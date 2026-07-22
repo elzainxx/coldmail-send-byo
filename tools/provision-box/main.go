@@ -1,0 +1,107 @@
+// Command provision-box is the out-of-band box provisioning CLI (P9-A / ADR-0005).
+//
+// token = authorization AUTHORITY; the mTLS client cert is transport. Flow:
+//   new    — mint a box id + a one-time token; print the plaintext token ONCE and the
+//            bcrypt HASH to seed. Plaintext is never stored.
+//   seed   — emit the SQL to store the token HASH (Phase 1: into sender.boxes.token_hash;
+//            Phase 0: into the Brain's DEV_BOX_TOKEN_HASH env — the box table arrives in
+//            Phase 1's sender_0006). Never stores the plaintext.
+//   revoke — emit the SQL to clear/rotate token_hash; a decommissioned box is refused on
+//            next connect regardless of a still-valid cert.
+//   hash   — bcrypt-hash a provided token (used by tooling/tests to compute a hash).
+//
+// The bcrypt hash format matches exactly what the Brain verifies with
+// bcrypt.CompareHashAndPassword (services/brain/internal/boxlink).
+package main
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "new":
+		id := flagVal("--id", "dev-box-1")
+		token := randToken()
+		hash := mustHash(token)
+		fmt.Printf("# box provisioned (P9-A). token=authority, cert=transport.\n")
+		fmt.Printf("BOX_ID=%s\n", id)
+		fmt.Printf("BOX_TOKEN=%s        # SHOWN ONCE — copy to the box's env; never stored\n", token)
+		fmt.Printf("DEV_BOX_TOKEN_HASH=%s   # seed into the Brain env (Phase 0) / sender.boxes (Phase 1)\n", hash)
+	case "hash":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: provision-box hash <token>")
+			os.Exit(2)
+		}
+		fmt.Println(mustHash(os.Args[2]))
+	case "seed":
+		id := flagVal("--id", "")
+		h := flagVal("--token-hash", "")
+		if id == "" || h == "" {
+			fmt.Fprintln(os.Stderr, "usage: provision-box seed --id <id> --token-hash <bcrypt-hash>")
+			os.Exit(2)
+		}
+		// Phase 1 form (sender.boxes exists then). Emitted for reference/CI.
+		fmt.Printf("-- Phase 1+ (requires sender.boxes from sender_0006):\n")
+		fmt.Printf("UPDATE sender.boxes SET token_hash='%s' WHERE id='%s';\n", h, id)
+		fmt.Printf("-- Phase 0: instead set DEV_BOX_ID=%s and DEV_BOX_TOKEN_HASH=%s in the Brain env.\n", id, h)
+	case "revoke":
+		id := flagVal("--id", "")
+		if id == "" {
+			fmt.Fprintln(os.Stderr, "usage: provision-box revoke --id <id>")
+			os.Exit(2)
+		}
+		fmt.Printf("-- decommission: refused on next connect regardless of cert.\n")
+		fmt.Printf("UPDATE sender.boxes SET token_hash=NULL, status='disabled' WHERE id='%s';\n", id)
+	default:
+		usage()
+		os.Exit(2)
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `provision-box — out-of-band box provisioning (token=authority, cert=transport)
+
+usage:
+  provision-box new    [--id <id>]                 mint id + one-time token + bcrypt hash
+  provision-box hash   <token>                     bcrypt-hash a token
+  provision-box seed   --id <id> --token-hash <h>  emit seed SQL / env line
+  provision-box revoke --id <id>                   emit revocation SQL
+`)
+}
+
+func randToken() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		fmt.Fprintf(os.Stderr, "provision-box: rand: %v\n", err)
+		os.Exit(1)
+	}
+	return hex.EncodeToString(b)
+}
+
+func mustHash(token string) string {
+	h, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.DefaultCost)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "provision-box: bcrypt: %v\n", err)
+		os.Exit(1)
+	}
+	return string(h)
+}
+
+func flagVal(name, def string) string {
+	for i, a := range os.Args {
+		if a == name && i+1 < len(os.Args) {
+			return os.Args[i+1]
+		}
+	}
+	return def
+}

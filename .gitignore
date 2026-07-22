@@ -3,7 +3,7 @@
 # and the harness generates ephemeral certs OUTSIDE secrets/, so cover every location.
 *.key
 *.pem
-secrets/
+secrets/*
 !secrets/.gitkeep
 **/certs/*.key
 **/certs/*.crt
@@ -17,6 +17,9 @@ deploy/certs/
 # ── Go (Brain) ──────────────────────────────────────────────────────────────
 /services/brain/bin/
 /tools/sender-migrate/bin/
+/tools/provision-box/bin/
+**/bin/sender-migrate
+**/bin/provision-box
 *.exe
 *.out
 *.test
