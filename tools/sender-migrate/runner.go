@@ -96,7 +96,7 @@ func (r *Runner) preflight(ctx context.Context, c *pgx.Conn) error {
 }
 
 // appliedVersions reads sender.schema_migrations. If the table doesn't exist yet (fresh DB,
-// pre-bootstrap), returns an empty set — the only special case, to bootstrap 0001 itself.
+// pre-bootstrap), returns an empty set — the only special case, to bootstrap 0000 itself.
 func (r *Runner) appliedVersions(ctx context.Context, c *pgx.Conn) (map[string]bool, error) {
 	var exists bool
 	err := c.QueryRow(ctx, `SELECT EXISTS (
