@@ -2,8 +2,12 @@ package harness
 
 import (
 	"net/url"
+	"os"
 	"strings"
 )
+
+// getenv is a thin os.Getenv wrapper kept here so test files read env via one helper.
+func getenv(k string) string { return os.Getenv(k) }
 
 // quoteIdent double-quotes a SQL identifier (test DB names are controlled, but be safe).
 func quoteIdent(s string) string {

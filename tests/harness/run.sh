@@ -64,13 +64,18 @@ TPL_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template"
 $DC exec -T postgres psql -U postgres -d sender_template -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
-if MIGRATE_DATABASE_URL="$TPL_DSN" tools/sender-migrate/bin/sender-migrate up >/dev/null 2>&1; then
-  export TEST_TEMPLATE_DB="sender_template"; echo "  template ready (fresh DB, migrated; platform untouched)"
+# up-and-set-password: apply the full chain AND set sender_module's password out-of-band, so
+# the Phase 1 role-isolation tests (T5/T6/T3e) can connect as sender_module against clones.
+if MIGRATE_DATABASE_URL="$TPL_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
+     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="sender_template"; echo "  template ready (fresh DB, migrated + app password; platform untouched)"
 else
   export TEST_TEMPLATE_DB=""; echo "  template create failed"
 fi
+# Phase 1 behavioral tests connect as sender_module; hand them the dev password.
+export SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}"
 
-hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation modes)"; hr
+hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation + Phase 1 data model)"; hr
 # Judge on the Go test verdict line ("^ok"/"^FAIL"), NOT the raw exit code: on Windows the
 # post-test temp-.exe cleanup ("unlinkat ... being used by another process") makes `go test`
 # exit non-zero even when every test PASSES. That artifact does not occur on Linux CI. We run
@@ -78,11 +83,15 @@ hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation mod
 go_suite() { # $1=dir  $2=label
   local out
   out="$(cd "$1" && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process")"
-  echo "$out" | grep -E "^(ok|FAIL|---)" | tail -6
+  echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -24
   if echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
 }
 go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
-go_suite tests/harness "DB isolation modes (template-clone cross-connection + txn-rollback)"
+# The harness package now holds BOTH the isolation-mode tests AND the Phase 1 behavioral suite
+# (T1 concurrent claim, T1b N-workers, T2 event-per-transition, T3 no-silent-state-change,
+# T3e RLS default-deny, T4 credential round-trip+tamper+AAD, T5 role-denied-platform-write,
+# T5b job_item_id UNIQUE, T6 append-only job_events). All run against real Postgres clones.
+go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/crypto/append-only)"
 
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
