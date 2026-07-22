@@ -70,11 +70,12 @@ func TestRunnerLifecycle(t *testing.T) {
 	}
 	defer admin.Close(context.Background())
 
-	// Clean slate on THIS connection (committed autocommit).
+	// Clean slate on THIS connection. Drop only the SCHEMA (per-database); the cluster-global
+	// roles sender_owner/sender_module are shared across databases (platform, template, this
+	// one) and the bootstrap creates them idempotently (IF NOT EXISTS), so we do NOT drop
+	// them here — dropping a role that still owns objects in another DB fails (2BP01). The
+	// bootstrap's ownership/grant statements are idempotent against pre-existing roles.
 	mustExec(t, admin, "DROP SCHEMA IF EXISTS sender CASCADE")
-	mustExec(t, admin, "DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname='sender_module') THEN EXECUTE 'REVOKE ALL ON public.users, public.job_items FROM sender_module'; END IF; END $$")
-	mustExec(t, admin, "DROP ROLE IF EXISTS sender_module")
-	mustExec(t, admin, "DROP ROLE IF EXISTS sender_owner")
 
 	// ANTI-VACUITY: assert the precondition. If the schema already existed here, the test
 	// below would be meaningless — so prove it's genuinely gone before we apply.

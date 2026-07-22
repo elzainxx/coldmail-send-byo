@@ -320,6 +320,30 @@ func (r *Runner) Status(ctx context.Context) error {
 	return nil
 }
 
+// SetAppPassword sets sender_module's password from the provided value (out-of-band; never
+// in migration SQL, never logged). Uses a parameterized-safe ALTER ROLE via format with a
+// quoted literal. The role must already exist (created by the bootstrap migration).
+func (r *Runner) SetAppPassword(ctx context.Context, password string) error {
+	if password == "" {
+		return fmt.Errorf("SENDER_MODULE_PASSWORD is empty; refusing to set an empty app-role password")
+	}
+	c, err := r.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close(context.Background())
+	// quote_literal via a server-side format to avoid injection; the value is never logged.
+	var stmt string
+	if err := c.QueryRow(ctx, "SELECT format('ALTER ROLE sender_module LOGIN PASSWORD %L', $1::text)", password).Scan(&stmt); err != nil {
+		return fmt.Errorf("format alter role: %w", err)
+	}
+	if _, err := c.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("alter role sender_module: %w", err)
+	}
+	fmt.Println("set-app-password: sender_module password set (value not logged)")
+	return nil
+}
+
 func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	for len(v) < 4 {

@@ -66,6 +66,15 @@ func main() {
 		err = r.Down(ctx, os.Args[2])
 	case "status":
 		err = r.Status(ctx)
+	case "set-app-password":
+		// Sets sender_module's password out-of-band from SENDER_MODULE_PASSWORD. Never logs
+		// the value. This keeps role passwords OUT of migration SQL (CLAUDE.md Rule 6).
+		err = r.SetAppPassword(ctx, os.Getenv("SENDER_MODULE_PASSWORD"))
+	case "up-and-set-password":
+		// Convenience for the compose one-shot: apply the chain, then set the app password.
+		if err = r.Up(ctx); err == nil {
+			err = r.SetAppPassword(ctx, os.Getenv("SENDER_MODULE_PASSWORD"))
+		}
 	case "-h", "--help", "help":
 		usage()
 		return

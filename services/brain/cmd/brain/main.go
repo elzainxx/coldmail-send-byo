@@ -47,7 +47,8 @@ func main() {
 
 	// Singleton guard: exactly one active Brain. Bounded-wait-then-fail. A second Brain
 	// that cannot acquire the session-level advisory lock exits non-zero and does nothing.
-	guard, err := singleton.Acquire(ctx, database, cfg.SingletonAcquireTimeout)
+	// Uses a DEDICATED standalone connection (its own DSN), independent of the pool.
+	guard, err := singleton.Acquire(ctx, cfg.DatabaseURL, cfg.SingletonAcquireTimeout)
 	if err != nil {
 		if errors.Is(err, singleton.ErrNotAcquired) {
 			// This is the correct, clean exit for a second Brain — not a crash.
