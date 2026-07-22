@@ -1,0 +1,329 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+var errDownForbidden = errors.New("down forbidden")
+
+// migrationFile is one on-disk sender_NNNN_*.{up,down}.sql pair member.
+type migrationFile struct {
+	Version string // "0001"
+	Name    string // "bootstrap"
+	UpPath  string
+	Concurrently bool // contains CREATE/DROP INDEX CONCURRENTLY -> run outside a txn
+}
+
+var fileRe = regexp.MustCompile(`^sender_(\d{4})_(.+)\.up\.sql$`)
+var concurrentlyRe = regexp.MustCompile(`(?i)\b(create|drop)\s+index\s+concurrently\b`)
+
+// Runner applies/rolls back migrations against the DSN.
+type Runner struct {
+	DSN              string
+	Dir              string
+	PreflightPath    string
+	LockTimeout      string
+	StatementTimeout string
+	AllowDown        bool
+	SkipPreflight    bool
+}
+
+func (r *Runner) connect(ctx context.Context) (*pgx.Conn, error) {
+	c, err := pgx.Connect(ctx, r.DSN)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	return c, nil
+}
+
+// acquireLock takes the runner's advisory lock with a bounded wait (retry loop around the
+// non-blocking pg_try_advisory_lock), then fails loud. Never blocks forever.
+func (r *Runner) acquireLock(ctx context.Context, c *pgx.Conn) error {
+	deadline := time.Now().Add(timeoutDur(r.LockTimeout, 10*time.Second))
+	for {
+		var got bool
+		if err := c.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", migrateAdvisoryLockID).Scan(&got); err != nil {
+			return fmt.Errorf("advisory lock: %w", err)
+		}
+		if got {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("could not acquire migration advisory lock within %s (another migrator running?)", r.LockTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func (r *Runner) releaseLock(ctx context.Context, c *pgx.Conn) {
+	_, _ = c.Exec(ctx, "SELECT pg_advisory_unlock($1)", migrateAdvisoryLockID)
+}
+
+// preflight runs the external-table existence check (OD-8) unless skipped.
+func (r *Runner) preflight(ctx context.Context, c *pgx.Conn) error {
+	if r.SkipPreflight {
+		fmt.Println("preflight: SKIPPED (MIGRATE_SKIP_PREFLIGHT=true)")
+		return nil
+	}
+	sqlBytes, err := os.ReadFile(r.PreflightPath)
+	if err != nil {
+		return fmt.Errorf("read preflight %q: %w", r.PreflightPath, err)
+	}
+	if _, err := c.Exec(ctx, string(sqlBytes)); err != nil {
+		return fmt.Errorf("preflight failed: %w", err)
+	}
+	fmt.Println("preflight: OK (public.users + public.job_items exist)")
+	return nil
+}
+
+// appliedVersions reads sender.schema_migrations. If the table doesn't exist yet (fresh DB,
+// pre-bootstrap), returns an empty set — the only special case, to bootstrap 0001 itself.
+func (r *Runner) appliedVersions(ctx context.Context, c *pgx.Conn) (map[string]bool, error) {
+	var exists bool
+	err := c.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.tables
+		WHERE table_schema='sender' AND table_name='schema_migrations')`).Scan(&exists)
+	if err != nil {
+		return nil, fmt.Errorf("check schema_migrations: %w", err)
+	}
+	applied := map[string]bool{}
+	if !exists {
+		return applied, nil
+	}
+	rows, err := c.Query(ctx, "SELECT version FROM sender.schema_migrations")
+	if err != nil {
+		return nil, fmt.Errorf("select versions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		applied[v] = true
+	}
+	return applied, rows.Err()
+}
+
+// discover globs sender_NNNN_*.up.sql, sorted ascending by version.
+func (r *Runner) discover() ([]migrationFile, error) {
+	entries, err := os.ReadDir(r.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("read migrations dir %q: %w", r.Dir, err)
+	}
+	var files []migrationFile
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := fileRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(r.Dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, migrationFile{
+			Version:      m[1],
+			Name:         m[2],
+			UpPath:       filepath.Join(r.Dir, e.Name()),
+			Concurrently: concurrentlyRe.Match(body),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Version < files[j].Version })
+	return files, nil
+}
+
+// Up applies all pending migrations in order.
+func (r *Runner) Up(ctx context.Context) error {
+	c, err := r.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close(context.Background())
+
+	if err := r.acquireLock(ctx, c); err != nil {
+		return err
+	}
+	defer r.releaseLock(context.Background(), c)
+
+	if err := r.preflight(ctx, c); err != nil {
+		return err
+	}
+
+	applied, err := r.appliedVersions(ctx, c)
+	if err != nil {
+		return err
+	}
+	files, err := r.discover()
+	if err != nil {
+		return err
+	}
+
+	// Contiguity guard: refuse to apply NNNN if NNNN-1 is neither applied nor present-and-pending.
+	pending := 0
+	for _, f := range files {
+		if applied[f.Version] {
+			continue
+		}
+		if err := r.applyOne(ctx, c, f); err != nil {
+			return fmt.Errorf("migration %s_%s: %w", f.Version, f.Name, err)
+		}
+		fmt.Printf("applied  %s_%s\n", f.Version, f.Name)
+		pending++
+	}
+	if pending == 0 {
+		fmt.Println("up: no pending migrations (already current)")
+	} else {
+		fmt.Printf("up: applied %d migration(s)\n", pending)
+	}
+	return nil
+}
+
+// applyOne runs a single up file. Transactional by default; non-transactional if it
+// contains CONCURRENTLY (the file must then be idempotent + carry its own bookkeeping last).
+func (r *Runner) applyOne(ctx context.Context, c *pgx.Conn, f migrationFile) error {
+	body, err := os.ReadFile(f.UpPath)
+	if err != nil {
+		return err
+	}
+	sqlText := string(body)
+
+	if f.Concurrently {
+		// Non-transactional: statements run sequentially; the file's own INSERT is last.
+		if _, err := c.Exec(ctx, fmt.Sprintf("SET statement_timeout = '%s'", r.StatementTimeout)); err != nil {
+			return err
+		}
+		_, err := c.Exec(ctx, sqlText)
+		return err
+	}
+
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%s'", r.LockTimeout)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%s'", r.StatementTimeout)); err != nil {
+		return err
+	}
+	// The file includes its OWN INSERT INTO sender.schema_migrations — we do not add one.
+	if _, err := tx.Exec(ctx, sqlText); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Down rolls back exactly one version (dev only).
+func (r *Runner) Down(ctx context.Context, version string) error {
+	if !r.AllowDown {
+		return errDownForbidden
+	}
+	version = normalizeVersion(version)
+	downPath, err := r.downPathFor(version)
+	if err != nil {
+		return err
+	}
+
+	c, err := r.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close(context.Background())
+	if err := r.acquireLock(ctx, c); err != nil {
+		return err
+	}
+	defer r.releaseLock(context.Background(), c)
+
+	body, err := os.ReadFile(downPath)
+	if err != nil {
+		return err
+	}
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	if _, err := tx.Exec(ctx, string(body)); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("rolled back %s\n", version)
+	return nil
+}
+
+func (r *Runner) downPathFor(version string) (string, error) {
+	entries, err := os.ReadDir(r.Dir)
+	if err != nil {
+		return "", err
+	}
+	prefix := "sender_" + version + "_"
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasPrefix(n, prefix) && strings.HasSuffix(n, ".down.sql") {
+			return filepath.Join(r.Dir, n), nil
+		}
+	}
+	return "", fmt.Errorf("no down file for version %s", version)
+}
+
+// Status prints applied vs pending.
+func (r *Runner) Status(ctx context.Context) error {
+	c, err := r.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close(context.Background())
+
+	applied, err := r.appliedVersions(ctx, c)
+	if err != nil {
+		return err
+	}
+	files, err := r.discover()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("migrations dir: %s\n", r.Dir)
+	if len(files) == 0 {
+		fmt.Println("  (no migration files on disk)")
+	}
+	pending := 0
+	for _, f := range files {
+		state := "PENDING"
+		if applied[f.Version] {
+			state = "applied"
+		} else {
+			pending++
+		}
+		fmt.Printf("  %s_%-24s %s\n", f.Version, f.Name, state)
+	}
+	fmt.Printf("summary: %d applied, %d pending\n", len(applied), pending)
+	return nil
+}
+
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	for len(v) < 4 {
+		v = "0" + v
+	}
+	return v
+}
