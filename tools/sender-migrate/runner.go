@@ -183,15 +183,21 @@ func (r *Runner) Up(ctx context.Context) error {
 	// Contiguity guard: the chain must be a gap-free ascending sequence. A file NNNN whose
 	// predecessor NNNN-1 is neither already applied nor present on disk is a hard error, not
 	// a silent skip (Phase 0 spec §5.5). This catches a dropped/renamed migration (e.g. a bad
-	// rebase) before it produces a half-applied schema.
+	// rebase) before it produces a half-applied schema. The chain start is the LOWEST version
+	// present (0000 pre-feature bootstrap, or 0001 if there is no bootstrap) — that lowest
+	// file needs no predecessor; every file above it does. So 0000 → 0001 is contiguous.
 	onDisk := make(map[int]bool, len(files))
+	minVer := -1
 	for _, f := range files {
 		n, _ := strconv.Atoi(f.Version)
 		onDisk[n] = true
+		if minVer == -1 || n < minVer {
+			minVer = n
+		}
 	}
 	for _, f := range files {
 		n, _ := strconv.Atoi(f.Version)
-		if n > 1 {
+		if n > minVer {
 			prev := n - 1
 			prevVer := fmt.Sprintf("%04d", prev)
 			if !applied[prevVer] && !onDisk[prev] {

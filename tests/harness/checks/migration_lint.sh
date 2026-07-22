@@ -14,7 +14,7 @@ prev=""
 
 ups=$(ls "$DIR"/sender_*.up.sql 2>/dev/null | sort || true)
 if [[ -z "$ups" ]]; then
-  echo "migration_lint: no migration files yet (Phase 0 ships sender_0001_bootstrap)."
+  echo "migration_lint: no migration files yet (Phase 0 ships sender_0000_bootstrap)."
 fi
 
 for up in $ups; do
@@ -28,12 +28,13 @@ for up in $ups; do
   # paired down
   [[ -f "$down" ]] || { echo "migration_lint FAIL: $base has no matching .down.sql"; fail=1; }
 
-  # contiguity
+  # contiguity — the chain starts at 0000 (Phase 0 pre-feature bootstrap) so the LOCKED
+  # feature chain stays 0001..0020; a bootstrap-free chain may legitimately start at 0001.
   if [[ -n "$prev" ]]; then
     expect=$(printf '%04d' $((10#$prev + 1)))
     [[ "$ver" == "$expect" ]] || { echo "migration_lint FAIL: gap/dup — after $prev expected $expect, got $ver"; fail=1; }
   else
-    [[ "$ver" == "0001" ]] || { echo "migration_lint FAIL: chain must start at 0001, got $ver"; fail=1; }
+    [[ "$ver" == "0000" || "$ver" == "0001" ]] || { echo "migration_lint FAIL: chain must start at 0000 (bootstrap) or 0001, got $ver"; fail=1; }
   fi
   prev="$ver"
 

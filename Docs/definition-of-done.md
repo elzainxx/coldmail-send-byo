@@ -62,8 +62,8 @@ DoD-9  CONTROL-PLANE SAFETY CONTROLS HONORED
 ---
 
 **Phase 0's own DoD status (this repo):** DoD-1 (spec `Docs/phase-0-groundwork.md`) ✅ · DoD-2
-(`scripts/dev.sh test` → 10/10 green on real infra) ✅ · DoD-3 (docs written; drift gates
+(`scripts/dev.sh test` → 11/11 green on real infra) ✅ · DoD-3 (docs written; drift gates
 wired) ✅ · DoD-4/5 (Phase 0 seeds zero config keys; manifest empty; no tuning constants) ✅ ·
-DoD-6 (open-decisions.md, OD rulings applied) ✅ · DoD-7 (`sender_0001_bootstrap` self-records;
-additive) ✅ · DoD-8 (mTLS/sole-decryptor/box-no-KMS all tested green) ✅ · DoD-9 (singleton
+DoD-6 (open-decisions.md, OD rulings applied) ✅ · DoD-7 (`sender_0000_bootstrap` self-records;
+feature chain stays `sender_0001..0020`; additive) ✅ · DoD-8 (mTLS/sole-decryptor/box-no-KMS all tested green) ✅ · DoD-9 (singleton
 guard tested green; kill-switch scaffolding honored, real subsystems arrive Phases 4–8) ✅.

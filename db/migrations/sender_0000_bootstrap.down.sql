@@ -1,4 +1,4 @@
--- sender_0001_bootstrap.down.sql — reverse of the bootstrap (dev/CI only; forward-only in
+-- sender_0000_bootstrap.down.sql — reverse of the pre-feature bootstrap (dev/CI only; forward-only in
 -- prod). Drops the schema (CASCADE removes the tracking table and anything created later),
 -- revokes platform-table grants, and drops the roles if unused. DELETE of the version row is
 -- moot once the schema is dropped, but we keep the convention explicit for symmetry.
@@ -14,7 +14,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE sender_owner IN SCHEMA sender
     REVOKE USAGE, SELECT ON SEQUENCES FROM sender_module;
 
 -- Bookkeeping delete (explicit, though the CASCADE below also removes the table).
-DELETE FROM sender.schema_migrations WHERE version = '0001';
+DELETE FROM sender.schema_migrations WHERE version = '0000';
 
 -- Drop the schema and everything in it.
 DROP SCHEMA IF EXISTS sender CASCADE;

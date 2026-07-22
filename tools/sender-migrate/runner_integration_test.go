@@ -99,8 +99,8 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !schemaMigrationsExists(t, admin) {
 		t.Fatal("after Up: sender.schema_migrations does not exist")
 	}
-	if got := versions(t, admin); len(got) != 1 || got[0] != "0001" {
-		t.Fatalf("after Up: versions = %v, want [0001]", got)
+	if got := versions(t, admin); len(got) != 1 || got[0] != "0000" {
+		t.Fatalf("after Up: versions = %v, want [0000] (bootstrap is sender_0000)", got)
 	}
 	// Prove the real objects/roles/grants exist (not just the tracking row).
 	assertRole(t, admin, "sender_owner", false /*login*/, false /*super*/)
@@ -109,16 +109,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertPlatformGrant(t, admin, "users")
 	assertPlatformGrant(t, admin, "job_items")
 
-	// --- Idempotent re-run: applying again changes nothing, still exactly [0001] ---
+	// --- Idempotent re-run: applying again changes nothing, still exactly [0000] ---
 	if err := r.Up(ctx); err != nil {
 		t.Fatalf("Up (2nd): %v", err)
 	}
-	if got := versions(t, admin); len(got) != 1 || got[0] != "0001" {
-		t.Fatalf("after idempotent Up: versions = %v, want [0001]", got)
+	if got := versions(t, admin); len(got) != 1 || got[0] != "0000" {
+		t.Fatalf("after idempotent Up: versions = %v, want [0000]", got)
 	}
 
 	// --- Down: reverses cleanly ---
-	if err := r.Down(ctx, "0001"); err != nil {
+	if err := r.Down(ctx, "0000"); err != nil {
 		t.Fatalf("Down: %v", err)
 	}
 	if schemaMigrationsExists(t, admin) {
