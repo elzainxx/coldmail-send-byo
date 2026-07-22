@@ -1,0 +1,6 @@
+# Phase-aware expected sender.config key manifest (OD-6).
+# One key name per line. The CI config_drift gate asserts:
+#   live sender.config key set  ==  this manifest  ==  the config-reference.md table.
+# Phase 0 seeds ZERO keys, so this manifest is intentionally empty (comments only).
+# Each config-seeding migration (Phase 1's sender_0010 onward) appends its keys here in the
+# SAME change, so the gate grows monotonically to the eventual 50-key total after sender_0021.
