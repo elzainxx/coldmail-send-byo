@@ -20,8 +20,9 @@ expected="$(grep -vE '^\s*#|^\s*$' "$MANIFEST" 2>/dev/null | sort -u || true)"
 live="$($DC exec -T postgres psql -U postgres -d platform -tAc \
   "SELECT key FROM sender.config ORDER BY key" 2>/dev/null | sort -u || true)"
 
-# 3) Documented keys = the key column of the config-reference table (rows like | key | ... |).
-documented="$(grep -oE '^\| *`[a-z_]+` *\|' Docs/config-reference.md 2>/dev/null \
+# 3) Documented keys = the key column of the config-reference table (rows like | `key` | ... |).
+# Key charset includes digits (e.g. retry_count_4xx) — [a-z0-9_].
+documented="$(grep -oE '^\| *`[a-z0-9_]+` *\|' Docs/config-reference.md 2>/dev/null \
   | tr -d '|` ' | sort -u || true)"
 
 fail=0

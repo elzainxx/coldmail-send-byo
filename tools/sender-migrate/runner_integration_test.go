@@ -92,6 +92,12 @@ func TestRunnerLifecycle(t *testing.T) {
 		AllowDown:        true,
 	}
 
+	// The full Phase-0 + Phase-1 feature chain: bootstrap 0000 then the locked feature
+	// migrations sender_0001..0012 (the data model). This is the executable expectation of
+	// the migration chain — it grows as later phases add 0013+.
+	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
+		"0008", "0009", "0010", "0011", "0012"}
+
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -99,31 +105,104 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !schemaMigrationsExists(t, admin) {
 		t.Fatal("after Up: sender.schema_migrations does not exist")
 	}
-	if got := versions(t, admin); len(got) != 1 || got[0] != "0000" {
-		t.Fatalf("after Up: versions = %v, want [0000] (bootstrap is sender_0000)", got)
+	if got := versions(t, admin); !equalStrings(got, wantChain) {
+		t.Fatalf("after Up: versions = %v, want %v", got, wantChain)
 	}
-	// Prove the real objects/roles/grants exist (not just the tracking row).
+	// Prove the real objects/roles/grants exist (not just the tracking rows). The roles,
+	// schema ownership, and platform grants are established by the bootstrap (0000).
 	assertRole(t, admin, "sender_owner", false /*login*/, false /*super*/)
 	assertRole(t, admin, "sender_module", true /*login*/, false /*super*/)
 	assertSchemaOwner(t, admin, "sender", "sender_owner")
 	assertPlatformGrant(t, admin, "users")
 	assertPlatformGrant(t, admin, "job_items")
+	// Prove the Phase-1 feature objects exist and are owned by sender_owner (so FORCE RLS on
+	// sender.accounts genuinely enforces — ADR-0004).
+	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config"} {
+		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
+	}
+	// Config seeds the 14 foundation keys (sender_0010).
+	if n := configKeyCount(t, admin); n != 14 {
+		t.Fatalf("after Up: sender.config has %d keys, want 14 (Phase 9 §4.1)", n)
+	}
+	// FORCE RLS is set on the crown-jewel credential table.
+	if !accountsForceRLS(t, admin) {
+		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
+	}
 
-	// --- Idempotent re-run: applying again changes nothing, still exactly [0000] ---
+	// --- Idempotent re-run: applying again changes nothing, still exactly the full chain ---
 	if err := r.Up(ctx); err != nil {
 		t.Fatalf("Up (2nd): %v", err)
 	}
-	if got := versions(t, admin); len(got) != 1 || got[0] != "0000" {
-		t.Fatalf("after idempotent Up: versions = %v, want [0000]", got)
+	if got := versions(t, admin); !equalStrings(got, wantChain) {
+		t.Fatalf("after idempotent Up: versions = %v, want %v", got, wantChain)
 	}
 
-	// --- Down: reverses cleanly ---
+	// --- Down: reverse the feature chain in strict reverse order (0012 -> 0001), proving each
+	// migration's DOWN is real, then finally the bootstrap 0000 which drops the schema. ---
+	for i := len(wantChain) - 1; i >= 1; i-- {
+		v := wantChain[i]
+		if err := r.Down(ctx, v); err != nil {
+			t.Fatalf("Down %s: %v", v, err)
+		}
+	}
+	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
+	// only version 0000 recorded — proving the feature-chain downs un-record without dropping
+	// the bootstrap's schema/roles.
+	if got := versions(t, admin); len(got) != 1 || got[0] != "0000" {
+		t.Fatalf("after feature-chain down: versions = %v, want [0000]", got)
+	}
+	// Finally reverse the bootstrap itself: schema gone.
 	if err := r.Down(ctx, "0000"); err != nil {
-		t.Fatalf("Down: %v", err)
+		t.Fatalf("Down 0000: %v", err)
 	}
 	if schemaMigrationsExists(t, admin) {
-		t.Fatal("after Down: sender schema still present")
+		t.Fatal("after Down 0000: sender schema still present")
 	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertTableOwner(t *testing.T, c *pgx.Conn, schema, table, owner string) {
+	t.Helper()
+	var got string
+	err := c.QueryRow(context.Background(),
+		`SELECT tableowner FROM pg_tables WHERE schemaname=$1 AND tablename=$2`, schema, table).Scan(&got)
+	if err != nil {
+		t.Fatalf("owner lookup %s.%s: %v", schema, table, err)
+	}
+	if got != owner {
+		t.Fatalf("table %s.%s owner = %s, want %s", schema, table, got, owner)
+	}
+}
+
+func configKeyCount(t *testing.T, c *pgx.Conn) int {
+	t.Helper()
+	var n int
+	if err := c.QueryRow(context.Background(), "SELECT count(*) FROM sender.config").Scan(&n); err != nil {
+		t.Fatalf("config count: %v", err)
+	}
+	return n
+}
+
+func accountsForceRLS(t *testing.T, c *pgx.Conn) bool {
+	t.Helper()
+	var relforcerowsecurity bool
+	err := c.QueryRow(context.Background(),
+		"SELECT relforcerowsecurity FROM pg_class WHERE oid='sender.accounts'::regclass").Scan(&relforcerowsecurity)
+	if err != nil {
+		t.Fatalf("force rls lookup: %v", err)
+	}
+	return relforcerowsecurity
 }
 
 func assertRole(t *testing.T, c *pgx.Conn, name string, wantLogin, wantSuper bool) {

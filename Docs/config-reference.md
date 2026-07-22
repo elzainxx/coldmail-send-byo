@@ -4,17 +4,31 @@ Authoritative source: **Phase 9 §4** (`../Docs/phase-9-polish-and-documentation
 50-key consolidated reference. This file is the checked-in mirror, verified by the CI
 `config_drift` gate against the live `sender.config` seeds.
 
-## Phase 0 state
+## Phase 1 state (14 keys, `sender_0010`)
 
-**Phase 0 seeds ZERO config keys.** `sender.config` is created in Phase 1 (`sender_0010`);
-the keys arrive across Phases 1–9.5. The drift gate therefore diffs against a **phase-aware
-manifest** (`config-manifest.txt`), which is empty at Phase 0 — the gate asserts that the
-live `sender.config` key set equals the manifest (both empty until Phase 1). This is what
-makes "no hardcoded tuning constant" checkable from the very first phase that seeds a key.
+`sender.config` is created in Phase 1 (`sender_0010`), seeding the **14 foundation keys** below
+(Phase 9 §4.1). Later phases append their keys (Phase 5 `sender_0017`, Phase 6 `sender_0018`,
+Phase 7 `sender_0019`, Phase 8 `sender_0020`, Phase 9.5 `sender_0021`) growing to the 50-key
+total. The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
+live `sender.config` key set AND this table — all three must match, which is what makes "no
+hardcoded tuning constant" structurally checkable. `default_value` is never mutated.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
-| _(none at Phase 0)_ | | | | |
+| `daily_limit_default` | `{"v": 500}` | integer | sender_0010 | Default max sends per account per day. |
+| `daily_reset_timezone` | `{"v": "UTC"}` | string | sender_0010 | Timezone (IANA tz name) defining the calendar "day" for limits. |
+| `daily_reset_hour` | `{"v": 0}` | integer | sender_0010 | Hour of day (0–23, in tz) when daily counters reset. |
+| `quarantine_threshold` | `{"v": 30}` | integer | sender_0010 | account_status_score below which an account is auto-quarantined (Phase 5). |
+| `retry_count_4xx` | `{"v": 3}` | integer | sender_0010 | Same-account 4xx retries before requeue (Phase 5). |
+| `dispatch_tick_interval_ms` | `{"v": 1000}` | integer | sender_0010 | Dispatcher poll interval / config re-read cadence (Phase 4). |
+| `send_delay_min_sec` | `{"v": 3}` | integer | sender_0010 | Lower bound of the random inter-send delay per lane (Phase 6). |
+| `send_delay_max_sec` | `{"v": 7}` | integer | sender_0010 | Upper bound of the random inter-send delay per lane (Phase 6). |
+| `concurrency_per_user_default` | `{"v": 3}` | integer | sender_0010 | Parallel-lane ceiling per user (Phase 4/6). |
+| `heartbeat_interval_sec` | `{"v": 120}` | integer | sender_0010 | Expected box heartbeat cadence (Phase 6). |
+| `heartbeat_missed_threshold` | `{"v": 3}` | integer | sender_0010 | Missed heartbeats before a box is presumed dead (Phase 6). |
+| `job_max_processing_time_sec` | `{"v": 120}` | integer | sender_0010 | Per-job max processing time (lease). **Invariant §4.6(a).** |
+| `debug_log_retention_days` | `{"v": 7}` | integer | sender_0010 | `send_logs.ttl_expires_at` age before the sweep purges raw content (Phase 7). |
+| `default_shared_pool_id` | `{"v": null}` | uuid | sender_0010 | Base-campaign shared pool; must be set before base sends route (Phase 4). |
 
 ## Both config-ordering invariants (enforced at config-load, Phase 7 §5.3 authoritative)
 
