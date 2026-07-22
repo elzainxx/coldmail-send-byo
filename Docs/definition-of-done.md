@@ -67,3 +67,19 @@ wired) ✅ · DoD-4/5 (Phase 0 seeds zero config keys; manifest empty; no tuning
 DoD-6 (open-decisions.md, OD rulings applied) ✅ · DoD-7 (`sender_0000_bootstrap` self-records;
 feature chain stays `sender_0001..0020`; additive) ✅ · DoD-8 (mTLS/sole-decryptor/box-no-KMS all tested green) ✅ · DoD-9 (singleton
 guard tested green; kill-switch scaffolding honored, real subsystems arrive Phases 4–8) ✅.
+
+**Phase 1's DoD status (data model & schema):** DoD-1 (spec `Docs/phase-1-data-model.md` +
+`phase1-drafts/`) ✅ · DoD-2 (9 real-Postgres behavioral tests — concurrent claim, event-per-
+transition, no-silent-state-change, RLS default-deny, credential round-trip+tamper+AAD,
+role-denied-platform-write, job_item_id UNIQUE, append-only log — all green in the harness;
+`scripts/dev.sh test` → 11/11) ✅ · DoD-3 (config-reference, config-manifest, architecture-
+overview updated same-change; ADR-0008 written; drift gates green) ✅ · DoD-4 (14 foundation
+keys seeded at `sender_0010`, documented; `default_value` unmutated; ordering-invariant keys
+arrive in later phases as Phase 9 §4 schedules) ✅ · DoD-5 (no tuning constant literal in
+Brain/box — none added; all 14 dials are seeded rows) ✅ · DoD-6 (open-decisions.md — Phase 1's
+§14 log is closed; no new open items) ✅ · DoD-7 (feature chain `sender_0001..0012` contiguous
+on `0000`, each self-records with paired DOWN; 7 enums additive; append-only REVOKEs land with
+their tables; `sender_owner` owns the schema; FORCE RLS on `accounts`) ✅ · DoD-8 (credential
+encrypted at rest with key outside the DB, AAD row-binding proven; box has no DB/KMS; mTLS
+unchanged; no credential in logs — no-leak gate green) ✅ · DoD-9 (no autonomous subsystem
+added in Phase 1; singleton guard unchanged and still green) ✅.
