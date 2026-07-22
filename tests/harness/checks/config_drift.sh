@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # config_drift — BLOCKING CI gate. Asserts the live sender.config key set equals the
-# phase-aware manifest (docs/config-manifest.txt) AND the config-reference.md table. This
+# phase-aware manifest (Docs/config-manifest.txt) AND the config-reference.md table. This
 # structurally forbids a hardcoded tuning constant: a dial that isn't a seeded row with a
 # documented default cannot pass. Grows monotonically to 50 keys after sender_0021 (OD-6).
 #
@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
 DC="${COMPOSE_INVOCATION:-docker compose -f docker-compose.yml -f tests/harness/compose.test.yml}"
-MANIFEST="docs/config-manifest.txt"
+MANIFEST="Docs/config-manifest.txt"
 
 # 1) Expected keys = non-comment, non-blank lines of the manifest.
 expected="$(grep -vE '^\s*#|^\s*$' "$MANIFEST" 2>/dev/null | sort -u || true)"
@@ -21,7 +21,7 @@ live="$($DC exec -T postgres psql -U postgres -d platform -tAc \
   "SELECT key FROM sender.config ORDER BY key" 2>/dev/null | sort -u || true)"
 
 # 3) Documented keys = the key column of the config-reference table (rows like | key | ... |).
-documented="$(grep -oE '^\| *`[a-z_]+` *\|' docs/config-reference.md 2>/dev/null \
+documented="$(grep -oE '^\| *`[a-z_]+` *\|' Docs/config-reference.md 2>/dev/null \
   | tr -d '|` ' | sort -u || true)"
 
 fail=0

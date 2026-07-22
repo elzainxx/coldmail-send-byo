@@ -10,11 +10,11 @@
 /tools/sender-migrate/           @sender-arch @platform-db
 
 # API/box contracts are additive-only; renames never.
-/docs/api-contract.md            @sender-arch
-/docs/config-reference.md        @sender-arch @platform-db
+/Docs/api-contract.md            @sender-arch
+/Docs/config-reference.md        @sender-arch @platform-db
 
 # Definition of Done: the gate every future phase is held to.
-/docs/definition-of-done.md      @sender-arch
+/Docs/definition-of-done.md      @sender-arch
 
 # Locked phase specs — historical design record, not edited during build work.
 /Docs/                           @sender-arch

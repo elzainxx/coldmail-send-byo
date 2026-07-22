@@ -19,6 +19,21 @@ DELETE FROM sender.schema_migrations WHERE version = '0001';
 -- Drop the schema and everything in it.
 DROP SCHEMA IF EXISTS sender CASCADE;
 
--- Drop roles last (only succeeds if they own nothing else / have no active sessions).
-DROP ROLE IF EXISTS sender_module;
-DROP ROLE IF EXISTS sender_owner;
+-- Drop the cluster-global roles BEST-EFFORT. Roles are shared across databases; if a role
+-- still owns objects in another database (e.g. a template/test DB, or the platform DB),
+-- DROP ROLE raises dependent_objects_still_exist (2BP01). That is legitimate — the role is
+-- still in use elsewhere — so we catch it and retain the role rather than abort the whole
+-- down. (Down is dev/CI-only anyway; prod is forward-only.)
+DO $$
+BEGIN
+  BEGIN
+    DROP ROLE IF EXISTS sender_module;
+  EXCEPTION WHEN dependent_objects_still_exist THEN
+    RAISE NOTICE 'sender_module retained: still owns objects in another database';
+  END;
+  BEGIN
+    DROP ROLE IF EXISTS sender_owner;
+  EXCEPTION WHEN dependent_objects_still_exist THEN
+    RAISE NOTICE 'sender_owner retained: still owns objects in another database';
+  END;
+END $$;

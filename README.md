@@ -10,8 +10,8 @@ nine locked phase specs live under `Docs/` and drive Phases 1–9.
 
 - **Operating rules:** [`CLAUDE.md`](./CLAUDE.md) — read first; non-negotiable build discipline.
 - **Phase 0 spec:** [`Docs/phase-0-groundwork.md`](./Docs/phase-0-groundwork.md).
-- **Definition of Done:** [`docs/definition-of-done.md`](./docs/definition-of-done.md).
-- **Open Decisions:** [`docs/open-decisions.md`](./docs/open-decisions.md).
+- **Definition of Done:** [`Docs/definition-of-done.md`](./Docs/definition-of-done.md).
+- **Open Decisions:** [`Docs/open-decisions.md`](./Docs/open-decisions.md).
 
 ## Layout
 
@@ -24,7 +24,7 @@ db/migrations/            central, self-tracking SQL migrations (sender_NNNN_*)
 tools/sender-migrate/     the thin migration runner (Go)
 tools/                    gen-certs, provision-box, gen-admin-key
 tests/harness/            real-infra behavioral test harness (real PG + Mailpit + procs)
-docs/                     living docs: config ref, api contract, ADRs, DoD, open-decisions
+Docs/                     living docs: config ref, api contract, ADRs, DoD, open-decisions
 Docs/                     LOCKED phase specs (1–9, 9.5, contract completions, phase 0)
 deploy/                   prod/override material + .env.example
 ```
@@ -41,4 +41,4 @@ scripts/dev.sh down       # tear down
 
 > `make` is not installed on the Windows dev host; `scripts/dev.sh` is the portable
 > entrypoint and `Makefile` delegates to it (CI's Ubuntu image has `make`). See
-> `docs/open-decisions.md` OD-16.
+> `Docs/open-decisions.md` OD-16.

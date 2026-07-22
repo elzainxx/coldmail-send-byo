@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # contract_drift — BLOCKING CI gate. Asserts the Brain SERVES exactly the routes documented
-# in docs/api-contract.md, and no undocumented ones, for the Phase-0 surface. Additive-only:
+# in Docs/api-contract.md, and no undocumented ones, for the Phase-0 surface. Additive-only:
 # a documented route the Brain doesn't answer, or a served route that's undocumented, fails.
 #
 # Health routes are probed on the host; the mTLS boxlink routes are probed IN-NETWORK from
@@ -32,7 +32,7 @@ und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/admin/sec
 
 # --- The contract doc actually lists these routes (doc <-> served lockstep) ---
 for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat"; do
-  grep -q "$r" docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
+  grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 
 [[ "$fail" -eq 0 ]] && echo "contract_drift OK: served routes == documented Phase-0 contract."

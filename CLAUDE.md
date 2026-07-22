@@ -31,8 +31,8 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 
 ## 2. Flag, don't silently fix
 - Contradictions, ambiguities, and locked-fact conflicts are NOT resolved by
-  inventing an answer. Record them in the Open Decisions log (`docs/open-decisions.md`
-  + an ADR in `docs/decisions/`) and await the user's ruling.
+  inventing an answer. Record them in the Open Decisions log (`Docs/open-decisions.md`
+  + an ADR in `Docs/decisions/`) and await the user's ruling.
 - Never resolve a locked contradiction on your own authority. "Locked" means locked.
 - An Open Decision blocks only the ambiguous slice; keep unrelated work moving.
 
@@ -53,7 +53,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   stale; a diff that changes behavior without changing docs is incomplete.
 - The docs discipline (structure, ownership, staleness gate) is defined in the
   Phase-0 documentation section (`Docs/phase-0-groundwork.md` §3) and the living docs
-  under `docs/`. Follow it.
+  under `Docs/`. Follow it.
 
 ## 5. Contracts, errors, and honesty
 - Contracts (API request/response shapes, event/message schemas, DB columns, enums)
@@ -122,7 +122,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   as an incident, not a refactor.
 
 ## Definition of Done (every phase is held to this)
-See `docs/definition-of-done.md`. A phase is not done until all nine DoD items are
+See `Docs/definition-of-done.md`. A phase is not done until all nine DoD items are
 green: spec written; real behavioral tests green on real infra; docs updated in the
 same change; config keys seeded + documented; no hardcoded tuning constants; Open
 Decisions discharged; additive-only + migration chain intact; security properties
