@@ -1,0 +1,20 @@
+# Change-controlled, load-bearing surfaces. Edits require the owning reviewers.
+
+# Operating rules: the single source of build discipline.
+/CLAUDE.md                       @sender-arch
+
+# Central migrations: shared schema, applied by Brain + harness + CI. Self-tracking.
+/db/migrations/                  @sender-arch @platform-db
+
+# The migration runner: keeps the locked self-tracking convention (OD-4).
+/tools/sender-migrate/           @sender-arch @platform-db
+
+# API/box contracts are additive-only; renames never.
+/docs/api-contract.md            @sender-arch
+/docs/config-reference.md        @sender-arch @platform-db
+
+# Definition of Done: the gate every future phase is held to.
+/docs/definition-of-done.md      @sender-arch
+
+# Locked phase specs — historical design record, not edited during build work.
+/Docs/                           @sender-arch
