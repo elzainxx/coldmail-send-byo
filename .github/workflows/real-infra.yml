@@ -1,0 +1,51 @@
+# Real-infra CI (Phase 0). Runs on every push/PR; a passing run is a REQUIRED status check
+# on the default branch. Brings up the SAME compose stack devs run (base + harness override),
+# executes the real-infra behavioral harness, then the three BLOCKING drift gates. Nothing is
+# mocked — real Postgres + real Brain + real box + real Mailpit (CLAUDE.md Rule 3).
+name: real-infra
+on: [push, pull_request]
+
+jobs:
+  behavioral:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Generate dev certs/secrets + provision dev box (writes .env)
+        run: bash scripts/dev.sh certs
+
+      - name: Bring up the stack (base + harness override; blocks on healthchecks)
+        run: bash scripts/dev.sh up
+
+      - name: Real-infra behavioral harness (10 checks, must be all-green)
+        run: bash scripts/dev.sh test
+
+      - name: Drift gate — config reference vs seeded sender.config (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/config_drift.sh
+
+      - name: Drift gate — served routes vs api-contract.md (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/contract_drift.sh
+
+      - name: Drift gate — migration chain lint (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/migration_lint.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f tests/harness/compose.test.yml ps || true
+          docker compose -f docker-compose.yml -f tests/harness/compose.test.yml logs brain box migrate || true
+
+      - name: Tear down
+        if: always()
+        run: bash scripts/dev.sh down || true
+
+  # E11 (single-Brain throughput-ceiling LOAD test) is a before-you-SCALE gate, NOT a
+  # per-push blocker (Phase 9.5 §7). It runs on demand, not here:
+  #   workflow_dispatch -> bash scripts/dev.sh test suites/load   (added when E11 lands)
