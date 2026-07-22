@@ -42,8 +42,8 @@ type Server struct {
 	http     *http.Server
 	registry Registry
 
-	mu        sync.Mutex
-	lastBeat  map[string]time.Time // box id -> last heartbeat (in-memory; Phase 0 only)
+	mu         sync.Mutex
+	lastBeat   map[string]time.Time // box id -> last heartbeat (in-memory; Phase 0 only)
 	registered map[string]bool
 }
 

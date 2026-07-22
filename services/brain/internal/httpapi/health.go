@@ -30,7 +30,7 @@ func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard) *Heal
 	return h
 }
 
-func (h *HealthServer) ListenAndServe() error       { return h.http.ListenAndServe() }
+func (h *HealthServer) ListenAndServe() error            { return h.http.ListenAndServe() }
 func (h *HealthServer) Shutdown(c context.Context) error { return h.http.Shutdown(c) }
 
 // handleHealthz is liveness: the process is up.

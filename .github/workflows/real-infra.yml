@@ -15,6 +15,15 @@ jobs:
         with:
           go-version: "1.23"
 
+      - name: Go lint — gofmt + vet (BLOCKING; keeps code/format from drifting)
+        run: |
+          test -z "$(gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness)" \
+            || { echo 'gofmt: files need formatting:'; gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness; exit 1; }
+          (cd services/brain && go vet ./...)
+          (cd tools/sender-migrate && go vet ./...)
+          (cd tools/provision-box && go vet ./...)
+          (cd tests/harness && go vet ./...)
+
       - name: Generate dev certs/secrets + provision dev box (writes .env)
         run: bash scripts/dev.sh certs
 
@@ -35,6 +44,10 @@ jobs:
       - name: Drift gate — migration chain lint (BLOCKING)
         if: always()
         run: bash tests/harness/checks/migration_lint.sh
+
+      - name: Security gate — no credential leak in service logs (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/no_secret_leak.sh
 
       - name: Diagnostics on failure
         if: failure()

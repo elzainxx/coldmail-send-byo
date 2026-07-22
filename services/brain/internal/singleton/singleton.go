@@ -34,9 +34,9 @@ var ErrNotAcquired = errors.New("singleton: lock not acquired within timeout")
 
 // Guard owns the dedicated lock connection via its keeper goroutine.
 type Guard struct {
-	conn   *pgx.Conn
-	held   atomic.Bool
-	stop   chan struct{}
+	conn    *pgx.Conn
+	held    atomic.Bool
+	stop    chan struct{}
 	stopped chan struct{}
 }
 

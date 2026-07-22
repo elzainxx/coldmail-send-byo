@@ -23,9 +23,9 @@ import (
 const (
 	// Advisory lock held only for the duration of an up/down/status run. Distinct from the
 	// Brain singleton key (9_200_000_001). Registered in docs/advisory-locks.md.
-	migrateAdvisoryLockID int64 = 9_100_000_001
-	defaultLockTimeout          = "10s"
-	defaultStatementTimeout     = "300s"
+	migrateAdvisoryLockID   int64 = 9_100_000_001
+	defaultLockTimeout            = "10s"
+	defaultStatementTimeout       = "300s"
 )
 
 func main() {

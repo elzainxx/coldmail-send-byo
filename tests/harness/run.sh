@@ -71,8 +71,18 @@ else
 fi
 
 hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation modes)"; hr
-( cd tools/sender-migrate && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process" ) && ok "migration lifecycle (apply/idempotent/down)" || bad "migration lifecycle"
-( cd tests/harness && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process" ) && ok "DB isolation modes (template-clone cross-connection + txn-rollback)" || bad "DB isolation modes"
+# Judge on the Go test verdict line ("^ok"/"^FAIL"), NOT the raw exit code: on Windows the
+# post-test temp-.exe cleanup ("unlinkat ... being used by another process") makes `go test`
+# exit non-zero even when every test PASSES. That artifact does not occur on Linux CI. We run
+# the tests, strip the cleanup noise, and decide pass/fail from whether Go printed a FAIL line.
+go_suite() { # $1=dir  $2=label
+  local out
+  out="$(cd "$1" && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process")"
+  echo "$out" | grep -E "^(ok|FAIL|---)" | tail -6
+  if echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
+}
+go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
+go_suite tests/harness "DB isolation modes (template-clone cross-connection + txn-rollback)"
 
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
@@ -132,6 +142,14 @@ if $DC exec -T brain sh -c 'test -r /secrets/kms/dev-master.key' 2>/dev/null; th
   ok "Brain CAN read the KMS key (sole decryptor); the box cannot — boundary is real"
 else
   bad "Brain cannot read the KMS key — sole-decryptor wiring wrong"
+fi
+
+hr; echo "SUITE 6: no credential leak in service logs (Rule 5/6 regression guard)"; hr
+# The box token + hash flow through registration today; assert neither appears in any log.
+if COMPOSE_INVOCATION="$DC" bash tests/harness/checks/no_secret_leak.sh >/dev/null 2>&1; then
+  ok "no dev token/hash found in brain/box/migrate/postgres/sink logs"
+else
+  bad "a dev credential (token or hash) leaked into service logs"
 fi
 
 hr

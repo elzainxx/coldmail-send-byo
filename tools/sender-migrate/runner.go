@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,9 @@ var errDownForbidden = errors.New("down forbidden")
 
 // migrationFile is one on-disk sender_NNNN_*.{up,down}.sql pair member.
 type migrationFile struct {
-	Version string // "0001"
-	Name    string // "bootstrap"
-	UpPath  string
+	Version      string // "0001"
+	Name         string // "bootstrap"
+	UpPath       string
 	Concurrently bool // contains CREATE/DROP INDEX CONCURRENTLY -> run outside a txn
 }
 
@@ -39,7 +40,11 @@ type Runner struct {
 }
 
 func (r *Runner) connect(ctx context.Context) (*pgx.Conn, error) {
-	c, err := pgx.Connect(ctx, r.DSN)
+	// Bounded connect so an unreachable Postgres fails fast rather than hanging on the OS
+	// default TCP timeout (mirrors the Brain's pool-ping timeout).
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	c, err := pgx.Connect(cctx, r.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -175,7 +180,26 @@ func (r *Runner) Up(ctx context.Context) error {
 		return err
 	}
 
-	// Contiguity guard: refuse to apply NNNN if NNNN-1 is neither applied nor present-and-pending.
+	// Contiguity guard: the chain must be a gap-free ascending sequence. A file NNNN whose
+	// predecessor NNNN-1 is neither already applied nor present on disk is a hard error, not
+	// a silent skip (Phase 0 spec §5.5). This catches a dropped/renamed migration (e.g. a bad
+	// rebase) before it produces a half-applied schema.
+	onDisk := make(map[int]bool, len(files))
+	for _, f := range files {
+		n, _ := strconv.Atoi(f.Version)
+		onDisk[n] = true
+	}
+	for _, f := range files {
+		n, _ := strconv.Atoi(f.Version)
+		if n > 1 {
+			prev := n - 1
+			prevVer := fmt.Sprintf("%04d", prev)
+			if !applied[prevVer] && !onDisk[prev] {
+				return fmt.Errorf("migration chain gap: %s present but predecessor %s is neither applied nor on disk", f.Version, prevVer)
+			}
+		}
+	}
+
 	pending := 0
 	for _, f := range files {
 		if applied[f.Version] {
@@ -206,11 +230,14 @@ func (r *Runner) applyOne(ctx context.Context, c *pgx.Conn, f migrationFile) err
 
 	if f.Concurrently {
 		// Non-transactional: statements run sequentially; the file's own INSERT is last.
+		// SET (not SET LOCAL) persists on the session, so RESET afterward to avoid leaking
+		// this timeout onto any subsequent file applied on the same connection in this run.
 		if _, err := c.Exec(ctx, fmt.Sprintf("SET statement_timeout = '%s'", r.StatementTimeout)); err != nil {
 			return err
 		}
-		_, err := c.Exec(ctx, sqlText)
-		return err
+		_, execErr := c.Exec(ctx, sqlText)
+		_, _ = c.Exec(ctx, "RESET statement_timeout")
+		return execErr
 	}
 
 	tx, err := c.Begin(ctx)

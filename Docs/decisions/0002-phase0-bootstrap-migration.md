@@ -37,5 +37,23 @@ and which phase owns the bootstrap. The locked phase spec files are NOT edited.
   schema/role creation to Phase 1, that is a one-line reversal (OD-17) — but then the
   "apply + record schema/roles" DONE criterion moves to Phase 1.
 
+## Note to Phase 1 — append-only REVOKE ordering (mandatory)
+
+The bootstrap sets `ALTER DEFAULT PRIVILEGES FOR ROLE sender_owner IN SCHEMA sender GRANT
+SELECT, INSERT, UPDATE, DELETE ON TABLES TO sender_module` — a blanket grant on every table
+`sender_owner` will later create. This is deliberate (it keeps `sender_module` usable without
+a per-table grant in each migration), but it means the **append-only invariant for
+`job_events` and `send_logs` (CLAUDE.md Rule 5/6, DoD-7) is not automatic**: those tables are
+born with full DML until a REVOKE narrows them.
+
+**Requirement for Phase 1:** the `REVOKE UPDATE, DELETE ON sender.job_events` and `REVOKE
+UPDATE ON sender.send_logs` statements MUST land in the **same migration** that creates those
+tables (or an immediately-following migration applied atomically in the same `up` run) — never
+deferred to a later, separately-deployable migration. Otherwise there is a window inside the
+Phase 1 chain where `sender_module` can UPDATE/DELETE append-only rows. The append-only
+BEFORE-UPDATE reject triggers are defense in depth, but the privilege REVOKE is the primary
+control and must not lag the table creation. `migration_lint` cannot detect this ordering, so
+it is a spec/review requirement recorded here.
+
 ## Links
 CLAUDE.md Rules 1, 6; `Docs/phase-0-groundwork.md` §5; open-decisions.md OD-4, OD-13, OD-17.

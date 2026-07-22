@@ -2,11 +2,12 @@
 // factories that insert real committed rows. NEVER mocks the DB (CLAUDE.md Rule 3).
 //
 // Isolation modes (§4.2 of the Phase 0 spec):
-//   A. Template-clone  — CREATE DATABASE test_<id> TEMPLATE <base>; real committed rows,
-//                        multiple connections, SKIP-LOCKED/advisory-lock/trigger semantics
-//                        exactly as prod. REQUIRED for any multi-connection test.
-//   B. Txn-rollback    — BEGIN ... ROLLBACK around a single-connection test. Fast; safe
-//                        ONLY for single-connection shape/constraint checks.
+//
+//	A. Template-clone  — CREATE DATABASE test_<id> TEMPLATE <base>; real committed rows,
+//	                     multiple connections, SKIP-LOCKED/advisory-lock/trigger semantics
+//	                     exactly as prod. REQUIRED for any multi-connection test.
+//	B. Txn-rollback    — BEGIN ... ROLLBACK around a single-connection test. Fast; safe
+//	                     ONLY for single-connection shape/constraint checks.
 package harness
 
 import (
