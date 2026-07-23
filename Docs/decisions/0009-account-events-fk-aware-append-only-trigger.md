@@ -80,6 +80,45 @@ And it makes the mandated behavior work: the account delete's `SET NULL` succeed
   `Docs/open-decisions.md` OD-23. The `job_events` trigger is unaffected (its inbound FK cleanup
   is a cascade DELETE, not a `SET NULL`, so its unconditional UPDATE-reject is already correct).
 
+## The pattern, generalized (recorded in the Phase 2 closeout)
+
+This class of conflict — **a DB-level append-only/immutability trigger colliding with a foreign
+key's own referential action** — has now occurred **twice**:
+
+1. **Phase 1 (`sender_0008`, `job_events`):** a `BEFORE DELETE` reject-trigger would have blocked
+   the `job_events → jobs` FK **`ON DELETE CASCADE`** cleanup (Postgres fires row-level
+   `BEFORE DELETE` on cascade). Resolved by **not** installing a `BEFORE DELETE` trigger at all
+   and relying on `REVOKE DELETE` to stop application deletes — the cascade is system-performed
+   and bypasses the app role's table privileges. (ADR-0002 / Phase 1 `#23`.)
+2. **Phase 2 (`sender_0014`, `account_events`):** a `BEFORE UPDATE` reject-trigger blocked the
+   `account_events → accounts` FK **`ON DELETE SET NULL`** cleanup (the `SET NULL` is an UPDATE).
+   Resolved by an **FK-aware `BEFORE UPDATE` trigger** that permits exactly the FK's own mutation
+   (`account_id` non-null → NULL, every other column unchanged) and rejects everything else.
+
+**The resolution pattern (mandatory for any future append-only table):** an immutability trigger
+must permit **exactly the mutation its own inbound FK referential actions perform, and nothing
+else** — whether that is achieved by omitting the trigger for the action the DB performs
+(the CASCADE-DELETE case) or by an explicit narrow carve-out in the trigger body (the SET-NULL
+case). The content the audit protects (what happened) stays frozen; only the FK-maintenance
+column transition the schema already committed to is allowed. A blanket "reject all
+UPDATE/DELETE" trigger is a latent bug whenever the table is the *target* of an FK whose parent
+can be deleted.
+
+**The pattern is CLOSED for the current schema.** The only tables carrying an immutability
+trigger are:
+- `sender.job_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `CASCADE DELETE`,
+  handled by the no-`BEFORE-DELETE` approach (correct as-is).
+- `sender.account_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `SET NULL`,
+  handled by the FK-aware `BEFORE UPDATE` trigger (this ADR).
+- `sender.send_logs` — write-once (`INSERT, SELECT, DELETE`; `REVOKE UPDATE` + `BEFORE UPDATE`
+  reject-trigger). It has **no inbound FK** (nothing references `send_logs.id`), so its
+  unconditional UPDATE-reject can never collide with a referential action; DELETE is granted
+  (Phase 7 retention), so there is no DELETE trigger to conflict either. No change needed.
+
+There are no other append-only/write-once tables in `sender.*` (verified against the migration
+chain `0000..0014`). Any table added in a later phase that installs an immutability trigger MUST
+apply this pattern in the same migration.
+
 ## Links
 `Docs/phase-2-account-management.md` §2.5/§7.4/§12, ADR-0002 (Phase 1 #23 append-only ordering /
 no-BEFORE-DELETE lesson), ADR-0008 (grants trap; account_events explicit grants),
