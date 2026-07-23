@@ -238,6 +238,9 @@ func TestT2_EventPerTransition(t *testing.T) {
 
 	c := Connect(t, cloneDSN)
 	uid := SeedUser(t, c, "t2@example.com")
+	poolID := SeedSharedPool(t, c, uid, "t2-pool")
+	boxID := SeedBox(t, c, uid)                                     // real box for provenance propagation
+	acctID := SeedAccount(t, c, uid, poolID)                        // real account for provenance propagation
 	jobID := InsertQueuedJob(t, c, uid, uid, "rcpt-t2@example.com") // genesis event written
 
 	// Anti-vacuity: exactly 1 event (genesis) right after creation.
@@ -245,16 +248,34 @@ func TestT2_EventPerTransition(t *testing.T) {
 		t.Fatalf("after insert: %d events, want 1 (genesis)", got)
 	}
 
-	// Each transition in its own tx with the actor GUC (sanctioned path).
+	// Each transition in its own tx with the actor GUC (sanctioned path). The assigned
+	// transition sets a REAL assigned_box_id so we can assert provenance propagation below.
 	transition(t, c, jobID, "dispatcher",
-		"UPDATE sender.jobs SET state='assigned', assigned_box_id=NULL, lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id=$1")
+		"UPDATE sender.jobs SET state='assigned', assigned_box_id='"+boxID+"', lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id=$1")
 	if got := eventCount(t, c, jobID); got != 2 {
 		t.Fatalf("after assigned: %d events, want 2", got)
 	}
+	// Provenance: the assigned event captured the box the job was assigned to (04-event-log.md
+	// "complete provenance"). This guards against a trigger refactor dropping the box_id copy.
+	var evBox string
+	if err := c.QueryRow(ctx, "SELECT box_id::text FROM sender.job_events WHERE job_id=$1 AND to_state='assigned'", jobID).Scan(&evBox); err != nil {
+		t.Fatalf("read assigned event box_id: %v", err)
+	}
+	if evBox != boxID {
+		t.Fatalf("assigned event box_id=%s, want %s (provenance not propagated)", evBox, boxID)
+	}
 	transition(t, c, jobID, "box",
-		"UPDATE sender.jobs SET state='sending' WHERE id=$1")
+		"UPDATE sender.jobs SET state='sending', assigned_account_id='"+acctID+"' WHERE id=$1")
 	if got := eventCount(t, c, jobID); got != 3 {
 		t.Fatalf("after sending: %d events, want 3", got)
+	}
+	// Provenance: the sending event captured the account.
+	var evAcct string
+	if err := c.QueryRow(ctx, "SELECT account_id::text FROM sender.job_events WHERE job_id=$1 AND to_state='sending'", jobID).Scan(&evAcct); err != nil {
+		t.Fatalf("read sending event account_id: %v", err)
+	}
+	if evAcct != acctID {
+		t.Fatalf("sending event account_id=%s, want %s (provenance not propagated)", evAcct, acctID)
 	}
 	transition(t, c, jobID, "box",
 		"UPDATE sender.jobs SET state='sent', provider_message_id='250-OK-t2', lease_expires_at=NULL, completed_at=NOW() WHERE id=$1")

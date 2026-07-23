@@ -89,8 +89,9 @@ go_suite() { # $1=dir  $2=label
 go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
 # The harness package now holds BOTH the isolation-mode tests AND the Phase 1 behavioral suite
 # (T1 concurrent claim, T1b N-workers, T2 event-per-transition, T3 no-silent-state-change,
-# T3e RLS default-deny, T4 credential round-trip+tamper+AAD, T5 role-denied-platform-write,
-# T5b job_item_id UNIQUE, T6 append-only job_events). All run against real Postgres clones.
+# T3e RLS default-deny, T3f superuser-reads-only-ciphertext, T4 credential round-trip+tamper+
+# AAD, T5 role-denied-platform-write, T5b job_item_id UNIQUE, T6 append-only job_events). All
+# run against real Postgres clones.
 go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/crypto/append-only)"
 
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr

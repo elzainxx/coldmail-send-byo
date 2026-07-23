@@ -15,6 +15,12 @@ CREATE INDEX jobs_claim_idx
     WHERE state = 'queued';
 
 -- Lease-expiry reclaim: WHERE state IN ('assigned','sending') AND lease_expires_at < NOW().
+-- Reconciliation note (this file is canonical over 02-claim-and-indexes.md, which documents a
+-- single-column (lease_expires_at) index): `state` is kept as a trailing key column here even
+-- though the partial WHERE already pins state to the two-value set — a deliberate, harmless
+-- widening that keeps the index self-describing and lets a planner satisfy a `state`-projecting
+-- reclaim variant index-only. `lease_expires_at` leads, so the `< NOW()` range scan the reclaim
+-- query needs is served identically to the drafted single-column shape.
 CREATE INDEX jobs_reclaim_idx
     ON sender.jobs (lease_expires_at, state)
     WHERE state IN ('assigned', 'sending') AND lease_expires_at IS NOT NULL;

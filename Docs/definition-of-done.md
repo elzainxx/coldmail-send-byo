@@ -69,10 +69,19 @@ feature chain stays `sender_0001..0020`; additive) ✅ · DoD-8 (mTLS/sole-decry
 guard tested green; kill-switch scaffolding honored, real subsystems arrive Phases 4–8) ✅.
 
 **Phase 1's DoD status (data model & schema):** DoD-1 (spec `Docs/phase-1-data-model.md` +
-`phase1-drafts/`) ✅ · DoD-2 (9 real-Postgres behavioral tests — concurrent claim, event-per-
-transition, no-silent-state-change, RLS default-deny, credential round-trip+tamper+AAD,
-role-denied-platform-write, job_item_id UNIQUE, append-only log — all green in the harness;
-`scripts/dev.sh test` → 11/11) ✅ · DoD-3 (config-reference, config-manifest, architecture-
+`phase1-drafts/`) ✅ · DoD-2 (10 real-Postgres behavioral tests — T1 concurrent claim, T1b
+N-workers, T2 event-per-transition, T3 no-silent-state-change, T3e RLS default-deny, T3f
+superuser-reads-only-ciphertext, T4 credential round-trip+tamper+AAD, T5 role-denied-platform-
+write, T5b job_item_id UNIQUE, T6 append-only log — all green in the harness; `scripts/dev.sh
+test` → 11/11) ✅ ·
+  - *Test-plan disposition (from architect-review):* the Phase 1 test plan (`phase1-drafts/07`)
+    also names **T5c** (pause_reason daily-reset behavior). T5c exercises the lazy-reset
+    eligibility UPDATE from `05-tenancy-rls-timezone.md` — that is dispatcher/account-consume
+    SQL owned by **Phase 4/5**, not a Phase-1 DB object (Phase 1 only ships the `pause_reason`
+    column + `accounts_pause_reason_check`, which the schema enforces and the migration test
+    covers). T5c is therefore **DEFER-TO-PHASE-5** with its owning logic; the Phase-1 schema it
+    depends on is present and tested. T3f is now implemented (superuser bypass reads ciphertext
+    only). DoD-3 (config-reference, config-manifest, architecture-
 overview updated same-change; ADR-0008 written; drift gates green) ✅ · DoD-4 (14 foundation
 keys seeded at `sender_0010`, documented; `default_value` unmutated; ordering-invariant keys
 arrive in later phases as Phase 9 §4 schedules) ✅ · DoD-5 (no tuning constant literal in

@@ -264,7 +264,11 @@ func (r *Runner) applyOne(ctx context.Context, c *pgx.Conn, f migrationFile) err
 	return tx.Commit(ctx)
 }
 
-// Down rolls back exactly one version (dev only).
+// Down rolls back exactly one version (dev only). It enforces reverse-order safety: a version
+// N is refused while any HIGHER version is still recorded applied. Without this, `down 0000`
+// while the feature chain 0001..NN is applied would run the bootstrap's `DROP SCHEMA ... CASCADE`
+// and silently destroy every higher-numbered object without their own down files ever running
+// (a real footgun, since down takes an arbitrary single version). Roll back highest-first.
 func (r *Runner) Down(ctx context.Context, version string) error {
 	if !r.AllowDown {
 		return errDownForbidden
@@ -284,6 +288,19 @@ func (r *Runner) Down(ctx context.Context, version string) error {
 		return err
 	}
 	defer r.releaseLock(context.Background(), c)
+
+	// Reverse-order guard: refuse if a higher applied version exists (it would be orphaned, and
+	// for the bootstrap 0000 its CASCADE would destroy the higher objects outright).
+	applied, err := r.appliedVersions(ctx, c)
+	if err != nil {
+		return err
+	}
+	target, _ := strconv.Atoi(version)
+	for v := range applied {
+		if n, e := strconv.Atoi(v); e == nil && n > target {
+			return fmt.Errorf("refusing to roll back %s while higher version %s is still applied; roll back highest-first", version, v)
+		}
+	}
 
 	body, err := os.ReadFile(downPath)
 	if err != nil {

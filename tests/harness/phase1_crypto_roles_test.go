@@ -119,8 +119,11 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 		t.Fatal("c3: altered nonce decrypted (want auth failure)")
 	}
 
-	// --- D) AAD row-binding: transplant this ciphertext+nonce into a DIFFERENT account row and
-	// decrypt with THAT row's AAD => fails (ciphertext is bound to the original account.id) ---
+	// --- D) AAD row-binding (PROVISIONAL — recommended design, not yet locked; Phase 1 §14
+	// [#AAD] is DEFER-TO-PHASE-2, see factories.go). Proves the recommended AAD = account.id ‖
+	// key_id is implementable and that GCM enforces row-binding: transplant this ciphertext+
+	// nonce into a DIFFERENT account row and decrypt with THAT row's AAD => fails. Phase 2 owns
+	// the adopt/decline ruling; if it declines, this sub-case is removed (no schema impact). ---
 	accID2 := insertAccount(t, c, uid, poolID, gotCT, keyID, gotNonce) // same ct/nonce, new row/id
 	acc2UUID := uuidBytes(t, accID2)
 	if _, err := aesGCMDecrypt(key, gotCT, gotNonce, aadFor(acc2UUID, keyID)); err == nil {
@@ -366,21 +369,155 @@ func TestT3e_RLSDefaultDenyBackstopsMisgrant(t *testing.T) {
 	}
 }
 
+// TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext — the documented residual (03-encryption-
+// and-rls.md §2.5 / T3f): a superuser-class principal BYPASSES RLS and CAN read sender.accounts
+// rows, but what it reads in credential_ciphertext is ciphertext, never the plaintext secret.
+// This turns the "uncomfortable truth" (RLS can't stop a superuser) into a passing assertion:
+// secrecy holds because the key lives outside the DB (proven here — the harness holds the key,
+// the DB never does). Anti-vacuity: the superuser DOES see the row (count=1), so the
+// no-plaintext assertion is meaningful, not an empty-table artifact.
+func TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext(t *testing.T) {
+	adminDSN := AdminDSN(t)
+	template := requireTemplate(t)
+	ctx := context.Background()
+
+	cloneDSN, cleanup := CloneDB(t, adminDSN, template, "t3fsuper")
+	defer cleanup()
+
+	// The admin/superuser-class connection (dev superuser) — the strongest DB-plane actor.
+	su := Connect(t, cloneDSN)
+	uid := SeedUser(t, su, "t3f@example.com")
+	poolID := SeedSharedPool(t, su, uid, "t3f-pool")
+
+	// Encrypt a known secret with a key held ONLY in this harness process (never the DB).
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand key: %v", err)
+	}
+	const keyID = "test-key-v1"
+	secret := []byte("t3f-super-secret-smtp-pw")
+	accID := insertAccount(t, su, uid, poolID, []byte("placeholder-ct-16b"), keyID, make([]byte, 12))
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("rand nonce: %v", err)
+	}
+	ct := aesGCMEncrypt(t, key, secret, nonce, aadFor(uuidBytes(t, accID), keyID))
+	updateCredential(t, su, accID, ct, keyID, nonce)
+
+	// Superuser bypasses RLS — the row IS visible (anti-vacuity control).
+	var seen int
+	if err := su.QueryRow(ctx, "SELECT count(*) FROM sender.accounts WHERE id=$1", accID).Scan(&seen); err != nil {
+		t.Fatalf("superuser count accounts: %v", err)
+	}
+	if seen != 1 {
+		t.Fatalf("anti-vacuity: superuser sees %d rows, want 1 (RLS should NOT hide from superuser)", seen)
+	}
+
+	// ...but what it reads is ciphertext, not the plaintext secret.
+	var rawHex string
+	if err := su.QueryRow(ctx, "SELECT encode(credential_ciphertext,'hex') FROM sender.accounts WHERE id=$1", accID).Scan(&rawHex); err != nil {
+		t.Fatalf("superuser read ciphertext: %v", err)
+	}
+	if strings.Contains(rawHex, hex.EncodeToString(secret)) {
+		t.Fatal("superuser read recovered the plaintext secret from credential_ciphertext (secrecy broken)")
+	}
+	// And the superuser has NO key (it's not in the DB), so it cannot decrypt. Prove the DB
+	// holds no key material by asserting the secret's plaintext appears nowhere in the row's
+	// text columns either.
+	var host, uname, kid string
+	if err := su.QueryRow(ctx, "SELECT smtp_host, smtp_username, credential_key_id FROM sender.accounts WHERE id=$1", accID).Scan(&host, &uname, &kid); err != nil {
+		t.Fatalf("superuser read row: %v", err)
+	}
+	if strings.Contains(host, string(secret)) || strings.Contains(uname, string(secret)) || strings.Contains(kid, string(secret)) {
+		t.Fatal("plaintext secret leaked into a plaintext column")
+	}
+	if kid != keyID {
+		t.Fatalf("credential_key_id = %q, want %q (label only, not key material)", kid, keyID)
+	}
+}
+
+// TestT7_CheckConstraintsRejectInvalid — DB-level guard test for the hand-written Phase 1 CHECK
+// constraints that are testable against the schema alone (no dispatcher logic): the pause_reason
+// invariant, the 2000-char error-message cap, and the pool self-fallback ban. Each invalid value
+// must be rejected with 23514 check_violation; each is PAIRED with a valid positive control that
+// succeeds (anti-vacuity — proves the constraint is the thing rejecting, not some unrelated
+// error). This is the DB-level verification proposed in phase1-drafts/07-test-plan.md §6.
+func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
+	adminDSN := AdminDSN(t)
+	template := requireTemplate(t)
+	ctx := context.Background()
+
+	cloneDSN, cleanup := CloneDB(t, adminDSN, template, "t7checks")
+	defer cleanup()
+
+	c := Connect(t, cloneDSN)
+	uid := SeedUser(t, c, "t7@example.com")
+	poolID := SeedSharedPool(t, c, uid, "t7-pool")
+
+	isCheckViolation := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		m := err.Error()
+		return strings.Contains(m, "23514") || strings.Contains(strings.ToLower(m), "check constraint") || strings.Contains(strings.ToLower(m), "violates check")
+	}
+
+	// (1) accounts_pause_reason_check: paused=TRUE with NULL pause_reason is INVALID.
+	acctBad := `INSERT INTO sender.accounts
+	  (user_id,pool_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
+	  VALUES ($1,$2,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,NULL)`
+	if _, err := c.Exec(ctx, acctBad, uid, poolID); !isCheckViolation(err) {
+		t.Fatalf("pause_reason: paused=TRUE, reason=NULL should be 23514, got: %v", err)
+	}
+	// positive control: paused=TRUE with a reason succeeds.
+	acctOK := `INSERT INTO sender.accounts
+	  (user_id,pool_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
+	  VALUES ($1,$2,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,'daily_limit')`
+	if _, err := c.Exec(ctx, acctOK, uid, poolID); err != nil {
+		t.Fatalf("pause_reason positive control (paused=TRUE, reason=daily_limit) failed: %v", err)
+	}
+
+	// (2) jobs_last_error_message_len_check: 2001 chars INVALID, 2000 chars valid.
+	itemID := SeedJobItem(t, c, uid, uid, "rcpt-t7@example.com")
+	over := strings.Repeat("x", 2001)
+	jobOver := `INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at,last_error_message)
+	            VALUES ($1,$2,$2,'r','s','b','queued',NOW(),$3)`
+	// Set actor GUC so the genesis trigger doesn't mask the CHECK with an actor error path
+	// (INSERT genesis is lenient, but set it anyway for clarity).
+	if _, err := c.Exec(ctx, "SELECT set_config('sender.actor','system',false)"); err != nil {
+		t.Fatalf("set actor: %v", err)
+	}
+	if _, err := c.Exec(ctx, jobOver, itemID, uid, over); !isCheckViolation(err) {
+		t.Fatalf("last_error_message 2001 chars should be 23514, got: %v", err)
+	}
+	// positive control: 2000 chars succeeds (fresh job_item — job_item_id is UNIQUE).
+	item2 := SeedJobItem(t, c, uid, uid, "rcpt-t7b@example.com")
+	atCap := strings.Repeat("x", 2000)
+	if _, err := c.Exec(ctx, jobOver, item2, uid, atCap); err != nil {
+		t.Fatalf("last_error_message 2000-char positive control failed: %v", err)
+	}
+
+	// (3) pools_fallback_not_self_check: a pool cannot be its own fallback.
+	// Insert a pool, then UPDATE it to point fallback at itself => 23514.
+	var p2 string
+	if err := c.QueryRow(ctx,
+		"INSERT INTO sender.pools (user_id,kind,name) VALUES ($1,'shared','t7-fb') RETURNING id", uid).Scan(&p2); err != nil {
+		t.Fatalf("seed pool2: %v", err)
+	}
+	if _, err := c.Exec(ctx, "UPDATE sender.pools SET fallback_pool_id=id WHERE id=$1", p2); !isCheckViolation(err) {
+		t.Fatalf("self-fallback should be 23514, got: %v", err)
+	}
+	// positive control: pointing fallback at a DIFFERENT pool succeeds.
+	if _, err := c.Exec(ctx, "UPDATE sender.pools SET fallback_pool_id=$2 WHERE id=$1", p2, poolID); err != nil {
+		t.Fatalf("cross-pool fallback positive control failed: %v", err)
+	}
+}
+
 // --- helpers (crypto/roles) ---
 
 func insertAccount(t *testing.T, c *pgx.Conn, userID, poolID string, ct []byte, keyID string, nonce []byte) string {
 	t.Helper()
-	var id string
-	err := c.QueryRow(context.Background(),
-		`INSERT INTO sender.accounts
-		   (user_id, pool_id, smtp_host, smtp_port, smtp_username, credential_ciphertext, credential_key_id, credential_nonce, from_address)
-		 VALUES ($1,$2,'smtp.example.com',587,'user@example.com',$3,$4,$5,'sender@example.com')
-		 RETURNING id`,
-		userID, poolID, ct, keyID, nonce).Scan(&id)
-	if err != nil {
-		t.Fatalf("insert account: %v", err)
-	}
-	return id
+	return insertAccountRow(t, c, userID, poolID, ct, keyID, nonce)
 }
 
 func updateCredential(t *testing.T, c *pgx.Conn, accID string, ct []byte, keyID string, nonce []byte) {

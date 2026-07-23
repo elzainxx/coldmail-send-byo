@@ -53,6 +53,43 @@ func SeedSharedPool(t *testing.T, c *pgx.Conn, userID, name string) string {
 	return id
 }
 
+// SeedBox inserts a real sender.boxes row (client-supplied UUID) and returns its id.
+func SeedBox(t *testing.T, c *pgx.Conn, userID string) string {
+	t.Helper()
+	var id string
+	err := c.QueryRow(context.Background(),
+		`INSERT INTO sender.boxes (id, user_id, token_hash) VALUES (gen_random_uuid(), $1, 'x') RETURNING id`,
+		userID).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed box: %v", err)
+	}
+	return id
+}
+
+// SeedAccount inserts a minimal real sender.accounts row (placeholder credential) and returns
+// its id. For tests that only need a valid assigned_account_id FK target.
+func SeedAccount(t *testing.T, c *pgx.Conn, userID, poolID string) string {
+	t.Helper()
+	return insertAccountRow(t, c, userID, poolID, []byte("\x00"), "k", []byte("\x00"))
+}
+
+// insertAccountRow is the shared minimal-account insert used by SeedAccount and the crypto
+// tests' insertAccount helper.
+func insertAccountRow(t *testing.T, c *pgx.Conn, userID, poolID string, ct []byte, keyID string, nonce []byte) string {
+	t.Helper()
+	var id string
+	err := c.QueryRow(context.Background(),
+		`INSERT INTO sender.accounts
+		   (user_id, pool_id, smtp_host, smtp_port, smtp_username, credential_ciphertext, credential_key_id, credential_nonce, from_address)
+		 VALUES ($1,$2,'smtp.example.com',587,'user@example.com',$3,$4,$5,'sender@example.com')
+		 RETURNING id`,
+		userID, poolID, ct, keyID, nonce).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+	return id
+}
+
 // InsertQueuedJob inserts a real sender.jobs row in state 'queued' via the sanctioned path
 // (actor GUC set for the genesis event) and returns its id. Uses a fresh job_item each call
 // (job_item_id is UNIQUE). Runs in one transaction so the genesis-event trigger sees the GUC.
@@ -82,11 +119,18 @@ func InsertQueuedJob(t *testing.T, c *pgx.Conn, userID, campaignID, recipient st
 	return id
 }
 
-// aesGCMEncrypt mirrors the Phase 1 credential encode contract (§9 / 03-encryption drafts):
-// AES-256-GCM, 12-byte nonce, 16-byte tag appended to ciphertext, AAD = account.id ‖ key_id.
-// The key lives ONLY in the test harness (never the DB) — this is the reference implementation
-// the behavioral tests use to prove round-trip + AAD binding + no-plaintext-in-DB. Phase 2
-// implements the production encrypt/decrypt against this same shape.
+// aesGCMEncrypt is a REFERENCE AES-256-GCM implementation for the behavioral tests: 12-byte
+// nonce, 16-byte tag appended to ciphertext (the combined-mode layout the schema stores in
+// credential_ciphertext), AAD passed by the caller. The key lives ONLY in the test harness
+// (never the DB). It proves the Phase 1 credential COLUMN SHAPE round-trips and that no
+// plaintext reaches the DB.
+//
+// NOTE on AAD (flag, don't silently fix — CLAUDE.md Rule 2): binding AAD = account.id ‖
+// credential_key_id is the drafts' RECOMMENDED design, but Phase 1 §14 [#AAD] still marks it
+// DEFER-TO-PHASE-2 (adopt/decline). These tests use it to prove it is *implementable* and that
+// GCM enforces row-binding by construction — they do NOT lock the encode contract. Phase 2
+// owns the adopt/decline ruling (+ADR); if it declines, T4 part D is dropped. The Phase 1
+// SCHEMA (3 credential columns, no AAD storage) is unaffected either way.
 func aesGCMEncrypt(t *testing.T, key, plaintext, nonce, aad []byte) []byte {
 	t.Helper()
 	block, err := aes.NewCipher(key)
