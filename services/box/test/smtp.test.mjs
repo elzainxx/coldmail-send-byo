@@ -51,6 +51,35 @@ test("S1: credential scrubbed on failed-AUTH (nothing leaks the canary)", async 
   }
 });
 
+// S1 (base64 vector) — the credential travels the AUTH exchange BASE64-encoded, so a server that
+// echoes the received AUTH argument in its 535 returns the base64 form, not the plaintext. Assert
+// NEITHER the plaintext NOR its base64 encoding survives into the error / report (regression for
+// the review's MEDIUM scrub-gap finding). Non-vacuous: the sink here DOES echo the base64 back.
+test("S1: credential scrubbed even when the server echoes the base64 AUTH argument", async () => {
+  const sink = await startSink({ authResult: "fail", echoAuthInError: true });
+  try {
+    const cred = new MemoryCredential(CANARY);
+    const b64 = Buffer.from(CANARY, "utf8").toString("base64");
+    let threw = null;
+    try {
+      await runSmtpSession(jobFor(sink.port), cred, { timeoutMs: 5000 });
+    } catch (e) {
+      threw = e;
+    } finally {
+      cred.zero();
+    }
+    assert.ok(threw instanceof SMTPError, "expected an SMTPError on failed AUTH");
+    const blob = `${threw.message}\n${threw.reason}\n${threw.smtpResponse}\n${JSON.stringify(threw, Object.getOwnPropertyNames(threw))}`;
+    assert.ok(!blob.includes(CANARY), `plaintext canary leaked: ${blob}`);
+    assert.ok(!blob.includes(b64), `base64 canary leaked (scrub only covered plaintext): ${blob}`);
+    // Non-vacuity: confirm the sink genuinely echoed the base64 argument to some client (i.e. the
+    // box DID send base64(secret) and the server DID quote it) — otherwise this proves nothing.
+    assert.ok(sink.received.some((l) => l.includes(b64)), "sink never received the base64 secret — test vacuous");
+  } finally {
+    await sink.close();
+  }
+});
+
 // S3 — the credential is zeroed on EVERY exit path. We drive: (1) clean accept, (2) failed AUTH
 // (SMTP error exit), and (5) a thrown exception mid-session, asserting the MemoryCredential is
 // zeroed after each. Zeroing is observed by MemoryCredential.use() throwing "already zeroed".

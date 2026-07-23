@@ -20,6 +20,10 @@ const certDir = path.resolve(here, "../../../secrets/dev/certs");
 export function startSink(opts = {}) {
   const advertiseStartTLS = opts.advertiseStartTLS !== false; // default true
   const authResult = opts.authResult || "ok"; // "ok" | "fail"
+  // echoAuthInError: a hostile/verbose server that quotes the received AUTH argument (the
+  // base64-encoded password) back in its 535 text. Used to prove scrubSecret redacts the base64
+  // form, not just the plaintext (§4.4). Default false (well-behaved server).
+  const echoAuthInError = opts.echoAuthInError === true;
   const received = []; // every line the client sent (plaintext + TLS phases)
   let tlsActive = false;
 
@@ -75,8 +79,14 @@ export function startSink(opts = {}) {
       sock._authStep = "pass";
     } else if (sock._authStep === "pass") {
       sock._authStep = null;
-      if (authResult === "fail") write(sock, "535 5.7.8 Authentication credentials invalid");
-      else write(sock, "235 2.7.0 Authentication successful");
+      if (authResult === "fail") {
+        // `line` here is the base64-encoded password the client just sent. A hostile server may
+        // echo it in the error; a well-behaved one does not.
+        if (echoAuthInError) write(sock, `535 5.7.8 Authentication failed for argument '${line}'`);
+        else write(sock, "535 5.7.8 Authentication credentials invalid");
+      } else {
+        write(sock, "235 2.7.0 Authentication successful");
+      }
     } else if (up.startsWith("MAIL FROM")) {
       write(sock, "250 2.1.0 Ok");
     } else if (up.startsWith("RCPT TO")) {

@@ -305,19 +305,29 @@ function dotStuff(data) {
   return String(data).replace(/\r\n/g, "\n").replace(/\n/g, "\r\n").replace(/(^|\r\n)\./g, "$1..");
 }
 
-// scrubSecret removes the plaintext credential from a string defense-in-depth (§4.4). It reads
-// the secret from the MemoryCredential ONLY to redact it; if the buffer is already zeroed it is a
-// no-op. Never logs.
+// scrubSecret removes the credential from a string defense-in-depth (§4.4). It reads the secret
+// from the MemoryCredential ONLY to redact it; if the buffer is already zeroed it is a no-op.
+// CRITICAL: the credential travels the AUTH exchange BASE64-encoded (AUTH LOGIN sends
+// base64(password)), so a server that echoes the offending AUTH argument in its error text
+// returns the base64 form — NOT the plaintext. We therefore redact BOTH the utf8 plaintext AND
+// its base64 / base64url encodings, so a `535` that quotes the sent line cannot carry a decodable
+// secret into report.smtp_response → send_logs. Never logs.
 function scrubSecret(text, credential) {
   if (!text) return text || "";
-  let secret = null;
+  const forms = [];
   try {
-    credential.use((buf) => { secret = buf.toString("utf8"); });
+    credential.use((buf) => {
+      forms.push(buf.toString("utf8"));                                  // plaintext
+      const b64 = buf.toString("base64");
+      forms.push(b64);                                                   // AUTH LOGIN wire form
+      forms.push(b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")); // base64url
+    });
   } catch {
     return text; // already zeroed — nothing to scrub against
   }
-  if (secret && text.includes(secret)) {
-    return text.split(secret).join("[redacted]");
+  let out = text;
+  for (const f of forms) {
+    if (f && out.includes(f)) out = out.split(f).join("[redacted]");
   }
-  return text;
+  return out;
 }
