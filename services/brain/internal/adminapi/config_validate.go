@@ -71,8 +71,11 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 			return typeErr(key, issueOutOfRange, "config_quarantine_threshold_out_of_range")
 		}
 	case "daily_limit_default":
-		if n, ok := asInt(value); !ok || n <= 0 {
-			return typeErr(key, issueOutOfRange, "config_daily_limit_default_not_positive")
+		// > 0 and <= the same hardcoded sanity ceiling as per-account daily_limit (§6.4 says the
+		// default is bounded by "the ceiling used to sanity-bound per-account daily_limit in §3").
+		// OD-24 option (c): a bound, not a config dial.
+		if n, ok := asInt(value); !ok || n <= 0 || n > DailyLimitCeiling {
+			return typeErr(key, issueOutOfRange, "config_daily_limit_default_out_of_range")
 		}
 	}
 	return nil

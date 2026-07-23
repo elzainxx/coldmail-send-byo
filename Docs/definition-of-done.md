@@ -105,17 +105,21 @@ manual-pause guard, T9 account_events append-only + audit-survives-delete + trig
 config value_type/tz/range + freshness, T11 daily_limit<counter 409, T12 cross-pool independent
 counters, T13 shared-needs-system-user, T14 end-to-end lifecycle, plus wrong/missing-key 401 —
 all green; the grants invariant still passes with `account_events` present; anti-vacuity
-positive/negative controls throughout) ✅ · DoD-3 (api-contract lists the 21 admin routes +
+positive/negative controls throughout; the closeout adds `TestDailyLimitSanityCeiling` +
+`TestPatchSmtpPortNullIsCleanReject`/`TestSmtpHostRejectsPortSuffix`/`TestPoolImmutableFieldsRejected`,
+adminapi suite now 21/21) ✅ · DoD-3 (api-contract lists the 21 admin routes +
 architecture-overview Phase 2 section + ADR-0009; contract_drift extended to probe the admin
 surface; no stale docs) ✅ · DoD-4 (no NEW config keys — Phase 2 adds the *management API* +
-validation for keys Phase 1 seeded; `default_value` untouched) ✅ · DoD-5 (no tuning constant
-literal added — `daily_limit_default` etc. resolved from `sender.config` at runtime; the tz
-validation source is a data dependency, not a dial) ✅ · DoD-6 (open-decisions: Phase 2 §10 log
-closed; carried rulings implemented as locked; **OD-23** ruled via ADR-0009; **OD-24** — the
-`daily_limit` ceiling cross-references a config key that was never seeded — **flagged and
-deferred, awaiting a user ruling on the key**, per CLAUDE.md Rule 2, blocking only the upper-bound
-`daily_limit` slice, not the rest of the phase (no contradiction silently resolved: we neither
-invented a key nor dropped the bound)) ✅ · DoD-7 (chain extended additively `sender_0013..0014`, each
+validation for keys Phase 1 seeded; `default_value` untouched; config_drift still 14 keys) ✅ ·
+DoD-5 (no tuning constant literal added — `daily_limit_default` etc. resolved from `sender.config`
+at runtime; the tz validation source is a data dependency, not a dial; the OD-24
+`DailyLimitCeiling = 100_000` is a **hardcoded safety BOUND, not a tuning dial** — the documented
+same category as the fallback-chain `maxDepth` guard, a fat-finger/reputation guard that degrades
+gracefully, explicitly NOT config-not-code's target class of runtime-tunable behavior) ✅ · DoD-6 (open-decisions: Phase 2 §10 log
+closed; carried rulings implemented as locked; **OD-23** ruled via ADR-0009; **OD-24** ruled
+(closeout) option (c) — a hardcoded sanity bound `DailyLimitCeiling = 100_000`, not a config key,
+not dropped (no contradiction silently resolved: we neither invented a Phase 9 §4 key nor dropped
+the bound); needs-user empty) ✅ · DoD-7 (chain extended additively `sender_0013..0014`, each
 self-records with paired DOWN; no Phase 1 column changed; no enum value added (reused `admin`);
 **new table ⇒ explicit grants** — `account_events` classified append-only in the grants
 invariant, which still passes) ✅ · DoD-8 (credential intake Encrypt-ONLY — admin holds no

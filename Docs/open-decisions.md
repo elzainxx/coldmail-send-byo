@@ -84,15 +84,12 @@ rulings were **implemented as locked**, not re-opened:
 | # | Decision | Status | Detail |
 |---|---|---|---|
 | OD-23 | Phase 2 §12's `account_events` DDL specifies BOTH an unconditional `BEFORE UPDATE` reject-trigger AND an `account_id` FK `ON DELETE SET NULL` — a direct contradiction (the FK's `SET NULL` is an UPDATE the trigger blocks, so the account delete §2.5/§7.4 mandate becomes impossible; the 500 was caught by tests T5/T9). | **RULED — see ADR-0009** | Resolved on the spec's own terms + the Phase 1 `#23` lesson §7.4 already cites: the reject-trigger is made **FK-aware** — it permits ONLY the `account_id` non-null→NULL maintenance transition (all other columns unchanged) and rejects every genuine content mutation. Content immutability + defense-in-depth both preserved (T9 proves teeth: a superuser content UPDATE and a bundled null+content UPDATE are both rejected). No locked spec edited; fix lives in `sender_0014` + ADR-0009. |
-| OD-24 | Phase 2 §3 (validation table) and §6.4 say `daily_limit` is `> 0` **"and ≤ a configurable ceiling — §6"**, and `daily_limit_default` is `> 0` **"and ≤ the ceiling used to sanity-bound per-account `daily_limit`"** — but **no ceiling config key was ever seeded** (Phase 1 `sender_0010` seeds 14 keys; none is a `daily_limit` ceiling, and the Phase 9 §4 50-key reference does not name one either). The cross-reference points at a dial that does not exist. | **FLAGGED — DEFERRED, needs ruling on the key** | Per CLAUDE.md Rule 2 this is **not** resolved on our own authority: we did **not** invent a config key (that would change the locked Phase 9 §4 reference — out of Phase 2 scope) and did **not** silently drop the bound. Phase 2 enforces the locked, backstopped rule it *can* (`daily_limit > 0`, mirrored by the Phase 1 `accounts_daily_limit_check`); the **upper** ceiling is left unenforced and flagged here. **Resolution options for the user:** (a) seed a new `daily_limit_ceiling` key — but that belongs to whichever phase owns the Phase 9 §4 key list, so it needs a ruling on the key name + default + which migration introduces it; or (b) confirm the §3/§6.4 parenthetical is aspirational and the ceiling is DEFER-TO-a-later-phase. Until ruled, an operator can set an arbitrarily large `daily_limit` at the admin layer (no security/tenancy impact — it only affects that account's own send budget, which the dispatcher (Phase 4+) consumes). No locked spec edited; no config key invented. |
+| OD-24 | Phase 2 §3 (validation table) and §6.4 say `daily_limit` is `> 0` **"and ≤ a configurable ceiling — §6"**, and `daily_limit_default` is `> 0` **"and ≤ the ceiling used to sanity-bound per-account `daily_limit`"** — but **no ceiling config key was ever seeded** (Phase 1 `sender_0010` seeds 14 keys; none is a `daily_limit` ceiling, and the Phase 9 §4 50-key reference does not name one either). The cross-reference points at a dial that does not exist. | **RULED (2026-07-23) — option (c): a hardcoded sanity BOUND, not a config key** | The user ruled: do NOT seed a `daily_limit_ceiling` config key (that would edit the locked Phase 9 §4 reference + the `config_drift` gate for a dial nobody would turn), and do NOT drop the bound. Instead enforce a **generous hardcoded sanity ceiling** at the admin validation layer — a fat-finger guard, same category as the fallback-chain `maxDepth` guard, NOT a tuning dial. Implemented as `adminapi.DailyLimitCeiling = 100_000` (`account_validate.go`), applied to per-account `daily_limit` (create + PATCH) and to `daily_limit_default` config writes (`config_validate.go`); a violation returns a clean `400 out_of_range`, never a raw DB error. **Rationale on the record:** 100k comfortably admits every real per-mailbox provider limit (Google Workspace ~2k/day; SES account quotas far higher but a single SMTP *mailbox* never sends ~100k/day) while catching an extra digit or two. A too-high limit degrades **gracefully** at send time — a provider throttle → throttle class → pause; a provider suspension → auth_failure → quarantine, both already handled downstream — so this is a **reputation guard, not a correctness guard**. The §3/§6.4 "configurable" wording is satisfied by a **bound** rather than a dial; **promoting it to a real seeded config key later is a trivial additive change** (new key + wire the validator to it). No locked spec edited; no config key added (config_drift still 14 keys). Proven by `TestDailyLimitSanityCeiling` (above-ceiling create/PATCH/config → clean 400; realistic 50k accepted; >0 lower bound intact). |
 
-**Needs-user: ONE open item — OD-24** (the `daily_limit` ceiling cross-references a config key
-that was never seeded). It blocks only the upper-bound slice of `daily_limit` validation; all
-other Phase 2 behavior is complete and green, so per CLAUDE.md Rule 2 ("an Open Decision blocks
-only the ambiguous slice; keep unrelated work moving") it does not hold the rest of the phase.
-Two owned/scheduled items also carry forward (not open questions): the platform coordination item
-to seed `SENDER_SYSTEM_USER_ID` into `public.users` (guarded by the §0.1 pre-flight, surfaced as
-pre-live gate **G5**), and the OD-7 IAM precondition (admin service = Encrypt-only, never KMS
+**Needs-user: empty** (this closeout settled OD-24 via ruling option (c) — a hardcoded sanity
+bound). Two owned/scheduled items carry forward (not open questions): the platform coordination
+item to seed `SENDER_SYSTEM_USER_ID` into `public.users` (guarded by the §0.1 pre-flight, surfaced
+as pre-live gate **G5**), and the OD-7 IAM precondition (admin service = Encrypt-only, never KMS
 Decrypt) to verify before Phase 3 alongside G4.
 
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
@@ -121,10 +118,10 @@ harness without them.
 Every Open Decision above is **RULED or APPLIED** — none is left open pending a build
 decision. Phase 0, Phase 1 (data model & schema, `sender_0001..0012`), and Phase 2 (account
 management & operator admin API, `sender_0013..0014` + `internal/adminapi`) are all built and
-green on real infra. Phase 2 surfaced two flagged items: **OD-23** (the `account_events`
-FK-vs-trigger contradiction) — ruled and implemented via ADR-0009 with no locked-spec edit — and
-**OD-24** (the `daily_limit` ceiling references a never-seeded config key) — flagged, deferred,
-and awaiting a user ruling on the key; it blocks only the upper-bound `daily_limit` slice, not the
-rest of the phase. The remaining items are the five **pre-live confirmations** (G1–G5), which by
-ruling are gates on going live, not on implementing a phase in the harness. Nothing here blocks
-the next phase from building on this ground.
+green on real infra. Phase 2 surfaced two flagged items, both now **RULED**: **OD-23** (the
+`account_events` FK-vs-trigger contradiction) — resolved via ADR-0009 with no locked-spec edit —
+and **OD-24** (the `daily_limit` ceiling referenced a never-seeded config key) — ruled option (c),
+a hardcoded sanity bound (`DailyLimitCeiling = 100_000`), not a config key, not dropped. Every
+Open Decision is RULED or APPLIED; **needs-user is empty.** The remaining items are the five
+**pre-live confirmations** (G1–G5), which by ruling are gates on going live, not on implementing a
+phase in the harness. Nothing here blocks the next phase from building on this ground.

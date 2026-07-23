@@ -65,6 +65,55 @@ func TestSmtpHostRejectsPortSuffix(t *testing.T) {
 	}).requireStatus(t, 201)
 }
 
+// TestDailyLimitSanityCeiling — OD-24 (ruling option (c)): daily_limit is bounded by a generous
+// hardcoded sanity ceiling (DailyLimitCeiling), a fat-finger guard, not a config dial. Above the
+// ceiling → clean 400 out_of_range (never a raw DB error); a realistic high value (50,000) is
+// accepted; the >0 lower bound still rejects 0. Applies on account create, account PATCH, and the
+// daily_limit_default config write. Anti-vacuity: each rejection is paired with an accepted control.
+func TestDailyLimitSanityCeiling(t *testing.T) {
+	e := newTestEnv(t, "dlceiling")
+	p := e.mkSharedPool(t, "P")
+
+	// --- create: above ceiling rejected, realistic high value accepted, 0 rejected ---
+	over := DailyLimitCeiling + 1
+	rc := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
+		"pool_id": p, "smtp_host": "h1.example.com", "smtp_username": "over@example.com",
+		"smtp_secret": "s", "from_address": "s@example.com", "daily_limit": over,
+	}).requireStatus(t, 400)
+	if rc.errorCode() != codeValidationFailed || rc.errorDetailIssue("daily_limit") != issueOutOfRange {
+		t.Fatalf("create over-ceiling: code=%s issue=%s, want validation_failed/out_of_range", rc.errorCode(), rc.errorDetailIssue("daily_limit"))
+	}
+	assertNoRawDBLeak(t, rc.raw)
+	// realistic high value (50k) accepted — comfortably above every real provider mailbox limit.
+	acc := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
+		"pool_id": p, "smtp_host": "h2.example.com", "smtp_username": "ok@example.com",
+		"smtp_secret": "s", "from_address": "s@example.com", "daily_limit": 50_000,
+	}).requireStatus(t, 201).str("id")
+	// 0 still rejected (lower bound intact).
+	e.do(t, "POST", "/v1/admin/accounts", map[string]any{
+		"pool_id": p, "smtp_host": "h3.example.com", "smtp_username": "zero@example.com",
+		"smtp_secret": "s", "from_address": "s@example.com", "daily_limit": 0,
+	}).requireStatus(t, 400)
+
+	// --- PATCH: above ceiling rejected (bytes/limit unchanged), at-ceiling accepted ---
+	rp := e.do(t, "PATCH", "/v1/admin/accounts/"+acc, map[string]any{"daily_limit": over}).requireStatus(t, 400)
+	if rp.errorDetailIssue("daily_limit") != issueOutOfRange {
+		t.Fatalf("patch over-ceiling: issue=%s, want out_of_range", rp.errorDetailIssue("daily_limit"))
+	}
+	g := e.do(t, "GET", "/v1/admin/accounts/"+acc, nil).requireStatus(t, 200)
+	if v, _ := g.body["daily_limit"].(float64); v != 50_000 {
+		t.Fatalf("daily_limit = %v after rejected over-ceiling PATCH, want 50000 unchanged", g.body["daily_limit"])
+	}
+	e.do(t, "PATCH", "/v1/admin/accounts/"+acc, map[string]any{"daily_limit": DailyLimitCeiling}).requireStatus(t, 200)
+
+	// --- config daily_limit_default: above ceiling rejected, realistic value accepted ---
+	rcfg := e.do(t, "PUT", "/v1/admin/config/daily_limit_default", map[string]any{"value": over}).requireStatus(t, 400)
+	if rcfg.errorDetailIssue("value") != issueOutOfRange {
+		t.Fatalf("config over-ceiling: issue=%s, want out_of_range", rcfg.errorDetailIssue("value"))
+	}
+	e.do(t, "PUT", "/v1/admin/config/daily_limit_default", map[string]any{"value": 25_000}).requireStatus(t, 200)
+}
+
 // TestPoolImmutableFieldsRejected — regression for the dead-code LOW: PATCH /pools with kind or
 // owner_user_id now returns the informative 422 forbidden_value (the fields are declared in
 // poolUpdateReq so strict-decode does not blanket-400 them first).

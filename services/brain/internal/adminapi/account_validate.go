@@ -64,16 +64,28 @@ func validateFromName(n *string) *fieldDetail {
 	return nil
 }
 
-// validateDailyLimit checks the > 0 rule (the ≥ daily_sent_count rule on PATCH is handled
-// separately as a 409, §3.1).
+// DailyLimitCeiling is a HARDCODED SANITY BOUND on daily_limit, NOT a tuning dial (OD-24, ruling
+// option (c) — same category as the fallback-chain maxDepth guard). It is a fat-finger guard: it
+// rejects an absurd value (an operator typing an extra digit or two — e.g. 5_000_000 instead of
+// 500) while comfortably admitting every realistic per-mailbox provider limit (Google Workspace
+// ~2,000/day; Amazon SES account quotas are far higher but a single SMTP *mailbox* never
+// legitimately sends anywhere near 100,000/day).
 //
-// OD-24 (FLAGGED, deferred): §3/§6.4 also say daily_limit must be "≤ a configurable ceiling — §6",
-// but no ceiling config key was ever seeded (Phase 1 §4 has no such key). Per CLAUDE.md Rule 2 we
-// do NOT invent one here (that would change the locked Phase 9 §4 reference); the upper bound is
-// left unenforced and flagged in Docs/open-decisions.md OD-24 awaiting a ruling on the key. The
-// `> 0` lower bound (backstopped by the Phase 1 accounts_daily_limit_check) is enforced.
+// Why a bound and not a config key: seeding a `daily_limit_ceiling` row would edit the locked
+// Phase 9 §4 50-key reference (and the config_drift gate) for a dial nobody would ever turn. The
+// §3/§6.4 "configurable ceiling" wording is satisfied by a bound rather than a dial. Why safe to
+// hardcode: a too-high daily_limit degrades GRACEFULLY at send time — a provider throttle maps to
+// the throttle error class → pause, and a provider suspension maps to auth_failure → quarantine,
+// both already handled downstream — so this is a REPUTATION guard, not a correctness guard.
+// Promoting it to a real seeded config key later is a trivial additive change (new key + wire
+// this validator to it). See Docs/open-decisions.md OD-24 and ADR-0009's sibling reasoning.
+const DailyLimitCeiling = 100_000
+
+// validateDailyLimit checks 0 < daily_limit <= DailyLimitCeiling. The ≥ daily_sent_count rule on
+// PATCH is handled separately as a 409 (§3.1); the Phase 1 accounts_daily_limit_check (> 0) is
+// the DB backstop for the lower bound.
 func validateDailyLimit(limit int) *fieldDetail {
-	if limit <= 0 {
+	if limit <= 0 || limit > DailyLimitCeiling {
 		return &fieldDetail{Field: "daily_limit", Issue: issueOutOfRange}
 	}
 	return nil
