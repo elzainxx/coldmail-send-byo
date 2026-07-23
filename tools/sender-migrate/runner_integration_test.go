@@ -92,11 +92,12 @@ func TestRunnerLifecycle(t *testing.T) {
 		AllowDown:        true,
 	}
 
-	// The full Phase-0 + Phase-1 feature chain: bootstrap 0000 then the locked feature
-	// migrations sender_0001..0012 (the data model). This is the executable expectation of
-	// the migration chain — it grows as later phases add 0013+.
+	// The full feature chain: bootstrap 0000, the locked Phase-1 data model sender_0001..0012,
+	// then Phase 2's additive migrations sender_0013 (per-pool account uniqueness index) and
+	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
+	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
-		"0008", "0009", "0010", "0011", "0012"}
+		"0008", "0009", "0010", "0011", "0012", "0013", "0014"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -117,7 +118,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertPlatformGrant(t, admin, "job_items")
 	// Prove the Phase-1 feature objects exist and are owned by sender_owner (so FORCE RLS on
 	// sender.accounts genuinely enforces — ADR-0004).
-	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config"} {
+	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
 		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
 	}
 	// Config seeds the 14 foundation keys (sender_0010).

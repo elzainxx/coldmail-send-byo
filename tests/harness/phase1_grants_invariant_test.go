@@ -58,7 +58,7 @@ func TestGrantsInvariant(t *testing.T) {
 
 	// Anti-vacuity: the schema must actually have the Phase 1 feature tables, or this test is
 	// meaningless. Assert the known set is present (a superset check — later phases add more).
-	mustHave := []string{"accounts", "boxes", "config", "job_events", "jobs", "pools", "schema_migrations", "send_logs"}
+	mustHave := []string{"account_events", "accounts", "boxes", "config", "job_events", "jobs", "pools", "schema_migrations", "send_logs"}
 	present := map[string]bool{}
 	for _, tn := range tables {
 		present[tn] = true
@@ -85,6 +85,8 @@ func TestGrantsInvariant(t *testing.T) {
 func expectedPrivs(table string) []string {
 	switch table {
 	case "job_events": // append-only audit log
+		return []string{"INSERT", "SELECT"}
+	case "account_events": // Phase 2 append-only account audit sink (sender_0014)
 		return []string{"INSERT", "SELECT"}
 	case "send_logs": // write-once, DELETE for the Phase 7 retention sweep
 		return []string{"DELETE", "INSERT", "SELECT"}
