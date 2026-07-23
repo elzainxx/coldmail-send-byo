@@ -38,3 +38,20 @@ func (d *Decryptor) KeyLen() int {
 	}
 	return len(d.key)
 }
+
+// LoadEncryptKey reads raw key material for the Phase 2 admin credential-INTAKE path (Encrypt
+// only). It is a DELIBERATELY separate entry point from the Brain's decryptor: the admin surface
+// encrypts new credentials but never decrypts (OD-7 — Decrypt stays Brain-only, the send path).
+// In dev/Phase 2 the Encrypt DEK is the same 32-byte dev key file (Phase 1 §0 "single master key
+// acceptable V1"); in prod it is an Encrypt/DEK-wrap-only KMS key whose IAM excludes Decrypt.
+// Returns exactly the raw bytes; the caller (adminapi.NewEncryptor) validates the 32-byte length.
+func LoadEncryptKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read credential encrypt key %q: %w", path, err)
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("credential encrypt key %q is empty", path)
+	}
+	return b, nil
+}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sender-module/brain/internal/boxlink"
@@ -26,6 +27,15 @@ type Config struct {
 	SingletonAcquireTimeout time.Duration
 	TLS                     tlsutil.ServerConfig
 	BoxRegistry             boxlink.Registry
+
+	// Admin API (Domain B, operator). Phase 2. The bearer-key HASHES (bcrypt) are configured
+	// out-of-band (comma-separated for a small key set); the plaintext key is never stored. The
+	// credential write-key ALIAS (OD-6, e.g. cred-dek-v3) is stored in credential_key_id. The
+	// admin surface reuses the Brain's dev key file as the AES-256 credential key material in
+	// dev/Phase 2 (prod: an Encrypt-only DEK — the admin IAM gets Encrypt, never Decrypt, OD-7).
+	AdminKeyHashes  []string
+	CredentialKeyID string
+	AdminEnabled    bool // false when no key hashes configured — the surface stays unmounted
 }
 
 // FromEnv resolves configuration from the environment, failing loudly on anything missing
@@ -67,7 +77,29 @@ func FromEnv() (*Config, error) {
 		TokenHash: env("DEV_BOX_TOKEN_HASH", ""),
 	}
 
+	// Admin API (Phase 2). ADMIN_API_KEY_HASHES is a comma-separated list of bcrypt hashes; the
+	// plaintext admin key never appears in config. CREDENTIAL_KEY_ID is the write-key alias
+	// stored in credential_key_id (OD-6). The surface only mounts when at least one hash is
+	// configured — otherwise it stays off (fail-closed: no key => no operator surface).
+	c.AdminKeyHashes = splitNonEmpty(env("ADMIN_API_KEY_HASHES", ""))
+	c.CredentialKeyID = env("CREDENTIAL_KEY_ID", "cred-dek-v1")
+	c.AdminEnabled = len(c.AdminKeyHashes) > 0
+
 	return c, nil
+}
+
+// splitNonEmpty splits a comma-separated env value, trimming spaces and dropping empties.
+func splitNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func env(key, def string) string {

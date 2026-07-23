@@ -45,6 +45,15 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Println(mustHash(os.Args[2]))
+	case "admin-key":
+		// Mint an operator admin API key (Domain B, Phase 2). Same discipline as the box token:
+		// print the plaintext key ONCE (copy to the operator's client) and the bcrypt HASH to
+		// configure in ADMIN_API_KEY_HASHES. Plaintext is never stored.
+		key := randToken()
+		hash := mustHash(key)
+		fmt.Printf("# operator admin key provisioned (Domain B). Hashed at rest; constant-time compared.\n")
+		fmt.Printf("ADMIN_API_KEY=%s        # SHOWN ONCE — the operator's bearer key; never stored\n", key)
+		fmt.Printf("ADMIN_API_KEY_HASH=%s   # configure in ADMIN_API_KEY_HASHES (comma-separated for a set)\n", hash)
 	case "seed":
 		id := flagVal("--id", "")
 		h := flagVal("--token-hash", "")
@@ -75,10 +84,11 @@ func usage() {
 	fmt.Fprint(os.Stderr, `provision-box — out-of-band box provisioning (token=authority, cert=transport)
 
 usage:
-  provision-box new    [--id <id>]                 mint id + one-time token + bcrypt hash
-  provision-box hash   <token>                     bcrypt-hash a token
-  provision-box seed   --id <id> --token-hash <h>  emit seed SQL / env line
-  provision-box revoke --id <id>                   emit revocation SQL
+  provision-box new       [--id <id>]              mint id + one-time token + bcrypt hash
+  provision-box hash      <token>                  bcrypt-hash a token
+  provision-box admin-key                          mint an operator admin API key + bcrypt hash
+  provision-box seed      --id <id> --token-hash <h>  emit seed SQL / env line
+  provision-box revoke    --id <id>                emit revocation SQL
 `)
 }
 

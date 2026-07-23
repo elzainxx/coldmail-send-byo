@@ -59,6 +59,12 @@ services:
       MTLS_CA_CERT:     /secrets/mtls/ca.crt
       DEV_BOX_ID: ${DEV_BOX_ID:-dev-box-1}
       DEV_BOX_TOKEN_HASH: ${DEV_BOX_TOKEN_HASH:?set DEV_BOX_TOKEN_HASH in .env (provision-box)}
+      # Admin API (Domain B, Phase 2). Operator bearer-key HASHES (comma-separated) — never the
+      # plaintext. CREDENTIAL_KEY_ID is the write-key alias stored in credential_key_id (OD-6).
+      # The admin surface reuses KMS_DEV_KEY_FILE as the Encrypt-only credential key (OD-7: the
+      # admin path Encrypts, never Decrypts). If ADMIN_API_KEY_HASHES is empty the surface is off.
+      ADMIN_API_KEY_HASHES: ${ADMIN_API_KEY_HASHES:-}
+      CREDENTIAL_KEY_ID: ${CREDENTIAL_KEY_ID:-cred-dek-v1}
     volumes:
       # LEAST-PRIVILEGE: Brain is the ONLY service that mounts the kms/ subtree (sole
       # decryptor). It also gets its own mTLS server leaf + the CA. Never box.key.

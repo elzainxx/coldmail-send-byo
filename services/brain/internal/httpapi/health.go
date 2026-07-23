@@ -13,19 +13,27 @@ import (
 	"github.com/sender-module/brain/internal/singleton"
 )
 
-// HealthServer answers /healthz and /readyz.
+// HealthServer answers /healthz and /readyz, and (Phase 2) mounts the operator admin surface
+// under /v1/admin/* when an admin handler is provided. Health remains unauthenticated (a liveness/
+// readiness probe); the admin routes carry their own Domain-B operator-key auth internally.
 type HealthServer struct {
 	http  *http.Server
 	db    *db.DB
 	guard *singleton.Guard
 }
 
-// NewHealthServer wires the health routes.
-func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard) *HealthServer {
+// NewHealthServer wires the health routes and, if adminHandler is non-nil, mounts it under
+// /v1/admin/. Passing nil keeps the surface health-only (Phase 0/1 behavior, or when the admin
+// key is unconfigured — fail-closed).
+func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard, adminHandler http.Handler) *HealthServer {
 	h := &HealthServer{db: database, guard: guard}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
 	mux.HandleFunc("/readyz", h.handleReadyz)
+	if adminHandler != nil {
+		// The admin server owns every /v1/admin/* route (method+path patterns, own auth).
+		mux.Handle("/v1/admin/", adminHandler)
+	}
 	h.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return h
 }

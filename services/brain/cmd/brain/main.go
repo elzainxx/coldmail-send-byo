@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sender-module/brain/internal/adminapi"
 	"github.com/sender-module/brain/internal/boxlink"
 	"github.com/sender-module/brain/internal/config"
 	"github.com/sender-module/brain/internal/db"
@@ -69,8 +70,33 @@ func main() {
 	}
 	log.Printf("kms dev key loaded (sole decryptor; %d bytes of key material held in-process, never logged)", decryptor.KeyLen())
 
-	// Health stub (plain HTTP; real Domain-B operator auth is Phase 2). Reports true state.
-	health := httpapi.NewHealthServer(cfg.HealthAddr, database, guard)
+	// Admin API (Domain B, operator — Phase 2). Mounted under /v1/admin/* on the health server.
+	// It authenticates callers with a hashed operator bearer key and is the ONLY writer of
+	// account credentials — Encrypt-ONLY (OD-7: Decrypt stays Brain-only, the send path). The
+	// surface only mounts when an admin key hash is configured (fail-closed: no key => no admin
+	// surface). The credential Encrypt key material is loaded via a DELIBERATELY separate KMS
+	// entry point (never the decryptor) so the encrypt-only property is structural.
+	var adminHandler http.Handler
+	if cfg.AdminEnabled {
+		encKey, err := kms.LoadEncryptKey(cfg.KMSDevKeyFile)
+		if err != nil {
+			log.Fatalf("FATAL admin credential key load: %v", err)
+		}
+		enc, err := adminapi.NewEncryptor(encKey, cfg.CredentialKeyID)
+		if err != nil {
+			log.Fatalf("FATAL admin encryptor init: %v", err)
+		}
+		auth := adminapi.NewAuthenticator(cfg.AdminKeyHashes)
+		adminSrv := adminapi.NewServer(database.Pool, enc, auth)
+		adminHandler = adminSrv.Handler()
+		log.Printf("admin API mounted on %s under /v1/admin/* (operator-key auth; Encrypt-only; %d key(s) configured)", cfg.HealthAddr, len(cfg.AdminKeyHashes))
+	} else {
+		log.Printf("admin API NOT mounted (ADMIN_API_KEY_HASHES unset — operator surface disabled, fail-closed)")
+	}
+
+	// Health stub (plain HTTP; TLS termination is a deployment concern — §4.5). Reports true
+	// state. The admin surface (if enabled) is mounted on the same server under /v1/admin/*.
+	health := httpapi.NewHealthServer(cfg.HealthAddr, database, guard, adminHandler)
 	go func() {
 		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("FATAL health server: %v", err)
