@@ -58,10 +58,12 @@ case "$cmd" in
            # send stream (token=authority, verified vs sender.boxes.token_hash). Account/send
            # fixtures are seeded programmatically by the behavioral harness (it holds the encrypt
            # helper + AAD), not here — this only makes the live stack's box connectable.
-           # shellcheck disable=SC1091
-           [[ -f .env ]] && source .env
-           BOX_UUID="${DEV_BOX_UUID:-11111111-1111-1111-1111-111111111111}"
-           BOX_HASH_UNESC="$(printf '%s' "${DEV_BOX_TOKEN_HASH:-}" | sed 's/\$\$/$/g')"
+           # Read the values by grep (NOT `source .env`: bash would expand the '$' in the bcrypt
+           # hash). Un-escape the compose '$$' back to '$' for the real hash the Brain compares.
+           [[ -f .env ]] || { echo "seed: .env missing (run scripts/dev.sh certs first)"; exit 1; }
+           BOX_UUID="$(grep -E '^DEV_BOX_UUID=' .env | cut -d= -f2-)"
+           BOX_UUID="${BOX_UUID:-11111111-1111-1111-1111-111111111111}"
+           BOX_HASH_UNESC="$(grep -E '^DEV_BOX_TOKEN_HASH=' .env | cut -d= -f2- | sed 's/\$\$/$/g')"
            $COMPOSE exec -T postgres psql -U postgres -d platform -v ON_ERROR_STOP=1 -q \
              -c "INSERT INTO public.users (id, email, is_active) VALUES ('00000000-0000-0000-0000-000000000000','system@sender.local', true) ON CONFLICT (id) DO NOTHING" \
              -c "INSERT INTO sender.boxes (id, user_id, token_hash, status) VALUES ('${BOX_UUID}','00000000-0000-0000-0000-000000000000','${BOX_HASH_UNESC}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" \
