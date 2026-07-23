@@ -40,6 +40,22 @@ privileges therefore do NOT fire for those tables — verified against real Post
    does not re-issue or revoke them, so rolling back `0012` never disturbs a grant the
    still-applied bootstrap owns.
 
+## Grants invariant (enforced — every future phase)
+The "explicit grants" requirement (point 3) is **manual discipline every future phase must
+remember**: because default privileges do not fire for admin-created-then-reowned tables, a new
+table with no explicit grant silently has **zero** rights for `sender_module` and fails at
+runtime. This is now an **automated invariant**, not a convention:
+
+> **New table ⇒ explicit grants, enforced by the grants invariant test.** Add the table's
+> `GRANT` in the same migration that creates it. `TestGrantsInvariant`
+> (`tests/harness/phase1_grants_invariant_test.go`) enumerates every `sender.*` table from the
+> catalog and asserts `sender_module` holds exactly its class's privileges (normal = SIUD;
+> append-only `job_events` = IS; write-once `send_logs` = ISD; bootstrap `schema_migrations` =
+> S). A table added without grants FAILS the test rather than being skipped; a genuinely new
+> privilege class must update the test's classifier in the same change.
+> `TestGrantsInvariant_AntiVacuity` proves the check has teeth (an ungranted reowned table is
+> rejected).
+
 ## Consequences
 - Zero edits to any locked Phase 1–9 spec or to the Phase 9 §4 config reference; the feature
   chain is exactly `sender_0001..0012`, config at `sender_0010`.

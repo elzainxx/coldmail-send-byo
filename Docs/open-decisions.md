@@ -45,8 +45,20 @@ default are marked **APPLIED (recommended)**. Items still needing a ruling are *
 |---|---|---|---|
 | OD-20 | How Phase 1's drafted `sender_0001`/`0002` (schema/role creation) reconcile with Phase 0's `sender_0000` bootstrap, which already created the schema + roles + grants | **RULED (2026-07-23) — see ADR-0008** | Feature chain stays at its LOCKED numbers `sender_0001..0012` (config at `0010`, per Phase 9 §4.1) with ZERO locked-spec edits. `0001`/`0002` are idempotent confirmations of the bootstrap ground (their DOWN un-records only the version, never drops bootstrap-owned objects). Feature objects are created by the admin runner then `ALTER ... OWNER TO sender_owner` so `FORCE RLS` enforces. `0012` issues EXPLICIT DML grants (default privileges don't fire for reowned tables — verified on real PG), which makes `job_events` born with zero `sender_module` DML. Append-only REVOKEs land in the creating migration (ADR-0002). Proven green by `TestRunnerLifecycle` + full harness. |
 
+### Phase 1 closeout (2026-07-23 — two guards + one carried question)
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| OD-21 | The ADR-0008 grants trap is manual discipline every future phase must remember | **RULED — converted to an enforced invariant** | `TestGrantsInvariant` (`tests/harness/phase1_grants_invariant_test.go`) enumerates every `sender.*` table from the catalog and asserts `sender_module`'s exact privileges per class; a future table added without grants FAILS. `TestGrantsInvariant_AntiVacuity` proves the teeth. Recorded in ADR-0008 + DoD-7 ("new table ⇒ explicit grants"). |
+| OD-22 | `send_logs` write-once vs the Phase 7 retention sweep | **RULED — verified, no migration needed** | Live grants already are the required end state: `send_logs` = INSERT+SELECT+DELETE, UPDATE revoked. Phase 7 §3.1 runs the sweep IN THE BRAIN as `sender_module` (it "uses the `send_logs` DELETE privilege Phase 1 `sender_0009` reserved exactly for this") — no separate role, no additive migration. `TestSendLogsWriteOnceButRetentionCanDelete` asserts UPDATE rejected + retention-path DELETE succeeds. |
+| OD-3 (AAD) | AAD row-binding adopt/decline | **LOCKED-ADOPTED** (Phase 2 §14 OD-3 "DECIDED-NOW (adopt)") | AAD = `account.id ‖ credential_key_id`. Phase 1 implements + tests it (T4 part D); Phase 2 carries it forward (its test T2b). The earlier "provisional/Phase-2-owns-adopt/decline" flag in the Phase 1 test comments is superseded — this is not re-opened. |
+
 **Phase 1's own §14 decision log is CLOSED** in `Docs/phase-1-data-model.md` (every item
 DECIDED-NOW or DEFER-TO-PHASE-N; NEEDS-USER empty). No Phase 1 build decision is left open.
+Carried, still-current dispositions (unchanged by this closeout): **T5c** pause-reason
+daily-reset test is **DEFER-TO-PHASE-5** (its lazy-reset UPDATE is Phase 4/5 logic; the Phase 1
+`pause_reason` CHECK it needs is present + tested by T7), and the `jobs_reclaim_idx`
+reconciliation note (0011 canonical over `02-claim-and-indexes.md`) stands as-is.
 Two rulings carry forward as owned, scheduled work: confirm platform column shapes before
 Phase 2 (pre-live gate G3 / OD-8), and the §9 credential-handoff preconditions (mTLS box
 channel, memory-only + zeroed credential, residual-risk note) are LOCKED requirements Phase 3

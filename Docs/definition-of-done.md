@@ -44,6 +44,7 @@ DoD-9  CONTROL-PLANE SAFETY CONTROLS HONORED
 - [ ] No locked enum value, column, table, or contract field renamed or removed. Changes additive only. The 7 locked enums stay frozen; contracts version additively.
 - [ ] The migration chain is contiguous ascending `NNNN`, no gaps/dupes. Each new migration self-records: UP `INSERT INTO sender.schema_migrations(version) VALUES('NNNN')`, DOWN the matching `DELETE`; every UP has a paired DOWN.
 - [ ] Grants/RLS posture preserved: append-only REVOKEs (`job_events` no UPDATE/DELETE; `send_logs` no UPDATE), platform access limited to read-only SELECT on `public.users` + `public.job_items`, `sender_owner` owns the schema, `FORCE RLS` on `sender.accounts` intact.
+- [ ] **New table ⇒ explicit grants** (ADR-0008 grants trap: default privileges do NOT fire for admin-created-then-reowned tables). Add the `GRANT` in the same migration that creates the table; the schema-wide `TestGrantsInvariant` (catalog-enumerated) FAILS any `sender.*` table whose `sender_module` privileges don't match its class.
 - [ ] Forward-only in prod (DOWN exists for local/CI, not for prod data rollback).
 
 **DoD-8 — Security properties re-verified for anything the phase touches.**
@@ -69,11 +70,12 @@ feature chain stays `sender_0001..0020`; additive) ✅ · DoD-8 (mTLS/sole-decry
 guard tested green; kill-switch scaffolding honored, real subsystems arrive Phases 4–8) ✅.
 
 **Phase 1's DoD status (data model & schema):** DoD-1 (spec `Docs/phase-1-data-model.md` +
-`phase1-drafts/`) ✅ · DoD-2 (10 real-Postgres behavioral tests — T1 concurrent claim, T1b
-N-workers, T2 event-per-transition, T3 no-silent-state-change, T3e RLS default-deny, T3f
-superuser-reads-only-ciphertext, T4 credential round-trip+tamper+AAD, T5 role-denied-platform-
-write, T5b job_item_id UNIQUE, T6 append-only log — all green in the harness; `scripts/dev.sh
-test` → 11/11) ✅ ·
+`phase1-drafts/`) ✅ · DoD-2 (13 real-Postgres behavioral tests — T1 concurrent claim, T1b
+N-workers, T2 event-per-transition (+ provenance propagation), T3 no-silent-state-change, T3e
+RLS default-deny, T3f superuser-reads-only-ciphertext, T4 credential round-trip+tamper+AAD, T5
+role-denied-platform-write, T5b job_item_id UNIQUE, T6 append-only log, T7 CHECK-constraint
+guards, plus the schema-wide grants invariant (+ its anti-vacuity control) and send_logs
+write-once-but-retention-can-delete — all green in the harness; `scripts/dev.sh test` → 11/11) ✅ ·
   - *Test-plan disposition (from architect-review):* the Phase 1 test plan (`phase1-drafts/07`)
     also names **T5c** (pause_reason daily-reset behavior). T5c exercises the lazy-reset
     eligibility UPDATE from `05-tenancy-rls-timezone.md` — that is dispatcher/account-consume

@@ -119,11 +119,10 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 		t.Fatal("c3: altered nonce decrypted (want auth failure)")
 	}
 
-	// --- D) AAD row-binding (PROVISIONAL — recommended design, not yet locked; Phase 1 §14
-	// [#AAD] is DEFER-TO-PHASE-2, see factories.go). Proves the recommended AAD = account.id ‖
-	// key_id is implementable and that GCM enforces row-binding: transplant this ciphertext+
-	// nonce into a DIFFERENT account row and decrypt with THAT row's AAD => fails. Phase 2 owns
-	// the adopt/decline ruling; if it declines, this sub-case is removed (no schema impact). ---
+	// --- D) AAD row-binding (LOCKED-ADOPTED — Phase 2 §14 OD-3 adopt; see factories.go). AAD =
+	// account.id ‖ credential_key_id binds ciphertext to its row: transplant this ciphertext+
+	// nonce into a DIFFERENT account row and decrypt with THAT row's AAD => fails closed. This
+	// is the locked encode contract Phase 2 carries forward (its test T2b). ---
 	accID2 := insertAccount(t, c, uid, poolID, gotCT, keyID, gotNonce) // same ct/nonce, new row/id
 	acc2UUID := uuidBytes(t, accID2)
 	if _, err := aesGCMDecrypt(key, gotCT, gotNonce, aadFor(acc2UUID, keyID)); err == nil {

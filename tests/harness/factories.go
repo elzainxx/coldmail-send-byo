@@ -125,12 +125,11 @@ func InsertQueuedJob(t *testing.T, c *pgx.Conn, userID, campaignID, recipient st
 // (never the DB). It proves the Phase 1 credential COLUMN SHAPE round-trips and that no
 // plaintext reaches the DB.
 //
-// NOTE on AAD (flag, don't silently fix — CLAUDE.md Rule 2): binding AAD = account.id ‖
-// credential_key_id is the drafts' RECOMMENDED design, but Phase 1 §14 [#AAD] still marks it
-// DEFER-TO-PHASE-2 (adopt/decline). These tests use it to prove it is *implementable* and that
-// GCM enforces row-binding by construction — they do NOT lock the encode contract. Phase 2
-// owns the adopt/decline ruling (+ADR); if it declines, T4 part D is dropped. The Phase 1
-// SCHEMA (3 credential columns, no AAD storage) is unaffected either way.
+// AAD binding is LOCKED-ADOPTED: AAD = account.id ‖ credential_key_id. Phase 2 §14 OD-3 ruled
+// "DECIDED-NOW (adopt)" (prevents cross-row ciphertext transplant; adds Phase 2 test T2b), and
+// Phase 1 implements + tests it here (T4 part D). This is the locked encode contract Phase 2
+// carries forward — it is NOT re-opened. The Phase 1 SCHEMA stores no AAD (3 credential columns
+// only); the AAD is recomputed at decrypt from the row's own id + credential_key_id.
 func aesGCMEncrypt(t *testing.T, key, plaintext, nonce, aad []byte) []byte {
 	t.Helper()
 	block, err := aes.NewCipher(key)
