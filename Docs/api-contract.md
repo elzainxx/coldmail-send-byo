@@ -7,7 +7,10 @@ against the Brain's registered routes.
 ## Auth domains (never share a credential)
 
 - **Domain A** — platform-facing (`quote`/`run`/`report`/`describe`): platform service token
-  over the private network. *(Not built in Phase 0.)*
+  over the private network, `Authorization: Bearer <token>`, stored hashed (bcrypt),
+  constant-time compared. A DISTINCT credential from the operator key — the two never share
+  (CLAUDE.md Rule 6). *(Built in Phase 3 — the minimal send path; see the Phase 3 routes below.
+  The surface only mounts when `PLATFORM_TOKEN_HASHES` is configured, fail-closed.)*
 - **Domain B** — operator (`/v1/admin/*`): `platform_admin` bearer key, stored hashed,
   constant-time compared. *(Built in Phase 2 — accounts/pools/config + lifecycle; see the Phase 2
   routes below. The Phase 0 health stub (`/healthz`,`/readyz`) remains unauthenticated.)*
@@ -77,3 +80,25 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | GET | `/v1/admin/config` | read all keys |
 | GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
 | PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation) |
+
+## Phase 3 served routes — platform-facing API (Domain A)
+
+The end-user surface for the minimal send path. Every route requires the platform service token
+(`Authorization: Bearer <token>`, hashed + constant-time; distinct from the operator key).
+Missing/invalid token → `401 unauthenticated`. The surface only mounts when `PLATFORM_TOKEN_HASHES`
+is configured (fail-closed). Error envelopes carry ONLY `{code, message, details[], request_id}` —
+never SMTP text, the box's `error_reason`, an internal reason, SQL/SQLSTATE, a credential, or an
+internal hostname (two-vocabulary rule). Per-tenant isolation applies (a caller for user A never
+sees user B's jobs). Additive-only: these routes never rename; later phases add.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/quote` | recipient count → cost (Phase 3 trivial pass-through: `cost = recipient_count × unit`) |
+| POST | `/v1/run` | accept a job (`job_item_id`) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). Duplicate `job_item_id` → clean `200` with the existing job (idempotent; never a raw `23505`) |
+| GET | `/v1/report` | reflect a job's state (`?job_id=` or `?job_item_id=`): `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only |
+| GET | `/v1/describe` | minimal Phase-3 tiers/pricing + capabilities stub (real tiers are Phase 9) |
+
+> The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated
+> persistent stream on the boxlink stream port) carrying `register`/`heartbeat`/`push_job`/`report`.
+> It is not a platform-facing HTTP route and is not part of this contract surface; its security
+> properties are covered by the Phase 3 spec (§2/§3) and the behavioral suite.

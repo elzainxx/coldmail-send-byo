@@ -70,6 +70,26 @@ else
   echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
 fi
 
+# --- Phase 3 platform routes (Domain A) ---
+# Behind the platform service-token gate. Probed WITHOUT a token: a real, mounted route answers
+# 401 unauthenticated (route exists but gated); a missing route 404s. So 401 proves the route is
+# served (the behavioral suite proves authed behavior). Method-appropriate probes.
+pf() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:8080$2" 2>/dev/null || echo 000; }
+pf_probe="$(pf POST /v1/run)"
+if [[ "$pf_probe" == "401" ]]; then
+  declare -A PLATFORM_ROUTES=(
+    ["POST /v1/quote"]=1 ["POST /v1/run"]=1 ["GET /v1/report"]=1 ["GET /v1/describe"]=1
+  )
+  for spec in "${!PLATFORM_ROUTES[@]}"; do
+    m="${spec%% *}"; p="${spec#* }"
+    rc="$(pf "$m" "$p")"
+    [[ "$rc" == "401" ]] || { echo "contract_drift FAIL: $m $p served as $rc, want 401 (platform route missing or not gated)"; fail=1; }
+  done
+  echo "contract_drift: Phase 3 platform surface mounted — 4 routes gated (401)."
+else
+  echo "contract_drift: platform surface not mounted (POST /v1/run -> $pf_probe); skipping Phase 3 route checks (set PLATFORM_TOKEN_HASHES to enable)."
+fi
+
 # --- No undocumented route: a path NOT in the contract must 404 ---
 und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/undocumented-nonadmin 2>/dev/null || echo 000)"
 [[ "$und" == "404" ]] || { echo "contract_drift FAIL: undocumented path did not 404 (got $und) — surface wider than the contract"; fail=1; }
@@ -78,7 +98,8 @@ und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/undocumen
 for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/admin/accounts" "/v1/admin/pools" "/v1/admin/config" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
-         "/v1/admin/accounts/{id}/events"; do
+         "/v1/admin/accounts/{id}/events" \
+         "/v1/quote" "/v1/run" "/v1/report" "/v1/describe"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 
