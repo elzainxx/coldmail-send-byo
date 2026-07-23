@@ -8,14 +8,13 @@
 // Two-vocabulary rule (Rule 5): every response is a clean envelope; a failure carries only
 // {code, message, request_id} — never SQL/SQLSTATE, internal reason, or the box's error_reason.
 //
-// Per-tenant isolation (spec §6): the locked Domain-A request shapes carry NO tenant selector
-// (run{job_item_id}, report ?job_id/?job_item_id) and Domain A uses a single shared platform
-// service token, so this module CANNOT scope reads/writes by a request-borne principal. Phase 3
-// relies on the platform (the trusted sole Domain-A caller) enforcing tenant boundaries + the
-// unguessable job UUIDs; whether the module should additionally take a tenant selector and filter
-// sender.jobs by it is an OPEN DECISION (OD-25, Docs/open-decisions.md) awaiting a user ruling.
-// This surface therefore does NOT itself enforce user-A-can't-see-user-B; do not add a silent
-// tenant filter without resolving OD-25 (it changes the locked Domain-A contract).
+// Per-tenant isolation is ENFORCED by this module (OD-25, RULED option b): every platform request
+// carries an explicit tenant selector (`user_id`) — `run` in the body, `report` in the query —
+// and every platform-facing query scopes `WHERE user_id = $tenant`. A job that exists but belongs
+// to another tenant returns the SAME 404-style not-found as a non-existent job (never 403), so a
+// caller cannot see, nor even confirm the existence of, another tenant's jobs. This is
+// defense-in-depth: even a platform-side bug that sends the wrong `user_id` cannot cross tenant
+// boundaries in the module. See `Docs/open-decisions.md` OD-25.
 package platformapi
 
 import (

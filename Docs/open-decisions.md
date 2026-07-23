@@ -124,13 +124,13 @@ notes in the Phase 3 spec), not seeded early.
 
 | # | Decision | Status | Detail |
 |---|---|---|---|
-| OD-25 | Phase 3 §6 (and `Docs/api-contract.md`) state the Domain-A surface enforces per-tenant isolation ("a caller for user A never sees user B's jobs"), but the **locked** request shapes carry **no tenant selector** — `run {job_item_id}`, `report ?job_id=`/`?job_item_id=` — and Domain A authenticates a **single shared platform service token** (`PLATFORM_TOKEN_HASHES`), not a per-tenant credential. So the module has no request-borne principal to scope `readReport`/`createJob` by; it cannot *structurally* enforce user-A-can't-see-user-B from the API alone. | **FLAGGED — needs user ruling** | Surfaced by the Phase 3 architecture review. Two readings are consistent with the locked spec, and the choice changes what (if anything) to build: **(a) platform-enforced tenancy** — the platform is the sole trusted Domain-A caller and enforces tenant boundaries on its side before calling `run`/`report`; the module treats the service token as a machine principal and relies on unguessable job UUIDs. This matches the "platform service token over the private network" auth model (§1, `api-contract.md` Domain A) and needs **no code change** — but the §6 sentence is then about the *platform's* guarantee, not the module's, and the doc wording should say so. **(b) module-enforced tenancy** — the platform passes a tenant/user id (e.g. a `user_id` request field or a per-tenant token claim) and the module scopes every `sender.jobs` read/write by it. This is **additive** (a new optional request field + a `WHERE user_id=$tenant` filter) but it changes the Domain-A contract, so it is a spec decision, not a silent implementation choice. **Phase 3 implemented neither tenant filter nor a tenant selector** (faithful to the literal locked request shapes); the gap is recorded here rather than resolved by inventing a selector the spec doesn't define. Real-world exposure in reading (a) is low (trusted single caller + 122-bit random job UUIDs), so this does not block the Phase 3 exit criteria, but it is a stated-security-property vs. contract gap that the user must rule on before the platform integration is locked. No locked spec edited. |
+| OD-25 | Phase 3 §6 (and `Docs/api-contract.md`) state the Domain-A surface enforces per-tenant isolation ("a caller for user A never sees user B's jobs"), but the request shapes as first built carried **no tenant selector** — `run {job_item_id}`, `report ?job_id=`/`?job_item_id=` — and Domain A authenticates a **single shared platform service token**, so the module had no request-borne principal to scope `readReport`/`createJob` by and could not *structurally* enforce user-A-can't-see-user-B from the API alone. Surfaced by both Phase 3 review gates; flagged (not silently resolved) per Rule 2. | **RULED (2026-07-23) — option (b): module-enforced tenancy** | The user ruled **module-enforced tenancy**. `run` (body) and `report` (query) now take an explicit `user_id` tenant selector (UUID, REQUIRED — missing/malformed → clean `400 validation_failed`), and every platform-facing query scopes `WHERE user_id = <tenant>`: `createJob` inserts only when `public.job_items.user_id = <tenant>`; `readReport`/`jobStateByItem`/`jobIDByItem` filter by it. A `run`/`report` for an id **owned by another tenant** returns the SAME `404 not_found` as a non-existent id (**never `403`** — no cross-tenant existence disclosure). **Reasoning on the record:** the module already receives `user_id` on `run` (frozen into `sender.jobs.user_id` from `public.job_items`), so scoping by it is natural; the **Domain-A contract has no consumers yet**, so adding a required selector is free now and breaking later; and this is **defense-in-depth** — even a platform-side bug that passes the wrong `user_id` cannot cross tenant boundaries in the module. This is an **additive** Domain-A contract change (a new required request field/param), permitted by the ruling; §6 of the Phase 3 spec + `api-contract.md` are updated so the isolation claim is now TRUE and enforced, not asserted. Implemented in `internal/platformapi/{handlers,store,server}.go`; proven by the cross-tenant behavioral tests (chunk 2). No other locked spec edited. |
 
-**Needs-user: OD-25** (the Domain-A tenant-isolation model — platform-enforced vs. module-enforced;
-see above). The two carried-forward cross-system sign-offs remain **owned, scheduled** verification
-items (not open questions): G4 (prod KMS Decrypt granted to the Brain role only; the admin service
-Encrypt-only) and G5 (`SENDER_SYSTEM_USER_ID` seeded into `public.users`) — both are going-live
-gates the harness exercises via seeded fixtures, not build blockers.
+**Needs-user: empty.** OD-25 is RULED (option b) and implemented. The two carried-forward
+cross-system sign-offs remain **owned, scheduled** verification items (not open questions): G4 (prod
+KMS Decrypt granted to the Brain role only; the admin service Encrypt-only) and G5
+(`SENDER_SYSTEM_USER_ID` seeded into `public.users`) — both are going-live gates the harness
+exercises via seeded fixtures, not build blockers.
 
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
@@ -165,12 +165,10 @@ Phase 2 surfaced two flagged items, both **RULED**: **OD-23** (the `account_even
 FK-vs-trigger contradiction) — resolved via ADR-0009 with no locked-spec edit — and **OD-24** (the
 `daily_limit` ceiling referenced a never-seeded config key) — ruled option (c), a hardcoded sanity
 bound (`DailyLimitCeiling = 100_000`), not a config key, not dropped. **Phase 3's §10 log was
-closed before build (every item implemented as specified), but the architecture review surfaced
-one genuine spec-vs-contract gap — OD-25** (the Domain-A per-tenant isolation model: the locked
-request shapes carry no tenant selector, so the module cannot enforce user-A-can't-see-user-B from
-the API alone). Per Rule 2 it is FLAGGED for a user ruling, not silently resolved. Every other Open
-Decision is RULED or APPLIED; **needs-user is OD-25.** The remaining items are the five **pre-live
-confirmations** (G1–G5), gates on going live, not on implementing a phase in the harness. OD-25 does
-not block the Phase 3 exit criteria (real exposure is low under the trusted-single-caller reading),
-so it does not block the next phase from building on this ground; it must be ruled before the
-platform integration contract is locked.
+closed before build; the review surfaced one genuine spec-vs-contract gap — OD-25** (the Domain-A
+per-tenant isolation model), which the user **RULED option (b): module-enforced tenancy** and which
+is now implemented (explicit `user_id` selector on `run`/`report`; every platform query scoped
+`WHERE user_id=<tenant>`; cross-tenant access → 404-style not-found). Every Open Decision is now
+RULED or APPLIED; **needs-user is empty.** The remaining items are the five **pre-live
+confirmations** (G1–G5), gates on going live, not on implementing a phase in the harness. Nothing
+here blocks the next phase from building on this ground.

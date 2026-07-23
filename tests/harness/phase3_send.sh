@@ -55,7 +55,8 @@ ACCT="$(curl -s -X POST http://localhost:8080/v1/admin/accounts -H "Authorizatio
 
 # --- T2 (part A): run returns 202 immediately with state queued ---
 JI="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,reply_to,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','t1@example.com','Phase 3 T1','<p>hello</p>','reply@ourdomain.com','pending') RETURNING id" || true)"
-RUN_JSON="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI\"}")"
+SYSUSER="00000000-0000-0000-0000-000000000000"   # OD-25 tenant selector: the job_item's owner
+RUN_JSON="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI\",\"user_id\":\"$SYSUSER\"}")"
 RUN_CODE="$(echo "$RUN_JSON" | tail -1)"
 JOB="$(echo "$RUN_JSON" | head -1 | grep -oE '"job_id":"[0-9a-f-]+"' | cut -d'"' -f4 || true)"
 [[ "$RUN_CODE" == "202" ]] && ok "T2: POST /v1/run returned 202 immediately (async kickoff)" || bad "T2: run returned $RUN_CODE, want 202"
@@ -79,7 +80,7 @@ MPCOUNT="$(curl -s http://localhost:8025/api/v1/messages | grep -oE '"messages_c
 [[ "${MPCOUNT:-0}" -ge 1 ]] && ok "T1: Mailpit received the message (count=$MPCOUNT)" || bad "T1: Mailpit received nothing"
 
 # --- T2 (part B): report reflects the outcome once it arrives ---
-REP="$(curl -s "http://localhost:8080/v1/report?job_id=$JOB" -H "Authorization: Bearer $PLTOK")"
+REP="$(curl -s "http://localhost:8080/v1/report?job_id=$JOB&user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
 echo "$REP" | grep -q '"state":"sent"' && echo "$REP" | grep -q '"provider_message_id"' \
   && ok "T2: GET /v1/report reflects sent + provider_message_id" || bad "T2: report did not reflect the outcome: $REP"
 # report must NOT leak SMTP text / internal reason / the credential.
@@ -87,7 +88,7 @@ if echo "$REP" | grep -qiE "smtp_response|error_reason|$CANARY|250 "; then bad "
 
 # --- T4: re-running the same job_item_id + a re-dispatch must NOT send twice ---
 BEFORE="$(curl -s http://localhost:8025/api/v1/messages | grep -oE '"messages_count":[0-9]+' | cut -d: -f2 || true)"
-DUP="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI\"}")"
+DUP="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI\",\"user_id\":\"$SYSUSER\"}")"
 DUP_CODE="$(echo "$DUP" | tail -1)"
 # duplicate run is a clean no-op (200 with the existing job) — never a raw 23505 / 500.
 [[ "$DUP_CODE" == "200" || "$DUP_CODE" == "409" ]] && ok "T4: duplicate run is a clean no-op ($DUP_CODE), not a raw error" || bad "T4: duplicate run returned $DUP_CODE"

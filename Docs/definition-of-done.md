@@ -150,10 +150,12 @@ DoD-4/5 (**no new config key** — Phase 3 CONSUMES `job_max_processing_time_sec
 retention_days`, read at runtime in `internal/dispatch/config.go`; `config_drift` still **14 keys**;
 no tuning constant hardcoded — the quote unit + per-op SMTP timeout bootstrap default are documented
 contract/bootstrap values, and the SMTP timeout becomes Phase 6's seeded `smtp_operation_timeout_sec`)
-✅ · DoD-6 (open-decisions: Phase 3 §10 closed; the architecture review surfaced one spec-vs-contract
-gap — **OD-25**, the Domain-A per-tenant isolation model — **FLAGGED for a user ruling per Rule 2**,
-not silently resolved; it does not block the Phase 3 exit criteria. No contradiction resolved on our
-own authority) ⚠️ (needs-user: OD-25) ·
+✅ · DoD-6 (open-decisions: Phase 3 §10 closed; the review surfaced one spec-vs-contract gap —
+**OD-25**, the Domain-A per-tenant isolation model — which was **RULED (option b): module-enforced
+tenancy**. Implemented in the closeout: `run`/`report` take an explicit `user_id` selector and
+every platform query scopes `WHERE user_id=<tenant>`; cross-tenant access returns 404-style
+not-found (no existence disclosure). The §6 wording + `api-contract.md` now state a TRUE, enforced
+property. needs-user empty) ✅ ·
 DoD-7 (**no migration** — Phase 3 is schema-neutral; every column already exists in the locked
 Phase 1 model; chain still `sender_0000..0014`; grants invariant unchanged and green) ✅ · DoD-8
 (security re-verified: **Brain remains the sole decryptor** — decrypt lives in `internal/credential`,

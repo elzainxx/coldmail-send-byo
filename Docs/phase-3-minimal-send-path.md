@@ -816,6 +816,19 @@ Phase 2 (§1.2 of that doc): every non-2xx is a clean `{ "error": { "code",
 applies here** — a caller for user A can never see user B's jobs (this is the
 platform-facing isolation Phase 2 §4.4 said would land in Phase 3+).
 
+> **Isolation is MODULE-ENFORCED via an explicit tenant selector (OD-25, RULED
+> option b — additive contract change, applied because the Domain-A contract has no
+> consumers yet).** Each platform request carries an explicit `user_id` (a UUID: the
+> owning tenant) — `run` in the request body, `report` in the query string — and every
+> platform-facing query scopes `WHERE user_id = <tenant>`. A `run` whose `job_item_id`
+> is owned by another tenant, and a `report` for a `job_id`/`job_item_id` owned by
+> another tenant, both return a clean **`404 not_found`** identical to a non-existent id
+> (**never `403`** — no cross-tenant existence disclosure). A missing/malformed `user_id`
+> is a clean `400 validation_failed`. The module thus enforces the isolation property
+> itself (defense-in-depth against a platform-side bug), rather than relying on the
+> caller. This makes the "user A can never see user B's jobs" claim above TRUE and
+> enforced at the module boundary, not merely asserted.
+
 ### 6.1 `POST /v1/quote` — recipient count → cost (trivial pass-through)
 
 - **Request:** `{ "recipient_count": 1 }` (or the campaign/job_item reference the

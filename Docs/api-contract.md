@@ -90,20 +90,20 @@ is configured (fail-closed). Error envelopes carry ONLY `{code, message, details
 never SMTP text, the box's `error_reason`, an internal reason, SQL/SQLSTATE, a credential, or an
 internal hostname (two-vocabulary rule). Additive-only: these routes never rename; later phases add.
 
-> **Per-tenant isolation (OD-25, needs ruling).** The Phase 3 spec §6 states "a caller for user A
-> never sees user B's jobs." The locked Domain-A request shapes carry no tenant selector (`run
-> {job_item_id}`, `report ?job_id=`/`?job_item_id=`) and Domain A uses a single shared platform
-> service token, so the module cannot enforce this from the API alone. Phase 3 relies on the
-> platform (the trusted sole Domain-A caller) enforcing tenant boundaries + unguessable job UUIDs;
-> whether the module should additionally take a tenant selector and filter `sender.jobs` by it is
-> **OD-25** (`Docs/open-decisions.md`), flagged for a user ruling before the integration contract
-> is locked. Not resolved silently.
+> **Per-tenant isolation is ENFORCED (OD-25, RULED option b).** Every platform request carries an
+> explicit tenant selector — `user_id` (a UUID): `run` in the body, `report` in the query. The
+> module scopes every `sender.jobs` read/write `WHERE user_id = <tenant>`. A `run` for a
+> `job_item_id` **owned by another tenant**, or a `report` for a `job_id`/`job_item_id` belonging to
+> another tenant, returns the SAME `404 not_found` as a non-existent id (never `403`) — so a caller
+> can neither read nor confirm the existence of another tenant's jobs. A missing/malformed
+> `user_id` → clean `400 validation_failed`. This is module-level defense-in-depth: even a
+> platform-side bug that passes the wrong `user_id` cannot cross tenant boundaries here.
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/v1/quote` | recipient count → cost (Phase 3 trivial pass-through: `cost = recipient_count × unit`) |
-| POST | `/v1/run` | accept a job (`job_item_id`) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). Duplicate `job_item_id` → clean `200` with the existing job (idempotent; never a raw `23505`) |
-| GET | `/v1/report` | reflect a job's state (`?job_id=` or `?job_item_id=`): `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only |
+| POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`) |
+| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. A job owned by another tenant → `404 not_found` (no existence disclosure) |
 | GET | `/v1/describe` | minimal Phase-3 tiers/pricing + capabilities stub (real tiers are Phase 9) |
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated

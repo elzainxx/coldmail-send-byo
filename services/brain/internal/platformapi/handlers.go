@@ -49,6 +49,7 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 
 type runReq struct {
 	JobItemID string `json:"job_item_id"`
+	UserID    string `json:"user_id"` // tenant selector (OD-25 option b) — the owning tenant
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
@@ -62,14 +63,22 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			withDetails(fieldDetail{Field: "job_item_id", Issue: issueRequired}))
 		return
 	}
+	// Tenant selector is REQUIRED and must be a UUID (OD-25 option b — module-enforced tenancy).
+	if !uuidRe.MatchString(req.UserID) {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
+		return
+	}
 
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
 	// Create one sender.jobs row (state=queued, genesis event via the actor='system' GUC), reading
-	// the frozen recipient/subject/body/reply_to from public.job_items (SELECT-only, Phase 1). The
-	// job_item_id UNIQUE constraint makes a duplicate run idempotent (§6.2).
-	jobID, existing, e := s.createJob(ctx, req.JobItemID)
+	// the frozen recipient/subject/body/reply_to from public.job_items (SELECT-only, Phase 1),
+	// SCOPED to the calling tenant: the job_item must belong to req.UserID (else 404-style
+	// not-found — no cross-tenant existence disclosure). The job_item_id UNIQUE constraint makes a
+	// duplicate run idempotent (§6.2).
+	jobID, existing, e := s.createJob(ctx, req.JobItemID, req.UserID)
 	if e != nil {
 		s.fail(w, r, e)
 		return
@@ -77,7 +86,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if existing {
 		// Duplicate run for the same job_item_id: return the existing job + its current state
 		// (treated as "already accepted", never a raw 23505). 200 with the existing job.
-		state, _ := s.jobStateByItem(ctx, req.JobItemID)
+		state, _ := s.jobStateByItem(ctx, req.JobItemID, req.UserID)
 		writeJSON(w, http.StatusOK, map[string]any{"job_id": jobID, "state": state})
 		return
 	}
@@ -94,9 +103,16 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	jobID := r.URL.Query().Get("job_id")
 	jobItemID := r.URL.Query().Get("job_item_id")
+	userID := r.URL.Query().Get("user_id")
 	if jobID == "" && jobItemID == "" {
 		s.fail(w, r, newErr(codeValidationFailed, "job_id_or_job_item_id_required").
 			withDetails(fieldDetail{Field: "job_id", Issue: issueRequired}))
+		return
+	}
+	// Tenant selector is REQUIRED and must be a UUID (OD-25 option b — module-enforced tenancy).
+	if !uuidRe.MatchString(userID) {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
 		return
 	}
 	if jobID != "" && !uuidRe.MatchString(jobID) {
@@ -113,7 +129,10 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
-	rep, ok, err := s.readReport(ctx, jobID, jobItemID)
+	// SCOPED to the calling tenant (userID). A job that exists but belongs to another tenant
+	// matches 0 rows and returns the SAME not_found as a non-existent job — no existence
+	// disclosure across tenants (404-style, never 403 — OD-25).
+	rep, ok, err := s.readReport(ctx, jobID, jobItemID, userID)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "report_query_failed"))
 		return
