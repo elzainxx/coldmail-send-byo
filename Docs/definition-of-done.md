@@ -130,3 +130,36 @@ added — Phase 2 is manual transitions only, no scoring/auto-quarantine/dispatc
 unchanged) ✅. *New table ⇒ explicit grants, enforced by the grants invariant test* (DoD-7)
 held: `account_events` got its explicit `GRANT INSERT, SELECT` in `sender_0014` and the
 classifier learned it in the same change.
+
+**Phase 3's DoD status (minimal send path):** DoD-1 (spec `Docs/phase-3-minimal-send-path.md`,
+§10 closed) ✅ · DoD-2 (real behavioral tests on real infra — a **real email is delivered to
+Mailpit**; full harness `scripts/dev.sh test` → **35 passed, 0 failed**. Three layers, no mocks:
+(a) **live-stack** SUITE 9 — box registers on the mTLS stream, T1 send→`sent`+`provider_message_id`+
+4 `job_events`+1 `send_log`+Mailpit received, T2 `run` 202 async + `report` reflects (no
+smtp/reason/credential leak), T4 duplicate `run` clean no-op + no second send, T6 wrong-token
+register refused, T3 box killed mid-send → job stays `sending` never falsely `sent`, S1 canary
+absent from logs/`send_logs`/`jobs` + credential column is real ciphertext, OD-7 no `/v1/admin/*`
+route exposes plaintext; (b) **box units** — S1 failed-AUTH scrub, S3 zeroing on every exit path
+incl. thrown exception, S5 abort-before-AUTH on no-STARTTLS, against a real local sink; (c) **Go
+dispatch/credential** on real Postgres clones — claim/decrypt/push, accepted-persist+idempotent,
+never-invent-sent (T3 invariant), error requeue (T5), bounced terminal, decryptor
+round-trip/tamper/transplant/key-id. Anti-vacuity controls throughout) ✅ · DoD-3 (api-contract
+gains the 4 Domain-A routes + `contract_drift` probes them; architecture-overview Phase 3 section;
+open-decisions Phase 3 log; no ADR needed — no locked-fact conflict arose; drift gates green) ✅ ·
+DoD-4/5 (**no new config key** — Phase 3 CONSUMES `job_max_processing_time_sec` + `debug_log_
+retention_days`, read at runtime in `internal/dispatch/config.go`; `config_drift` still **14 keys**;
+no tuning constant hardcoded — the quote unit + per-op SMTP timeout bootstrap default are documented
+contract/bootstrap values, and the SMTP timeout becomes Phase 6's seeded `smtp_operation_timeout_sec`)
+✅ · DoD-6 (open-decisions: Phase 3 §10 closed, **no new Open Decision**, needs-user empty) ✅ ·
+DoD-7 (**no migration** — Phase 3 is schema-neutral; every column already exists in the locked
+Phase 1 model; chain still `sender_0000..0014`; grants invariant unchanged and green) ✅ · DoD-8
+(security re-verified: **Brain remains the sole decryptor** — decrypt lives in `internal/credential`,
+a package wired ONLY into the dispatcher and never into `adminapi`, so no admin route can produce
+plaintext even with decrypt now in-process (OD-7, proven live); box credential memory-only + zeroed
+on every exit path incl. exception (S1/S3); box has NO DB/KMS (structural); box↔Brain mTLS both
+ways (S4-class register-refusal + wrong-token T6); STARTTLS-before-AUTH enforced (S5); two-vocabulary
+envelopes on the platform surface — no smtp/reason/credential in a `report` (T2); the box's reported
+outcome is the only outcome recorded, never invented (T3); AAD row-binding on decrypt
+(transplant/tamper fail closed)) ✅ · DoD-9 (no autonomous subsystem — dispatch is trivial +
+event-kicked, no poll loop / routing / scoring / auto-quarantine / retry / reclaim; `dispatch_enabled`
+and the other dials are untouched; the Brain singleton guard is unchanged and still green) ✅.
