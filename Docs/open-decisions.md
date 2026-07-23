@@ -92,6 +92,39 @@ item to seed `SENDER_SYSTEM_USER_ID` into `public.users` (guarded by the §0.1 p
 as pre-live gate **G5**), and the OD-7 IAM precondition (admin service = Encrypt-only, never KMS
 Decrypt) to verify before Phase 3 alongside G4.
 
+## Phase 3 build (minimal send path)
+
+Phase 3's own §10 decision log is **CLOSED** in `Docs/phase-3-minimal-send-path.md` (every item
+DECIDED-NOW / DEFER-TO-PHASE-N / CONFIRMED; the needs-user list is empty). The decisions were
+**implemented as specified**, not re-litigated:
+
+| # | Decision (from Phase 3 §10) | Where implemented |
+|---|---|---|
+| P3-1 | box↔Brain = box-initiated persistent mTLS stream (register/heartbeat/push_job/report on one channel) | `internal/boxlink/stream.go` + `services/box/src/stream.js`; new `:8444` listener; Phase-0 `:8443` HTTP routes unchanged |
+| P3-2 | SMTP failure → requeue to `queued` (`error_class='unknown'`, lease cleared, `attempt_count++`, no auto re-dispatch) | `internal/dispatch/outcome.go` `applyError`; test `TestOutcome_ErrorRequeues` + live T5 note |
+| P3-3 | provider id capture; fall back to Brain `Message-ID`; `accepted_without_id` only as impossible-case backstop | `services/box/src/stream.js` (`parseProviderID` → Message-ID); `outcome.go` guards empty id |
+| P3-4 | box id collision = upsert-by-identity (same id+token = re-register; wrong token = auth fail) | `stream.go` register handler (markActive upsert; reject on token mismatch) |
+| P3-5 | `From` address-only when `from_name` NULL | `internal/dispatch/headers.go` `formatFrom` |
+| P3-6 | `box_metadata` = `{box_version,hostname,started_at}`, diagnostics only | `stream.go` `boxMetadata`; box sends optional fields on register |
+| P3-7 | §8 minimum guaranteed headers (From/To/Subject/Reply-To/Message-ID/Date) | `headers.go` `buildHeaders`; box sends exactly these + MIME framing |
+| P3-11 | HELO name derived from `from_address` (`mail.<domain>`); configurability DEFERRED | box `smtp.js` `sendingDomain`; deferred to deliverability phase |
+| U1 / OD-7 | box runs SMTP; Brain SOLE decryptor; admin Encrypt-only; box no DB/KMS | `internal/credential` (Decrypt-only, separate from `adminapi`), wired only into `internal/dispatch`; live suite S1/OD-7 |
+
+**Phase 3 surfaced no new Open Decision** — no locked-fact conflict arose (unlike Phase 1's `#23`
+or Phase 2's OD-23/OD-24). The one operational note recorded during build: on a fresh live stack
+the dev box row (`sender.boxes`) must be seeded before the box's bounded register-retry window
+expires (`scripts/dev.sh seed`); the behavioral harness seeds fixtures before starting the box,
+so this is a dev-ergonomics note, not a defect. **No new config key** was added — Phase 3 CONSUMES
+already-seeded keys (`job_max_processing_time_sec` = lease, `debug_log_retention_days` =
+`send_logs` TTL), read at runtime in `internal/dispatch/config.go` (config_drift still 14 keys).
+The per-operation SMTP timeout and outcome-buffer TTL keys are owned by Phases 6/7 (coordinated
+notes in the Phase 3 spec), not seeded early.
+
+**Needs-user: empty.** The two carried-forward cross-system sign-offs remain **owned, scheduled**
+verification items (not open questions): G4 (prod KMS Decrypt granted to the Brain role only; the
+admin service Encrypt-only) and G5 (`SENDER_SYSTEM_USER_ID` seeded into `public.users`) — both are
+going-live gates the harness exercises via seeded fixtures, not build blockers.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
@@ -116,12 +149,16 @@ harness without them.
 ## Status
 
 Every Open Decision above is **RULED or APPLIED** — none is left open pending a build
-decision. Phase 0, Phase 1 (data model & schema, `sender_0001..0012`), and Phase 2 (account
-management & operator admin API, `sender_0013..0014` + `internal/adminapi`) are all built and
-green on real infra. Phase 2 surfaced two flagged items, both now **RULED**: **OD-23** (the
-`account_events` FK-vs-trigger contradiction) — resolved via ADR-0009 with no locked-spec edit —
-and **OD-24** (the `daily_limit` ceiling referenced a never-seeded config key) — ruled option (c),
-a hardcoded sanity bound (`DailyLimitCeiling = 100_000`), not a config key, not dropped. Every
+decision. Phase 0, Phase 1 (data model & schema, `sender_0001..0012`), Phase 2 (account
+management & operator admin API, `sender_0013..0014` + `internal/adminapi`), and Phase 3 (the
+minimal send path — box↔Brain persistent mTLS stream, credential handoff + sole-decryptor scoping,
+SMTP session on the box, idempotency, `quote`/`run`/`report`/`describe`; NO new migration —
+schema-neutral) are all built and green on real infra (a real email is delivered to Mailpit).
+Phase 2 surfaced two flagged items, both **RULED**: **OD-23** (the `account_events`
+FK-vs-trigger contradiction) — resolved via ADR-0009 with no locked-spec edit — and **OD-24** (the
+`daily_limit` ceiling referenced a never-seeded config key) — ruled option (c), a hardcoded sanity
+bound (`DailyLimitCeiling = 100_000`), not a config key, not dropped. **Phase 3 surfaced no new
+Open Decision** (its §10 log was closed before build; every item implemented as specified). Every
 Open Decision is RULED or APPLIED; **needs-user is empty.** The remaining items are the five
 **pre-live confirmations** (G1–G5), which by ruling are gates on going live, not on implementing a
 phase in the harness. Nothing here blocks the next phase from building on this ground.
