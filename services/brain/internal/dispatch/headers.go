@@ -61,3 +61,31 @@ func sendingDomain(addr string) string {
 	}
 	return "localhost"
 }
+
+// hasCRLF reports whether s contains a CR or LF (or a NUL). These are the SMTP header/body
+// separators; a value carrying one could inject extra headers (e.g. a Bcc) or split into the body
+// when composed into the DATA payload. The Brain owns the header set, so it rejects such a value
+// here rather than emit poisoned wire bytes (defense-in-depth even though Phase 3 content is
+// first-party platform content).
+func hasCRLF(s string) bool {
+	return strings.ContainsAny(s, "\r\n\x00")
+}
+
+// validateNoInjection checks every header-bound value + the envelope recipient/from for CR/LF/NUL.
+// Returns the offending field name (or "" if clean) so the caller can requeue with a slug rather
+// than transmit a header/body-injection payload (§8.1; SMTP header-injection guard).
+func validateNoInjection(fromName, fromAddress, recipient, subject, replyTo string) string {
+	switch {
+	case hasCRLF(fromName):
+		return "from_name"
+	case hasCRLF(fromAddress):
+		return "from_address"
+	case hasCRLF(recipient):
+		return "recipient"
+	case hasCRLF(subject):
+		return "subject"
+	case hasCRLF(replyTo):
+		return "reply_to"
+	}
+	return ""
+}

@@ -203,6 +203,48 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	}
 }
 
+// TestDispatch_HeaderInjectionRequeued — a job whose subject carries CR/LF (an SMTP header/body
+// injection attempt) is NOT pushed: the dispatcher requeues it (lease cleared) and the box never
+// receives a push_job for it. Anti-vacuity: a clean job in the same env DOES push.
+func TestDispatch_HeaderInjectionRequeued(t *testing.T) {
+	e := newDispatchEnv(t, "crlf")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	// A poisoned job: subject contains CRLF + an injected Bcc header.
+	job := e.seedQueuedJobSubject(t, "inj@example.com", "Hello\r\nBcc: victim@evil.com")
+	pushed, err := e.d.TryDispatch(ctx)
+	if err != nil {
+		t.Fatalf("TryDispatch: %v", err)
+	}
+	if pushed == job {
+		t.Fatalf("poisoned job was pushed — header-injection guard failed")
+	}
+	if e.px.pushCount() != 0 {
+		t.Fatalf("push count=%d, want 0 (nothing pushed for a poisoned job)", e.px.pushCount())
+	}
+	// The job is requeued to a legal state (queued, lease cleared).
+	state, _, leaseNull, _, attempt := e.jobState(t, job)
+	if state != "queued" || !leaseNull {
+		t.Fatalf("poisoned job state=%s leaseNull=%v, want queued/true (requeued)", state, leaseNull)
+	}
+	if attempt != 1 {
+		t.Fatalf("attempt_count=%d, want 1", attempt)
+	}
+
+	// Positive control: a CLEAN job DOES push (the guard didn't wedge dispatch). Remove the
+	// poisoned job first so it isn't re-claimed ahead of the clean one (it is older; the claim
+	// orders by created_at). Deleting it is fine — this only proves the guard doesn't over-reject.
+	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.jobs WHERE id=$1`, job); err != nil {
+		t.Fatalf("cleanup poisoned job: %v", err)
+	}
+	clean := e.seedQueuedJob(t, "clean@example.com")
+	if got, _ := e.d.TryDispatch(ctx); got != clean {
+		t.Fatalf("clean job not pushed (got %q, want %q) — guard over-rejects", got, clean)
+	}
+}
+
 // TestOutcome_BouncedTerminal — a bounced report drives sending→bounced (terminal), clears the
 // lease, sets completed_at.
 func TestOutcome_BouncedTerminal(t *testing.T) {

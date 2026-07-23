@@ -136,6 +136,18 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	if job.replyTo != nil {
 		replyTo = *job.replyTo
 	}
+
+	// SMTP header/body-injection guard (§8.1): reject a job whose header-bound values or envelope
+	// recipient/from carry CR/LF/NUL rather than compose poisoned DATA bytes. The Brain owns the
+	// header set, so this is the choke point. Zero the just-decrypted plaintext and requeue — the
+	// credential is never pushed for a poisoned job.
+	if bad := validateNoInjection(fromName, acct.fromAddress, job.recipient, job.subject, replyTo); bad != "" {
+		zero(plaintext)
+		log.Printf("dispatch: job %s has CR/LF in %q — requeued, not sent (header-injection guard)", job.id, bad)
+		d.requeue(ctx, job.id, "header_injection:"+bad)
+		return "", nil
+	}
+
 	msgID := messageIDFor(job.id, acct.fromAddress)
 	headers := buildHeaders(fromName, acct.fromAddress, job.recipient, job.subject, replyTo, msgID, sentAt)
 
@@ -163,8 +175,17 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 
 	// 5) Move assigned → sending and set assigned_account_id, THEN push. Ordering: mark sending
 	// first so the state reflects in-flight; if the push fails we requeue (clearing the lease).
-	if err := d.markSending(ctx, job.id, acct.id); err != nil {
+	// On a DB error OR a 0-row update (state drifted out of 'assigned'), do NOT push — requeue to a
+	// claimable state so the job is never orphaned in 'assigned' with a live lease (Phase 3 has no
+	// reclaim loop; a stranded 'assigned' job would wait until Phase 6). The credential is zeroed
+	// and never leaves the Brain for a job we couldn't transition.
+	moved, err := d.markSending(ctx, job.id, acct.id)
+	if err != nil || !moved {
 		zero(plaintext)
+		d.requeuePushFailed(ctx, job.id)
+		if err != nil {
+			log.Printf("dispatch: markSending failed for job %s: %v — requeued", job.id, err)
+		}
 		return "", err
 	}
 	// Echo the lease so the box knows its deadline (re-read the just-set lease).
@@ -249,16 +270,24 @@ LIMIT 1`
 }
 
 // markSending moves assigned → sending and records the account, in a tx with the actor GUC. The
-// lease stays set (still in {assigned,sending} — CHECK satisfied).
-func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID string) error {
+// lease stays set (still in {assigned,sending} — CHECK satisfied). Returns (moved, err): moved is
+// false when the guarded UPDATE affected 0 rows (the job was not in 'assigned' — state drifted),
+// so the caller must NOT push and should requeue rather than send on a job it didn't transition.
+func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+	moved := false
+	err := d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
 			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, updated_at=NOW()
 			 WHERE id=$1 AND state='assigned'`, jobID, accountID)
-		return err
+		if err != nil {
+			return err
+		}
+		moved = tag.RowsAffected() == 1
+		return nil
 	})
+	return moved, err
 }
 
 // requeueNoAccount / requeuePushFailed return an assigned/sending job to queued in a LEGAL state

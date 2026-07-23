@@ -170,13 +170,25 @@ func (e *dispatchEnv) seedAccount(t *testing.T, poolID, secret string) string {
 
 // seedQueuedJob seeds a job_item + a queued sender.jobs row (genesis event) and returns the job id.
 func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
+	return e.seedQueuedJobSubject(t, recipient, "Subj")
+}
+
+// seedQueuedJobSubject is seedQueuedJob with a caller-chosen rendered_subject (used to inject a
+// CR/LF-bearing subject for the header-injection guard test). The subject is bound as a parameter
+// (never string-concatenated into SQL), so the CRLF reaches the row verbatim.
+func (e *dispatchEnv) seedQueuedJobSubject(t *testing.T, recipient, subject string) string {
+	t.Helper()
+	return e.seedQueuedJobImpl(t, recipient, subject)
+}
+
+func (e *dispatchEnv) seedQueuedJobImpl(t *testing.T, recipient, subject string) string {
 	t.Helper()
 	ctx := context.Background()
 	var jobItemID string
 	if err := e.admin.QueryRow(ctx,
 		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
-		 VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000',$1,'Subj','<p>b</p>','reply@ourdomain.com','pending')
-		 RETURNING id`, recipient).Scan(&jobItemID); err != nil {
+		 VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000',$1,$2,'<p>b</p>','reply@ourdomain.com','pending')
+		 RETURNING id`, recipient, subject).Scan(&jobItemID); err != nil {
 		t.Fatalf("seed job_item: %v", err)
 	}
 	var jobID string
@@ -190,8 +202,8 @@ func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
 	}
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
-		 VALUES ($1,'00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000',$2,'Subj','<p>b</p>','reply@ourdomain.com','queued',NOW())
-		 RETURNING id`, jobItemID, recipient).Scan(&jobID); err != nil {
+		 VALUES ($1,'00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000',$2,$3,'<p>b</p>','reply@ourdomain.com','queued',NOW())
+		 RETURNING id`, jobItemID, recipient, subject).Scan(&jobID); err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
