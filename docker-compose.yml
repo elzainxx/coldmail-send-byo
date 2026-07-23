@@ -119,6 +119,11 @@ services:
     environment:
       MP_SMTP_AUTH_ALLOW_INSECURE: "false"
       MP_SMTP_REQUIRE_STARTTLS: "true"     # force STARTTLS so the TLS path is really tested
+      # Accept any AUTH credential — but ONLY over STARTTLS (ALLOW_INSECURE=false). This lets the
+      # Phase-3 happy-path send authenticate (the box always AUTHs) while still exercising
+      # STARTTLS-before-AUTH. The failed-AUTH / no-STARTTLS / requeue paths use a controllable Go
+      # sink (tests/harness) that Mailpit's fixed behavior cannot express.
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_TLS_CERT: /certs/sink.crt
       MP_SMTP_TLS_KEY:  /certs/sink.key
     volumes:
