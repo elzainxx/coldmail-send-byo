@@ -1,0 +1,118 @@
+// Package boxproto defines the Phase-3 box↔Brain control-channel message shapes (§2.2–§2.4).
+// All messages are JSON objects with a `type` discriminator and a `request_id` for correlation,
+// exchanged as newline-delimited JSON frames over the held mTLS stream (§2.1: the specific wire
+// framing is an implementation choice; the LOCKED requirements are mutual auth + encryption +
+// Brain-initiated push on the held stream — the box ships no RPC dependency, so line-delimited
+// JSON over crypto/tls is the dependency-free realization on both sides).
+//
+// Two-vocabulary rule (§2.6): nothing on this internal channel flows verbatim to a platform
+// caller. error_reason is an INTERNAL slug (logged, mapped to error_class='unknown' in Phase 3);
+// smtp.secret is the decrypted plaintext scoped to ONE job and is never logged/persisted.
+package boxproto
+
+// Message type discriminators (§2.2). Additive-only.
+const (
+	TypeRegister    = "register"     // box → Brain: authenticate on stream open (§3.1)
+	TypeRegisterAck = "register_ack" // Brain → box: accept/reject registration
+	TypeHeartbeat   = "heartbeat"    // box → Brain: liveness ping (§3.2)
+	TypePushJob     = "push_job"     // Brain → box: one job + its decrypted credential (§2.3)
+	TypeReport      = "report"       // box → Brain: outcome of one job (§2.4)
+)
+
+// Outcome values (§2.4). Phase 3 does NOT classify an error taxonomy (Phase 5).
+const (
+	OutcomeAccepted = "accepted"
+	OutcomeError    = "error"
+	OutcomeBounced  = "bounced" // hard 550; the locked state machine already models sending→bounced
+)
+
+// SMTP security modes (§2.3). Derived by the Brain from the port, explicit so the box does not
+// re-derive policy.
+const (
+	SecurityStartTLS    = "starttls"     // 587/25: STARTTLS required before AUTH
+	SecurityImplicitTLS = "implicit_tls" // 465: TLS at connect
+)
+
+// Register is the box's first message on stream open (§3.1).
+type Register struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	BoxID     string `json:"box_id"`
+	Token     string `json:"token"` // authorization AUTHORITY (verified vs sender.boxes.token_hash)
+	// Optional diagnostics merged into box_metadata (§3.5); never read by dispatch.
+	BoxVersion string `json:"box_version,omitempty"`
+	Hostname   string `json:"hostname,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+}
+
+// RegisterAck is the Brain's accept/reject (§3.1). On reject the Brain closes the stream and the
+// box learns only the clean code (two-vocabulary rule); no job/credential is ever pushed.
+type RegisterAck struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	Accepted  bool   `json:"accepted"`
+	Code      string `json:"code,omitempty"` // e.g. "unauthenticated" on reject
+}
+
+// Heartbeat refreshes last_heartbeat_at even when idle (§3.2).
+type Heartbeat struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	BoxID     string `json:"box_id"`
+}
+
+// Send is the rendered message content the box transmits (§2.3, headers per §8).
+type Send struct {
+	Recipient   string            `json:"recipient"`
+	FromAddress string            `json:"from_address"`
+	FromName    string            `json:"from_name,omitempty"`
+	ReplyTo     string            `json:"reply_to,omitempty"`
+	Subject     string            `json:"subject"`
+	Body        string            `json:"body"`
+	Headers     map[string]string `json:"headers"` // the §8 minimum guaranteed set the Brain built
+}
+
+// SMTP carries the connection + the decrypted plaintext credential for ONE send (§2.3). secret
+// is memory-only on both sides, never logged/persisted, and zeroed after the session (§3.3/§4.4).
+type SMTP struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Secret   string `json:"secret"`   // DECRYPTED plaintext SMTP password — scoped to this job
+	Security string `json:"security"` // "starttls" | "implicit_tls"
+}
+
+// PushJob delivers one job + its credential down the held stream (§2.3). One push = one send.
+type PushJob struct {
+	Type           string `json:"type"`
+	RequestID      string `json:"request_id"`
+	JobID          string `json:"job_id"`
+	Send           Send   `json:"send"`
+	SMTP           SMTP   `json:"smtp"`
+	LeaseExpiresAt string `json:"lease_expires_at"` // RFC3339; the box's own deadline (§2.3)
+}
+
+// Report is the box's outcome for one job (§2.4). provider_message_id present iff accepted.
+// smtp_response is the raw final SMTP line (never the credential). error_reason is an internal
+// slug on failure. NONE of this flows verbatim to a platform caller.
+type Report struct {
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	JobID             string `json:"job_id"`
+	Outcome           string `json:"outcome"` // accepted | error | bounced
+	ProviderMessageID string `json:"provider_message_id,omitempty"`
+	SMTPResponse      string `json:"smtp_response,omitempty"`
+	ErrorReason       string `json:"error_reason,omitempty"`
+}
+
+// error_reason slugs (§2.4). Internal only; mapped to error_class='unknown' in Phase 3 (§5.4).
+const (
+	ReasonConnectRefused    = "connect_refused"
+	ReasonAuthFailed        = "auth_failed"
+	ReasonStartTLSUnavail   = "starttls_unavailable"
+	ReasonDataRejected4xx   = "data_rejected_4xx"
+	ReasonDataRejected5xx   = "data_rejected_5xx"
+	ReasonLeaseExpired      = "lease_expired"
+	ReasonTimeout           = "timeout"
+	ReasonAcceptedWithoutID = "accepted_without_id" // §4.3 defensive backstop (should be impossible)
+)
