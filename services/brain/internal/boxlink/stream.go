@@ -38,15 +38,21 @@ type ReportHandler func(boxID string, rep boxproto.Report)
 
 // StreamServer accepts box connections on the mTLS boxlink stream port.
 type StreamServer struct {
-	ln       net.Listener
-	db       *pgxpool.Pool
-	onReport ReportHandler
+	ln         net.Listener
+	db         *pgxpool.Pool
+	onReport   ReportHandler
+	onRegister func(boxID string) // optional: kick the dispatcher when a box comes online
 
 	mu    sync.Mutex
 	boxes map[string]*boxConn // box id -> its live connection (one in-flight job per box)
 
 	closed chan struct{}
 }
+
+// SetOnRegister installs a callback fired after a box successfully registers. The dispatcher uses
+// it to kick a dispatch attempt when a box comes online (event-driven — NOT a background timer),
+// so a job queued before any box connected is picked up on connect. Must not block.
+func (s *StreamServer) SetOnRegister(fn func(boxID string)) { s.onRegister = fn }
 
 // boxConn is one registered box's held stream. writes are serialized by wmu so a push_job frame
 // is never interleaved with an ack.
@@ -163,6 +169,9 @@ func (s *StreamServer) handle(conn net.Conn) {
 		return
 	}
 	log.Printf("boxlink stream: box registered id=%q (token verified, mTLS client cert)", reg.BoxID)
+	if s.onRegister != nil {
+		go s.onRegister(reg.BoxID) // kick the dispatcher (a queued job may be waiting for a box)
+	}
 
 	// Read loop: heartbeats + reports. No further register expected. Clear the handshake deadline
 	// (a healthy held stream is the liveness signal; idle is fine, heartbeats refresh the row).

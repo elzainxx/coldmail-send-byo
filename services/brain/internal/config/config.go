@@ -23,6 +23,7 @@ type Config struct {
 	DatabaseURL             string
 	HealthAddr              string
 	BoxlinkAddr             string
+	BoxlinkStreamAddr       string // Phase 3: the persistent send-stream mTLS listener (§2.1)
 	KMSDevKeyFile           string
 	SingletonAcquireTimeout time.Duration
 	TLS                     tlsutil.ServerConfig
@@ -36,16 +37,24 @@ type Config struct {
 	AdminKeyHashes  []string
 	CredentialKeyID string
 	AdminEnabled    bool // false when no key hashes configured — the surface stays unmounted
+
+	// Platform API (Domain A, Phase 3). The service-token HASHES (bcrypt) authenticate the
+	// platform-facing quote/run/report/describe surface. DISTINCT credential from the operator
+	// admin key (Rule 6 — the two domains never share). The surface mounts only when at least one
+	// hash is configured (fail-closed). The credential Decryptor is loaded separately (send path).
+	PlatformTokenHashes []string
+	PlatformEnabled     bool
 }
 
 // FromEnv resolves configuration from the environment, failing loudly on anything missing
 // that has no safe default.
 func FromEnv() (*Config, error) {
 	c := &Config{
-		DatabaseURL:   env("DATABASE_URL", ""),
-		HealthAddr:    env("BRAIN_HEALTH_ADDR", ":8080"),
-		BoxlinkAddr:   env("BRAIN_BOXLINK_ADDR", ":8443"),
-		KMSDevKeyFile: env("KMS_DEV_KEY_FILE", ""),
+		DatabaseURL:       env("DATABASE_URL", ""),
+		HealthAddr:        env("BRAIN_HEALTH_ADDR", ":8080"),
+		BoxlinkAddr:       env("BRAIN_BOXLINK_ADDR", ":8443"),
+		BoxlinkStreamAddr: env("BRAIN_BOXLINK_STREAM_ADDR", ":8444"),
+		KMSDevKeyFile:     env("KMS_DEV_KEY_FILE", ""),
 	}
 	if c.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
@@ -84,6 +93,11 @@ func FromEnv() (*Config, error) {
 	c.AdminKeyHashes = splitNonEmpty(env("ADMIN_API_KEY_HASHES", ""))
 	c.CredentialKeyID = env("CREDENTIAL_KEY_ID", "cred-dek-v1")
 	c.AdminEnabled = len(c.AdminKeyHashes) > 0
+
+	// Platform API (Phase 3). PLATFORM_TOKEN_HASHES is a comma-separated list of bcrypt hashes;
+	// the plaintext service token never appears in config. Fail-closed: no hash => surface off.
+	c.PlatformTokenHashes = splitNonEmpty(env("PLATFORM_TOKEN_HASHES", ""))
+	c.PlatformEnabled = len(c.PlatformTokenHashes) > 0
 
 	return c, nil
 }

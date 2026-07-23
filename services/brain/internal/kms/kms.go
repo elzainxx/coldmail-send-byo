@@ -55,3 +55,20 @@ func LoadEncryptKey(path string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// LoadDecryptKey reads raw key material for the Phase 3 SEND-PATH decryptor (the sole decryptor,
+// Rule 6). It is a deliberately separate entry point from LoadEncryptKey so the two capabilities
+// read as distinct in the code even though dev reuses one key file: in prod the Decrypt key's IAM
+// grants Decrypt to the Brain role ONLY (sole-decryptor precondition G4). The returned bytes are
+// handed to internal/credential.NewDecryptor (validates the 32-byte AES-256 length); they are
+// wired ONLY into the dispatch path, never into the admin surface (OD-7, structural).
+func LoadDecryptKey(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read credential decrypt key %q: %w", path, err)
+	}
+	if len(b) == 0 {
+		return nil, fmt.Errorf("credential decrypt key %q is empty", path)
+	}
+	return b, nil
+}

@@ -22,10 +22,13 @@ type HealthServer struct {
 	guard *singleton.Guard
 }
 
-// NewHealthServer wires the health routes and, if adminHandler is non-nil, mounts it under
-// /v1/admin/. Passing nil keeps the surface health-only (Phase 0/1 behavior, or when the admin
-// key is unconfigured — fail-closed).
-func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard, adminHandler http.Handler) *HealthServer {
+// NewHealthServer wires the health routes and mounts, when provided:
+//   - adminHandler   under /v1/admin/*   (Domain B operator surface, Phase 2)
+//   - platformHandler for /v1/quote,/v1/run,/v1/report,/v1/describe (Domain A, Phase 3)
+//
+// Passing nil for either keeps that surface unmounted (fail-closed when its credential is
+// unconfigured). The two handlers own disjoint route sets and carry their own auth.
+func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard, adminHandler, platformHandler http.Handler) *HealthServer {
 	h := &HealthServer{db: database, guard: guard}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
@@ -33,6 +36,14 @@ func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard, admin
 	if adminHandler != nil {
 		// The admin server owns every /v1/admin/* route (method+path patterns, own auth).
 		mux.Handle("/v1/admin/", adminHandler)
+	}
+	if platformHandler != nil {
+		// The platform server owns exactly /v1/quote,/v1/run,/v1/report,/v1/describe (Domain A).
+		// Register each explicitly so the mux does not shadow /v1/admin/*.
+		mux.Handle("/v1/quote", platformHandler)
+		mux.Handle("/v1/run", platformHandler)
+		mux.Handle("/v1/report", platformHandler)
+		mux.Handle("/v1/describe", platformHandler)
 	}
 	h.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return h

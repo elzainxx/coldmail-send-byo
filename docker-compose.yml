@@ -53,6 +53,7 @@ services:
       BRAIN_SINGLETON_ACQUIRE_TIMEOUT_SEC: "60"
       BRAIN_HEALTH_ADDR: ":8080"
       BRAIN_BOXLINK_ADDR: ":8443"
+      BRAIN_BOXLINK_STREAM_ADDR: ":8444"                  # Phase 3 persistent send stream (mTLS)
       KMS_DEV_KEY_FILE: /secrets/kms/dev-master.key       # Brain is SOLE decryptor
       MTLS_SERVER_CERT: /secrets/mtls/brain.crt
       MTLS_SERVER_KEY:  /secrets/mtls/brain.key
@@ -65,6 +66,9 @@ services:
       # admin path Encrypts, never Decrypts). If ADMIN_API_KEY_HASHES is empty the surface is off.
       ADMIN_API_KEY_HASHES: ${ADMIN_API_KEY_HASHES:-}
       CREDENTIAL_KEY_ID: ${CREDENTIAL_KEY_ID:-cred-dek-v1}
+      # Platform API (Domain A, Phase 3). Service-token HASHES (bcrypt) — a DISTINCT credential
+      # from the operator admin key (Rule 6). If empty the platform surface stays off (fail-closed).
+      PLATFORM_TOKEN_HASHES: ${PLATFORM_TOKEN_HASHES:-}
     volumes:
       # LEAST-PRIVILEGE: Brain is the ONLY service that mounts the kms/ subtree (sole
       # decryptor). It also gets its own mTLS server leaf + the CA. Never box.key.
@@ -73,8 +77,9 @@ services:
       - ./secrets/dev/certs/brain.key:/secrets/mtls/brain.key:ro
       - ./secrets/dev/certs/ca.crt:/secrets/mtls/ca.crt:ro
     ports:
-      - "8080:8080"     # health/ready
-      - "8443:8443"     # boxlink mTLS
+      - "8080:8080"     # health/ready + platform API (Domain A) + admin API (Domain B)
+      - "8443:8443"     # boxlink mTLS (Phase-0 register/heartbeat)
+      - "8444:8444"     # boxlink send-stream mTLS (Phase 3 credential channel)
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/readyz || exit 1"]
       interval: 3s
@@ -88,10 +93,15 @@ services:
     environment:
       BRAIN_HOST: brain
       BRAIN_BOXLINK_PORT: "8443"
+      BRAIN_STREAM_PORT: "8444"
       BRAIN_SERVER_NAME: brain
-      BOX_ID: ${DEV_BOX_ID:-dev-box-1}
+      # sender.boxes.id is a UUID (Phase 1), so the box's STREAM identity is a UUID seeded into
+      # sender.boxes (token=authority, verified against token_hash; the mTLS cert CN stays
+      # "dev-box-1" — cert is transport). The Phase-0 HTTP registry still keys on DEV_BOX_ID.
+      BOX_ID: ${DEV_BOX_UUID:-11111111-1111-1111-1111-111111111111}
       BOX_TOKEN: ${DEV_BOX_TOKEN:?set DEV_BOX_TOKEN in .env (provision-box)}
       BOX_HEARTBEAT_INTERVAL_SEC: "10"
+      BOX_SMTP_TIMEOUT_MS: "30000"
       MTLS_CLIENT_CERT: /secrets/mtls/box.crt
       MTLS_CLIENT_KEY:  /secrets/mtls/box.key
       MTLS_CA_CERT:     /secrets/mtls/ca.crt

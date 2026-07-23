@@ -20,9 +20,12 @@ import (
 	"github.com/sender-module/brain/internal/adminapi"
 	"github.com/sender-module/brain/internal/boxlink"
 	"github.com/sender-module/brain/internal/config"
+	"github.com/sender-module/brain/internal/credential"
 	"github.com/sender-module/brain/internal/db"
+	"github.com/sender-module/brain/internal/dispatch"
 	"github.com/sender-module/brain/internal/httpapi"
 	"github.com/sender-module/brain/internal/kms"
+	"github.com/sender-module/brain/internal/platformapi"
 	"github.com/sender-module/brain/internal/singleton"
 )
 
@@ -94,9 +97,64 @@ func main() {
 		log.Printf("admin API NOT mounted (ADMIN_API_KEY_HASHES unset — operator surface disabled, fail-closed)")
 	}
 
+	// --- Phase 3: the minimal send path (dispatch + credential handoff + outcome handler) -------
+	// The credential DECRYPTOR is the sole decryptor (Rule 6). It is loaded via a DELIBERATELY
+	// separate KMS entry point and wired ONLY into the dispatcher — NEVER into the admin surface
+	// (OD-7, structural: the admin Encryptor has no Decrypt; this Decryptor is not injected there).
+	decKey, err := kms.LoadDecryptKey(cfg.KMSDevKeyFile)
+	if err != nil {
+		log.Fatalf("FATAL send-path decrypt key load: %v", err)
+	}
+	dec, err := credential.NewDecryptor(decKey, cfg.CredentialKeyID)
+	if err != nil {
+		log.Fatalf("FATAL credential decryptor init: %v", err)
+	}
+	// Zero the raw key bytes now that the Decryptor holds its own copy.
+	for i := range decKey {
+		decKey[i] = 0
+	}
+
+	sendCfg, err := dispatch.LoadConfig(ctx, database.Pool)
+	if err != nil {
+		log.Fatalf("FATAL send-path config load: %v", err)
+	}
+
+	// The persistent box↔Brain send stream (§2.1). The outcome handler is its ReportHandler.
+	outcome := dispatch.NewOutcomeHandler(database.Pool, sendCfg)
+	stream, err := boxlink.NewStreamServer(cfg.BoxlinkStreamAddr, cfg.TLS, database.Pool, outcome.Handle)
+	if err != nil {
+		log.Fatalf("FATAL boxlink stream init: %v", err)
+	}
+
+	// The dispatcher pushes over the stream; a Runner drives it off a KICK signal (event-driven,
+	// NOT a polling loop — Phase 4). A box coming online kicks it too (a queued job may be waiting).
+	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream, sendCfg)
+	runner := dispatch.NewRunner(dispatcher)
+	stream.SetOnRegister(func(string) { runner.Kick() })
+	go runner.Run(ctx)
+	go func() {
+		if err := stream.Serve(); err != nil {
+			log.Printf("boxlink stream server stopped: %v", err)
+		}
+	}()
+	log.Printf("boxlink send-stream mTLS server on %s (client cert required; credential channel)", cfg.BoxlinkStreamAddr)
+
+	// Platform API (Domain A, Phase 3). Service-token auth (distinct credential from the operator
+	// admin key). run kicks the dispatcher asynchronously; it never blocks on the send.
+	var platformHandler http.Handler
+	if cfg.PlatformEnabled {
+		pauth := platformapi.NewAuthenticator(cfg.PlatformTokenHashes)
+		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick)
+		platformHandler = psrv.Handler()
+		log.Printf("platform API mounted under /v1/{quote,run,report,describe} (service-token auth; %d token(s) configured)", len(cfg.PlatformTokenHashes))
+	} else {
+		log.Printf("platform API NOT mounted (PLATFORM_TOKEN_HASHES unset — Domain A surface disabled, fail-closed)")
+	}
+
 	// Health stub (plain HTTP; TLS termination is a deployment concern — §4.5). Reports true
-	// state. The admin surface (if enabled) is mounted on the same server under /v1/admin/*.
-	health := httpapi.NewHealthServer(cfg.HealthAddr, database, guard, adminHandler)
+	// state. The admin surface (/v1/admin/*) and platform surface (/v1/{quote,run,report,describe})
+	// mount on the same server when their credentials are configured.
+	health := httpapi.NewHealthServer(cfg.HealthAddr, database, guard, adminHandler, platformHandler)
 	go func() {
 		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("FATAL health server: %v", err)
@@ -104,8 +162,8 @@ func main() {
 	}()
 	log.Printf("health server on %s", cfg.HealthAddr)
 
-	// Box-link: mTLS server. A box registers (id+token, token verified against its hash
-	// AND the client cert) then heartbeats. No persistent job stream in Phase 0.
+	// Box-link: the Phase-0 mTLS HTTP register/heartbeat routes (still served, additive-only). The
+	// Phase-3 persistent send stream is the separate listener above.
 	link, err := boxlink.NewServer(cfg.BoxlinkAddr, cfg.TLS, cfg.BoxRegistry)
 	if err != nil {
 		log.Fatalf("FATAL boxlink init: %v", err)
@@ -125,5 +183,6 @@ func main() {
 	defer cancel()
 	_ = health.Shutdown(shutdownCtx)
 	_ = link.Shutdown(shutdownCtx)
+	_ = stream.Close()
 	log.Printf("shutdown complete")
 }
