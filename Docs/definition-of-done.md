@@ -133,7 +133,8 @@ classifier learned it in the same change.
 
 **Phase 3's DoD status (minimal send path):** DoD-1 (spec `Docs/phase-3-minimal-send-path.md`,
 §10 closed) ✅ · DoD-2 (real behavioral tests on real infra — a **real email is delivered to
-Mailpit**; full harness `scripts/dev.sh test` → **35 passed, 0 failed**. Three layers, no mocks:
+Mailpit**; full harness `scripts/dev.sh test` → **39 passed, 0 failed** (incl. the OD-25 tenancy
+suite added in the closeout). Three+ layers, no mocks:
 (a) **live-stack** SUITE 9 — box registers on the mTLS stream, T1 send→`sent`+`provider_message_id`+
 4 `job_events`+1 `send_log`+Mailpit received, T2 `run` 202 async + `report` reflects (no
 smtp/reason/credential leak), T4 duplicate `run` clean no-op + no second send, T6 wrong-token
@@ -143,7 +144,11 @@ route exposes plaintext; (b) **box units** — S1 failed-AUTH scrub, S3 zeroing 
 incl. thrown exception, S5 abort-before-AUTH on no-STARTTLS, against a real local sink; (c) **Go
 dispatch/credential** on real Postgres clones — claim/decrypt/push, accepted-persist+idempotent,
 never-invent-sent (T3 invariant), error requeue (T5), bounced terminal, decryptor
-round-trip/tamper/transplant/key-id. Anti-vacuity controls throughout) ✅ · DoD-3 (api-contract
+round-trip/tamper/transplant/key-id; **OD-25 tenancy** (`internal/platformapi`) — cross-tenant
+`report`/`run` → 404 not-found by both `job_id` and `job_item_id` (identical to a nonexistent id,
+no existence disclosure), missing/malformed `user_id` → clean 400, unauth → 401, with owning-tenant
+positive controls; plus a LIVE cross-tenant T7 against the running Brain. Anti-vacuity controls
+throughout) ✅ · DoD-3 (api-contract
 gains the 4 Domain-A routes + `contract_drift` probes them; architecture-overview Phase 3 section;
 open-decisions Phase 3 log; no ADR needed — no locked-fact conflict arose; drift gates green) ✅ ·
 DoD-4/5 (**no new config key** — Phase 3 CONSUMES `job_max_processing_time_sec` + `debug_log_

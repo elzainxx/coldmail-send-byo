@@ -145,3 +145,16 @@ ADMGET="$(curl -s "http://localhost:8080/v1/admin/accounts/$ACCT" -H "Authorizat
 ADMLIST="$(curl -s "http://localhost:8080/v1/admin/accounts" -H "Authorization: Bearer $ADMKEY")"
 if grep -qF "$CANARY" <<<"$ADMGET$ADMLIST"; then bad "OD-7: an admin account response exposed the plaintext credential"; else ok "OD-7: no /v1/admin/* account route exposes plaintext (has_credential only)"; fi
 echo "$ADMGET" | grep -q '"has_credential":true' && ok "OD-7: admin read exposes has_credential=true (positive control)" || bad "OD-7: admin read missing has_credential"
+
+# --- T7 (OD-25) LIVE cross-tenant isolation: a DIFFERENT tenant cannot read $JOB (owned by the ---
+# system user) via report — a real cross-tenant attempt against the live Brain. It must 404, and
+# the SAME 404 as a genuinely-nonexistent job (no existence disclosure). Positive control: the
+# owning tenant DOES read it (proven by the T2 report above). $JOB reached 'sent' in T1.
+OTHER_TENANT="99999999-9999-9999-9999-999999999999"
+XCODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/v1/report?job_id=$JOB&user_id=$OTHER_TENANT" -H "Authorization: Bearer $PLTOK" || true)"
+[[ "$XCODE" == "404" ]] && ok "T7: cross-tenant report of another tenant's job → 404 (isolation enforced)" || bad "T7: cross-tenant report returned $XCODE, want 404"
+GHOST_CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/v1/report?job_id=11111111-2222-3333-4444-555555555555&user_id=$OTHER_TENANT" -H "Authorization: Bearer $PLTOK" || true)"
+[[ "$XCODE" == "$GHOST_CODE" ]] && ok "T7: cross-tenant 404 is identical to a nonexistent-job 404 (no existence disclosure)" || bad "T7: cross-tenant ($XCODE) differs from nonexistent ($GHOST_CODE) — existence leak"
+# A missing tenant selector is a clean 400 (not a 404/500): the two-vocabulary envelope on the reject path.
+NOSEL_CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/v1/report?job_id=$JOB" -H "Authorization: Bearer $PLTOK" || true)"
+[[ "$NOSEL_CODE" == "400" ]] && ok "T7: report without user_id → clean 400 validation_failed" || bad "T7: report without user_id returned $NOSEL_CODE, want 400"
