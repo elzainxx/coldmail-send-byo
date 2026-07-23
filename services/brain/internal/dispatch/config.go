@@ -19,14 +19,15 @@ import (
 )
 
 // Config holds the seeded sender.config values the dispatcher CONSUMES (config-not-code, §0).
-// Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval and the per-user
-// concurrency ceiling — both ALREADY seeded in Phase 1's sender_0010 (Phase 4 adds NO new key, §0).
-// Every value is read at runtime from sender.config, never hardcoded.
+// Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval, the per-user
+// concurrency ceiling, and the daily-reset timezone — ALL ALREADY seeded in Phase 1's sender_0010
+// (Phase 4 adds NO new key, §0). Every value is read at runtime from sender.config, never hardcoded.
 type Config struct {
-	JobMaxProcessingTimeSec   int // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
-	DebugLogRetentionDays     int // debug_log_retention_days — send_logs.ttl_expires_at (§7)
-	DispatchTickIntervalMS    int // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
-	ConcurrencyPerUserDefault int // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
+	JobMaxProcessingTimeSec   int    // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
+	DebugLogRetentionDays     int    // debug_log_retention_days — send_logs.ttl_expires_at (§7)
+	DispatchTickIntervalMS    int    // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
+	ConcurrencyPerUserDefault int    // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
+	DailyResetTimezone       string // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
 }
 
 // LoadConfig reads the dispatcher-consumed config keys from sender.config. Values are JSONB-wrapped
@@ -48,6 +49,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.ConcurrencyPerUserDefault, err = readIntKey(ctx, db, "concurrency_per_user_default"); err != nil {
 		return c, err
 	}
+	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {
+		return c, err
+	}
 	return c, nil
 }
 
@@ -64,6 +68,23 @@ func readIntKey(ctx context.Context, db *pgxpool.Pool, key string) (int, error) 
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
 		return 0, fmt.Errorf("config %q is not an integer {\"v\":N}", key)
+	}
+	return *wrap.V, nil
+}
+
+// readStringKey reads one string config key ({"v": "..."}).
+func readStringKey(ctx context.Context, db *pgxpool.Pool, key string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return "", fmt.Errorf("read config %q: %w", key, err)
+	}
+	var wrap struct {
+		V *string `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return "", fmt.Errorf("config %q is not a string {\"v\":\"...\"}", key)
 	}
 	return *wrap.V, nil
 }

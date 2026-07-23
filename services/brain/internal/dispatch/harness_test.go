@@ -86,15 +86,23 @@ func (p *recordingPusher) pushCount() int {
 
 // dispatchEnv bundles a real Dispatcher + OutcomeHandler over a real clone.
 type dispatchEnv struct {
-	pool  *pgxpool.Pool
-	admin *pgx.Conn
-	dec   *credential.Decryptor
-	enc   *adminapi.Encryptor
-	key   []byte
-	px    *recordingPusher
-	d     *Dispatcher
-	oh    *OutcomeHandler
-	cfg   Config
+	pool      *pgxpool.Pool
+	moduleDSN string // for tests that need their OWN pgxpool.Pool (genuine multi-connection concurrency)
+	admin     *pgx.Conn
+	dec       *credential.Decryptor
+	enc       *adminapi.Encryptor
+	key       []byte
+	px        *recordingPusher
+	d         *Dispatcher
+	oh        *OutcomeHandler
+	cfg       Config
+}
+
+// poolDSN returns the env's module DSN so a test can open additional, independent connections
+// (genuine concurrency — CLAUDE.md Rule 3 forbids simulating this with one shared pool).
+func poolDSN(t *testing.T, e *dispatchEnv) string {
+	t.Helper()
+	return e.moduleDSN
 }
 
 func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
@@ -132,7 +140,7 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	d := NewDispatcher(pool, dec, px, cfg)
 	oh := NewOutcomeHandler(pool, cfg)
 
-	return &dispatchEnv{pool: pool, admin: admin, dec: dec, enc: enc, key: key, px: px, d: d, oh: oh, cfg: cfg}
+	return &dispatchEnv{pool: pool, moduleDSN: moduleDSN, admin: admin, dec: dec, enc: enc, key: key, px: px, d: d, oh: oh, cfg: cfg}
 }
 
 // --- fixtures (real committed rows) ---
@@ -156,7 +164,10 @@ func (e *dispatchEnv) seedPool(t *testing.T) string {
 
 // seedAccount seeds an eligible account in poolID with a real encrypted credential (secret). It
 // uses the harness Encryptor so the Decryptor round-trips (AAD = account.id ‖ key_id). Because
-// account.id must exist before Encrypt (AAD binding), we generate the UUID app-side.
+// account.id must exist before Encrypt (AAD binding), we generate the UUID app-side. smtp_username
+// is derived from the account's own id (never a fixed literal): sender_0013's
+// accounts_pool_host_user_unique UNIQUE(pool_id, smtp_host, smtp_username) would otherwise reject
+// a second account in the same pool.
 func (e *dispatchEnv) seedAccount(t *testing.T, poolID, secret string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -165,12 +176,13 @@ func (e *dispatchEnv) seedAccount(t *testing.T, poolID, secret string) string {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
+	username := "u-" + id + "@ourdomain.com"
 	_, err = e.admin.Exec(ctx,
 		`INSERT INTO sender.accounts
 		   (id, user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
-		 VALUES ($1,'00000000-0000-0000-0000-000000000000',$2,'smtp-sink',587,'u@ourdomain.com',$3,$4,$5,'u@ourdomain.com','Tester')`,
-		id, poolID, ct, testKeyID, nonce)
+		 VALUES ($1,'00000000-0000-0000-0000-000000000000',$2,'smtp-sink',587,$6,$3,$4,$5,'u@ourdomain.com','Tester')`,
+		id, poolID, ct, testKeyID, nonce, username)
 	if err != nil {
 		t.Fatalf("seed account: %v", err)
 	}

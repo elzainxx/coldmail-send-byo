@@ -174,3 +174,31 @@ build plan); this section is updated as each chunk lands.
   (`sender_0021`), not Phase 1 or Phase 4. The polling loop does not yet gate on it — there is no
   key to read (config-not-code forbids inventing one early). This is recorded honestly rather
   than stubbed; the gate is wired when Phase 9.5 seeds the key.
+- **Chunk 2 — account eligibility + the atomic consume, THE double-booking core**
+  (`internal/dispatch/eligibility.go`): the trivial single-account `selectAccount` is replaced by
+  `accountConsume` — the locked Phase 1 draft-05 UPDATE (`FOR UPDATE SKIP LOCKED` +
+  `accounts_daily_sent_check` as the un-bypassable last resort) reused verbatim, generalized with a
+  bound `pool_id` and a strategy `ORDER BY` (Chunk 3 wires per-strategy ordering; today it is the
+  locked default `account_status_score DESC, RANDOM()`). The increment now happens **inside the
+  same atomic consume, before any send is attempted** — moved from Phase 3's accept-time increment
+  in `outcome.go` (which is now a doc-comment-only change: `applyAccepted` no longer touches
+  `daily_sent_count`) — because that is the only ordering under which two concurrent workers can
+  never both pass an eligibility check for an account's last unit of headroom. The accepted
+  tradeoff (spec §7.3): a consumed-but-undelivered slot still costs headroom; refunding it is
+  Phase 6 (P4-15). The lazy daily-reset self-heal (§2.1: a stale `daily_reset_day` is treated as 0
+  and reset in the same UPDATE; a `pause_reason='daily_limit'` pause self-clears, `manual` never
+  does) is implemented; the Phase-5 expired-throttle OR-term is DEFERRED — it depends on
+  `sender.accounts.throttle_paused_at` + `throttle_pause_seconds`, neither of which exists until
+  Phase 5's own migrations (`sender_0016`/`sender_0017`) ship. `selectAccountForJob` resolves a
+  job's candidate pools (Chunk 1-3 stand-in: the tenant's own pools + any shared pool; Chunk 4
+  replaces this with the real dedicated-first/shared-fallback chain, §4.2, without changing the
+  "resolve chain, try each pool via `accountConsume`" shape) and tries each pool via the atomic
+  consume, first hit wins. `poolHasEligible` is the read-only `EXISTS` form of the identical
+  predicate (§4.1), for the Chunk 5 pre-claim gate.
+  Proven by real-concurrency behavioral tests (`eligibility_test.go`): 8 genuine Postgres
+  connections racing ONE account with `daily_limit=50` under 4x over-subscription (200 attempts)
+  land at **exactly** 50 successful consumes and `daily_sent_count=50`, never more; the lazy
+  self-heal admits a stale-day `daily_limit`-paused account and never a stale-day `manual`-paused
+  one; ineligible accounts (paused/quarantined/disabled/at-limit) are never selected even with a
+  healthy sibling present (anti-vacuity); an exhausted pool returns "not found" identically from
+  both `accountConsume` and `poolHasEligible`.

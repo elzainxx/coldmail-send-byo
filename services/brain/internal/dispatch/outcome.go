@@ -57,10 +57,17 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
 }
 
 // applyAccepted: one tx — set provider_message_id + state='sent' + completed_at + clear lease,
-// increment the account's daily_sent_count, write the send_logs row, and (trigger) the event.
-// provider_message_id is written at the SAME commit that marks sent, so there is no window where
-// a job is 'sent' with a null id (§5.3). A report claiming accepted with NO id is impossible per
-// §4.3 (the box would send error/accepted_without_id); guard anyway.
+// write the send_logs row, and (trigger) the event. provider_message_id is written at the SAME
+// commit that marks sent, so there is no window where a job is 'sent' with a null id (§5.3). A
+// report claiming accepted with NO id is impossible per §4.3 (the box would send
+// error/accepted_without_id); guard anyway.
+//
+// daily_sent_count is NOT incremented here (Phase 4 change, §7.1/§7.3): the atomic account-consume
+// (eligibility.go) increments it BEFORE the send is attempted, in the same statement that admits
+// the row — that is the only ordering that prevents two concurrent workers from both passing an
+// eligibility check for an account's last unit of headroom. Incrementing again on accept would
+// double-count. The accepted tradeoff (§7.3): a consumed-but-never-delivered slot (send fails/
+// crashes after consume) still costs headroom; refunding it is deferred to Phase 6 (P4-15).
 func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report) {
 	if rep.ProviderMessageID == "" {
 		// Defensive: never mark sent without an idempotency key. Treat as an error requeue.
@@ -85,11 +92,12 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			// Raced to sent/requeued by another path; treat as already handled (no double send).
 			return errNoop
 		}
-		// Increment the sending account's daily counter (respects accounts_daily_sent_check).
+		// daily_sent_count is NOT touched here (see the doc comment above) — the atomic consume
+		// already incremented it. last_success_at is a health-tracking timestamp, not part of the
+		// double-booking invariant, so it is still updated on accept.
 		if _, err := tx.Exec(ctx,
 			`UPDATE sender.accounts a
-			   SET daily_sent_count = daily_sent_count + 1,
-			       last_success_at = NOW(),
+			   SET last_success_at = NOW(),
 			       updated_at = NOW()
 			 FROM sender.jobs j
 			 WHERE j.id = $1 AND a.id = j.assigned_account_id`, rep.JobID); err != nil {

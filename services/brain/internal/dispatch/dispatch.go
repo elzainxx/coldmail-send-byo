@@ -123,9 +123,14 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 // pushed nothing is (false, nil). This is the per-job handoff shared by TryDispatch (Phase 3) and
 // the tick loop (Phase 4, §1.3 RESOLVE_AND_PUSH).
 func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string) (bool, error) {
-	// 2) Select the eligible account (trivial pick, §5.1 / Chunk 1). On none, requeue the claim so
-	// the job returns to queued in a legal state (lease cleared).
-	acct, ok, err := d.selectAccount(ctx, job.id)
+	// 2) Resolve the job's pool chain (Chunk 4 wires dedicated-first/shared-fallback; Chunks 1-3
+	// use the trivial single-pool chain below) and atomically CONSUME an eligible account from the
+	// first pool that has one (§3/§7, THE double-booking core — accountConsume increments
+	// daily_sent_count in the SAME statement that admits the row, before any send is attempted).
+	// On exhaustion of the whole chain, requeue the claim so the job returns to queued in a legal
+	// state (lease cleared) — the rare-race backstop (§7.2); it is not expected in steady state
+	// once the Chunk 5 pre-claim gate lands.
+	acct, ok, err := d.selectAccountForJob(ctx, job)
 	if err != nil || !ok {
 		d.requeueNoAccount(ctx, job.id)
 		if err != nil {
@@ -259,41 +264,6 @@ func (d *Dispatcher) claimOne(ctx context.Context, boxID string) (claimedJob, bo
 		return claimedJob{}, false, err
 	}
 	return j, true, nil
-}
-
-// selectAccount picks the ONE eligible account in the job's target pool (§5.1 trivial rule): not
-// paused/quarantined/disabled and under daily_limit. If more than one qualifies, take the first
-// deterministically. The job's target pool is the pool of... in Phase 3 the job carries no pool
-// column, so we select across the pool that owns an eligible account for the job's user OR a
-// shared pool. To keep Phase 3 truly minimal (one pool, one account per §5.1 fixtures), we select
-// the single eligible account visible to this job's tenant.
-func (d *Dispatcher) selectAccount(ctx context.Context, jobID string) (selectedAccount, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	// Phase 3 minimal selection: the job's user_id scopes candidate accounts; an account is
-	// eligible if not paused/quarantined/disabled and under its daily_limit. Deterministic order.
-	const q = `
-SELECT a.id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.from_name,
-       a.credential_ciphertext, a.credential_nonce, a.credential_key_id
-FROM sender.accounts a
-JOIN sender.jobs j ON j.id = $1
-JOIN sender.pools p ON p.id = a.pool_id
-WHERE (a.user_id = j.user_id OR p.kind = 'shared')
-  AND a.paused = FALSE AND a.quarantined = FALSE AND a.disabled = FALSE
-  AND a.daily_sent_count < a.daily_limit
-ORDER BY a.created_at ASC, a.id ASC
-LIMIT 1`
-	var a selectedAccount
-	err := d.db.QueryRow(ctx, q, jobID).Scan(
-		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
-		&a.ciphertext, &a.nonce, &a.keyID)
-	if err == pgx.ErrNoRows {
-		return selectedAccount{}, false, nil
-	}
-	if err != nil {
-		return selectedAccount{}, false, err
-	}
-	return a, true, nil
 }
 
 // markSending moves assigned → sending and records the account + the box, in a tx with the actor
