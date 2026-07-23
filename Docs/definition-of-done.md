@@ -111,8 +111,11 @@ surface; no stale docs) ✅ · DoD-4 (no NEW config keys — Phase 2 adds the *m
 validation for keys Phase 1 seeded; `default_value` untouched) ✅ · DoD-5 (no tuning constant
 literal added — `daily_limit_default` etc. resolved from `sender.config` at runtime; the tz
 validation source is a data dependency, not a dial) ✅ · DoD-6 (open-decisions: Phase 2 §10 log
-closed; carried rulings implemented as locked; the one surfaced conflict **OD-23** ruled via
-ADR-0009; needs-user empty) ✅ · DoD-7 (chain extended additively `sender_0013..0014`, each
+closed; carried rulings implemented as locked; **OD-23** ruled via ADR-0009; **OD-24** — the
+`daily_limit` ceiling cross-references a config key that was never seeded — **flagged and
+deferred, awaiting a user ruling on the key**, per CLAUDE.md Rule 2, blocking only the upper-bound
+`daily_limit` slice, not the rest of the phase (no contradiction silently resolved: we neither
+invented a key nor dropped the bound)) ✅ · DoD-7 (chain extended additively `sender_0013..0014`, each
 self-records with paired DOWN; no Phase 1 column changed; no enum value added (reused `admin`);
 **new table ⇒ explicit grants** — `account_events` classified append-only in the grants
 invariant, which still passes) ✅ · DoD-8 (credential intake Encrypt-ONLY — admin holds no

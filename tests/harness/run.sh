@@ -82,8 +82,16 @@ hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation + P
 # the tests, strip the cleanup noise, and decide pass/fail from whether Go printed a FAIL line.
 go_suite() { # $1=dir  $2=label
   local out
-  out="$(cd "$1" && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process")"
-  echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -24
+  # The trailing `|| true` is load-bearing under `set -euo pipefail`: on Windows `go test` can
+  # exit non-zero purely from the post-test temp-.exe cleanup ("unlinkat ... being used by
+  # another process") even when EVERY test PASSES, and with pipefail that non-zero would
+  # propagate through the command substitution and `set -e` would kill this script mid-run
+  # (observed: the larger brain binary triggers the cleanup artifact intermittently). We
+  # deliberately judge pass/fail from the Go verdict LINE below, never the exit code — so
+  # swallowing the substitution's exit status here is correct, not a masked failure. On Linux
+  # CI the artifact does not occur, so `|| true` is a no-op there.
+  out="$( { cd "$1" && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process"; } || true )"
+  echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -40
   if echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
 }
 go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"

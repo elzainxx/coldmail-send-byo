@@ -35,14 +35,13 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, derr)
 		return
 	}
-	// Reject fields that are not patchable through this endpoint (clean 422, not silent ignore).
-	for _, f := range []string{"paused", "quarantined", "disabled", "pause_reason", "account_status_score", "user_id", "id"} {
-		if hasField(present, f) {
-			s.fail(w, r, newErr(codeUnprocessable, "field_not_patchable:"+f).
-				withDetails(fieldDetail{Field: f, Issue: issueForbiddenValue}))
-			return
-		}
-	}
+	// Fields that are NOT patchable through this endpoint — paused / quarantined / disabled /
+	// pause_reason (move only through the audited §7 lifecycle), account_status_score (Phase 5),
+	// user_id / id (tenancy derived from the pool, not directly settable) — are deliberately
+	// ABSENT from accountUpdateReq. decodeStrict's DisallowUnknownFields therefore rejects any of
+	// them with a clean 400 validation_failed BEFORE this point (no silent ignore, no partial
+	// write). That is the structural guard; there is intentionally no per-field 422 branch here,
+	// since the field can never decode into the request struct in the first place.
 
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
@@ -67,8 +66,14 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			details = append(details, collect(validateSMTPHost(*req.SMTPHost))...)
 		}
 	}
-	if hasField(present, "smtp_port") && req.SMTPPort != nil {
-		details = append(details, collect(validateSMTPPort(*req.SMTPPort))...)
+	if hasField(present, "smtp_port") {
+		if req.SMTPPort == nil {
+			// present-but-null (or non-integer) — reject like every sibling field, never skip
+			// (a skip would let the SET-list builder below dereference a nil pointer).
+			details = append(details, fieldDetail{Field: "smtp_port", Issue: issueMalformed})
+		} else {
+			details = append(details, collect(validateSMTPPort(*req.SMTPPort))...)
+		}
 	}
 	if hasField(present, "smtp_username") {
 		if req.SMTPUsername == nil {
@@ -182,7 +187,7 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	if hasField(present, "smtp_host") {
 		set("smtp_host = ?", *req.SMTPHost)
 	}
-	if hasField(present, "smtp_port") {
+	if hasField(present, "smtp_port") && req.SMTPPort != nil {
 		set("smtp_port = ?", *req.SMTPPort)
 	}
 	if hasField(present, "smtp_username") {

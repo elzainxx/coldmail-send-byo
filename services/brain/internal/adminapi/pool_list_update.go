@@ -108,6 +108,12 @@ type poolUpdateReq struct {
 	RoutingStrategy *string `json:"routing_strategy"`
 	FallbackPoolID  *string `json:"fallback_pool_id"`
 	Enabled         *bool   `json:"enabled"`
+	// kind and owner_user_id are IMMUTABLE post-create (OD-12). They are DECLARED here (rather
+	// than left as unknown fields) precisely so decodeStrict does NOT blanket-400 them: the
+	// handler detects their presence and returns the specific 422 forbidden_value below, which
+	// is the informative rejection the spec wants. Values are ignored (never written).
+	Kind        *string `json:"kind"`
+	OwnerUserID *string `json:"owner_user_id"`
 }
 
 // handlePoolUpdate: PATCH /v1/admin/pools/{id} (§5.4). Patchable: name, routing_strategy,

@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -63,16 +64,32 @@ func bearerToken(r *http.Request) string {
 
 // requireAuth wraps a handler with the operator-key gate. On failure it writes a clean
 // 401 unauthenticated envelope (no internal reason) and logs the rejection against the
-// request_id. The admin key is NEVER logged.
+// request_id. The admin key is NEVER logged. It also installs a panic recover (defense in
+// depth): a bug that panics inside a handler must still degrade to a clean 500 envelope with a
+// request_id (two-vocabulary rule, CLAUDE.md Rule 5) — NEVER a bare connection reset with no
+// response. The recover runs before any handler body, so the rid it uses is the same one the
+// handler chain sees.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid := newRequestID()
+		r = r.WithContext(withRequestID(r.Context(), rid))
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				// The panic value/stack is internal detail: logged against the rid, never
+				// serialized. If the handler already wrote a status this WriteHeader is a no-op
+				// (net/http guards it), but a mid-handler panic before any write still yields a
+				// clean envelope.
+				s.logError(rid, r, newErr(codeInternalError, fmt.Sprintf("panic_recovered: %v", rec)))
+				writeError(w, rid, newErr(codeInternalError, "panic_recovered"))
+			}
+		}()
+
 		if !s.auth.authenticate(bearerToken(r)) {
 			s.logReject(rid, r, "admin_key_invalid_or_missing")
 			writeError(w, rid, newErr(codeUnauthenticated, "admin_key_invalid_or_missing"))
 			return
 		}
-		// Stash the request id for the handler chain (so one request = one id in logs + envelope).
-		next(w, r.WithContext(withRequestID(r.Context(), rid)))
+		next(w, r)
 	}
 }
