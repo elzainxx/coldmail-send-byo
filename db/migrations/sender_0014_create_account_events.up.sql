@@ -50,9 +50,38 @@ CREATE INDEX account_events_user_id_created_at_idx
     ON sender.account_events (user_id, created_at);
 
 -- Append-only: BEFORE UPDATE reject-trigger (defense in depth alongside the REVOKE below).
+--
+-- FLAGGED SPEC RESOLUTION (OD-23, ADR-0009): §12's DDL specifies BOTH a BEFORE UPDATE trigger
+-- that rejects *all* updates AND an account_id FK that is `ON DELETE SET NULL` (so §7.4's "the
+-- deleted audit row survives" holds). Those two are in direct conflict: the FK SET NULL performs
+-- an internal `UPDATE account_events SET account_id = NULL`, which an unconditional reject-trigger
+-- blocks — making the account delete that §7.4 mandates impossible. This is exactly the Phase 1
+-- #23 lesson the spec cites, but for the SET NULL (an UPDATE) rather than a cascade DELETE. The
+-- only self-consistent reading of §7.4 + #23 is a trigger that permits ONLY the FK-maintenance
+-- transition (account_id non-null -> NULL with every other column unchanged) and rejects every
+-- genuine content mutation. This preserves the defense-in-depth backstop AND lets the audit
+-- survive the account delete. Content immutability (you cannot alter WHAT happened) is fully
+-- kept: action/reason/flags/timestamps can never change. (Flagged, not silently fixed — see
+-- Docs/open-decisions.md OD-23 and Docs/decisions/0009-*.md.)
 CREATE OR REPLACE FUNCTION sender.fn_account_events_reject_update()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- Permit ONLY the FK `ON DELETE SET NULL` maintenance update: account_id goes non-null -> NULL
+    -- and NOTHING else changes. Everything else is a forbidden content mutation.
+    IF OLD.account_id IS NOT NULL AND NEW.account_id IS NULL
+       AND NEW.id         =            OLD.id
+       AND NEW.user_id    =            OLD.user_id
+       AND NEW.actor      =            OLD.actor
+       AND NEW.action     =            OLD.action
+       AND NEW.from_flags IS NOT DISTINCT FROM OLD.from_flags
+       AND NEW.to_flags   IS NOT DISTINCT FROM OLD.to_flags
+       AND NEW.reason     IS NOT DISTINCT FROM OLD.reason
+       AND NEW.request_id IS NOT DISTINCT FROM OLD.request_id
+       AND NEW.created_at =            OLD.created_at
+    THEN
+        RETURN NEW; -- FK ON DELETE SET NULL cleanup (audit survives the account delete, §7.4)
+    END IF;
+
     RAISE EXCEPTION 'sender.account_events is append-only: UPDATE forbidden'
         USING HINT = 'Account audit events are immutable records',
               ERRCODE = 'integrity_constraint_violation';
