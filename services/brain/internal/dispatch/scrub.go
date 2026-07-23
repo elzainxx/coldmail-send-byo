@@ -13,12 +13,14 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-// scrubSmtpResponse is the outcome handler's defense-in-depth guard (§5.5): the credential should
-// never appear in an SMTP response (the box already redacts, §4.4), but a pathological server
-// could echo it. Phase 3 has no per-request secret here (the Brain zeroed its copy at push), so
-// this is a placeholder that returns the response unchanged — the real scrub happens on the box,
-// and the no-secret-leak gate + S1 assert the whole chain is clean. Kept as a named choke point
-// so a future need to redact has one place to do it.
+// scrubSmtpResponse is the outcome handler's defense-in-depth choke point (§5.5). The REAL scrub
+// happens on the box (services/box/src/smtp.js scrubSecret), which now redacts both the plaintext
+// AND the base64/base64url forms of the credential before the response ever leaves the box — so a
+// pathological server that echoes the AUTH argument cannot land a decodable secret here. The Brain
+// zeroed its own plaintext copy at push (§3.3) and has no per-request secret at outcome time, so
+// it cannot re-derive the value to match; this returns the (already box-scrubbed) response
+// unchanged. Kept as a named choke point + guarded by the no-secret-leak gate and S1 (which
+// exercises a base64-echoing sink), so the whole chain is asserted clean.
 func scrubSmtpResponse(resp string) string {
 	return resp
 }

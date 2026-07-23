@@ -196,6 +196,11 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	err = d.px.PushJob(pj, boxID)
 	// Zero the Brain's plaintext copy immediately after writing it to the stream (§3.3), and scrub
 	// it from the local push_job struct so no plaintext lingers in memory beyond the send.
+	// RESIDUAL (accepted, defense-in-depth only): string(plaintext) assigned to pj.SMTP.Secret and
+	// the JSON-encoded frame in writeFrame are immutable copies that only GC can reclaim — Go
+	// cannot zero a string in place. The spec's actual requirements (never logged/persisted/
+	// serialized-to-a-client) are met; eliminating this residual would require byte-slice framing
+	// end-to-end, out of scope for Phase 3's JSON wire.
 	zero(plaintext)
 	pj.SMTP.Secret = ""
 	if err != nil {
