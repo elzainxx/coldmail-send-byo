@@ -202,3 +202,24 @@ build plan); this section is updated as each chunk lands.
   one; ineligible accounts (paused/quarantined/disabled/at-limit) are never selected even with a
   healthy sibling present (anti-vacuity); an exhausted pool returns "not found" identically from
   both `accountConsume` and `poolHasEligible`.
+- **Chunk 3 — routing strategies** (`accountOrderByForStrategy` in `eligibility.go`): each pool's
+  own `routing_strategy` column (`random | round_robin | one_by_one`, unchanged Phase 1 enum) now
+  drives the atomic consume's `ORDER BY` — `consumeFromPool` reads the pool's strategy, resolves
+  the matching fragment, and (for `round_robin`) reads/advances a per-pool in-memory cursor
+  (`Dispatcher.rrCursor`, mutex-guarded) exactly as §3.1 specifies: `(id > cursor) DESC, id ASC`,
+  wrapping to the smallest id when the cursor is unset (a `NULL` bind, restart-safe, §5.3 accepted
+  skew). `random` is a pure `RANDOM()` draw. All three strategies share the identical eligibility
+  `WHERE` (Chunk 2, unchanged) — only the ordering differs, so a strategy can never select an
+  ineligible account.
+  **P4-OD-1 (RULED):** the spec's literal `one_by_one` SQL (`score DESC, RANDOM()`) does not
+  produce its own documented "exhaust one, then move on" behavior — `RANDOM()` re-evaluates on
+  every query call, so tied scores (the actual pre-Phase-5 condition) reshuffle every time,
+  behaving like `random` instead. Verified empirically against real Postgres. Ruled: replace the
+  tiebreak with deterministic `a.id ASC` (`defaultAccountOrderBy`), which genuinely exhausts the
+  lowest-id tied account before the next takes over, and is inert (no behavior change) once Phase
+  5 gives accounts distinct scores. Recorded as `P4-OD-1` in `open-decisions.md`.
+  Proven by `routing_test.go`: `round_robin` cycles 4 accounts to exactly 10 uses each with no
+  immediate repeats and a per-pool-independent cursor; `one_by_one` fully exhausts one account
+  (whichever the deterministic tiebreak picks) before the other's first use; `random` spreads
+  across 5 accounts over 500 draws within a wide, non-vacuous band; a live strategy flip on the
+  pool row takes effect on the very next consume (no caching).

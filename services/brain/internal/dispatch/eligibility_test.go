@@ -87,7 +87,7 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 			defer p.Close()
 			d := NewDispatcher(p, e.dec, e.px, e.cfg)
 			for i := 0; i < attemptsPerWorker; i++ {
-				_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+				_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 				if err != nil {
 					t.Errorf("worker %d attempt %d: %v", worker, i, err)
 					return
@@ -119,14 +119,26 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 }
 
 // TestAccountConsume_SkipsIneligibleAccounts (T6-style) — paused/quarantined/disabled/at-limit
-// accounts are NEVER selected; only the healthy account is. Anti-vacuity: a second healthy
-// account is also present, proving "clean result" isn't just "there was only one candidate."
+// accounts are NEVER selected. Anti-vacuity: TWO healthy accounts are present (the lower-id one
+// given a small daily_limit so it exhausts within the run) so a "clean result" can't be explained
+// by there being only one possible target — defaultAccountOrderBy's deterministic id-ASC tiebreak
+// (P4-OD-1) means the lower-id healthy account is exhausted FIRST, then the second takes over;
+// both healthy accounts get real selections and no ineligible one ever does.
 func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 	e := newDispatchEnv(t, "skip")
 	pool := e.seedPool(t)
 
 	healthy := e.seedAccount(t, pool, "ok")
 	healthy2 := e.seedAccount(t, pool, "ok2")
+	// account ids are random UUIDs, so determine which sorts FIRST (the deterministic id-ASC
+	// tiebreak, P4-OD-1, always picks it first) and give THAT one the small limit so it exhausts
+	// within the run and the second one takes over — never assume creation order == id order.
+	first, second := healthy, healthy2
+	if healthy2 < healthy {
+		first, second = healthy2, healthy
+	}
+	e.setAccountDailyState(t, first, 25, 0, todayUTC(), false, nil) // exhausts within 40 draws
+	e.setAccountDailyState(t, second, 1000, 0, todayUTC(), false, nil)
 	pausedManual := e.seedAccount(t, pool, "pm")
 	e.setAccountDailyState(t, pausedManual, 100, 0, todayUTC(), true, strPtr("manual"))
 	quarantined := e.seedAccount(t, pool, "q")
@@ -138,7 +150,7 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 
 	seen := map[string]int{}
 	for i := 0; i < 40; i++ {
-		acct, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+		acct, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 		if err != nil {
 			t.Fatalf("accountConsume: %v", err)
 		}
@@ -174,7 +186,7 @@ func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 	staleManual := e.seedAccount(t, pool, "stalemanual")
 	e.setAccountDailyState(t, staleManual, 50, 10, yesterdayUTC(), true, strPtr("manual"))
 
-	acct, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+	acct, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 	if err != nil {
 		t.Fatalf("accountConsume: %v", err)
 	}
@@ -207,7 +219,7 @@ func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 	// Negative control: the manual-paused stale account must NEVER be admitted by this consume —
 	// drain any remaining eligibility and confirm it was never selected.
 	for i := 0; i < 5; i++ {
-		a, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+		a, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 		if err != nil {
 			t.Fatalf("accountConsume: %v", err)
 		}
@@ -229,7 +241,7 @@ func TestAccountConsume_ExhaustedPoolReturnsNotFound(t *testing.T) {
 	acct := e.seedAccount(t, pool, "sec")
 	e.setAccountDailyState(t, acct, 10, 10, todayUTC(), true, strPtr("daily_limit"))
 
-	_, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+	_, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 	if err != nil {
 		t.Fatalf("accountConsume: %v", err)
 	}
@@ -253,7 +265,7 @@ func TestAccountConsume_ExhaustedPoolReturnsNotFound(t *testing.T) {
 	if !has2 {
 		t.Fatal("poolHasEligible=false after adding a healthy account — predicate over-rejects")
 	}
-	_, ok2, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, "UTC")
+	_, ok2, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 	if err != nil {
 		t.Fatalf("accountConsume: %v", err)
 	}

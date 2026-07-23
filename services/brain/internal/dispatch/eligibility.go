@@ -23,11 +23,48 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// defaultAccountOrderBy is the ORDER BY used until Chunk 3 wires per-strategy ordering (random /
-// round_robin / one_by_one). It is the LOCKED Phase 1 draft-05 default (score DESC, then a random
-// tiebreak) — real behavior, not a stub: concurrent lanes naturally converge on the top-scoring
-// eligible account until it is exhausted, then move to the next (exactly one_by_one's definition).
-const defaultAccountOrderBy = "a.account_status_score DESC, RANDOM()"
+// defaultAccountOrderBy is the one_by_one / fallback ORDER BY (§3, RULED — see P4-OD-1 below):
+// score DESC, then a DETERMINISTIC id ASC tiebreak — NOT RANDOM(). §3's literal SQL
+// (`account_status_score DESC, RANDOM()`) does not produce its own documented behavior: RANDOM()
+// re-evaluates on EVERY query execution (verified empirically against real Postgres — 10 repeated
+// single-row selects over 2 equal-score rows reshuffled on nearly every call), so it behaves like
+// the `random` strategy, not "exhaust one, then move on," whenever scores are tied — which is
+// EXACTLY the pre-Phase-5 condition the spec's own prose and T3b test plan assume. `a.id ASC` is
+// deterministic: the lowest-id account among ties is always the leader until it is genuinely
+// removed from eligibility (hits daily_limit / paused / quarantined / disabled), then the next
+// tied id becomes the leader — real exhaust-then-move-on, not incidental. Once Phase 5 computes
+// distinct scores the `score DESC` term already dominates and this tiebreak is inert on ties, so
+// the change has NO effect post-Phase-5. RULED by the user (2026-07-23): deterministic tiebreak,
+// not "accept spread instead of exhaust." Recorded as P4-OD-1 in Docs/open-decisions.md.
+const defaultAccountOrderBy = "a.account_status_score DESC, a.id ASC"
+
+// randomAccountOrderBy is the random strategy (§3): a uniform draw across eligible accounts.
+const randomAccountOrderBy = "RANDOM()"
+
+// roundRobinAccountOrderBy is the round_robin strategy (§3.1): prefer the smallest id STRICTLY
+// after the in-memory cursor, wrapping to the smallest id when the cursor is unset/exhausted. The
+// cursor is bound as $3 (nullable — NULL on first use / after a restart, §5.3 accepted skew); when
+// NULL the "(a.id > $3) " comparison is itself NULL, so the AND short-circuits false and every row
+// falls to the "else" branch (id ASC from the bottom) — exactly the wrap-to-smallest behavior, with
+// no separate NULL-handling branch needed.
+const roundRobinAccountOrderBy = "($3::uuid IS NOT NULL AND a.id > $3::uuid) DESC, a.id ASC"
+
+// accountOrderByForStrategy maps sender.routing_strategy -> the ORDER BY fragment + whether it
+// needs the round-robin cursor bound as $3. An unrecognized strategy falls back to the locked
+// default rather than erroring — defensive against a future additive enum value this code doesn't
+// know about yet; never a hard failure in the dispatch hot path.
+func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor bool) {
+	switch strategy {
+	case "random":
+		return randomAccountOrderBy, false
+	case "round_robin":
+		return roundRobinAccountOrderBy, true
+	case "one_by_one":
+		return defaultAccountOrderBy, false
+	default:
+		return defaultAccountOrderBy, false
+	}
+}
 
 // accountConsumeQueryTmpl is the atomic consume (§3/§7), the locked Phase 1 draft-05 UPDATE reused
 // VERBATIM except for the bound pool_id ($2) and the caller-supplied ORDER BY (%s — an internal,
@@ -52,6 +89,11 @@ eligible_accounts AS (
     SELECT a.id
     FROM sender.accounts a, today_calc
     WHERE a.pool_id = $2
+      AND ($3::uuid IS NULL OR $3::uuid IS NOT NULL) -- always true; keeps $3 (the optional
+                                                        -- round_robin cursor) bound for every
+                                                        -- strategy, since Postgres' extended query
+                                                        -- protocol requires every supplied
+                                                        -- parameter to appear in the query text
       AND a.quarantined = FALSE
       AND a.disabled = FALSE
       AND (
@@ -93,14 +135,14 @@ RETURNING a.id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.fro
           a.credential_ciphertext, a.credential_nonce, a.credential_key_id`
 
 // selectAccountForJob resolves the job's candidate pool(s) and atomically consumes the first
-// eligible account found, trying pools in order. Chunk 2 scope: candidate pools are the job's
-// tenant's own pools (dedicated first, oldest-created first) plus any shared pool, mirroring
-// Phase 3's visibility rule — but selection within a pool now goes through the REAL atomic
-// consume (§3/§7), not a plain SELECT. TODO(Chunk 4): replace the candidate-pool query below with
+// eligible account found, trying pools in order, using EACH pool's own routing_strategy (§3).
+// Chunk 2/3 scope: candidate pools are the job's tenant's own pools (dedicated first, oldest-
+// created first) plus any shared pool, mirroring Phase 3's visibility rule — but selection within
+// a pool now goes through the REAL atomic consume (§3/§7) with the pool's real strategy, not a
+// plain SELECT or a hardcoded ordering. TODO(Chunk 4): replace the candidate-pool query below with
 // RESOLVE_POOL_CHAIN (§4.2) — dedicated-first, explicit/default shared fallback, MAX_FALLBACK_HOPS
 // — without changing this function's shape (still "resolve chain, try each pool via
-// accountConsume, first hit wins"). TODO(Chunk 3): defaultAccountOrderBy becomes per-pool
-// routing_strategy.
+// accountConsume, first hit wins").
 func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob) (selectedAccount, bool, error) {
 	cfg, err := LoadConfig(ctx, d.db)
 	if err != nil {
@@ -110,8 +152,8 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob) (s
 	if err != nil {
 		return selectedAccount{}, false, err
 	}
-	for _, poolID := range pools {
-		acct, ok, err := d.accountConsume(ctx, poolID, defaultAccountOrderBy, cfg.DailyResetTimezone)
+	for _, pool := range pools {
+		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone)
 		if err != nil {
 			return selectedAccount{}, false, err
 		}
@@ -120,6 +162,50 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob) (s
 		}
 	}
 	return selectedAccount{}, false, nil
+}
+
+// consumeFromPool resolves poolID's routing_strategy, builds the matching ORDER BY + cursor
+// (§3/§3.1), runs the atomic consume, and — on success under round_robin — advances that pool's
+// in-memory cursor to the consumed account's id (under rrMu, §3.1's "on success, under a per-pool
+// mutex" step). A non-round_robin strategy's cursor argument is nil and no cursor is ever written.
+func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string) (selectedAccount, bool, error) {
+	strategy, err := d.poolRoutingStrategy(ctx, poolID)
+	if err != nil {
+		return selectedAccount{}, false, err
+	}
+	orderBy, needsCursor := accountOrderByForStrategy(strategy)
+
+	var cursor *string
+	if needsCursor {
+		d.rrMu.Lock()
+		if c, ok := d.rrCursor[poolID]; ok {
+			cursor = &c
+		}
+		d.rrMu.Unlock()
+	}
+
+	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone)
+	if err != nil || !ok {
+		return selectedAccount{}, false, err
+	}
+	if needsCursor {
+		d.rrMu.Lock()
+		d.rrCursor[poolID] = acct.id
+		d.rrMu.Unlock()
+	}
+	return acct, true, nil
+}
+
+// poolRoutingStrategy reads one pool's routing_strategy column (§3).
+func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var strategy string
+	if err := d.db.QueryRow(ctx,
+		`SELECT routing_strategy::text FROM sender.pools WHERE id = $1`, poolID).Scan(&strategy); err != nil {
+		return "", err
+	}
+	return strategy, nil
 }
 
 // candidatePools returns the pool ids visible to a job's tenant: the tenant's own dedicated pools
@@ -148,17 +234,18 @@ func (d *Dispatcher) candidatePools(ctx context.Context, userID string) ([]strin
 }
 
 // accountConsume runs the atomic consume against ONE pool, using orderBy as the strategy ordering
-// (a fixed, code-controlled SQL fragment — never user input). It is its OWN transaction (distinct
-// from claim/markSending), matching §7.2 ("job-claim and account-consume are separate
-// transactions"). Returns (account, found, err); found=false means the pool is exhausted/unhealthy
-// by the §4.1 predicate (zero eligible accounts) — the caller tries the next pool in the chain or
-// requeues.
-func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy, dailyResetTimezone string) (selectedAccount, bool, error) {
+// (a fixed, code-controlled SQL fragment — never user input) and cursor as the optional
+// round_robin cursor bound ($3, nullable; ignored by strategies whose ORDER BY doesn't reference
+// it). It is its OWN transaction (distinct from claim/markSending), matching §7.2 ("job-claim and
+// account-consume are separate transactions"). Returns (account, found, err); found=false means
+// the pool is exhausted/unhealthy by the §4.1 predicate (zero eligible accounts) — the caller
+// tries the next pool in the chain or requeues.
+func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string) (selectedAccount, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	query := accountConsumeQuery(orderBy)
 	var a selectedAccount
-	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID).Scan(
+	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor).Scan(
 		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
 		&a.ciphertext, &a.nonce, &a.keyID)
 	if err == pgx.ErrNoRows {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,20 +22,26 @@ type Pusher interface {
 	AnyConnectedBox() string
 }
 
-// Dispatcher runs the Phase-3 minimal send path. It is event-kicked (TryDispatch), NOT a polling
-// loop (Phase 4). It claims one queued job, selects the one eligible account trivially, decrypts
-// the credential in memory, builds the §8 headers, and pushes one push_job to a connected box.
+// Dispatcher runs the send path: claims jobs (TryDispatch for Phase 3, Tick for Phase 4's polling
+// loop), resolves an eligible account per the job's pool chain and routing strategy, decrypts the
+// credential in memory, builds the §8 headers, and pushes one push_job to a connected box.
 type Dispatcher struct {
 	db  *pgxpool.Pool
 	dec *credential.Decryptor
 	px  Pusher
 	cfg Config
+
+	// rrMu/rrCursor is the in-memory per-pool round_robin account cursor (§3.1, P4-6): soft state,
+	// re-derived (reset to empty) on Brain restart — an accepted ≤one-rotation transient skew
+	// (§5.3), never load-bearing for correctness (SKIP LOCKED + accounts_daily_sent_check are).
+	rrMu     sync.Mutex
+	rrCursor map[string]string // pool_id -> last-consumed account id
 }
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed
 // to the admin surface.
 func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher, cfg Config) *Dispatcher {
-	return &Dispatcher{db: db, dec: dec, px: px, cfg: cfg}
+	return &Dispatcher{db: db, dec: dec, px: px, cfg: cfg, rrCursor: make(map[string]string)}
 }
 
 // claimQuery is the LOCKED Phase 1 claim CTE (§5.1), LIMIT 1 in Phase 3. FOR UPDATE SKIP LOCKED

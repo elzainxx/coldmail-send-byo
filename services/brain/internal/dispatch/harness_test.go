@@ -162,6 +162,25 @@ func (e *dispatchEnv) seedPool(t *testing.T) string {
 	return poolID
 }
 
+// seedPoolWithStrategy seeds a shared pool with an EXPLICIT routing_strategy (§3 Chunk 3 tests:
+// random/round_robin/one_by_one). Ensures the system user exists (same as seedPool).
+func (e *dispatchEnv) seedPoolWithStrategy(t *testing.T, strategy string) string {
+	t.Helper()
+	ctx := context.Background()
+	_, err := e.admin.Exec(ctx,
+		`INSERT INTO public.users (id, email, is_active) VALUES ('00000000-0000-0000-0000-000000000000','sys@sender.local',true) ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		t.Fatalf("seed system user: %v", err)
+	}
+	var poolID string
+	if err := e.admin.QueryRow(ctx,
+		`INSERT INTO sender.pools (user_id, kind, name, routing_strategy) VALUES ('00000000-0000-0000-0000-000000000000','shared','p4-strategy',$1::sender.routing_strategy) RETURNING id`,
+		strategy).Scan(&poolID); err != nil {
+		t.Fatalf("seed pool with strategy %s: %v", strategy, err)
+	}
+	return poolID
+}
+
 // seedAccount seeds an eligible account in poolID with a real encrypted credential (secret). It
 // uses the harness Encryptor so the Decryptor round-trips (AAD = account.id ‖ key_id). Because
 // account.id must exist before Encrypt (AAD binding), we generate the UUID app-side. smtp_username

@@ -132,6 +132,14 @@ KMS Decrypt granted to the Brain role only; the admin service Encrypt-only) and 
 (`SENDER_SYSTEM_USER_ID` seeded into `public.users`) — both are going-live gates the harness
 exercises via seeded fixtures, not build blockers.
 
+### Phase 4 build surfaced (flagged, not silently resolved — CLAUDE.md Rule 2)
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| P4-OD-1 | Phase 4 spec §3 specifies the `one_by_one` strategy's account ordering as `ORDER BY account_status_score DESC, RANDOM() LIMIT 1`, and both the prose ("concurrent lanes naturally stick to the same account until it becomes ineligible... exactly one-by-one") and the T3b test plan ("A reaches 15 before B's first send") assume this order is STABLE across repeated calls while scores are tied — the documented pre-Phase-5 condition (all `account_status_score` default to 100 until Phase 5 computes real scores). Empirically verified against real Postgres this is FALSE: `RANDOM()` re-evaluates on every query execution, so two equal-score rows reshuffle on nearly every call (a direct 10-call trial returned an alternating/unstable sequence, not a sticky one). Under the literal §3 SQL, `one_by_one` behaves exactly like `random` whenever scores are tied — i.e. always, pre-Phase-5 — contradicting its own name and test plan. Surfaced while writing Chunk 3's routing tests; flagged (not silently resolved) per Rule 2. | **RULED (2026-07-23) — deterministic tiebreak: `a.id ASC`, not `RANDOM()`** | The user ruled a deterministic tiebreak. `defaultAccountOrderBy` (the `one_by_one` / fallback ordering, `internal/dispatch/eligibility.go`) is `account_status_score DESC, a.id ASC`. This makes the lowest-id account among score-ties the leader deterministically until it is genuinely removed from eligibility (hits `daily_limit` / becomes paused/quarantined/disabled), at which point the next-lowest tied id becomes the new leader — real "exhaust one, then move on," not incidental. Once Phase 5 computes distinct scores, `score DESC` already dominates and this tiebreak is inert on ties — so the change has **zero effect post-Phase-5** and does not weaken or contradict anything Phase 5 introduces. `random` and `round_robin` are unaffected (their own `ORDER BY` fragments do not use this constant). Proven by `TestRouting_OneByOne` (`internal/dispatch/routing_test.go`): account A (limit 15) is fully exhausted strictly before account B's first consume, across 25 draws. |
+
+**Needs-user: empty.** P4-OD-1 is RULED and implemented; no other Phase 4 item is open.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
