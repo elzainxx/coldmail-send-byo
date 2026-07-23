@@ -81,9 +81,11 @@ type selectedAccount struct {
 	keyID       string
 }
 
-// TryDispatch attempts to turn ONE queued job into ONE push_job. It is safe to call on every run
-// kickoff; if there is no queued job, no connected box, or no eligible account, it is a clean
-// no-op (the job stays claimable). Returns the job id it pushed (or "" if nothing was pushed).
+// TryDispatch attempts to turn ONE queued job into ONE push_job. It is the Phase-3 single-shot
+// primitive, retained for its behavioral tests; the PRODUCTION driver is the Phase-4 polling loop
+// (see loop.go / Runner). It is safe to call on every run kickoff; if there is no queued job, no
+// connected box, or no eligible account, it is a clean no-op (the job stays claimable). Returns
+// the job id it pushed (or "" if nothing was pushed).
 func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	// 0) Need a connected, idle box to push to (boxes are interchangeable — §2.2). If none, do
 	// not claim (leaving the job queued for a later kick).
@@ -101,29 +103,49 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 		return "", nil // nothing queued
 	}
 
-	// 2) Select the one eligible account in the job's target pool (trivial, §5.1). On no eligible
-	// account, requeue the claim so the job returns to queued in a legal state (lease cleared).
+	// 2–5) Resolve the account, decrypt, build headers, transition, and push (shared with the
+	// Phase-4 loop). Returns (pushed, err); a clean requeue is (false, nil).
+	pushed, err := d.resolveAndPush(ctx, job, boxID)
+	if err != nil {
+		return "", err
+	}
+	if pushed {
+		return job.id, nil
+	}
+	return "", nil
+}
+
+// resolveAndPush turns ONE already-claimed (state='assigned') job into a push_job on boxID: select
+// an account (trivial in Phase 3 / Chunk 1; the atomic consume lands in Chunk 2), decrypt the
+// credential in Brain memory, build the §8 headers, transition assigned→sending, and push. On any
+// failure it requeues the job to a legal claimable state (lease cleared) and never leaks the
+// credential — the plaintext is zeroed on every path. Returns (pushed, err): a clean requeue that
+// pushed nothing is (false, nil). This is the per-job handoff shared by TryDispatch (Phase 3) and
+// the tick loop (Phase 4, §1.3 RESOLVE_AND_PUSH).
+func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string) (bool, error) {
+	// 2) Select the eligible account (trivial pick, §5.1 / Chunk 1). On none, requeue the claim so
+	// the job returns to queued in a legal state (lease cleared).
 	acct, ok, err := d.selectAccount(ctx, job.id)
 	if err != nil || !ok {
 		d.requeueNoAccount(ctx, job.id)
 		if err != nil {
-			return "", err
+			return false, err
 		}
-		return "", nil
+		return false, nil
 	}
 
 	// 3) Decrypt the credential IN BRAIN MEMORY (sole decryptor). AAD = account.id ‖ key_id.
 	var acctUUID [16]byte
 	if err := parseUUID(acct.id, &acctUUID); err != nil {
 		d.requeueNoAccount(ctx, job.id)
-		return "", fmt.Errorf("parse account id: %w", err)
+		return false, fmt.Errorf("parse account id: %w", err)
 	}
 	plaintext, err := d.dec.Decrypt(acctUUID, acct.keyID, acct.ciphertext, acct.nonce)
 	if err != nil {
 		// Cannot decrypt (rotation/tamper): requeue, do not push. Never log the ciphertext.
 		log.Printf("dispatch: decrypt failed for account %s (job %s): %v — requeued", acct.id, job.id, err)
 		d.requeueNoAccount(ctx, job.id)
-		return "", nil
+		return false, nil
 	}
 
 	// 4) Build §8 headers + Message-ID/Date; assemble push_job.
@@ -145,7 +167,7 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 		zero(plaintext)
 		log.Printf("dispatch: job %s has CR/LF in %q — requeued, not sent (header-injection guard)", job.id, bad)
 		d.requeue(ctx, job.id, "header_injection:"+bad)
-		return "", nil
+		return false, nil
 	}
 
 	msgID := messageIDFor(job.id, acct.fromAddress)
@@ -173,20 +195,20 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 		},
 	}
 
-	// 5) Move assigned → sending and set assigned_account_id, THEN push. Ordering: mark sending
-	// first so the state reflects in-flight; if the push fails we requeue (clearing the lease).
-	// On a DB error OR a 0-row update (state drifted out of 'assigned'), do NOT push — requeue to a
-	// claimable state so the job is never orphaned in 'assigned' with a live lease (Phase 3 has no
-	// reclaim loop; a stranded 'assigned' job would wait until Phase 6). The credential is zeroed
-	// and never leaves the Brain for a job we couldn't transition.
-	moved, err := d.markSending(ctx, job.id, acct.id)
+	// 5) Move assigned → sending and set assigned_account_id + assigned_box_id, THEN push. Ordering:
+	// mark sending first so the state reflects in-flight; if the push fails we requeue (clearing the
+	// lease). On a DB error OR a 0-row update (state drifted out of 'assigned'), do NOT push —
+	// requeue to a claimable state so the job is never orphaned in 'assigned' with a live lease
+	// (the reclaim loop is Phase 6). The credential is zeroed and never leaves the Brain for a job
+	// we couldn't transition.
+	moved, err := d.markSending(ctx, job.id, acct.id, boxID)
 	if err != nil || !moved {
 		zero(plaintext)
 		d.requeuePushFailed(ctx, job.id)
 		if err != nil {
 			log.Printf("dispatch: markSending failed for job %s: %v — requeued", job.id, err)
 		}
-		return "", err
+		return false, err
 	}
 	// Echo the lease so the box knows its deadline (re-read the just-set lease).
 	if lease, ok := d.readLease(ctx, job.id); ok {
@@ -200,16 +222,16 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	// the JSON-encoded frame in writeFrame are immutable copies that only GC can reclaim — Go
 	// cannot zero a string in place. The spec's actual requirements (never logged/persisted/
 	// serialized-to-a-client) are met; eliminating this residual would require byte-slice framing
-	// end-to-end, out of scope for Phase 3's JSON wire.
+	// end-to-end, out of scope for the JSON wire.
 	zero(plaintext)
 	pj.SMTP.Secret = ""
 	if err != nil {
 		// Push failed (box vanished): requeue to a legal state; the box never got the credential.
 		log.Printf("dispatch: push_job failed for job %s to box %s: %v — requeued", job.id, boxID, err)
 		d.requeuePushFailed(ctx, job.id)
-		return "", nil
+		return false, nil
 	}
-	return job.id, nil
+	return true, nil
 }
 
 // claimOne runs the locked claim CTE with the actor GUC set (same tx).
@@ -274,18 +296,20 @@ LIMIT 1`
 	return a, true, nil
 }
 
-// markSending moves assigned → sending and records the account, in a tx with the actor GUC. The
-// lease stays set (still in {assigned,sending} — CHECK satisfied). Returns (moved, err): moved is
-// false when the guarded UPDATE affected 0 rows (the job was not in 'assigned' — state drifted),
-// so the caller must NOT push and should requeue rather than send on a job it didn't transition.
-func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID string) (bool, error) {
+// markSending moves assigned → sending and records the account + the box, in a tx with the actor
+// GUC. The lease stays set (still in {assigned,sending} — CHECK satisfied). Box selection is
+// orthogonal to routing (§1.3), so the box is recorded here at the sending transition rather than
+// at claim. Returns (moved, err): moved is false when the guarded UPDATE affected 0 rows (the job
+// was not in 'assigned' — state drifted), so the caller must NOT push and should requeue rather
+// than send on a job it didn't transition.
+func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID, boxID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	moved := false
 	err := d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, updated_at=NOW()
-			 WHERE id=$1 AND state='assigned'`, jobID, accountID)
+			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, assigned_box_id=$3, updated_at=NOW()
+			 WHERE id=$1 AND state='assigned'`, jobID, accountID, boxID)
 		if err != nil {
 			return err
 		}

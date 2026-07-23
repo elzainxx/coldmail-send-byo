@@ -30,14 +30,18 @@ import (
 
 const testKeyID = "cred-dek-test"
 
-// recordingPusher is a real in-process Pusher: it records every push_job and reports the
-// configured connected box. PushJob can be made to fail (to exercise the push-failed requeue).
+// recordingPusher is a real in-process Pusher: it records every push_job and reports a connected
+// IDLE box, honoring the Phase-3 one-job-in-flight-PER-BOX constraint. boxID is the single default
+// box (Phase 3 fixtures); extraBoxes (Chunk 1+) lets a test model several simultaneously-idle
+// boxes, so a tick can push to more than one box concurrently. PushJob can be made to fail (to
+// exercise the push-failed requeue).
 type recordingPusher struct {
-	mu       sync.Mutex
-	pushes   []boxproto.PushJob
-	boxID    string // "" => AnyConnectedBox returns "" (no box)
-	failPush bool
-	inFlight bool
+	mu         sync.Mutex
+	pushes     []boxproto.PushJob
+	boxID      string          // "" => AnyConnectedBox returns "" (no box) unless extraBoxes has an idle one
+	extraBoxes []string        // additional registered box ids (Chunk 1 multi-box tests)
+	inFlightBy map[string]bool // per-box in-flight marker
+	failPush   bool
 }
 
 func (p *recordingPusher) PushJob(pj boxproto.PushJob, boxID string) error {
@@ -47,17 +51,22 @@ func (p *recordingPusher) PushJob(pj boxproto.PushJob, boxID string) error {
 		return fmt.Errorf("simulated push failure")
 	}
 	p.pushes = append(p.pushes, pj)
-	p.inFlight = true
+	if p.inFlightBy == nil {
+		p.inFlightBy = map[string]bool{}
+	}
+	p.inFlightBy[boxID] = true
 	return nil
 }
 
 func (p *recordingPusher) AnyConnectedBox() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.inFlight {
-		return "" // one-in-flight: no idle box
+	for _, b := range append([]string{p.boxID}, p.extraBoxes...) {
+		if b != "" && !p.inFlightBy[b] {
+			return b
+		}
 	}
-	return p.boxID
+	return ""
 }
 
 func (p *recordingPusher) lastPush() (boxproto.PushJob, bool) {
@@ -168,9 +177,74 @@ func (e *dispatchEnv) seedAccount(t *testing.T, poolID, secret string) string {
 	return id
 }
 
+// seedUser inserts a real public.users row (a distinct tenant, for the per-user claim tests) and
+// returns its id.
+func (e *dispatchEnv) seedUser(t *testing.T, email string) string {
+	t.Helper()
+	var id string
+	if err := e.admin.QueryRow(context.Background(),
+		`INSERT INTO public.users (email, is_active) VALUES ($1, true) RETURNING id`, email).Scan(&id); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	return id
+}
+
+// addBox seeds one more real sender.boxes row and registers it as an additional idle box on the
+// env's recordingPusher, so a test can exercise more than one simultaneous push (the default
+// dispatchEnv has exactly one box, mirroring the Phase 3 fixtures).
+func (e *dispatchEnv) addBox(t *testing.T) {
+	t.Helper()
+	id := seedBox(t, e.admin)
+	e.px.extraBoxes = append(e.px.extraBoxes, id)
+}
+
+// setConfigInt overwrites a seeded sender.config integer value (default_value is left untouched —
+// CLAUDE.md Rule 1 forbids mutating default_value; only value is overridden for the test).
+func (e *dispatchEnv) setConfigInt(t *testing.T, key string, v int) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.config SET value = jsonb_build_object('v', $2::int), updated_at = NOW() WHERE key = $1`,
+		key, v); err != nil {
+		t.Fatalf("set config %s: %v", key, err)
+	}
+}
+
 // seedQueuedJob seeds a job_item + a queued sender.jobs row (genesis event) and returns the job id.
 func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
 	return e.seedQueuedJobSubject(t, recipient, "Subj")
+}
+
+// seedQueuedJobFor is seedQueuedJob for an EXPLICIT tenant (userID), used by the per-user claim
+// tests (Chunk 1) where the system-user default would collapse every job into one tenant.
+func (e *dispatchEnv) seedQueuedJobFor(t *testing.T, userID, recipient string) string {
+	t.Helper()
+	ctx := context.Background()
+	var jobItemID string
+	if err := e.admin.QueryRow(ctx,
+		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
+		 VALUES (gen_random_uuid(),$1,$2,'Subj','<p>b</p>','reply@ourdomain.com','pending')
+		 RETURNING id`, userID, recipient).Scan(&jobItemID); err != nil {
+		t.Fatalf("seed job_item for user: %v", err)
+	}
+	var jobID string
+	tx, err := e.admin.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','system',true)"); err != nil {
+		t.Fatalf("set actor: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		 VALUES ($1,(SELECT campaign_id FROM public.job_items WHERE id=$1),$2,$3,'Subj','<p>b</p>','reply@ourdomain.com','queued',NOW())
+		 RETURNING id`, jobItemID, userID, recipient).Scan(&jobID); err != nil {
+		t.Fatalf("seed job for user: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit job: %v", err)
+	}
+	return jobID
 }
 
 // seedQueuedJobSubject is seedQueuedJob with a caller-chosen rendered_subject (used to inject a

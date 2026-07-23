@@ -97,7 +97,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
-		"0008", "0009", "0010", "0011", "0012", "0013", "0014"}
+		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -121,9 +121,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
 		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
 	}
-	// Config seeds the 14 foundation keys (sender_0010).
+	// Config seeds the 14 foundation keys (sender_0010). Phase 4 adds NO config key (§0).
 	if n := configKeyCount(t, admin); n != 14 {
 		t.Fatalf("after Up: sender.config has %d keys, want 14 (Phase 9 §4.1)", n)
+	}
+	// Phase 4's ONE additive schema delta: the per-user claim index (sender_0015, CONCURRENTLY).
+	// Proves the runner APPLIED a CONCURRENTLY migration (not a no-op) — anti-vacuity for the
+	// non-transactional path fix.
+	if !indexExists(t, admin, "jobs_claim_by_user_idx") {
+		t.Fatal("after Up: sender.jobs_claim_by_user_idx missing (sender_0015 CONCURRENTLY not applied)")
 	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -138,12 +144,16 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatalf("after idempotent Up: versions = %v, want %v", got, wantChain)
 	}
 
-	// --- Down: reverse the feature chain in strict reverse order (0012 -> 0001), proving each
-	// migration's DOWN is real, then finally the bootstrap 0000 which drops the schema. ---
+	// --- Down: reverse the feature chain in strict reverse order (0015 -> 0001), proving each
+	// migration's DOWN is real, then finally the bootstrap 0000 which drops the schema. The first
+	// step (0015) exercises the runner's non-transactional DROP INDEX CONCURRENTLY down path. ---
 	for i := len(wantChain) - 1; i >= 1; i-- {
 		v := wantChain[i]
 		if err := r.Down(ctx, v); err != nil {
 			t.Fatalf("Down %s: %v", v, err)
+		}
+		if v == "0015" && indexExists(t, admin, "jobs_claim_by_user_idx") {
+			t.Fatal("after Down 0015: jobs_claim_by_user_idx still present (CONCURRENTLY down did not drop it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -193,6 +203,17 @@ func configKeyCount(t *testing.T, c *pgx.Conn) int {
 		t.Fatalf("config count: %v", err)
 	}
 	return n
+}
+
+// indexExists reports whether an index of the given name exists in the sender schema.
+func indexExists(t *testing.T, c *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='sender' AND indexname=$1)`, name).Scan(&ok); err != nil {
+		t.Fatalf("index exists lookup %q: %v", name, err)
+	}
+	return ok
 }
 
 func accountsForceRLS(t *testing.T, c *pgx.Conn) bool {

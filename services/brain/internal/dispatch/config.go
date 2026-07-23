@@ -18,16 +18,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Config holds the seeded sender.config values Phase 3 CONSUMES (config-not-code, §0). No new key
-// is introduced by Phase 3; these are read at runtime from sender.config, never hardcoded.
+// Config holds the seeded sender.config values the dispatcher CONSUMES (config-not-code, §0).
+// Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval and the per-user
+// concurrency ceiling — both ALREADY seeded in Phase 1's sender_0010 (Phase 4 adds NO new key, §0).
+// Every value is read at runtime from sender.config, never hardcoded.
 type Config struct {
-	JobMaxProcessingTimeSec int // job_max_processing_time_sec — the lease duration (§5.1)
-	DebugLogRetentionDays   int // debug_log_retention_days — send_logs.ttl_expires_at (§7)
+	JobMaxProcessingTimeSec   int // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
+	DebugLogRetentionDays     int // debug_log_retention_days — send_logs.ttl_expires_at (§7)
+	DispatchTickIntervalMS    int // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
+	ConcurrencyPerUserDefault int // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
 }
 
-// LoadConfig reads the Phase-3-consumed config keys from sender.config. Values are JSONB-wrapped
+// LoadConfig reads the dispatcher-consumed config keys from sender.config. Values are JSONB-wrapped
 // {"v": ...}; this unwraps the scalar. A missing key is an error (the migration seeds them), not
-// a silent default — a hardcoded fallback would violate config-not-code.
+// a silent default — a hardcoded fallback would violate config-not-code. The dispatcher RE-READS
+// config each tick (Phase 2 OD-14, spec §0), so a change takes effect without a redeploy.
 func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	var c Config
 	var err error
@@ -35,6 +40,12 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.DebugLogRetentionDays, err = readIntKey(ctx, db, "debug_log_retention_days"); err != nil {
+		return c, err
+	}
+	if c.DispatchTickIntervalMS, err = readIntKey(ctx, db, "dispatch_tick_interval_ms"); err != nil {
+		return c, err
+	}
+	if c.ConcurrencyPerUserDefault, err = readIntKey(ctx, db, "concurrency_per_user_default"); err != nil {
 		return c, err
 	}
 	return c, nil

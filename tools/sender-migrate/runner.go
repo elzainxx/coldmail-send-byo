@@ -235,13 +235,24 @@ func (r *Runner) applyOne(ctx context.Context, c *pgx.Conn, f migrationFile) err
 	sqlText := string(body)
 
 	if f.Concurrently {
-		// Non-transactional: statements run sequentially; the file's own INSERT is last.
-		// SET (not SET LOCAL) persists on the session, so RESET afterward to avoid leaking
-		// this timeout onto any subsequent file applied on the same connection in this run.
+		// Non-transactional: CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction block,
+		// AND a multi-statement simple query is itself wrapped in an implicit transaction by
+		// Postgres — so we must send each statement as its OWN Exec (auto-commit), never the whole
+		// file at once. Statements run sequentially; the file's own bookkeeping INSERT/DELETE is
+		// last, so a mid-file failure leaves the version UN-recorded (safe: a re-run retries, and
+		// the DDL is written IF (NOT) EXISTS to be idempotent).
+		//
+		// SET (not SET LOCAL) persists on the session, so RESET afterward to avoid leaking this
+		// timeout onto any subsequent file applied on the same connection in this run.
 		if _, err := c.Exec(ctx, fmt.Sprintf("SET statement_timeout = '%s'", r.StatementTimeout)); err != nil {
 			return err
 		}
-		_, execErr := c.Exec(ctx, sqlText)
+		var execErr error
+		for _, stmt := range splitStatements(sqlText) {
+			if _, execErr = c.Exec(ctx, stmt); execErr != nil {
+				break
+			}
+		}
 		_, _ = c.Exec(ctx, "RESET statement_timeout")
 		return execErr
 	}
@@ -306,6 +317,27 @@ func (r *Runner) Down(ctx context.Context, version string) error {
 	if err != nil {
 		return err
 	}
+
+	// A down file that drops an index CONCURRENTLY (mirroring its up) cannot run inside a
+	// transaction block — apply it statement-by-statement, auto-commit, exactly like the up path.
+	if concurrentlyRe.Match(body) {
+		if _, err := c.Exec(ctx, fmt.Sprintf("SET statement_timeout = '%s'", r.StatementTimeout)); err != nil {
+			return err
+		}
+		var execErr error
+		for _, stmt := range splitStatements(string(body)) {
+			if _, execErr = c.Exec(ctx, stmt); execErr != nil {
+				break
+			}
+		}
+		_, _ = c.Exec(ctx, "RESET statement_timeout")
+		if execErr != nil {
+			return execErr
+		}
+		fmt.Printf("rolled back %s\n", version)
+		return nil
+	}
+
 	tx, err := c.Begin(ctx)
 	if err != nil {
 		return err
@@ -319,6 +351,85 @@ func (r *Runner) Down(ctx context.Context, version string) error {
 	}
 	fmt.Printf("rolled back %s\n", version)
 	return nil
+}
+
+// splitStatements splits a migration file into individual SQL statements on top-level
+// semicolons. It is used ONLY for the non-transactional CONCURRENTLY path, where the whole file
+// cannot be sent as one implicit-transaction simple-query. It is intentionally simple: it handles
+// single-quoted string literals and line/block comments, but NOT dollar-quoted bodies — so a
+// CONCURRENTLY migration MUST contain only plain statements (no plpgsql / $$ ... $$). Index
+// migrations meet that contract. Empty/whitespace/comment-only fragments are dropped.
+func splitStatements(sqlText string) []string {
+	var out []string
+	var buf strings.Builder
+	inLine, inBlock, inString := false, false, false
+	rs := []rune(sqlText)
+	for i := 0; i < len(rs); i++ {
+		c := rs[i]
+		var next rune
+		if i+1 < len(rs) {
+			next = rs[i+1]
+		}
+		switch {
+		case inLine:
+			buf.WriteRune(c)
+			if c == '\n' {
+				inLine = false
+			}
+		case inBlock:
+			buf.WriteRune(c)
+			if c == '*' && next == '/' {
+				buf.WriteRune(next)
+				i++
+				inBlock = false
+			}
+		case inString:
+			buf.WriteRune(c)
+			if c == '\'' {
+				inString = false
+			}
+		case c == '-' && next == '-':
+			buf.WriteRune(c)
+			buf.WriteRune(next)
+			i++
+			inLine = true
+		case c == '/' && next == '*':
+			buf.WriteRune(c)
+			buf.WriteRune(next)
+			i++
+			inBlock = true
+		case c == '\'':
+			buf.WriteRune(c)
+			inString = true
+		case c == ';':
+			stmt := strings.TrimSpace(buf.String())
+			if !isBlankSQL(stmt) {
+				out = append(out, stmt)
+			}
+			buf.Reset()
+		default:
+			buf.WriteRune(c)
+		}
+	}
+	if stmt := strings.TrimSpace(buf.String()); !isBlankSQL(stmt) {
+		out = append(out, stmt)
+	}
+	return out
+}
+
+// isBlankSQL reports whether a fragment is empty or contains only line comments/whitespace (so it
+// would be a no-op statement, which Postgres rejects on an empty simple query).
+func isBlankSQL(stmt string) bool {
+	if stmt == "" {
+		return true
+	}
+	for _, line := range strings.Split(stmt, "\n") {
+		l := strings.TrimSpace(line)
+		if l != "" && !strings.HasPrefix(l, "--") {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) downPathFor(version string) (string, error) {

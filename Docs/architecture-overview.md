@@ -136,3 +136,41 @@ schema (every column already exists in the Phase 1 model). See `../Docs/phase-3-
   service-token auth (distinct credential from the operator key). `run` is async (returns `202`,
   never blocks on the send; duplicate `job_item_id` is a clean idempotent no-op); `report`
   reflects only clean external state. Two-vocabulary errors throughout.
+
+## Phase 4 state — dispatcher & routing (in progress; Chunk 1 landed)
+
+Turns Phase 3's straight-line send into a real arbitrator. See
+`../Docs/phase-4-dispatcher-and-routing.md`. Landing incrementally across six chunks (per the
+build plan); this section is updated as each chunk lands.
+
+- **One additive schema delta, the whole of it**: `jobs_claim_by_user_idx (user_id,
+  next_attempt_at, created_at) WHERE state='queued'` (migration `sender_0015`, `CREATE INDEX
+  CONCURRENTLY`). Coexists with, does not replace, the Phase 1 `jobs_claim_idx`. No column/
+  constraint of any locked table changes.
+- **Migration runner fix (prerequisite, `tools/sender-migrate`)**: a `CONCURRENTLY` migration
+  file is now executed **statement-by-statement, outside any transaction** (`splitStatements`),
+  for BOTH `up` and `down` — previously the runner sent a `CONCURRENTLY` file's full multi-
+  statement body as one simple query, which Postgres itself wraps in an implicit transaction,
+  making `CREATE/DROP INDEX CONCURRENTLY` fail (`SQLSTATE 25001`). Proven by the migration
+  lifecycle integration test applying/rolling back `sender_0015` for real.
+- **Chunk 1 — the polling dispatch loop + per-user claim** (`internal/dispatch/loop.go`,
+  `runner.go`): the Phase-3 event-only kick is replaced by a **timer-driven `Tick`** on the
+  seeded `dispatch_tick_interval_ms` (re-read fresh every tick — Phase 2 OD-14, no redeploy for a
+  config change); `Kick()` remains as an optional responsiveness nudge (an extra tick now,
+  never a substitute for the timer). Each tick: snapshot per-user in-flight counts + the active-
+  user set, compute each user's lane grant (`concurrency_per_user_default − in_flight[user]`,
+  never negative), then run the LOCKED per-user claim (`CLAIM_FOR_USER`, `FOR UPDATE SKIP LOCKED`,
+  same lease/actor discipline as the Phase 1/3 claim, generalized with a `user_id` predicate and a
+  `LIMIT` from the lane grant) for each active user, and push each claimed job through the
+  existing Phase-3 account-select/decrypt/header/push handoff (`resolveAndPush`, shared with
+  `TryDispatch`). **No routing strategy, no pool eligibility/fallback, no fairness cursor yet**
+  (a plain ascending `user_id` sort stands in for the ring order) — those are Chunks 2–5, each
+  replacing one marked seam in `loop.go` without changing its shape. `TryDispatch` (Phase 3) is
+  kept as-is for its own tests; `Tick` is the production driver going forward.
+- **Config consumed, no new key**: `dispatch_tick_interval_ms` and `concurrency_per_user_default`
+  were already seeded in Phase 1's `sender_0010`; Phase 4 reads them at runtime
+  (`internal/dispatch/config.go`) — no hardcoded tuning constant, no new `sender.config` row.
+- **`dispatch_enabled` disposition**: the panic-switch kill switch is seeded in **Phase 9.5**
+  (`sender_0021`), not Phase 1 or Phase 4. The polling loop does not yet gate on it — there is no
+  key to read (config-not-code forbids inventing one early). This is recorded honestly rather
+  than stubbed; the gate is wired when Phase 9.5 seeds the key.
