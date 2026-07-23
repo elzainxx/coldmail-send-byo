@@ -26,14 +26,61 @@ rc="$(probe /v1/box/register "{\"box_id\":\"dev-box-1\",\"token\":\"$BOXTOK\"}")
 rc="$(probe /v1/box/heartbeat '{"box_id":"dev-box-1"}')"
 [[ "$rc" == "200" ]] || { echo "contract_drift FAIL: POST /v1/box/heartbeat not served as documented (got $rc)"; fail=1; }
 
+# --- Phase 2 operator admin routes (Domain B) ---
+# These are behind the operator-key gate. Probed WITHOUT a key: a real, mounted route answers
+# 401 unauthenticated (route exists but gated); a missing route would 404. So 401 proves the
+# route is served, and is the additive-only assertion. (The behavioral suite proves the authed
+# behavior; here we only prove the surface matches the contract.) Method-appropriate probes.
+adm() { # $1=method $2=path -> http code (no auth header)
+  curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:8080$2" 2>/dev/null || echo 000
+}
+# Only run the admin-route checks if the surface is mounted (ADMIN_API_KEY_HASHES configured).
+# A collection GET without a key must be 401 when mounted; 404 means the surface is off.
+adm_probe="$(adm GET /v1/admin/accounts)"
+if [[ "$adm_probe" == "401" ]]; then
+  declare -A ADMIN_ROUTES=(
+    ["GET /v1/admin/accounts"]=1 ["POST /v1/admin/accounts"]=1
+    ["GET /v1/admin/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["PATCH /v1/admin/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["DELETE /v1/admin/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/admin/accounts/00000000-0000-0000-0000-000000000000/events"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/quarantine"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/unquarantine"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/disable"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/enable"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/pause"]=1
+    ["POST /v1/admin/accounts/00000000-0000-0000-0000-000000000000/unpause"]=1
+    ["GET /v1/admin/pools"]=1 ["POST /v1/admin/pools"]=1
+    ["GET /v1/admin/pools/00000000-0000-0000-0000-000000000000"]=1
+    ["PATCH /v1/admin/pools/00000000-0000-0000-0000-000000000000"]=1
+    ["DELETE /v1/admin/pools/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/admin/config"]=1 ["GET /v1/admin/config/daily_limit_default"]=1
+    ["PUT /v1/admin/config/daily_limit_default"]=1
+  )
+  for spec in "${!ADMIN_ROUTES[@]}"; do
+    m="${spec%% *}"; p="${spec#* }"
+    rc="$(adm "$m" "$p")"
+    [[ "$rc" == "401" ]] || { echo "contract_drift FAIL: $m $p served as $rc, want 401 (route missing or not gated)"; fail=1; }
+  done
+  # An UNDOCUMENTED admin path must NOT be gated as a real route — it should 404 (no handler).
+  und_adm="$(adm GET /v1/admin/secret-undocumented)"
+  [[ "$und_adm" == "404" ]] || { echo "contract_drift FAIL: undocumented admin path returned $und_adm, want 404 — surface wider than the contract"; fail=1; }
+  echo "contract_drift: Phase 2 admin surface mounted — 21 routes gated (401), undocumented 404."
+else
+  echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
+fi
+
 # --- No undocumented route: a path NOT in the contract must 404 ---
-und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/admin/secret-undocumented 2>/dev/null || echo 000)"
+und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/undocumented-nonadmin 2>/dev/null || echo 000)"
 [[ "$und" == "404" ]] || { echo "contract_drift FAIL: undocumented path did not 404 (got $und) — surface wider than the contract"; fail=1; }
 
 # --- The contract doc actually lists these routes (doc <-> served lockstep) ---
-for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat"; do
+for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
+         "/v1/admin/accounts" "/v1/admin/pools" "/v1/admin/config" \
+         "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
+         "/v1/admin/accounts/{id}/events"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 
-[[ "$fail" -eq 0 ]] && echo "contract_drift OK: served routes == documented Phase-0 contract."
+[[ "$fail" -eq 0 ]] && echo "contract_drift OK: served routes == documented contract (Phase 0 + Phase 2 admin)."
 exit "$fail"

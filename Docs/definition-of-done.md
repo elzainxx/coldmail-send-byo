@@ -94,3 +94,32 @@ their tables; `sender_owner` owns the schema; FORCE RLS on `accounts`) ✅ · Do
 encrypted at rest with key outside the DB, AAD row-binding proven; box has no DB/KMS; mTLS
 unchanged; no credential in logs — no-leak gate green) ✅ · DoD-9 (no autonomous subsystem
 added in Phase 1; singleton guard unchanged and still green) ✅.
+
+**Phase 2's DoD status (account management & operator admin API):** DoD-1 (spec
+`Docs/phase-2-account-management.md`, §10 closed) ✅ · DoD-2 (17 real-Postgres behavioral tests
+driving the actual `internal/adminapi` Server over httptest against template-clones migrated
+`0000..0014` — T1 credential-never-leaks, T2 omit=byte-unchanged/replace/reject, T2b AAD
+transplant, T3 no-secret-on-failure, T4 pool owner rules, T5 delete-pool-with-accounts 409, T6
+fallback cycle, T7 per-pool uniqueness, T8 quarantine round-trip exactly-one-event, T8b
+manual-pause guard, T9 account_events append-only + audit-survives-delete + trigger-teeth, T10
+config value_type/tz/range + freshness, T11 daily_limit<counter 409, T12 cross-pool independent
+counters, T13 shared-needs-system-user, T14 end-to-end lifecycle, plus wrong/missing-key 401 —
+all green; the grants invariant still passes with `account_events` present; anti-vacuity
+positive/negative controls throughout) ✅ · DoD-3 (api-contract lists the 21 admin routes +
+architecture-overview Phase 2 section + ADR-0009; contract_drift extended to probe the admin
+surface; no stale docs) ✅ · DoD-4 (no NEW config keys — Phase 2 adds the *management API* +
+validation for keys Phase 1 seeded; `default_value` untouched) ✅ · DoD-5 (no tuning constant
+literal added — `daily_limit_default` etc. resolved from `sender.config` at runtime; the tz
+validation source is a data dependency, not a dial) ✅ · DoD-6 (open-decisions: Phase 2 §10 log
+closed; carried rulings implemented as locked; the one surfaced conflict **OD-23** ruled via
+ADR-0009; needs-user empty) ✅ · DoD-7 (chain extended additively `sender_0013..0014`, each
+self-records with paired DOWN; no Phase 1 column changed; no enum value added (reused `admin`);
+**new table ⇒ explicit grants** — `account_events` classified append-only in the grants
+invariant, which still passes) ✅ · DoD-8 (credential intake Encrypt-ONLY — admin holds no
+Decrypt (OD-7, structural: no Decrypt method); AAD row-binding proven (T2b); `smtp_secret`
+write-only, never in body/list/logs/DB-plaintext (T1/T3); two-vocabulary envelope, no raw
+SQLSTATE leaks (asserted); box/KMS boundaries unchanged) ✅ · DoD-9 (no autonomous subsystem
+added — Phase 2 is manual transitions only, no scoring/auto-quarantine/dispatch; singleton guard
+unchanged) ✅. *New table ⇒ explicit grants, enforced by the grants invariant test* (DoD-7)
+held: `account_events` got its explicit `GRANT INSERT, SELECT` in `sender_0014` and the
+classifier learned it in the same change.

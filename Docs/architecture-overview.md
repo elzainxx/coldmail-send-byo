@@ -58,3 +58,34 @@ the schema enforces. See `../Docs/phase-1-data-model.md` and `../Docs/phase1-dra
   bypasses RLS — that residual is handled by the key being absent from the DB).
 - **Config-not-code**: `sender.config` seeds the 14 foundation keys (`sender_0010`); the
   `config_drift` gate asserts live == manifest == `config-reference.md`.
+
+## Phase 2 state — account management & operator admin API
+
+The operator surface that puts real SMTP accounts/pools into the system and manages their
+lifecycle. Backend-only; **no** sending, dispatcher, SMTP, routing, or scoring (Phases 3–8). See
+`../Docs/phase-2-account-management.md`. Two additive migrations extend the chain:
+
+- **`sender_0013`** — `UNIQUE (pool_id, smtp_host, smtp_username)` on the existing
+  `sender.accounts` (no column changed): duplicate mailbox blocked **within** a pool, allowed
+  **across** pools (accepted residual: independent daily counters).
+- **`sender_0014`** — `sender.account_events`, an additive append-only audit sink (same
+  discipline as `job_events`: `REVOKE UPDATE, DELETE` + explicit `GRANT INSERT, SELECT`, RLS
+  policy). Its `BEFORE UPDATE` reject-trigger is **FK-aware** (OD-23/ADR-0009): it permits ONLY
+  the `account_id → NULL` transition the FK `ON DELETE SET NULL` performs (so a `deleted` audit
+  row survives the account's hard delete) and rejects every content mutation. Reuses the existing
+  `event_actor` enum (`'admin'`) — no enum change.
+
+- **Admin API** (`services/brain/internal/adminapi`, mounted under `/v1/admin/*` on the Brain):
+  operator-only (`platform_admin`), authenticated by a bcrypt-hashed bearer key
+  (constant-time; fail-closed when unconfigured). Accounts + pools CRUD, six audited lifecycle
+  transitions, config read/update. **Two-vocabulary errors**: `{code, message, details[],
+  request_id}` only — every raw `23505/23503/23514/42501` is translated, never surfaced.
+- **Credential intake** (the security core): `smtp_secret` is **write-only**. App-side UUID
+  (OD-4) so `account.id` exists before encryption; **Encrypt-only** AES-256-GCM (OD-7 — the
+  admin path holds NO Decrypt; Decrypt stays Brain-only, the send path), AAD = `account.id ‖
+  credential_key_id` (OD-3). Reads expose only `has_credential`; PATCH **omit = unchanged** is
+  structural (credential columns absent from the SET list, not re-encrypted). The plaintext is
+  zeroed after encryption and never logged.
+- **Reserved system user** (§0.1): shared pools/accounts use `SENDER_SYSTEM_USER_ID` (all-zero
+  UUID) for `user_id NOT NULL`. The module has SELECT-only on `public.users` and cannot seed it;
+  a pre-flight fails shared-pool creates with a clean `409` until the platform provisions it.

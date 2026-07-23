@@ -64,6 +64,32 @@ Phase 2 (pre-live gate G3 / OD-8), and the §9 credential-handoff preconditions 
 channel, memory-only + zeroed credential, residual-risk note) are LOCKED requirements Phase 3
 must implement.
 
+## Phase 2 build (account management & operator admin API)
+
+Phase 2's own §10 decision log is **CLOSED** in `Docs/phase-2-account-management.md` (every item
+DECIDED-NOW / DEFER-TO-PHASE-N / DROPPED; the needs-user list is empty). The carried-forward
+rulings were **implemented as locked**, not re-opened:
+
+| # | Decision (carried, locked) | Where implemented |
+|---|---|---|
+| Admin model | Operator-only, one scope `platform_admin`, env-configured bcrypt-hashed bearer key(s); no per-principal table (OD-9 dropped); no admin-layer tenant isolation. | `internal/adminapi/auth.go` (constant-time, fail-closed); mounted only when `ADMIN_API_KEY_HASHES` set. |
+| Reserved system user (§0.1) | `SENDER_SYSTEM_USER_ID` = all-zero UUID owns shared pools/accounts; `user_id` stays NOT NULL; module has SELECT-only on `public.users` so the platform must seed it; pre-flight → clean `409 system_user_not_provisioned`. | `internal/adminapi/server.go` (`SystemUserID`), `pool_store.go` (`systemUserProvisioned`), tests T13. |
+| OD-2 per-pool uniqueness | `UNIQUE (pool_id, smtp_host, smtp_username)` (`sender_0013`); dup within pool → `409`, across pools allowed; residual (two counters) accepted. | `sender_0013`; `account_create.go`/`account_update.go` pre-check + 23505 backstop; tests T7/T12. |
+| OD-1 audit sink | `sender.account_events` (`sender_0014`), append-only; one row per audited op in-tx; reuses `event_actor` enum (no enum change). | `sender_0014`; `audit.go`; tests T8/T8b/T9. |
+| OD-3/4/6/7 crypto | AAD = `account.id ‖ credential_key_id`; app-side UUID; namespaced `credential_key_id` alias; admin **Encrypt-only, never Decrypt**. | `crypto.go` (no Decrypt method), `uuid.go`, `kms.LoadEncryptKey`; tests T1/T2/T2b. |
+| OD-5/8/10/12/13/14/15 | disabled-pool assign allow+warn; live SMTP verify DEFER-TO-PHASE-3; rate-limit off; `owner_user_id`/`kind` immutable; fallback kind-agnostic (Phase 4 owns kind policy); config reload DEFER-TO-PHASE-4; manual pause/unpause included. | pool/account handlers + `pool_list_update.go` (immutability), `config_*` (reload not built), `account_lifecycle.go`. |
+
+### Phase 2 build surfaced (flagged, not silently fixed)
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| OD-23 | Phase 2 §12's `account_events` DDL specifies BOTH an unconditional `BEFORE UPDATE` reject-trigger AND an `account_id` FK `ON DELETE SET NULL` — a direct contradiction (the FK's `SET NULL` is an UPDATE the trigger blocks, so the account delete §2.5/§7.4 mandate becomes impossible; the 500 was caught by tests T5/T9). | **RULED — see ADR-0009** | Resolved on the spec's own terms + the Phase 1 `#23` lesson §7.4 already cites: the reject-trigger is made **FK-aware** — it permits ONLY the `account_id` non-null→NULL maintenance transition (all other columns unchanged) and rejects every genuine content mutation. Content immutability + defense-in-depth both preserved (T9 proves teeth: a superuser content UPDATE and a bundled null+content UPDATE are both rejected). No locked spec edited; fix lives in `sender_0014` + ADR-0009. |
+
+**Needs-user: empty.** Two owned/scheduled items carry forward (not open questions): the platform
+coordination item to seed `SENDER_SYSTEM_USER_ID` into `public.users` (guarded by the §0.1
+pre-flight, surfaced as pre-live gate **G5**), and the OD-7 IAM precondition (admin service =
+Encrypt-only, never KMS Decrypt) to verify before Phase 3 alongside G4.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
@@ -77,11 +103,21 @@ harness without them.
   pre-flight checks table EXISTENCE only (a column-level check would break whenever the platform
   legitimately adds a column), so this is a going-live confirmation, not a harness blocker.
 - **G4 / S15** — prod KMS key policy grants Decrypt to the Brain role only (sole-decryptor IAM).
+  Phase 2 adds a paired precondition: the **admin service's** IAM grant is **Encrypt/DEK-wrap
+  only, never Decrypt** (OD-7) — verified against the KMS key policy before Phase 3 ships.
+- **G5 / OD (§0.1)** — the platform seeds the reserved `SENDER_SYSTEM_USER_ID` (all-zero UUID)
+  row into `public.users` before shared-pool operations are used live. The module has SELECT-only
+  on `public.users` and cannot seed it; the §0.1 pre-flight fails shared-pool creates with a
+  clean `409` until the row exists, so this is a going-live coordination item, not a harness
+  blocker (the behavioral suite seeds it via the admin connection to exercise the provisioned path).
 
 ## Status
 
 Every Open Decision above is **RULED or APPLIED** — none is left open pending a build
-decision. Phase 0 and Phase 1 (data model & schema, `sender_0001..0012`) are both built and
-green on real infra. The only outstanding items are the four **pre-live confirmations**
-(G1–G4), which by ruling are gates on going live, not on implementing a phase in the harness.
-Nothing here blocks the next phase from building on this ground.
+decision. Phase 0, Phase 1 (data model & schema, `sender_0001..0012`), and Phase 2 (account
+management & operator admin API, `sender_0013..0014` + `internal/adminapi`) are all built and
+green on real infra. Phase 2 surfaced exactly one flagged conflict — **OD-23** (the
+`account_events` FK-vs-trigger contradiction) — ruled and implemented via ADR-0009 with no
+locked-spec edit. The only outstanding items are the five **pre-live confirmations** (G1–G5),
+which by ruling are gates on going live, not on implementing a phase in the harness. Nothing here
+blocks the next phase from building on this ground.

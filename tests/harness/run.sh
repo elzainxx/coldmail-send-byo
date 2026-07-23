@@ -94,6 +94,30 @@ go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/ide
 # run against real Postgres clones.
 go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/crypto/append-only)"
 
+# --- Phase 2 admin API behavioral suite (real Server over httptest against real PG clones) -----
+# These tests live in the brain module (internal/adminapi) and drive the ACTUAL admin handlers
+# against clones of a template migrated 0000..0014. Build a dedicated template so the clones have
+# sender.account_events (0014) + sender_module's password. Never touches the live `platform` DB.
+echo "== preparing Phase 2 admin template (sender_template_p2, migrated 0000..0014) =="
+$DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS sender_template_p2" \
+  -c "CREATE DATABASE sender_template_p2" >/dev/null 2>&1 || true
+P2_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template_p2"
+$DC exec -T postgres psql -U postgres -d sender_template_p2 -v ON_ERROR_STOP=1 -q \
+  -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+if MIGRATE_DATABASE_URL="$P2_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
+     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="sender_template_p2"; echo "  Phase 2 template ready (migrated 0000..0014 + app password)"
+else
+  export TEST_TEMPLATE_DB=""; echo "  Phase 2 template create failed"
+fi
+# The adminapi tests share the same admin DSN + module password + template env as the harness.
+( cd services/brain && GOTOOLCHAIN=local go build -o /dev/null ./... ) >/dev/null 2>&1 || true
+go_suite services/brain/internal/adminapi "Phase 2 admin API (credential intake/omit/AAD, pools/owner/cycle/RESTRICT, lifecycle+audit, config, auth 401)"
+# Restore the Phase 1 isolation template env for any later suite that expects it.
+export TEST_TEMPLATE_DB="sender_template"
+
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
 # own mounted client cert. (Host->localhost is intercepted by host antivirus TLS-inspection,
