@@ -88,8 +88,16 @@ The end-user surface for the minimal send path. Every route requires the platfor
 Missing/invalid token → `401 unauthenticated`. The surface only mounts when `PLATFORM_TOKEN_HASHES`
 is configured (fail-closed). Error envelopes carry ONLY `{code, message, details[], request_id}` —
 never SMTP text, the box's `error_reason`, an internal reason, SQL/SQLSTATE, a credential, or an
-internal hostname (two-vocabulary rule). Per-tenant isolation applies (a caller for user A never
-sees user B's jobs). Additive-only: these routes never rename; later phases add.
+internal hostname (two-vocabulary rule). Additive-only: these routes never rename; later phases add.
+
+> **Per-tenant isolation (OD-25, needs ruling).** The Phase 3 spec §6 states "a caller for user A
+> never sees user B's jobs." The locked Domain-A request shapes carry no tenant selector (`run
+> {job_item_id}`, `report ?job_id=`/`?job_item_id=`) and Domain A uses a single shared platform
+> service token, so the module cannot enforce this from the API alone. Phase 3 relies on the
+> platform (the trusted sole Domain-A caller) enforcing tenant boundaries + unguessable job UUIDs;
+> whether the module should additionally take a tenant selector and filter `sender.jobs` by it is
+> **OD-25** (`Docs/open-decisions.md`), flagged for a user ruling before the integration contract
+> is locked. Not resolved silently.
 
 | Method | Path | Purpose |
 |---|---|---|
