@@ -22,8 +22,12 @@ Single repository, multiple deployable services:
 
 - box ↔ Brain: **mutual TLS** (both directions verified). Registration **token = authority**;
   client **cert = transport**. Decommission clears `token_hash` → refused regardless of cert.
-- Brain ↔ SMTP upstream (Phase 5+): STARTTLS-before-AUTH on 587/25; implicit TLS on 465.
-- KMS Decrypt is **Brain-only** (IAM separation; box and operators hold none).
+  Phase 3 adds a box-initiated **persistent** mTLS stream (job push + outcome report) alongside
+  the Phase-0 register/heartbeat routes.
+- **box ↔ SMTP upstream** (Phase 3): the box runs the SMTP session — STARTTLS-before-AUTH on
+  587/25 (abort before AUTH if STARTTLS is absent); implicit TLS on 465.
+- KMS Decrypt is **Brain-only** (IAM separation; box and operators hold none). In Phase 3 decrypt
+  is scoped to the send path only (`internal/credential`), never reachable from the admin surface.
 
 ## Phase 0 state
 
@@ -89,3 +93,46 @@ lifecycle. Backend-only; **no** sending, dispatcher, SMTP, routing, or scoring (
 - **Reserved system user** (§0.1): shared pools/accounts use `SENDER_SYSTEM_USER_ID` (all-zero
   UUID) for `user_id NOT NULL`. The module has SELECT-only on `public.users` and cannot seed it;
   a pre-flight fails shared-pool creates with a clean `409` until the platform provisions it.
+
+## Phase 3 state — minimal send path
+
+The first phase that actually **sends**: one account, one box, one email, end to end. No new
+schema (every column already exists in the Phase 1 model). See `../Docs/phase-3-minimal-send-path.md`.
+
+- **box↔Brain send channel** (`internal/boxlink` StreamServer + `services/box/src/stream.js`):
+  a box-initiated **persistent mTLS stream** on a dedicated port (`:8444`) carrying
+  `register`/`heartbeat`/`push_job`/`report` as newline-delimited JSON. NAT-friendly (the box
+  needs no inbound port/served cert); mutual TLS both ways; the register **token = authority**
+  (bcrypt vs `sender.boxes.token_hash`), the client cert = transport. One job in flight per box.
+  The Phase-0 HTTP register/heartbeat routes (`:8443`) remain served, unchanged.
+- **Credential handoff & sole-decryptor scoping** (`internal/credential` + `internal/dispatch`):
+  the send-path `credential.Decryptor` is the SOLE decryptor (KMS Decrypt is Brain-only). It is a
+  DELIBERATELY separate package from `internal/adminapi` (which is Encrypt-only, no `Decrypt`
+  method) and is wired ONLY into the dispatcher — never into the admin surface — so **no
+  `/v1/admin/*` route can produce a plaintext credential** even though decrypt now lives in the
+  same process (OD-7, structural; proven by the behavioral suite). Per send: read
+  ciphertext+nonce+key_id, decrypt in memory (AAD = `account.id ‖ credential_key_id`), push the
+  plaintext + rendered job to the box scoped to ONE send, then zero the Brain's copy.
+- **On the box**: the plaintext is memory-only (a zeroed-on-every-exit `MemoryCredential`), never
+  logged/persisted/reported. The full SMTP session runs on the box (connect/EHLO/STARTTLS/AUTH/
+  MAIL/RCPT/DATA/QUIT); **STARTTLS-before-AUTH is mandatory on 587/25** — if STARTTLS is not
+  advertised the box aborts BEFORE AUTH (the credential never touches an unencrypted wire);
+  implicit TLS on 465. The box has NO DB and NO KMS (structural: no such deps).
+- **Dispatch (trivial, event-kicked — NOT a poll loop)**: the locked Phase 1 claim CTE (LIMIT 1)
+  + a trivial single-account selection (not paused/quarantined/disabled, under `daily_limit`).
+  No routing/fallback/round-robin/pacing/scoring/retry (Phases 4–6). A `run` or a box coming
+  online kicks one dispatch attempt.
+- **Idempotency (the load-bearing guarantee)**: `provider_message_id` is persisted at the SAME
+  commit that marks a job `sent` (no null-id-sent window), and checked before any (re-)send — a
+  reclaimed/re-run job with a non-null id is never sent again (the crash-after-`250` duplicate is
+  the accepted Phase 1 `#7` residual). On `250` with no parseable provider id, the box records the
+  Brain-generated `Message-ID` (`<job_id@sending-domain>`) — always a non-null, unique key.
+- **Outcome path**: the box reports; the Brain's outcome handler (never inventing an outcome)
+  drives `sending→sent` (accept), `sending→queued` (error requeue — the one locked failure
+  transition, `error_class='unknown'`, lease cleared, `attempt_count++`, no auto re-dispatch), or
+  `sending→bounced` (hard 550). Every transition clears `lease_expires_at` in the same UPDATE
+  (Phase 1 CHECK), sets the actor GUC, and writes one `send_logs` row + one `job_events` row.
+- **Platform API** (`internal/platformapi`, Domain A under `/v1/{quote,run,report,describe}`):
+  service-token auth (distinct credential from the operator key). `run` is async (returns `202`,
+  never blocks on the send; duplicate `job_item_id` is a clean idempotent no-op); `report`
+  reflects only clean external state. Two-vocabulary errors throughout.
