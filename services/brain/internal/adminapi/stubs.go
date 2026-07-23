@@ -49,18 +49,3 @@ func (s *Server) handleAccountPause(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAccountUnpause(w http.ResponseWriter, r *http.Request) {
 	s.stubUnimplemented(w, r, "account_unpause")
 }
-func (s *Server) handlePoolCreate(w http.ResponseWriter, r *http.Request) {
-	s.stubUnimplemented(w, r, "pool_create")
-}
-func (s *Server) handlePoolList(w http.ResponseWriter, r *http.Request) {
-	s.stubUnimplemented(w, r, "pool_list")
-}
-func (s *Server) handlePoolGet(w http.ResponseWriter, r *http.Request) {
-	s.stubUnimplemented(w, r, "pool_get")
-}
-func (s *Server) handlePoolUpdate(w http.ResponseWriter, r *http.Request) {
-	s.stubUnimplemented(w, r, "pool_update")
-}
-func (s *Server) handlePoolDelete(w http.ResponseWriter, r *http.Request) {
-	s.stubUnimplemented(w, r, "pool_delete")
-}
