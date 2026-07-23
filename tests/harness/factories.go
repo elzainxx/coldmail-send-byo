@@ -4,10 +4,19 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// acctSeq gives each inserted account a distinct smtp_username so multiple accounts can live in
+// the SAME pool without colliding on the Phase 2 per-pool uniqueness index (sender_0013:
+// UNIQUE(pool_id, smtp_host, smtp_username)). The AAD/transplant tests only need distinct rows,
+// not distinct credentials, so a unique username per insert satisfies the constraint without
+// changing what those tests exercise.
+var acctSeq atomic.Int64
 
 // Typed factories that insert REAL committed rows into a cloned DB (CLAUDE.md Rule 3 — never
 // mocks). They satisfy the real FKs (public.users, public.job_items, sender.pools) so Phase 1
@@ -77,13 +86,17 @@ func SeedAccount(t *testing.T, c *pgx.Conn, userID, poolID string) string {
 // tests' insertAccount helper.
 func insertAccountRow(t *testing.T, c *pgx.Conn, userID, poolID string, ct []byte, keyID string, nonce []byte) string {
 	t.Helper()
+	// Unique username per insert so two accounts can share a pool without tripping the Phase 2
+	// per-pool uniqueness index (sender_0013). AAD binding is proven by distinct row ids, not by
+	// distinct credentials, so this does not weaken any Phase 1 assertion.
+	username := fmt.Sprintf("user%d@example.com", acctSeq.Add(1))
 	var id string
 	err := c.QueryRow(context.Background(),
 		`INSERT INTO sender.accounts
 		   (user_id, pool_id, smtp_host, smtp_port, smtp_username, credential_ciphertext, credential_key_id, credential_nonce, from_address)
-		 VALUES ($1,$2,'smtp.example.com',587,'user@example.com',$3,$4,$5,'sender@example.com')
+		 VALUES ($1,$2,'smtp.example.com',587,$6,$3,$4,$5,'sender@example.com')
 		 RETURNING id`,
-		userID, poolID, ct, keyID, nonce).Scan(&id)
+		userID, poolID, ct, keyID, nonce, username).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert account: %v", err)
 	}
