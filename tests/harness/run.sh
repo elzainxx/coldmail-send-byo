@@ -194,6 +194,51 @@ else
   bad "a dev credential (token or hash) leaked into service logs"
 fi
 
+hr; echo "SUITE 7: Phase 3 box SMTP unit tests (real local sink; S1/S3/S5 credential paths)"; hr
+# The REAL src/smtp.js run against a REAL controllable local SMTP server (no mocks): failed-AUTH
+# scrub (S1), zeroing on every exit path incl. exception (S3), abort-before-AUTH on no-STARTTLS
+# (S5). Node's built-in test runner; judged on its own PASS/FAIL summary.
+if command -v node >/dev/null 2>&1; then
+  BOX_TEST_OUT="$( { cd services/box && node --test test/smtp.test.mjs 2>&1; } || true )"
+  # Node's built-in runner prints "ℹ pass N" / "ℹ fail N" and "✔"/"✖" lines. Judge on fail count.
+  ( echo "$BOX_TEST_OUT" | grep -E "(pass|fail) [0-9]+" | tail -4 ) || true
+  fails="$(echo "$BOX_TEST_OUT" | grep -oE "fail [0-9]+" | grep -oE "[0-9]+" | tail -1 || true)"
+  if [[ "${fails:-1}" == "0" ]]; then
+    ok "box SMTP units (S1 scrub / S3 zeroing / S5 STARTTLS-before-AUTH)"
+  else
+    bad "box SMTP units failed (fail=${fails:-?}): $(echo "$BOX_TEST_OUT" | grep -iE 'not ok|✖' | head -3 | tr '\n' ' ')"
+  fi
+else
+  bad "node not found on PATH — cannot run box SMTP unit tests"
+fi
+
+hr; echo "SUITE 8: Phase 3 dispatch + credential Go tests (real Postgres clones)"; hr
+# Build a template migrated 0000..0014 (same shape as the Phase 2 template) and run the real
+# Dispatcher + OutcomeHandler + credential.Decryptor against clones. Reuses the Phase 2 template
+# if present, else builds sender_template_p3.
+echo "== preparing Phase 3 dispatch template (sender_template_p3, migrated 0000..0014) =="
+$DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS sender_template_p3" -c "CREATE DATABASE sender_template_p3" >/dev/null 2>&1 || true
+P3_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template_p3"
+$DC exec -T postgres psql -U postgres -d sender_template_p3 -v ON_ERROR_STOP=1 -q \
+  -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+if MIGRATE_DATABASE_URL="$P3_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
+     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="sender_template_p3"; echo "  Phase 3 template ready"
+else
+  export TEST_TEMPLATE_DB=""; echo "  Phase 3 template create failed"
+fi
+go_suite services/brain/internal/dispatch "Phase 3 dispatch (claim/decrypt/push, idempotency, requeue, bounced, never-invent)"
+go_suite services/brain/internal/credential "Phase 3 credential decryptor (round-trip/tamper/transplant/key-id)"
+export TEST_TEMPLATE_DB="sender_template"
+
+hr; echo "SUITE 9: Phase 3 minimal send path — LIVE end-to-end (real box + real Mailpit)"; hr
+# T1 real email accepted, T2 async run + report, T4 no double-send, T6 register auth, S1 no
+# credential leak, OD-7 no admin route decrypts. Sourced so it shares PASS/FAIL/ok/bad + $DC.
+# shellcheck disable=SC1091
+source tests/harness/phase3_send.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr
