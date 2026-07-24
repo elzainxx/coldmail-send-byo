@@ -176,7 +176,12 @@ bound (`DailyLimitCeiling = 100_000`), not a config key, not dropped. **Phase 3'
 closed before build; the review surfaced one genuine spec-vs-contract gap — OD-25** (the Domain-A
 per-tenant isolation model), which the user **RULED option (b): module-enforced tenancy** and which
 is now implemented (explicit `user_id` selector on `run`/`report`; every platform query scoped
-`WHERE user_id=<tenant>`; cross-tenant access → 404-style not-found). Every Open Decision is now
-RULED or APPLIED; **needs-user is empty.** The remaining items are the five **pre-live
-confirmations** (G1–G5), gates on going live, not on implementing a phase in the harness. Nothing
-here blocks the next phase from building on this ground.
+`WHERE user_id=<tenant>`; cross-tenant access → 404-style not-found). **Phase 4's own §10 log
+shipped with an empty needs-user list; build surfaced one genuine spec self-contradiction —
+P4-OD-1** (the `one_by_one` routing strategy's literal `ORDER BY` does not produce its own
+documented "exhaust one, then move on" behavior — verified empirically against real Postgres),
+which the user **RULED: a deterministic `a.id ASC` tiebreak** (inert once Phase 5 gives accounts
+distinct scores). Every Open Decision is now RULED or APPLIED; **needs-user is empty.** The
+remaining items are the five **pre-live confirmations** (G1–G5), gates on going live, not on
+implementing a phase in the harness. Nothing here blocks the next phase from building on this
+ground.

@@ -173,3 +173,56 @@ outcome is the only outcome recorded, never invented (T3); AAD row-binding on de
 (transplant/tamper fail closed)) ✅ · DoD-9 (no autonomous subsystem — dispatch is trivial +
 event-kicked, no poll loop / routing / scoring / auto-quarantine / retry / reclaim; `dispatch_enabled`
 and the other dials are untouched; the Brain singleton guard is unchanged and still green) ✅.
+
+**Phase 4's DoD status (dispatcher & routing):** DoD-1 (spec
+`Docs/phase-4-dispatcher-and-routing.md`, §10 closed with an empty needs-user list at build start)
+✅ · DoD-2 (real behavioral tests on real infra — full harness `scripts/dev.sh test` →
+**39 passed, 0 failed**, verified on a genuinely CLEAN-SLATE reset from an empty Docker volume
+(`docker compose down -v` → `scripts/dev.sh up` → `seed` → `test`), not just an already-warm
+stack. The Go suites (`internal/dispatch` + `internal/platformapi`, real Postgres clones) grew to
+**39 tests** across the six chunks — `internal/dispatch`: `TestAccountConsume_NeverExceedsDailyLimit`
+(THE test — 8 genuine concurrent Postgres connections racing one `daily_limit=50` account under
+4× over-subscription land at **exactly** 50 successful consumes, run repeatedly with no flakiness),
+lazy daily-reset self-heal + reason-scoped pause admission, per-strategy distribution
+(`random`/`round_robin`/`one_by_one`, incl. the round_robin per-pool-independent cursor),
+dedicated-first/shared-fallback at an exact spillover boundary + the P4-3 kind-policy guard (never
+routes onto another tenant's dedicated account) + P4-4's explicit-fallback-wins-over-default
+resolution + the `shared_pool_not_configured` clean state (unset/disabled/wrong-kind/nonexistent
+default all behave identically), the per-user claim scoped strictly to one tenant with a respected
+batch grant, per-user lane-ceiling enforcement observed under real load, the pre-claim
+pool-eligibility gate producing ZERO claim/requeue churn across multiple ticks under sustained
+exhaustion, and unequal-campaign fairness (30/6/2 jobs) with no starvation; `internal/platformapi`:
+one-active-campaign-per-user rejected with zero job/event rows, and — via genuinely concurrent HTTP
+requests against one running `Server` — BOTH of two simultaneous second-campaign attempts
+rejected, proving the per-user advisory lock serializes rather than races, plus the carried OD-25
+tenancy suite (unchanged, still green). All 4 CI gates green on the fresh stack
+(`migration_lint`/`config_drift`/`contract_drift`/`no_secret_leak`). Anti-vacuity controls
+throughout — every guard test carries a paired positive/negative control) ✅ · DoD-3
+(`architecture-overview.md` gained a full Phase 4 section covering all six chunks in the same
+commits as the code; `api-contract.md`'s `/v1/run` row gained the additive one-campaign-per-user
+`409` behavior; `Docs/advisory-locks.md` registered the new per-user campaign-start lock;
+`Docs/open-decisions.md` recorded and closed **P4-OD-1** (below); drift gates green) ✅ ·
+DoD-4/5 (**no new config key** — Phase 4 CONSUMES `dispatch_tick_interval_ms`,
+`concurrency_per_user_default`, `daily_reset_timezone`, and `default_shared_pool_id`, all already
+seeded in Phase 1's `sender_0010`; `config_drift` still **14 keys**; `maxFallbackHops=8` is a
+documented hardcoded defense-in-depth cap — not an operator dial — per §10 P4-19, the same
+exemption class as the admin API's `DailyLimitCeiling` (OD-24)) ✅ · DoD-6 (open-decisions: the
+spec's own §10 log shipped with an empty needs-user list; build surfaced exactly one new item,
+**P4-OD-1** — the locked spec's literal `one_by_one` ORDER BY (`score DESC, RANDOM()`) does not
+produce its own documented "exhaust one, then move on" behavior (verified empirically against real
+Postgres: `RANDOM()` reshuffles tied scores on every call, the actual pre-Phase-5 condition) — which
+was **RULED: a deterministic `a.id ASC` tiebreak**, inert once Phase 5 gives accounts distinct
+scores. needs-user empty) ✅ · DoD-7 (**one additive index only** — `jobs_claim_by_user_idx`
+(migration `sender_0015`, `CREATE INDEX CONCURRENTLY`), coexisting with the Phase 1 `jobs_claim_idx`;
+no locked column/constraint touched; chain now `sender_0000..0015`; the migration RUNNER itself
+required a fix — applying a `CONCURRENTLY` file statement-by-statement outside any transaction, for
+both up and down — proven by the lifecycle integration test rolling `0015` back and forward for
+real; grants invariant unchanged and green) ✅ · DoD-8 (security re-verified: no change to the
+sole-decryptor scoping, box memory-only credential handling, mTLS, or the two-vocabulary rule —
+Phase 4 touches only claim/eligibility/routing/fairness logic on already-decrypted-path plumbing;
+the new per-user advisory lock and the new `409` on a rejected second campaign carry no credential/
+internal-reason detail, consistent with the platform surface's existing envelope) ✅ · DoD-9 (no
+new autonomous subsystem — the polling loop replaces the Phase-3 event-only kick as LOCKED by this
+phase's own spec, not a new kill-switch-gated subsystem; `dispatch_enabled` remains correctly
+UNWIRED because it is seeded only in Phase 9.5's `sender_0021`, not yet on disk — recorded honestly
+rather than stubbed; the Brain singleton guard is unchanged and still green) ✅.
