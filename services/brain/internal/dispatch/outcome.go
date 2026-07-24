@@ -46,13 +46,18 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
 		return
 	}
 
-	switch rep.Outcome {
-	case boxproto.OutcomeAccepted:
+	// Phase 5 (§1/§2): the Brain classifies the raw report into exactly one error_class, then
+	// applies the per-class job + account policy in one transaction. Success has no class.
+	if rep.Outcome == boxproto.OutcomeAccepted {
 		h.applyAccepted(ctx, boxID, rep)
-	case boxproto.OutcomeBounced:
-		h.applyBounced(ctx, boxID, rep)
-	default: // error (or anything non-accepted/bounced) → requeue (§5.4)
-		h.applyError(ctx, boxID, rep)
+		return
+	}
+	class := classifyReport(rep)
+	switch class {
+	case classBouncePermanent:
+		h.applyBounced(ctx, boxID, rep) // terminal bounced, NO account penalty (§2.1, §3.3 carve-out)
+	default: // auth_failure | throttle | transport_4xx | timeout | unknown → requeue + per-class account effect
+		h.applyClassifiedFailure(ctx, boxID, rep, class)
 	}
 }
 
@@ -70,9 +75,12 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
 // crashes after consume) still costs headroom; refunding it is deferred to Phase 6 (P4-15).
 func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report) {
 	if rep.ProviderMessageID == "" {
-		// Defensive: never mark sent without an idempotency key. Treat as an error requeue.
-		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued (§4.3 anomaly)", rep.JobID)
-		h.applyError(ctx, boxID, boxproto.Report{JobID: rep.JobID, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse})
+		// Defensive: never mark sent without an idempotency key (§4.3 anomaly). Treat as a
+		// classified failure — accepted_without_id classifies as 'unknown' (§1.1 row 8), a
+		// conservative requeue with NO account penalty, which is exactly right for this anomaly.
+		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly)", rep.JobID)
+		anomaly := boxproto.Report{JobID: rep.JobID, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
+		h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly))
 		return
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
@@ -110,8 +118,11 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 	}
 }
 
-// applyBounced: sending → bounced (terminal). Sets completed_at, clears the lease (§5.4). Also
-// writes a send_logs row for the attempt.
+// applyBounced: sending → bounced (terminal, §2.1). Sets completed_at, clears the lease,
+// last_error_class='bounce_permanent'. NO account effect: a bounce is a RECIPIENT fault, so it
+// does NOT set last_failure_at, does NOT touch consecutive_failures, and does NOT recompute the
+// score (the LOCKED "bounce never penalizes" carve-out, §3.3 — asserted byte-for-byte by T4).
+// Also writes a send_logs row for the attempt.
 func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report) {
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
@@ -119,7 +130,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 			   SET state='bounced',
 			       completed_at=NOW(),
 			       lease_expires_at=NULL,
-			       last_error_class='unknown',
+			       last_error_class='bounce_permanent',
 			       last_error_message=$2,
 			       updated_at=NOW()
 			 WHERE id=$1 AND state='sending'`, rep.JobID, truncate(rep.SMTPResponse, 2000))
@@ -136,36 +147,103 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 	}
 }
 
-// applyError: sending → queued (the one locked failure transition, §5.4). error_class='unknown'
-// (no taxonomy in Phase 3), last_error_message = truncated smtp_response/error_reason, lease
-// cleared, attempt_count++, next_attempt_at=NOW(). No auto re-dispatch. Also logs the attempt.
-func (h *OutcomeHandler) applyError(ctx context.Context, boxID string, rep boxproto.Report) {
+// applyClassifiedFailure applies the §2.1 per-class policy for a penalizing failure
+// (auth_failure | throttle | transport_4xx | timeout | unknown), in ONE transaction:
+//  1. requeue the job: sending → queued (the one locked failure transition, §2.2), lease cleared,
+//     last_error_class = the real class, saturating attempt_count (§6.2 — NEVER exceeds
+//     max_attempts, so jobs_attempt_count_check is honored, not weakened), next_attempt_at = the
+//     per-class backoff (§6.4);
+//  2. apply the account effect to the assigned_account_id account (quarantine / pause / none) +
+//     recompute the score, writing account_events(actor='system') on a flag change (§2, §4);
+//  3. write the send_logs row for the attempt.
+// All three commit together, so a failed account effect rolls back the job requeue too (the
+// account state and the job state never disagree).
+func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string) {
 	detail := rep.ErrorReason
 	if rep.SMTPResponse != "" {
 		detail = rep.ErrorReason + ": " + rep.SMTPResponse
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
+		// The account this attempt used (needed for the account effect + score recompute). Read it
+		// BEFORE the requeue clears assignment fields; assigned_account_id is not cleared on requeue
+		// (only the box is), but reading first keeps the account effect independent of that ordering.
+		var acctID *string
+		if err := tx.QueryRow(ctx,
+			`SELECT assigned_account_id FROM sender.jobs WHERE id=$1 AND state='sending'`, rep.JobID).Scan(&acctID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNoop // not sending (raced/duplicate) — nothing to apply
+			}
+			return err
+		}
+
+		// (1) Requeue with the saturating attempt_count and the per-class backoff. The CASE bounds
+		// attempt_count at max_attempts (§6.2): once at the cap it STAYS there, so the locked
+		// jobs_attempt_count_check (attempt_count <= max_attempts) can never abort — no 23514 ever,
+		// for any job lifetime. next_attempt_at uses the post-increment attempt as the backoff index.
+		nextSecs := h.backoffSecondsForClass(class, saturatingAttempt(ctx, tx, rep.JobID))
 		tag, err := tx.Exec(ctx,
 			`UPDATE sender.jobs
 			   SET state='queued',
 			       lease_expires_at=NULL,
-			       last_error_class='unknown',
+			       last_error_class=$3,
 			       last_error_message=$2,
-			       attempt_count = attempt_count + 1,
-			       next_attempt_at = NOW(),
+			       attempt_count = LEAST(attempt_count + 1, max_attempts),
+			       next_attempt_at = NOW() + make_interval(secs => $4),
 			       updated_at=NOW()
-			 WHERE id=$1 AND state='sending'`, rep.JobID, truncate(detail, 2000))
+			 WHERE id=$1 AND state='sending'`,
+			rep.JobID, truncate(detail, 2000), class, nextSecs)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() == 0 {
 			return errNoop
 		}
+
+		// (2) Account effect + score recompute on the one account this attempt used.
+		if acctID != nil {
+			if err := h.applyAccountEffect(ctx, tx, *acctID, class, rep); err != nil {
+				return err
+			}
+		}
+
+		// (3) Log the attempt.
 		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
-		log.Printf("outcome: apply error for job %s failed: %v", rep.JobID, err)
+		log.Printf("outcome: apply %s for job %s failed: %v", class, rep.JobID, err)
 	}
+}
+
+// backoffSecondsForClass returns next_attempt_at's delay (seconds) for a requeued class (§6.4):
+//   - transport_4xx / timeout / unknown → the exponential ladder indexed by the saturating attempt;
+//   - throttle                          → throttle_pause_seconds (align with the account's window);
+//   - auth_failure                      → 0 (immediately eligible; the account is quarantined so
+//     routing simply won't pick it — the JOB should try a different account on the very next tick).
+func (h *OutcomeHandler) backoffSecondsForClass(class string, attemptCount int) int {
+	switch class {
+	case classAuthFailure:
+		return 0
+	case classThrottle:
+		return h.cfg.ThrottlePauseSeconds
+	default: // transport_4xx | timeout | unknown
+		return h.cfg.Backoff.backoffForAttempt(attemptCount)
+	}
+}
+
+// saturatingAttempt reads the job's current attempt_count, returning the value AFTER a saturating
+// increment (min(attempt_count+1, max_attempts)) — the same value the UPDATE will store — so the
+// backoff ladder is indexed by the attempt this requeue represents. Read-only; the UPDATE does the
+// actual write atomically.
+func saturatingAttempt(ctx context.Context, tx pgx.Tx, jobID string) int {
+	var attempt, max int
+	if err := tx.QueryRow(ctx,
+		`SELECT attempt_count, max_attempts FROM sender.jobs WHERE id=$1`, jobID).Scan(&attempt, &max); err != nil {
+		return 1 // conservative: treat as first retry if unreadable (backoff still bounded)
+	}
+	if attempt+1 > max {
+		return max
+	}
+	return attempt + 1
 }
 
 // writeSendLog inserts one send_logs row from the job's denormalized content + the report's

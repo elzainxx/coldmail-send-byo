@@ -148,14 +148,17 @@ func TestOutcome_NeverInventsSent(t *testing.T) {
 	}
 }
 
-// TestOutcome_ErrorRequeues (T5) — an error report drives sending→queued (the one locked failure
-// transition), clears the lease, increments attempt_count, sets error_class='unknown', writes one
-// send_log, and does NOT auto re-dispatch. Anti-vacuity: the job was genuinely sending first.
+// TestOutcome_ErrorRequeues (Phase 5) — a connect_refused error report classifies as `timeout`
+// (§1.1 row 6) and drives sending→queued (the one locked failure transition), clears the lease,
+// increments attempt_count, sets last_error_class='timeout' (Phase 5 replaces the Phase-3
+// 'unknown' stub), applies NO account penalty (timeout is transient — §2.1), backs off
+// next_attempt_at into the future (§6.4), writes one send_log, and does NOT auto re-dispatch.
+// Anti-vacuity: the job was genuinely sending first.
 func TestOutcome_ErrorRequeues(t *testing.T) {
 	e := newDispatchEnv(t, "requeue")
 	ctx := context.Background()
 	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, pool, "sec")
 	job := e.seedQueuedJob(t, "c@example.com")
 	if _, err := e.d.TryDispatch(ctx); err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -181,13 +184,36 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	if attempt != 1 {
 		t.Fatalf("attempt_count=%d after one failure, want 1", attempt)
 	}
-	// error_class='unknown' (no taxonomy in Phase 3).
+	// Phase 5 taxonomy: connect_refused → timeout (§1.1 row 6), not the Phase-3 'unknown' stub.
 	var ec *string
 	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM sender.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
 		t.Fatalf("error class: %v", err)
 	}
-	if ec == nil || *ec != "unknown" {
-		t.Fatalf("last_error_class=%v, want unknown", ec)
+	if ec == nil || *ec != "timeout" {
+		t.Fatalf("last_error_class=%v, want timeout", ec)
+	}
+	// Backoff: timeout requeues with next_attempt_at in the FUTURE (§6.4), not NOW().
+	var future bool
+	if err := e.admin.QueryRow(ctx, `SELECT next_attempt_at > NOW() FROM sender.jobs WHERE id=$1`, job).Scan(&future); err != nil {
+		t.Fatalf("next_attempt_at: %v", err)
+	}
+	if !future {
+		t.Fatalf("next_attempt_at not backed off into the future for a timeout requeue (§6.4)")
+	}
+	// No account penalty for timeout: not paused/quarantined; NO account_events row written.
+	var paused, quarantined bool
+	if err := e.admin.QueryRow(ctx, `SELECT paused, quarantined FROM sender.accounts WHERE id=$1`, acct).Scan(&paused, &quarantined); err != nil {
+		t.Fatalf("account flags: %v", err)
+	}
+	if paused || quarantined {
+		t.Fatalf("timeout penalized the account (paused=%v quarantined=%v) — transient must not (§2.1)", paused, quarantined)
+	}
+	var aev int
+	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM sender.account_events WHERE account_id=$1`, acct).Scan(&aev); err != nil {
+		t.Fatalf("account_events: %v", err)
+	}
+	if aev != 0 {
+		t.Fatalf("account_events count=%d for a no-penalty timeout, want 0", aev)
 	}
 	if n := e.sendLogCount(t, job); n != 1 {
 		t.Fatalf("send_log count=%d after error, want 1 (the attempt is logged)", n)

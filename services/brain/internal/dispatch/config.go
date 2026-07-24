@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,66 @@ type Config struct {
 	ConcurrencyPerUserDefault int     // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
 	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
 	DefaultSharedPoolID       *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
+
+	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
+	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
+	ThrottlePauseSeconds int            // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
+	Backoff              BackoffSchedule // retry_backoff_schedule — the transient/timeout/unknown requeue ladder (§6.4)
+	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
+}
+
+// BackoffSchedule is the §6.4 exponential ladder for transient/timeout/unknown requeues. The
+// saturating attempt_count indexes the ladder; past the last rung the delay saturates at
+// max_seconds (§6.4). Read from the retry_backoff_schedule json config key.
+type BackoffSchedule struct {
+	LadderSeconds []int `json:"ladder_seconds"`
+	MaxSeconds    int   `json:"max_seconds"`
+}
+
+// backoffScheduleDefault mirrors the sender_0017 seed. Used ONLY as the reject-and-fall-back
+// value when the stored json is malformed (§7: "never crash") — never as a config-not-code
+// shortcut; the healthy path always reads the seeded row.
+var backoffScheduleDefault = BackoffSchedule{LadderSeconds: []int{30, 120, 600}, MaxSeconds: 600}
+
+// ScoreWeights is the §3.2 status-score formula's weights + shape parameters, read from the
+// status_score_weights json config key.
+type ScoreWeights struct {
+	WFail              float64 `json:"w_fail"`
+	WProx              float64 `json:"w_prox"`
+	WRecency           float64 `json:"w_recency"`
+	FailSaturation     float64 `json:"fail_saturation"`
+	RecencyHorizonHours float64 `json:"recency_horizon_hours"`
+}
+
+// scoreWeightsDefault mirrors the sender_0017 seed — the §7 reject-and-fall-back value for a
+// malformed stored json (never a hardcoded shortcut).
+var scoreWeightsDefault = ScoreWeights{WFail: 60, WProx: 15, WRecency: 25, FailSaturation: 5, RecencyHorizonHours: 72}
+
+// backoffForAttempt returns the requeue delay (seconds) for a given saturating attempt_count,
+// indexing the ladder and capping at MaxSeconds (§6.4). attempt_count is 1-based after the first
+// failure; index 0 of the ladder is the first backoff. A ladder rung is itself capped at
+// MaxSeconds so a mis-seeded ladder can never exceed the documented cap.
+func (b BackoffSchedule) backoffForAttempt(attemptCount int) int {
+	ladder := b.LadderSeconds
+	if len(ladder) == 0 {
+		ladder = backoffScheduleDefault.LadderSeconds
+	}
+	idx := attemptCount - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(ladder) {
+		idx = len(ladder) - 1
+	}
+	d := ladder[idx]
+	max := b.MaxSeconds
+	if max <= 0 {
+		max = backoffScheduleDefault.MaxSeconds
+	}
+	if d > max {
+		d = max
+	}
+	return d
 }
 
 // LoadConfig reads the dispatcher-consumed config keys from sender.config. Values are JSONB-wrapped
@@ -57,7 +118,68 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.DefaultSharedPoolID, err = readNullableStringKey(ctx, db, "default_shared_pool_id"); err != nil {
 		return c, err
 	}
+	if c.QuarantineThreshold, err = readIntKey(ctx, db, "quarantine_threshold"); err != nil {
+		return c, err
+	}
+	if c.ThrottlePauseSeconds, err = readIntKey(ctx, db, "throttle_pause_seconds"); err != nil {
+		return c, err
+	}
+	// The two json keys: read the seeded row, but on a MALFORMED value fall back to the documented
+	// default with a logged warning rather than crash the dispatcher (§7). A missing key is still a
+	// hard error (the migration seeds it); only a corrupt/edited value triggers the fallback.
+	c.Backoff = readBackoffSchedule(ctx, db)
+	c.ScoreWeights = readScoreWeights(ctx, db)
 	return c, nil
+}
+
+// readBackoffSchedule reads retry_backoff_schedule ({"v": {...}}), unwrapping and validating the
+// inner object; on any malformation it logs and returns backoffScheduleDefault (§7 never-crash).
+func readBackoffSchedule(ctx context.Context, db *pgxpool.Pool) BackoffSchedule {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='retry_backoff_schedule'`).Scan(&raw); err != nil {
+		log.Printf("dispatch: retry_backoff_schedule unreadable (%v) — using documented default", err)
+		return backoffScheduleDefault
+	}
+	var wrap struct {
+		V *BackoffSchedule `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
+		len(wrap.V.LadderSeconds) == 0 || wrap.V.MaxSeconds <= 0 {
+		log.Printf("dispatch: retry_backoff_schedule malformed — using documented default (§7)")
+		return backoffScheduleDefault
+	}
+	for _, s := range wrap.V.LadderSeconds {
+		if s <= 0 {
+			log.Printf("dispatch: retry_backoff_schedule has a non-positive rung — using documented default (§7)")
+			return backoffScheduleDefault
+		}
+	}
+	return *wrap.V
+}
+
+// readScoreWeights reads status_score_weights ({"v": {...}}), unwrapping and validating; on any
+// malformation it logs and returns scoreWeightsDefault (§7 never-crash). The divisors
+// fail_saturation and recency_horizon_hours must be strictly positive.
+func readScoreWeights(ctx context.Context, db *pgxpool.Pool) ScoreWeights {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='status_score_weights'`).Scan(&raw); err != nil {
+		log.Printf("dispatch: status_score_weights unreadable (%v) — using documented default", err)
+		return scoreWeightsDefault
+	}
+	var wrap struct {
+		V *ScoreWeights `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
+		wrap.V.WFail < 0 || wrap.V.WProx < 0 || wrap.V.WRecency < 0 ||
+		wrap.V.FailSaturation <= 0 || wrap.V.RecencyHorizonHours <= 0 {
+		log.Printf("dispatch: status_score_weights malformed — using documented default (§7)")
+		return scoreWeightsDefault
+	}
+	return *wrap.V
 }
 
 // readIntKey reads one integer config key ({"v": <int>}).

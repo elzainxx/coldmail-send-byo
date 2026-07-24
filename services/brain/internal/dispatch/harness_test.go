@@ -145,7 +145,13 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 		t.Fatalf("decryptor: %v", err)
 	}
 
-	cfg := Config{JobMaxProcessingTimeSec: 120, DebugLogRetentionDays: 7}
+	// Load real config from the clone (seeded by the migration chain) so the OutcomeHandler has the
+	// real Phase 5 dials (quarantine_threshold, throttle_pause_seconds, backoff ladder, weights) —
+	// not a hand-built Config that would zero them and mask policy bugs.
+	cfg, err := LoadConfig(context.Background(), pool)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
 	px := &recordingPusher{boxID: seedBox(t, admin)}
 	d := NewDispatcher(pool, dec, px)
 	oh := NewOutcomeHandler(pool, cfg)
