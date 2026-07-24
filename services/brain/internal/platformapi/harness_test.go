@@ -76,14 +76,24 @@ func (e *testEnv) seedUser(t *testing.T, email string) string {
 	return id
 }
 
-// seedJobItem inserts a real public.job_items row owned by userID and returns its id.
+// seedJobItem inserts a real public.job_items row owned by userID and returns its id. Its
+// campaign_id defaults to userID itself (fine for single-campaign tests; use seedJobItemCampaign
+// when a test needs two DISTINCT campaigns for the same user).
 func (e *testEnv) seedJobItem(t *testing.T, userID, recipient string) string {
+	t.Helper()
+	return e.seedJobItemCampaign(t, userID, userID, recipient)
+}
+
+// seedJobItemCampaign inserts a real public.job_items row owned by userID under an EXPLICIT
+// campaignID (Phase 4 Chunk 5's one-campaign-per-user tests need two job_items for the SAME user
+// under two DIFFERENT campaigns — seedJobItem's userID-as-campaign_id default can't express that).
+func (e *testEnv) seedJobItemCampaign(t *testing.T, campaignID, userID, recipient string) string {
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(context.Background(),
 		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
 		 VALUES ($1, $2, $3, 'Subj', '<p>b</p>', 'reply@ourdomain.com', 'pending') RETURNING id`,
-		userID, userID, recipient).Scan(&id); err != nil {
+		campaignID, userID, recipient).Scan(&id); err != nil {
 		t.Fatalf("seed job_item: %v", err)
 	}
 	return id

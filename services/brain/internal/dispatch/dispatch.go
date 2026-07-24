@@ -36,6 +36,14 @@ type Dispatcher struct {
 	// (§5.3), never load-bearing for correctness (SKIP LOCKED + accounts_daily_sent_check are).
 	rrMu     sync.Mutex
 	rrCursor map[string]string // pool_id -> last-consumed account id
+
+	// fairMu/fairCursor is the in-memory campaign (≡ user, §8) fairness cursor (§5.1, P4-6): the
+	// user_id serviced LAST. Soft state, resets to "" (unset) on Brain restart — the same accepted
+	// ≤one-rotation transient skew (§5.3) as rrCursor; no-starvation is structural (every ring
+	// member is visited every tick, §5.2), so a lost cursor never starves a campaign, only
+	// momentarily re-orders send interleaving.
+	fairMu     sync.Mutex
+	fairCursor string
 }
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed

@@ -253,3 +253,37 @@ build plan); this section is updated as each chunk lands.
   all behave identically — clean `(false, nil)`, and the SAME never-re-enqueued job dispatches on
   the very next attempt once the operator sets a valid default (T10-equivalent, config re-read
   per call).
+- **Chunk 5 — fairness + concurrency + one-campaign-per-user** (`internal/dispatch/loop.go` +
+  `internal/dispatch/dispatch.go` + `internal/platformapi/store.go`): three pieces.
+  1. **The campaign fairness cursor** (§5.1, `Dispatcher.fairCursor` + `rotateRing`): each tick
+     rotates the (already lane-filtered, already gated) ring to start just after the `user_id`
+     serviced last, wrapping to the smallest when the cursor is unset/stale/past every member.
+     Every ring member is still visited every tick regardless of rotation — no-starvation is
+     structural (§5.2); the cursor only changes interleaving order across ticks.
+  2. **The pre-claim pool-eligibility gate** (§1.2/§6, P4-5, `poolChainHasEligible`): a user whose
+     resolved pool chain (Chunk 4) has zero eligible accounts — including an EMPTY chain from an
+     unset/invalid `default_shared_pool_id` (§4.3) — is dropped from the ring before any claim,
+     so sustained exhaustion produces **zero** claim/requeue churn and **zero** extra
+     `job_events` rows (only the genesis event survives across many ticks). Reuses
+     `resolvePoolChain` + `poolHasEligible` (Chunk 4) so the gate can never drift from the real
+     selection predicate.
+  3. **One-active-campaign-per-user** (§8, P4-7, `internal/platformapi/store.go`'s `createJob`):
+     the check-then-insert now runs under a `pg_advisory_xact_lock(hashtext('sender.campaign_start:'
+     || user_id))` (transaction-scoped, auto-released, registered in `Docs/advisory-locks.md`).
+     Starting a DIFFERENT campaign while one is active for the same user is a clean `409 conflict`
+     (internal reason `user_campaign_active`) with **zero** job rows written — a repeat `run` for
+     the SAME campaign is unaffected (handled earlier by the existing idempotent lookup). Per-user
+     concurrency was already a pre-claim lane count from Chunk 1 (`concurrency_per_user_default −
+     in_flight[user]`, never in the claim SQL); one-campaign-per-user is what makes that ceiling
+     equivalent to a per-campaign ceiling, per the spec's own equivalence (§6/§8).
+  Proven by `fairness_test.go` (real Postgres, multi-tick, `settleAllSending` simulating real box
+  reports so lanes free up across ticks): unequal campaigns (30/6/2 jobs) all complete without the
+  small ones starving behind the large one; an exhausted user's jobs sit `queued` untouched across
+  3 ticks (1 event total, genesis only) while a healthy second user in the same tick IS serviced;
+  the same no-churn property holds for the Chunk-4 unconfigured-shared-pool state; `rotateRing`'s
+  wrap/advance semantics are unit-tested directly. `campaign_test.go` (real Postgres, genuine
+  concurrent HTTP requests against one running `platformapi.Server`): a second campaign is
+  rejected with zero job/event rows and the first campaign is unaffected; TWO concurrent attempts
+  at a second campaign are BOTH rejected (proving the advisory lock genuinely serializes the
+  check-then-insert, not just correct single-threaded); two DIFFERENT users' concurrent `run`s
+  never interfere (the lock is per-user, not global).

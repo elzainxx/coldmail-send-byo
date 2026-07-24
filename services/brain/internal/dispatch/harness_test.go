@@ -69,6 +69,16 @@ func (p *recordingPusher) AnyConnectedBox() string {
 	return ""
 }
 
+// freeAllBoxes clears every box's in-flight marker, simulating that each box has reported its
+// outcome and is idle again (mirrors boxlink.StreamServer.dispatchFrame's report handling, which
+// clears inFlight on every report — accepted, error, or bounced). Used by multi-tick tests that
+// need more total pushes than there are boxes (Chunk 5 fairness/gate tests).
+func (p *recordingPusher) freeAllBoxes() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.inFlightBy = map[string]bool{}
+}
+
 func (p *recordingPusher) lastPush() (boxproto.PushJob, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

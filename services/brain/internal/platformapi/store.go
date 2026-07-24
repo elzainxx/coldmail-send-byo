@@ -21,8 +21,17 @@ const (
 // BELONG to userID (`ji.user_id = userID`); a job_item owned by another tenant is treated as
 // NOT FOUND — no existence disclosure across tenants. The idempotent-existing lookup is scoped
 // the same way, so tenant B can never observe (nor collide with) tenant A's job for A's job_item.
+//
+// ONE-ACTIVE-CAMPAIGN-PER-USER (§8, P4-7, Phase 4 Chunk 5): the whole check-then-insert runs under
+// a per-user PostgreSQL transaction-scoped advisory lock (released on commit/rollback), so two
+// concurrent `run` calls for the SAME user cannot both pass the "is a different campaign already
+// active" check. Starting a SECOND campaign for a user who already has one active is REJECTED
+// outright — no queueing, NO job row created (409 conflict, internal reason
+// 'user_campaign_active') — while a REPEAT `run` for the SAME campaign_id is unaffected (handled
+// above by the idempotent existing-job lookup) and always passes this gate.
 func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID string, existing bool, e *apiError) {
 	// If a job for this job_item already exists FOR THIS TENANT, return it (idempotent, §6.2).
+	// Same-campaign reruns therefore never reach the advisory-lock gate below.
 	if existingID, ok := s.jobIDByItem(ctx, jobItemID, userID); ok {
 		return existingID, true, nil
 	}
@@ -35,6 +44,40 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 
 	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', 'system', true)"); err != nil {
 		return "", false, newErr(codeInternalError, "set_actor_failed")
+	}
+
+	// Serialize concurrent campaign-start checks for THIS user (transaction-scoped: auto-released
+	// on commit/rollback, no unlock call needed). hashtext() keeps the key namespace distinct from
+	// both the Brain singleton lock and the migration runner's lock (Docs/advisory-locks.md).
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('sender.campaign_start:' || $1::text))`, userID); err != nil {
+		return "", false, newErr(codeInternalError, "advisory_lock_failed")
+	}
+
+	// A DIFFERENT campaign already active for this user (any non-terminal job) → reject outright,
+	// no job row written. This must run for THIS job_item's campaign_id, so read it first — a
+	// cross-tenant job_item still resolves to job_item_not_found below via the same INSERT...
+	// SELECT tenant scoping, never leaking whether it exists.
+	var campaignID string
+	if err := tx.QueryRow(ctx,
+		`SELECT campaign_id FROM public.job_items WHERE id = $1 AND user_id = $2`, jobItemID, userID).
+		Scan(&campaignID); err != nil {
+		if isNoRows(err) {
+			return "", false, newErr(codeNotFound, "job_item_not_found").
+				withDetails(fieldDetail{Field: "job_item_id", Issue: issueNotFound})
+		}
+		return "", false, newErr(codeInternalError, "read_job_item_failed")
+	}
+	var otherCampaignActive bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM sender.jobs
+		                WHERE user_id = $1 AND campaign_id <> $2
+		                  AND state IN ('queued','assigned','sending'))`,
+		userID, campaignID).Scan(&otherCampaignActive); err != nil {
+		return "", false, newErr(codeInternalError, "campaign_check_failed")
+	}
+	if otherCampaignActive {
+		return "", false, newErr(codeConflict, "user_campaign_active")
 	}
 
 	// Freeze the denormalized copy from public.job_items into sender.jobs (Phase 1 shape), but ONLY

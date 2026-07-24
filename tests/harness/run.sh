@@ -231,7 +231,7 @@ else
 fi
 go_suite services/brain/internal/dispatch "Phase 3 dispatch (claim/decrypt/push, idempotency, requeue, bounced, never-invent)"
 go_suite services/brain/internal/credential "Phase 3 credential decryptor (round-trip/tamper/transplant/key-id)"
-go_suite services/brain/internal/platformapi "Phase 3 platform API tenancy (OD-25: cross-tenant 404, selector required, authn)"
+go_suite services/brain/internal/platformapi "Platform API tenancy (OD-25) + one-campaign-per-user (Phase 4 P4-7, incl. concurrent-attempt serialization)"
 export TEST_TEMPLATE_DB="sender_template"
 
 hr; echo "SUITE 9: Phase 3 minimal send path — LIVE end-to-end (real box + real Mailpit)"; hr

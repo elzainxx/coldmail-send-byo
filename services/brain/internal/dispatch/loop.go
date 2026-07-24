@@ -1,12 +1,8 @@
 // loop.go — the Phase-4 polling dispatch loop (§1.2): one tick snapshots ground truth, computes
-// per-user lanes, claims per active user (§1.1), and turns each claimed job into a push_job
-// handoff. This is the PRODUCTION driver; TryDispatch (dispatch.go) is the Phase-3 single-shot
-// primitive kept for its own behavioral tests.
-//
-// Chunk 1 scope (this file): the loop skeleton + per-user claim + lane ceiling + batching. NO
-// routing strategy, NO pool eligibility/fallback, NO fairness cursor yet (a plain ascending sort
-// stands in for the ring order) — those land in Chunks 2-5, each replacing one TODO-marked piece
-// without changing this file's shape.
+// per-user lanes, applies the pre-claim pool-eligibility gate (§1.2/§6, P4-5), visits active
+// campaigns in fairness-cursor order (§5), claims per active user (§1.1), and turns each claimed
+// job into a push_job handoff. This is the PRODUCTION driver; TryDispatch (dispatch.go) is the
+// Phase-3 single-shot primitive kept for its own behavioral tests.
 package dispatch
 
 import (
@@ -61,27 +57,39 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		return cfg, 0, err
 	}
 
-	// Phase B: available lanes (the ceiling). lanes[U] = max(0, ceiling - in_flight[U]); a user
-	// already at ceiling is skipped (frees no churn). TODO(Chunk 4): the pre-claim pool-eligibility
-	// gate (P4-5, POOL_CHAIN_HAS_ELIGIBLE) belongs here — until it lands, an exhausted pool's jobs
-	// are claimed and immediately requeued each tick (correctness-safe, just noisier events).
+	// Phase B: available lanes (the ceiling) + the pre-claim pool-eligibility gate (§1.2/§6, P4-5).
+	// lanes[U] = max(0, ceiling - in_flight[U]); a user already at ceiling is skipped (frees no
+	// churn). A user whose resolved pool chain has ZERO eligible accounts — including an empty
+	// chain from an unset/invalid default_shared_pool_id, §4.3 — is likewise skipped: their jobs
+	// stay queued, untouched, no claim/requeue churn, no job_events flooding under sustained
+	// exhaustion (the rare-race requeue in resolveAndPush remains the only backstop).
 	var ring []ringSlot
 	for _, u := range activeUsers {
 		lanes := cfg.ConcurrencyPerUserDefault - inFlight[u]
 		if lanes <= 0 {
 			continue
 		}
+		hasEligible, err := d.poolChainHasEligible(ctx, u, cfg)
+		if err != nil {
+			return cfg, 0, err
+		}
+		if !hasEligible {
+			continue
+		}
 		ring = append(ring, ringSlot{userID: u, grant: lanes})
 	}
-	// TODO(Chunk 5): replace this plain ascending sort with the rotating fairness cursor (§5) —
-	// "first ring member with user_id > rr_cursor, wrapping". Every ring member is still visited
-	// every tick either way, so no-starvation already holds (§5.2); the cursor only changes
-	// interleaving order across ticks, not membership within one.
 	sort.Slice(ring, func(i, j int) bool { return ring[i].userID < ring[j].userID })
 
-	// Phase C+D: claim per active user (in ring order), then resolve+push each claimed job.
+	// Phase C: rotate the ring to start at the first member after the fairness cursor (§5.1),
+	// wrapping to the smallest if the cursor is past every member or unset/stale (a departed
+	// campaign's id, e.g.). Every member is still visited this tick regardless of rotation —
+	// no-starvation is structural (§5.2); the cursor only changes interleaving order across ticks.
+	ring = rotateRing(ring, d.fairnessCursor())
+
+	// Phase C+D: claim per active user (in rotated ring order), then resolve+push each claimed job.
 	pushed := 0
 	for _, slot := range ring {
+		d.setFairnessCursor(slot.userID) // advance past this campaign as soon as it's visited
 		jobs, err := d.claimForUser(ctx, slot.userID, slot.grant, cfg.JobMaxProcessingTimeSec)
 		if err != nil {
 			return cfg, pushed, err
@@ -105,6 +113,64 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		}
 	}
 	return cfg, pushed, nil
+}
+
+// poolChainHasEligible is the P4-5 pre-claim gate: does userID's resolved pool chain (§4.2) have
+// AT LEAST ONE pool with an eligible account right now? Reuses resolvePoolChain + poolHasEligible
+// so the gate can never drift from the real selection logic (§4.1's own "defined identically"
+// principle). An empty chain (no dedicated pool, no resolvable shared fallback) returns false —
+// treated exactly like an exhausted chain, per §4.3.
+func (d *Dispatcher) poolChainHasEligible(ctx context.Context, userID string, cfg Config) (bool, error) {
+	pools, err := d.resolvePoolChain(ctx, userID, cfg)
+	if err != nil {
+		return false, err
+	}
+	for _, poolID := range pools {
+		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// fairnessCursor/setFairnessCursor guard Dispatcher.fairCursor (§5.1) under its own mutex —
+// separate from rrMu (the account-cursor lock), since they protect independent state and are read
+// from different call sites.
+func (d *Dispatcher) fairnessCursor() string {
+	d.fairMu.Lock()
+	defer d.fairMu.Unlock()
+	return d.fairCursor
+}
+
+func (d *Dispatcher) setFairnessCursor(userID string) {
+	d.fairMu.Lock()
+	d.fairCursor = userID
+	d.fairMu.Unlock()
+}
+
+// rotateRing reorders ring (already sorted ascending by userID) to start at the first member
+// with userID > cursor, wrapping to the beginning if none qualifies (cursor is unset, stale, or
+// past every current member — §5.1's "resolves to the next id after the one we last served").
+// Every element is kept; only the starting point changes.
+func rotateRing(ring []ringSlot, cursor string) []ringSlot {
+	if len(ring) == 0 {
+		return ring
+	}
+	start := 0
+	for i, slot := range ring {
+		if slot.userID > cursor {
+			start = i
+			break
+		}
+		if i == len(ring)-1 {
+			start = 0 // no member exceeds the cursor — wrap to the smallest
+		}
+	}
+	return append(append([]ringSlot{}, ring[start:]...), ring[:start]...)
 }
 
 // snapshotInFlight is Phase A1 (§1.2): per-user count of jobs currently assigned/sending, served
