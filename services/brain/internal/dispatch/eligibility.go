@@ -138,12 +138,10 @@ RETURNING a.id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.fro
 // shared fallback) and atomically consumes the first eligible account found, trying pools in
 // order, using EACH pool's own routing_strategy (§3). An empty chain (no dedicated pool AND no
 // resolvable shared target — e.g. default_shared_pool_id unset/invalid, §4.3) is a clean "not
-// found," never an error: the caller requeues, and the job stays legally claimable.
-func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob) (selectedAccount, bool, error) {
-	cfg, err := LoadConfig(ctx, d.db)
-	if err != nil {
-		return selectedAccount{}, false, err
-	}
+// found," never an error: the caller requeues, and the job stays legally claimable. cfg is the
+// caller's ALREADY-LOADED config (Tick loads it once per cycle, §0 OD-14 only requires per-tick
+// freshness) — this avoids re-reading all of sender.config once per claimed job.
+func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cfg Config) (selectedAccount, bool, error) {
 	pools, err := d.resolvePoolChain(ctx, job.userID, cfg)
 	if err != nil {
 		return selectedAccount{}, false, err

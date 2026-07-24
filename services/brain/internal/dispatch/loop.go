@@ -116,7 +116,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 				d.requeue(ctx, job.id, "no_box_available")
 				continue
 			}
-			ok, perr := d.resolveAndPush(ctx, job, boxID)
+			ok, perr := d.resolveAndPush(ctx, job, boxID, cfg)
 			if perr != nil {
 				continue // resolveAndPush already logs; the job was requeued or left claimable
 			}
@@ -252,20 +252,18 @@ func (d *Dispatcher) claimForUser(ctx context.Context, userID string, grant, job
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var jobs []claimedJob
 	for rows.Next() {
 		var j claimedJob
 		if err := rows.Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.replyTo); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		jobs = append(jobs, j)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
-	rows.Close()
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

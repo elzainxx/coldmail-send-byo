@@ -29,7 +29,6 @@ type Dispatcher struct {
 	db  *pgxpool.Pool
 	dec *credential.Decryptor
 	px  Pusher
-	cfg Config
 
 	// rrMu/rrCursor is the in-memory per-pool round_robin account cursor (§3.1, P4-6): soft state,
 	// re-derived (reset to empty) on Brain restart — an accepted ≤one-rotation transient skew
@@ -59,9 +58,11 @@ type Dispatcher struct {
 const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed
-// to the admin surface.
-func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher, cfg Config) *Dispatcher {
-	return &Dispatcher{db: db, dec: dec, px: px, cfg: cfg, rrCursor: make(map[string]string)}
+// to the admin surface. There is no config snapshot stored on the Dispatcher itself — every entry
+// point (TryDispatch, Tick) loads config fresh at its own start, so a config change is visible on
+// the very next attempt with no stale in-memory copy (§0 OD-14).
+func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher) *Dispatcher {
+	return &Dispatcher{db: db, dec: dec, px: px, rrCursor: make(map[string]string)}
 }
 
 // logSharedPoolNotConfigured emits the §4.3 internal diagnostic, throttled to at most once per
@@ -128,6 +129,13 @@ type selectedAccount struct {
 // connected box, or no eligible account, it is a clean no-op (the job stays claimable). Returns
 // the job id it pushed (or "" if nothing was pushed).
 func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
+	// Load config fresh at entry — the SAME freshness contract Tick gives its own callers (§0 OD-14:
+	// a config change takes effect on the very next attempt, no redeploy, no stale in-memory copy).
+	cfg, err := LoadConfig(ctx, d.db)
+	if err != nil {
+		return "", err
+	}
+
 	// 0) Need a connected, idle box to push to (boxes are interchangeable — §2.2). If none, do
 	// not claim (leaving the job queued for a later kick).
 	boxID := d.px.AnyConnectedBox()
@@ -136,7 +144,7 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	}
 
 	// 1) Claim one queued job (locked CTE) + set the assigned box, in a tx with the actor GUC.
-	job, ok, err := d.claimOne(ctx, boxID)
+	job, ok, err := d.claimOne(ctx, boxID, cfg.JobMaxProcessingTimeSec)
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +154,7 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 
 	// 2–5) Resolve the account, decrypt, build headers, transition, and push (shared with the
 	// Phase-4 loop). Returns (pushed, err); a clean requeue is (false, nil).
-	pushed, err := d.resolveAndPush(ctx, job, boxID)
+	pushed, err := d.resolveAndPush(ctx, job, boxID, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -162,8 +170,10 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 // failure it requeues the job to a legal claimable state (lease cleared) and never leaks the
 // credential — the plaintext is zeroed on every path. Returns (pushed, err): a clean requeue that
 // pushed nothing is (false, nil). This is the per-job handoff shared by TryDispatch (Phase 3) and
-// the tick loop (Phase 4, §1.3 RESOLVE_AND_PUSH).
-func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string) (bool, error) {
+// the tick loop (Phase 4, §1.3 RESOLVE_AND_PUSH). cfg is the caller's already-loaded config,
+// threaded through to selectAccountForJob so a job-loop of N claimed jobs does not re-read
+// sender.config N times in a single tick.
+func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string, cfg Config) (bool, error) {
 	// 2) Resolve the job's pool chain (Chunk 4 wires dedicated-first/shared-fallback; Chunks 1-3
 	// use the trivial single-pool chain below) and atomically CONSUME an eligible account from the
 	// first pool that has one (§3/§7, THE double-booking core — accountConsume increments
@@ -171,7 +181,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 	// On exhaustion of the whole chain, requeue the claim so the job returns to queued in a legal
 	// state (lease cleared) — the rare-race backstop (§7.2); it is not expected in steady state
 	// once the Chunk 5 pre-claim gate lands.
-	acct, ok, err := d.selectAccountForJob(ctx, job)
+	acct, ok, err := d.selectAccountForJob(ctx, job, cfg)
 	if err != nil || !ok {
 		d.requeueNoAccount(ctx, job.id)
 		if err != nil {
@@ -193,6 +203,11 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 		d.requeueNoAccount(ctx, job.id)
 		return false, nil
 	}
+	// Zero on EVERY exit from here on, including a panic (CLAUDE.md Rule 6: "zeroes them on EVERY
+	// exit path — success, error, panic, shutdown, timeout"). zero() is idempotent, so the later
+	// explicit calls below (kept for clarity at the point of use) are harmless double-zeroing, not
+	// a correctness issue — this defer is the actual guarantee.
+	defer zero(plaintext)
 
 	// 4) Build §8 headers + Message-ID/Date; assemble push_job.
 	sentAt := time.Now().UTC()
@@ -281,7 +296,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 }
 
 // claimOne runs the locked claim CTE with the actor GUC set (same tx).
-func (d *Dispatcher) claimOne(ctx context.Context, boxID string) (claimedJob, bool, error) {
+func (d *Dispatcher) claimOne(ctx context.Context, boxID string, jobMaxProcessingTimeSec int) (claimedJob, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := d.db.Begin(ctx)
@@ -293,7 +308,7 @@ func (d *Dispatcher) claimOne(ctx context.Context, boxID string) (claimedJob, bo
 		return claimedJob{}, false, err
 	}
 	var j claimedJob
-	err = tx.QueryRow(ctx, claimQuery, boxID, d.cfg.JobMaxProcessingTimeSec).
+	err = tx.QueryRow(ctx, claimQuery, boxID, jobMaxProcessingTimeSec).
 		Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.replyTo)
 	if err == pgx.ErrNoRows {
 		return claimedJob{}, false, tx.Commit(ctx) // nothing queued; commit the (no-op) tx

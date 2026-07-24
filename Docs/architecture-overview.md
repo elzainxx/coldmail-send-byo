@@ -307,3 +307,57 @@ build plan); this section is updated as each chunk lands.
     `TestPoolChain_NotConfiguredDiagnosticIsThrottled`: fires on the first empty-chain resolution,
     does NOT fire again immediately, and DOES fire again once the throttle window has genuinely
     elapsed (time-based, not a one-shot latch).
+
+  **Code-review fixes (R3, dispatcher core):**
+  - **Credential zeroing relied on explicit `zero(plaintext)` calls at specific return points, not
+    a `defer` — not panic-safe** (CLAUDE.md Rule 6: zero on EVERY exit path including panic).
+    Fixed: `defer zero(plaintext)` immediately after a successful `Decrypt` in `resolveAndPush`
+    (`zero` is idempotent, so the pre-existing explicit calls are now harmless redundant
+    double-zeroing, kept for clarity at the point of use).
+  - **`Runner.tick` had no panic recovery**, so any single tick's panic would crash the whole
+    singleton Brain. Fixed: `recover()` inside `tick`, logging and falling back to
+    `defaultTickIntervalOnLoadErr` so a bad tick degrades to "skip, retry next cycle" rather than
+    taking the process down.
+  - **`selectAccountForJob` re-loaded ALL of `sender.config` (6 queries) once per claimed job**,
+    discarding the `Config` `Tick()` already loaded once per cycle — an N+1-style multiplication
+    under load. Fixed: `cfg` is now threaded from `Tick`/`TryDispatch` through `resolveAndPush` →
+    `selectAccountForJob`, so it's loaded once per tick (or once per `TryDispatch` call) rather
+    than once per job. `TryDispatch` now loads its own fresh `cfg` at entry (matching `Tick`'s
+    freshness contract) instead of relying on a stale `Dispatcher.cfg` field frozen at
+    construction time — that field is removed entirely (`NewDispatcher` no longer takes a `cfg`
+    parameter; `claimOne`/`claimQuery` take `jobMaxProcessingTimeSec` as a parameter instead).
+  - **`readLease` silently swallowed every DB error with no log line**, so a job could be pushed
+    with an empty echoed lease deadline and zero operator-visible diagnostic trail. Fixed: logs on
+    both a genuine error and a NULL lease (the latter would itself indicate a state-machine bug,
+    since a job in `sending` should always carry a lease).
+  - **`claimForUser`'s `rows.Close()` was called at each explicit return point instead of via
+    `defer`**, inconsistent with the `defer`-based pattern used two functions above it in the same
+    file and not future-maintenance-safe against a new early return forgetting the call. Fixed:
+    `defer rows.Close()` immediately after the successful query.
+  - **(Flagged, not fixed — cross-cutting, pre-existing across Phases 0-3, out of a Phase-4-scoped
+    fix)** ~13 hardcoded per-query `context.WithTimeout` literals (5s/10s) in the dispatch package
+    carry no seeded config key and no "exempt because..." comment, unlike `maxFallbackHops` and
+    `sharedPoolNotConfiguredLogInterval`. The SAME pattern exists identically in `adminapi`,
+    `boxlink`, `db`, `httpapi`, `platformapi`, and `singleton` — this is a repo-wide convention
+    from Phase 0 onward, not something Chunk 1/2 introduced. Fixing only the dispatch package's
+    instances would be inconsistent with the rest of the codebase; sweeping all ~20+ call sites
+    across 4 other locked-phase packages is outside this review's scope. Recorded here as a
+    candidate future Open Decision (a single seeded `db_query_timeout_sec` key, or a documented
+    per-site exemption) rather than silently fixed or silently ignored.
+  - **A `Tick()` call has no overall deadline**, bounded only by the sum of many independent
+    per-query timeouts across every active user × pool in their chain. Not fixed for the same
+    reason as the timeout point above (any fix threading a seeded value would touch the same
+    cross-cutting question); noted as a related follow-on to that Open Decision candidate.
+
+  **Harness discovery (re-verifying live-stack after the review fixes):** running the full harness
+  repeatedly on the SAME stack revealed that `tests/harness/phase3_send.sh`'s T3 ("box killed
+  mid-send, job never falsely marked sent") deliberately leaves its job stranded `sending`
+  forever (no reclaim loop until Phase 6) — and used the SAME `SYSUSER` tenant as T1/T2/T4/T6.
+  Before Phase 4, that was harmless (no per-user lane ceiling existed). With Chunk 1's REAL
+  `concurrency_per_user_default` ceiling now enforced, each repeated harness run left one more
+  permanently-occupied lane on `SYSUSER`; after `concurrency_per_user_default` (3) accumulated
+  runs, a later run's T1 job could never dispatch — `SYSUSER`'s lanes were exhausted by T3's own
+  debris from earlier runs. Fixed in the test script: T3 now uses a fresh, dedicated random
+  tenant (`T3_TENANT`) per run, seeded with its own `public.users` row, so its intentionally-stuck
+  job never accumulates against `SYSUSER`. Verified by running the full harness three times in a
+  row on one stack — 40/40 every time (was previously only reliable on a freshly-reset volume).

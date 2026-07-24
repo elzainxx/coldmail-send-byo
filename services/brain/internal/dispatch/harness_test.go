@@ -147,7 +147,7 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 
 	cfg := Config{JobMaxProcessingTimeSec: 120, DebugLogRetentionDays: 7}
 	px := &recordingPusher{boxID: seedBox(t, admin)}
-	d := NewDispatcher(pool, dec, px, cfg)
+	d := NewDispatcher(pool, dec, px)
 	oh := NewOutcomeHandler(pool, cfg)
 
 	return &dispatchEnv{pool: pool, moduleDSN: moduleDSN, admin: admin, dec: dec, enc: enc, key: key, px: px, d: d, oh: oh, cfg: cfg}
@@ -299,6 +299,18 @@ func (e *dispatchEnv) addBox(t *testing.T) {
 	t.Helper()
 	id := seedBox(t, e.admin)
 	e.px.extraBoxes = append(e.px.extraBoxes, id)
+}
+
+// mustLoadConfig reads the CURRENT live sender.config (via the real LoadConfig, same as Tick/
+// TryDispatch use) — for tests that call selectAccountForJob directly and need the freshest
+// config after mutating a key mid-test (e.g. setDefaultSharedPool/clearDefaultSharedPool).
+func (e *dispatchEnv) mustLoadConfig(t *testing.T) Config {
+	t.Helper()
+	cfg, err := LoadConfig(context.Background(), e.pool)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	return cfg
 }
 
 // setConfigInt overwrites a seeded sender.config integer value (default_value is left untouched —

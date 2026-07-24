@@ -27,7 +27,7 @@ func TestPoolChain_DedicatedTriedBeforeShared(t *testing.T) {
 	e.setAccountDailyState(t, dedicatedAcct, 20, 0, todayUTC(), false, nil)
 
 	for i := 0; i < 15; i++ {
-		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 		if err != nil {
 			t.Fatalf("selectAccountForJob: %v", err)
 		}
@@ -61,7 +61,7 @@ func TestPoolChain_SpilloverOnlyAfterExhaustion(t *testing.T) {
 	var sawSharedBeforeDedicatedExhausted bool
 	dedicatedExhausted := false
 	for i := 0; i < 25; i++ {
-		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 		if err != nil {
 			t.Fatalf("selectAccountForJob: %v", err)
 		}
@@ -95,7 +95,7 @@ func TestPoolChain_SpilloverOnlyAfterExhaustion(t *testing.T) {
 	// dedicated's counter stays unchanged.
 	e.setAccountDailyState(t, dedicatedAcct, 20, 20, todayUTC(), true, strPtr("daily_limit"))
 	for i := 0; i < 10; i++ {
-		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+		acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 		if err != nil {
 			t.Fatalf("post-exhaustion consume %d: %v", i, err)
 		}
@@ -132,7 +132,7 @@ func TestPoolChain_KindPolicy_NeverDedicatedToDedicated(t *testing.T) {
 	mineAcct := e.seedAccount(t, mineDedicated, "sec")
 	e.setAccountDailyState(t, mineAcct, 10, 10, todayUTC(), true, strPtr("daily_limit"))
 
-	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 	if err != nil {
 		t.Fatalf("selectAccountForJob: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestPoolChain_ExplicitFallbackWinsOverConfigDefault(t *testing.T) {
 	dedicatedAcct := e.seedAccount(t, dedicated, "sec")
 	e.setAccountDailyState(t, dedicatedAcct, 5, 5, todayUTC(), true, strPtr("daily_limit")) // exhausted
 
-	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 	if err != nil {
 		t.Fatalf("selectAccountForJob: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestPoolChain_SharedPoolNotConfigured(t *testing.T) {
 	e.clearDefaultSharedPool(t) // the Phase 1 seed: NULL
 
 	// No dedicated pool for A, and NO usable shared target — the chain must be empty.
-	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA})
+	acct, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t))
 	if err != nil {
 		t.Fatalf("selectAccountForJob returned an error for the unconfigured state, want a clean (false, nil): %v", err)
 	}
@@ -225,7 +225,7 @@ func TestPoolChain_SharedPoolNotConfigured(t *testing.T) {
 	e.setAccountDailyState(t, sharedAcct, 100, 0, todayUTC(), false, nil)
 	e.setDefaultSharedPool(t, shared)
 
-	got, ok2, err := e.d.selectAccountForJob(ctx, claimedJob{id: job, userID: userA})
+	got, ok2, err := e.d.selectAccountForJob(ctx, claimedJob{id: job, userID: userA}, e.mustLoadConfig(t))
 	if err != nil {
 		t.Fatalf("selectAccountForJob after config set: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestPoolChain_InvalidDefaultBehavesLikeUnset(t *testing.T) {
 		t.Fatalf("disable pool: %v", err)
 	}
 	e.setDefaultSharedPool(t, disabledShared)
-	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil || ok {
+	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil || ok {
 		t.Fatalf("disabled default: ok=%v err=%v, want (false, nil)", ok, err)
 	}
 
@@ -256,13 +256,13 @@ func TestPoolChain_InvalidDefaultBehavesLikeUnset(t *testing.T) {
 	userB := e.seedUser(t, "invalid-b@tenant.example")
 	wrongKind := e.seedDedicatedPool(t, userB, "")
 	e.setDefaultSharedPool(t, wrongKind)
-	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil || ok {
+	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil || ok {
 		t.Fatalf("dedicated-as-default: ok=%v err=%v, want (false, nil)", ok, err)
 	}
 
 	// Case 3: default points at a NON-EXISTENT pool id.
 	e.setDefaultSharedPool(t, "11111111-2222-3333-4444-555555555555")
-	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil || ok {
+	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil || ok {
 		t.Fatalf("nonexistent-default: ok=%v err=%v, want (false, nil)", ok, err)
 	}
 }
@@ -280,7 +280,7 @@ func TestPoolChain_NotConfiguredDiagnosticIsThrottled(t *testing.T) {
 	if !e.d.lastSharedPoolNotConfiguredLog.IsZero() {
 		t.Fatal("precondition: lastSharedPoolNotConfiguredLog should start zero")
 	}
-	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil {
 		t.Fatalf("selectAccountForJob: %v", err)
 	}
 	first := e.d.lastSharedPoolNotConfiguredLog
@@ -289,7 +289,7 @@ func TestPoolChain_NotConfiguredDiagnosticIsThrottled(t *testing.T) {
 	}
 
 	// A second empty-chain resolution immediately after must NOT update the timestamp (throttled).
-	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil {
 		t.Fatalf("selectAccountForJob (2nd): %v", err)
 	}
 	if e.d.lastSharedPoolNotConfiguredLog != first {
@@ -302,7 +302,7 @@ func TestPoolChain_NotConfiguredDiagnosticIsThrottled(t *testing.T) {
 	e.d.diagMu.Lock()
 	e.d.lastSharedPoolNotConfiguredLog = time.Now().Add(-2 * sharedPoolNotConfiguredLogInterval)
 	e.d.diagMu.Unlock()
-	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}, e.mustLoadConfig(t)); err != nil {
 		t.Fatalf("selectAccountForJob (3rd): %v", err)
 	}
 	if !e.d.lastSharedPoolNotConfiguredLog.After(first) {

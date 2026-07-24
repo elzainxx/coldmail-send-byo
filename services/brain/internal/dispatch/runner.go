@@ -59,8 +59,18 @@ func (r *Runner) Run(ctx context.Context) {
 
 // tick runs one Dispatcher.Tick and returns how long to wait before the next one, derived from the
 // freshly-read config (dispatch_tick_interval_ms) so a config change takes effect on the very next
-// wait, no redeploy (§0, Phase 2 OD-14).
-func (r *Runner) tick(ctx context.Context) time.Duration {
+// wait, no redeploy (§0, Phase 2 OD-14). Recovers a panic from ANY single tick so an unexpected
+// failure degrades to "skip this tick, retry on the next one" rather than crashing the whole
+// singleton Brain — consistent with the kill-switch philosophy (CLAUDE.md Rule 7) that dispatch
+// failures halt cleanly with zero job loss, never take the process down (a claimed-but-stuck job
+// simply waits out its lease and is reclaimed by Phase 6; nothing here is unrecoverable).
+func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
+	interval = defaultTickIntervalOnLoadErr
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("dispatch: tick PANIC recovered: %v — skipping this tick, will retry", rec)
+		}
+	}()
 	cfg, pushed, err := r.d.Tick(ctx)
 	if err != nil {
 		log.Printf("dispatch: tick error: %v", err)

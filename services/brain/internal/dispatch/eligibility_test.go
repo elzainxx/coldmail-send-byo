@@ -85,7 +85,7 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 				return
 			}
 			defer p.Close()
-			d := NewDispatcher(p, e.dec, e.px, e.cfg)
+			d := NewDispatcher(p, e.dec, e.px)
 			for i := 0; i < attemptsPerWorker; i++ {
 				_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 				if err != nil {

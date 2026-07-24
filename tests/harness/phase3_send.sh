@@ -52,6 +52,11 @@ POOL="$(curl -s -X POST http://localhost:8080/v1/admin/pools -H "Authorization: 
 # The account's credential is the CANARY secret (S1 scans for it). Sink accepts any AUTH over TLS.
 ACCT="$(curl -s -X POST http://localhost:8080/v1/admin/accounts -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"pool_id\":\"$POOL\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"$CANARY\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"P3 Suite\"}" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
 [[ -n "$ACCT" ]] && ok "P3: created account (encrypted canary credential) via admin API" || bad "P3: failed to create account"
+# Phase 4 §4.2/§4.3: base (non-dedicated) routing only reaches a shared pool via
+# default_shared_pool_id — an operator MUST set it (seeded NULL) before base sends dispatch. Do
+# that real setup step here via the Phase 2 admin config endpoint, exactly as an operator would.
+CFG_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://localhost:8080/v1/admin/config/default_shared_pool_id" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"value\":\"$POOL\"}")"
+[[ "$CFG_CODE" == "200" ]] && ok "P3: set default_shared_pool_id to the suite pool (operator setup step, §4.3)" || bad "P3: setting default_shared_pool_id returned $CFG_CODE, want 200"
 
 # --- T2 (part A): run returns 202 immediately with state queued ---
 JI="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,reply_to,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','t1@example.com','Phase 3 T1','<p>hello</p>','reply@ourdomain.com','pending') RETURNING id" || true)"
@@ -113,12 +118,23 @@ if echo "$BADREG" | grep -q '"accepted":false'; then ok "T6: wrong-token registe
 # pushed), hard-kill the box so NO report can arrive, and assert the job is never flipped to sent
 # and never gains a provider_message_id. Phase 3 runs no reclaim (Phase 6), so it stays 'sending'
 # with its lease — exactly the T3 expectation (§9 T3).
+#
+# T3_TENANT: a DEDICATED, per-run tenant — NOT SYSUSER. T3 deliberately leaves its job stuck
+# 'sending' forever (no reclaim loop until Phase 6), and Phase 4's per-user concurrency ceiling
+# (concurrency_per_user_default, default 3) now counts that stranded job as a permanently-occupied
+# lane for whichever user_id owns it. If T3 shared SYSUSER with T1/T2/T4/T6, every repeated harness
+# run would leave one more permanently-stuck job on SYSUSER, and after `concurrency_per_user_default`
+# accumulated runs, T1's job in a LATER run would never dispatch (SYSUSER's lanes exhausted) — a
+# real cross-suite interaction discovered while re-verifying the harness after the Phase 4 review
+# fixes. A fresh random tenant per run means T3's stuck job never accumulates against SYSUSER.
+T3_TENANT="$(PSQL1 "SELECT gen_random_uuid()" || true)"
+PSQL "INSERT INTO public.users (id,email,is_active) VALUES ('${T3_TENANT}','t3-${T3_TENANT}@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
 $DC kill box >/dev/null 2>&1 || true   # ensure no box can report on this job
-JI3="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','t3@example.com','Phase 3 T3','<p>x</p>','pending') RETURNING id" || true)"
+JI3="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('${T3_TENANT}','${T3_TENANT}','t3@example.com','Phase 3 T3','<p>x</p>','pending') RETURNING id" || true)"
 # A job is born 'queued' (the genesis event requires to_state='queued'), then transitioned to the
 # in-flight 'sending' state via a REAL state UPDATE with the actor GUC — exactly what a push does.
 # The box is killed, so NO report can arrive. This is the precise T3 in-flight condition.
-JOB3="$(PSQL1 "INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at) VALUES ('$JI3','00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','t3@example.com','S','<p>x</p>','queued',NOW()) RETURNING id" || true)"
+JOB3="$(PSQL1 "INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at) VALUES ('$JI3','${T3_TENANT}','${T3_TENANT}','t3@example.com','S','<p>x</p>','queued',NOW()) RETURNING id" || true)"
 PSQL "BEGIN; SELECT set_config('sender.actor','dispatcher',true); UPDATE sender.jobs SET state='assigned', assigned_box_id='$BOX_UUID', assigned_account_id='$ACCT', lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id='$JOB3'; UPDATE sender.jobs SET state='sending' WHERE id='$JOB3'; COMMIT;" >/dev/null 2>&1 || true
 sleep 2
 T3STATE="$(PSQL "SELECT state FROM sender.jobs WHERE id='$JOB3'" || true)"

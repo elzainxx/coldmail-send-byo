@@ -128,7 +128,7 @@ func main() {
 
 	// The dispatcher pushes over the stream; a Runner drives it off a KICK signal (event-driven,
 	// NOT a polling loop — Phase 4). A box coming online kicks it too (a queued job may be waiting).
-	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream, sendCfg)
+	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream)
 	runner := dispatch.NewRunner(dispatcher)
 	stream.SetOnRegister(func(string) { runner.Kick() })
 	go runner.Run(ctx)
