@@ -309,3 +309,21 @@ key was added by the closeout (`config_drift` stays 14); no locked spec was touc
 remaining items are the five **pre-live confirmations** (G1–G5), gates on going live, not on
 implementing a phase in the harness. Nothing here blocks the next phase from building on this
 ground.
+**Phase 5 (error taxonomy, account status & quarantine, `sender_0016..0017` + the classifier/
+scoring/state-machine/exhaustion logic in `internal/dispatch`)** is built and green on real infra
+(live harness 40/40, all 4 CI gates green, `config_drift` 14 → 17). Its spec §8 shipped with an
+empty needs-user list; the four review gates (R1/R2 architect, R3/R4 code) each re-verified against
+the working tree — R1/R2/R3 clean, **R4 found two real defects** on the account-flag write path (a
+HIGH lost-update that could silently un-quarantine an account under concurrent outcomes, and a
+MEDIUM consume CASE-order bug), both fixed and covered by a new two-connection regression test (the
+naive locking fix's deadlock was itself caught by that concurrent test before shipping). **Phase 5's
+closeout (2026-07-24)** verified the two carve-outs: (a) bounce-never-penalizes held, but the test
+was under-specified — a paired positive control was added so it can no longer pass vacuously; (b)
+the wait-vs-fail ordering (empty→WAIT and self-recovering→WAIT strictly before the terminal-fail
+branch) was verified real and well-covered, no change needed. The closeout also recorded a standing
+requirement (**ADR-0010**): every phase that mutates `sender.accounts` state under an outcome/
+consume/claim path ships a genuine two-connection concurrency-race test, and any locking fix is
+itself checked for deadlock with a two-connection test — because account-state mutation under
+concurrent outcomes is the recurring defect surface (Phase 4's double-book and Phase 5's
+lost-update un-quarantine + its fix's deadlock all live there). Needs-user remains **empty**; no
+locked spec was touched by Phase 5 or its closeout.
