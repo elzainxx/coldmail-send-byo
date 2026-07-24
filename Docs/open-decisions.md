@@ -237,6 +237,21 @@ pause. The double-booking core (`SKIP LOCKED` + `accounts_daily_sent_check`) is 
 `json` keys validated at write (admin endpoint) AND re-validated on read (fall back to the
 documented default, never crash — §7). No locked spec touched; only additive columns + config.
 
+### Phase 5 review gates (R1–R4) — findings
+
+Four narrowly-scoped review passes ran after the build (R1/R2 architect, R3/R4 code), each
+independently re-verifying against the working tree (the Phase-4 R4 lesson). R1, R2, R3 returned
+zero findings. R4 (code review of scoring / state machine / decision seams) returned two REAL,
+tree-verified findings on the account-flag write path, both fixed + covered by a new regression test:
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| P5-R4-1 | `applyAccountEffect` read account flags WITHOUT `FOR UPDATE`, then wrote back whole-column literals computed in Go from that snapshot. Two concurrent outcomes on the SAME account (allowed — per-user lanes, no per-account in-flight lock, independent report transactions) could lost-update: an `auth_failure` commits `quarantined=TRUE`, a concurrent `throttle` then writes its stale `quarantined=FALSE` literal — **silently un-quarantining**, violating the LOCKED manual-recovery-only invariant (§4.2). | **HIGH** | `readAccountEffectState` now `SELECT … FOR UPDATE`; the account row is locked at tx entry in `applyClassifiedFailure` BEFORE the job requeue (whose `job_events` trigger takes a FK KEY SHARE on the account) — a consistent account→job lock order that also prevents the deadlock the naive lock would have caused. New `TestConcurrentOutcomes_QuarantineSurvivesThrottle` (two real connections) proves quarantine survives + is stable across repeated runs. |
+| P5-R4-2 | In the consume CASE, the expired-throttle self-clear branch (`WHEN ea.was_throttle THEN FALSE`) preceded the `>= daily_limit` branch, so a send that both cleared an expired throttle pause AND reached the daily cap ended `paused=FALSE` while at-limit, plus a spurious `unpause` audit row. No safety/double-booking impact (next consume's count guard + `chainHasSelfRecovering` check the count directly; self-heals at reset) but an observable account-state/audit deviation. | **MEDIUM** | Reordered the CASE so daily-limit-reached wins over the throttle self-clear; the throttle-unpause audit now fires only when the row ended un-paused (`now_paused = FALSE`), so a throttle→daily_limit transition writes no spurious `unpause`. |
+
+No additional findings. The consume's `SKIP LOCKED` + `accounts_daily_sent_check` double-booking
+core remained untouched by both fixes (verified: the double-booking test still lands exactly 50).
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

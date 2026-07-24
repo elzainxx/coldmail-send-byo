@@ -118,11 +118,24 @@ func pauseDecision(class string, before accountFlagState) bool {
 }
 
 // readAccountEffectState loads the account's current flags + user_id (for the audit row's tenant).
+//
+// FOR UPDATE is LOAD-BEARING, not incidental (R4 finding): applyAccountEffect reads `before` here,
+// then later writes back whole-column literals (quarantined=$2, paused=$3, ...) computed in Go from
+// that snapshot. An account can serve MULTIPLE concurrent in-flight jobs (per-user lanes, no
+// per-account in-flight lock), whose box reports are processed in INDEPENDENT transactions. Without
+// a row lock, two concurrent outcomes both read before={quarantined:false}; if one commits
+// quarantined=TRUE and the other then writes its stale quarantined=FALSE literal, the account is
+// silently un-quarantined — violating the LOCKED "quarantine is manual-recovery-only" invariant
+// (§4.2). Because the write is a client-side literal (not a SQL expression like `quarantined OR …`),
+// READ COMMITTED alone does NOT save us. FOR UPDATE serializes concurrent outcome transactions on
+// the account row: the second SELECT blocks until the first commits, then re-reads the fresh
+// post-commit flags (EvalPlanQual), so `before` is never stale. Lock order is consistent
+// (job row first in applyClassifiedFailure, then this account row), so no deadlock.
 func (h *OutcomeHandler) readAccountEffectState(ctx context.Context, tx pgx.Tx, accountID string) (accountFlagState, string, error) {
 	var f accountFlagState
 	var uid string
 	err := tx.QueryRow(ctx,
-		`SELECT paused, pause_reason, quarantined, disabled, user_id FROM sender.accounts WHERE id=$1`, accountID).
+		`SELECT paused, pause_reason, quarantined, disabled, user_id FROM sender.accounts WHERE id=$1 FOR UPDATE`, accountID).
 		Scan(&f.Paused, &f.PauseReason, &f.Quarantined, &f.Disabled, &uid)
 	return f, uid, err
 }

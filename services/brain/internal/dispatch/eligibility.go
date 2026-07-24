@@ -136,38 +136,49 @@ consumed AS (
             ELSE a.daily_sent_count + 1
         END,
         daily_reset_day = (SELECT today_in_tz FROM today_calc),
+        -- Branch ORDER is load-bearing (R4 finding): the daily-limit-reached check MUST precede the
+        -- expired-throttle self-clear, so a send that both clears an expired throttle pause AND tips
+        -- the account to its daily cap ends in the correct pause_reason='daily_limit' state — not
+        -- silently un-paused while at-limit. (Without this order the was_throttle branch would win
+        -- and leave paused=FALSE at the ceiling.)
         paused = CASE
             WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
                  AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN FALSE
-            WHEN ea.was_throttle THEN FALSE     -- P5-13: expired throttle self-clears
             WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
                        ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN TRUE
+            WHEN ea.was_throttle THEN FALSE     -- P5-13: expired throttle self-clears (only if not at-limit)
             ELSE a.paused
         END,
         pause_reason = CASE
             WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
                  AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN NULL
-            WHEN ea.was_throttle THEN NULL      -- P5-13: expired throttle self-clears
             WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
                        ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN 'daily_limit'
+            WHEN ea.was_throttle THEN NULL      -- P5-13: expired throttle self-clears (only if not at-limit)
             ELSE a.pause_reason
         END,
+        -- throttle_paused_at clears whenever the row WAS a throttle pause (it is no longer one,
+        -- whether it self-cleared to healthy or transitioned to a daily_limit pause).
         throttle_paused_at = CASE WHEN ea.was_throttle THEN NULL ELSE a.throttle_paused_at END,
         updated_at = NOW()
     FROM eligible_accounts ea
     WHERE a.id = ea.id
     RETURNING a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.from_name,
-              a.credential_ciphertext, a.credential_nonce, a.credential_key_id, ea.was_throttle
+              a.credential_ciphertext, a.credential_nonce, a.credential_key_id,
+              ea.was_throttle, a.paused AS now_paused
 ),
 throttle_unpause_audit AS (
-    -- One account_events(system, unpause) IFF this consume self-cleared a throttle pause (§4.3, T3/T8).
-    -- The daily_limit self-heal writes no event (Phase 1 behavior, §4.1) — only throttle does here.
+    -- One account_events(system, unpause) IFF this consume self-cleared a throttle pause AND the
+    -- account ended UN-paused (§4.3, T3/T8). If the same send simultaneously reached the daily limit,
+    -- the row transitions throttle→daily_limit (now_paused=TRUE) and NO unpause event is written —
+    -- the daily_limit pause writes no event either (Phase 1 behavior, §4.1), so the audit correctly
+    -- shows no spurious "unpause" for an account that is still paused.
     INSERT INTO sender.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
     SELECT id, user_id, 'system', 'unpause',
            '{"paused":true,"pause_reason":"throttle","quarantined":false,"disabled":false}'::jsonb,
            '{"paused":false,"pause_reason":null,"quarantined":false,"disabled":false}'::jsonb,
            'throttle_window_expired'
-    FROM consumed WHERE was_throttle
+    FROM consumed WHERE was_throttle AND now_paused = FALSE
     RETURNING 1
 )
 SELECT id, smtp_host, smtp_port, smtp_username, from_address, from_name,

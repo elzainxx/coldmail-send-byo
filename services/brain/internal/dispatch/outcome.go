@@ -180,6 +180,21 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 			return err
 		}
 
+		// (0) LOCK ORDER (deadlock avoidance): acquire the account row's FOR UPDATE lock BEFORE the
+		// job requeue below. The job state UPDATE fires the job_events trigger, whose INSERT carries
+		// account_id and so takes a FOR KEY SHARE lock on the account row. If two concurrent outcomes
+		// for the SAME account each took that shared FK lock first and THEN tried to upgrade to the
+		// FOR UPDATE in applyAccountEffect, they would deadlock (each waiting for the other to release
+		// KEY SHARE). Taking the exclusive account lock up front gives a single consistent order
+		// (account → job) so the two transactions serialize cleanly instead of cycling. This is also
+		// the lock applyAccountEffect's readAccountEffectState needs; acquiring it here (a no-op to
+		// re-request the same row lock later) makes the ordering explicit at the tx entry point.
+		if acctID != nil {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
+				return err
+			}
+		}
+
 		// (1) Requeue with the saturating attempt_count and the per-class backoff. The CASE bounds
 		// attempt_count at max_attempts (§6.2): once at the cap it STAYS there, so the locked
 		// jobs_attempt_count_check (attempt_count <= max_attempts) can never abort — no 23514 ever,
