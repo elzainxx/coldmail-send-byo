@@ -32,6 +32,12 @@ type Config struct {
 	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
 	DefaultSharedPoolID       *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
 
+	// Phase 6 pacing dials (both ALREADY seeded in Phase 1's sender_0010; Phase 6 consumes them
+	// unchanged — no re-seed, additive-only contract §5). They bound the per-lane random inter-send
+	// delay drawn per send (pacing.go, §1.1).
+	SendDelayMinSec int // send_delay_min_sec — lower bound of the per-lane random inter-send delay (§1.1)
+	SendDelayMaxSec int // send_delay_max_sec — upper bound of the per-lane random inter-send delay (§1.1)
+
 	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
 	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
 	ThrottlePauseSeconds int            // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
@@ -110,6 +116,12 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.ConcurrencyPerUserDefault, err = readIntKey(ctx, db, "concurrency_per_user_default"); err != nil {
+		return c, err
+	}
+	if c.SendDelayMinSec, err = readIntKey(ctx, db, "send_delay_min_sec"); err != nil {
+		return c, err
+	}
+	if c.SendDelayMaxSec, err = readIntKey(ctx, db, "send_delay_max_sec"); err != nil {
 		return c, err
 	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {

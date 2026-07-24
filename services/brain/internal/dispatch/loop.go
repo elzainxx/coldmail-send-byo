@@ -84,7 +84,17 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		}
 		switch verdict {
 		case verdictClaim:
-			ring = append(ring, ringSlot{userID: u, grant: lanes})
+			// Phase 6 pacing (§1): withhold the portion of this user's grant whose lanes are still
+			// cooling down. Admit returns min(lanes, paced-ready lanes) — a `min`, so it can only
+			// FURTHER delay a send, never raise the grant above Phase 4's DB-derived ceiling
+			// (`lanes`). A user with a positive lane count but no paced-ready slot this tick gets
+			// grant 0: their jobs stay queued, untouched (claimed on a later tick once a timer
+			// elapses) — the tick never blocks. Slots are stamped only on an ACTUAL push (Phase D).
+			paced := d.pace.Admit(u, cfg.ConcurrencyPerUserDefault, lanes)
+			if paced <= 0 {
+				continue
+			}
+			ring = append(ring, ringSlot{userID: u, grant: paced})
 		case verdictFail:
 			if err := d.failExhaustedJobs(ctx, u); err != nil {
 				log.Printf("dispatch: failExhaustedJobs(%s) failed: %v", u, err)
@@ -130,6 +140,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 				continue // resolveAndPush already logs; the job was requeued or left claimable
 			}
 			if ok {
+				// A send actually fired: cost this user one lane's cooldown (a fresh uniform delay
+				// re-drawn per send, §1.1). Stamped ONLY on a real push, so a claim that returned
+				// fewer jobs than granted, or a requeued/failed handoff, never burns a lane's timer.
+				d.pace.Stamp(slot.userID, cfg.ConcurrencyPerUserDefault, cfg.SendDelayMinSec, cfg.SendDelayMaxSec)
 				pushed++
 			}
 		}

@@ -44,6 +44,13 @@ type Dispatcher struct {
 	fairMu     sync.Mutex
 	fairCursor string
 
+	// pace is the Phase 6 per-lane inter-send pacing register (§1, P6-1): soft, in-memory
+	// next_send_at timestamps per user's lanes. It decides only WHEN a lane may fire (never how
+	// many are in flight — that stays DB-derived, §1.1), and is consulted off the tick's critical
+	// path (a timestamp read, never a sleep). Like the cursors above, it resets on Brain restart —
+	// the accepted one-time unpaced burst (§1.1), never load-bearing for correctness.
+	pace *pacer
+
 	// diagMu/lastSharedPoolNotConfiguredLog throttles the §4.3 shared_pool_not_configured internal
 	// diagnostic: an operational condition (not a per-job error), logged at most once per
 	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
@@ -62,7 +69,7 @@ const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
 // point (TryDispatch, Tick) loads config fresh at its own start, so a config change is visible on
 // the very next attempt with no stale in-memory copy (§0 OD-14).
 func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher) *Dispatcher {
-	return &Dispatcher{db: db, dec: dec, px: px, rrCursor: make(map[string]string)}
+	return &Dispatcher{db: db, dec: dec, px: px, rrCursor: make(map[string]string), pace: newPacer()}
 }
 
 // logSharedPoolNotConfigured emits the §4.3 internal diagnostic, throttled to at most once per
