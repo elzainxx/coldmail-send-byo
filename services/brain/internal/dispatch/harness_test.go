@@ -145,7 +145,9 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 
 // --- fixtures (real committed rows) ---
 
-// seedSystemUserAndPool seeds the system user + a shared pool and returns the pool id.
+// seedSystemUserAndPool seeds the system user + a shared pool, sets it as default_shared_pool_id
+// (§4.2/§4.3 — base/non-dedicated routing only reaches a shared pool via that config key; an
+// operator "has configured" state is what most fixtures want), and returns the pool id.
 func (e *dispatchEnv) seedPool(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
@@ -159,7 +161,19 @@ func (e *dispatchEnv) seedPool(t *testing.T) string {
 		`INSERT INTO sender.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared','p3') RETURNING id`).Scan(&poolID); err != nil {
 		t.Fatalf("seed pool: %v", err)
 	}
+	e.setDefaultSharedPool(t, poolID)
 	return poolID
+}
+
+// setDefaultSharedPool sets sender.config's default_shared_pool_id to poolID (the Phase 2
+// config-update path, done directly here since these are dispatch-package fixtures).
+func (e *dispatchEnv) setDefaultSharedPool(t *testing.T, poolID string) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.config SET value = jsonb_build_object('v', $1::text) WHERE key = 'default_shared_pool_id'`,
+		poolID); err != nil {
+		t.Fatalf("set default_shared_pool_id: %v", err)
+	}
 }
 
 // seedPoolWithStrategy seeds a shared pool with an EXPLICIT routing_strategy (§3 Chunk 3 tests:
@@ -178,7 +192,55 @@ func (e *dispatchEnv) seedPoolWithStrategy(t *testing.T, strategy string) string
 		strategy).Scan(&poolID); err != nil {
 		t.Fatalf("seed pool with strategy %s: %v", strategy, err)
 	}
+	e.setDefaultSharedPool(t, poolID)
 	return poolID
+}
+
+// seedDedicatedPool seeds a dedicated pool OWNED BY userID (§4.2 — a user may own several; this
+// helper is called multiple times with the same userID for that case). fallbackPoolID may be ""
+// (no explicit fallback — resolvePoolChain falls through to the config default, §4.2/P4-4).
+func (e *dispatchEnv) seedDedicatedPool(t *testing.T, userID, fallbackPoolID string) string {
+	t.Helper()
+	ctx := context.Background()
+	var fb *string
+	if fallbackPoolID != "" {
+		fb = &fallbackPoolID
+	}
+	var poolID string
+	if err := e.admin.QueryRow(ctx,
+		`INSERT INTO sender.pools (user_id, kind, owner_user_id, name, fallback_pool_id)
+		 VALUES ($1,'dedicated',$1,'dedicated-p4',$2) RETURNING id`, userID, fb).Scan(&poolID); err != nil {
+		t.Fatalf("seed dedicated pool: %v", err)
+	}
+	return poolID
+}
+
+// seedSharedPool seeds a plain shared pool WITHOUT registering it as default_shared_pool_id (the
+// Chunk 4 fallback-resolution tests need a shared pool that is reachable ONLY via an explicit
+// fallback_pool_id, to prove (a) of P4-4's resolution order — not via the config default).
+func (e *dispatchEnv) seedSharedPool(t *testing.T, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	_, err := e.admin.Exec(ctx,
+		`INSERT INTO public.users (id, email, is_active) VALUES ('00000000-0000-0000-0000-000000000000','sys@sender.local',true) ON CONFLICT (id) DO NOTHING`)
+	if err != nil {
+		t.Fatalf("seed system user: %v", err)
+	}
+	var poolID string
+	if err := e.admin.QueryRow(ctx,
+		`INSERT INTO sender.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared',$1) RETURNING id`, name).Scan(&poolID); err != nil {
+		t.Fatalf("seed shared pool: %v", err)
+	}
+	return poolID
+}
+
+// clearDefaultSharedPool sets default_shared_pool_id back to NULL (its Phase 1 seed, §4.3).
+func (e *dispatchEnv) clearDefaultSharedPool(t *testing.T) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.config SET value = jsonb_build_object('v', NULL) WHERE key = 'default_shared_pool_id'`); err != nil {
+		t.Fatalf("clear default_shared_pool_id: %v", err)
+	}
 }
 
 // seedAccount seeds an eligible account in poolID with a real encrypted credential (secret). It

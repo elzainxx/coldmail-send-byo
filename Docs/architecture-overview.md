@@ -223,3 +223,33 @@ build plan); this section is updated as each chunk lands.
   (whichever the deterministic tiebreak picks) before the other's first use; `random` spreads
   across 5 accounts over 500 draws within a wide, non-vacuous band; a live strategy flip on the
   pool row takes effect on the very next consume (no caching).
+- **Chunk 4 — pool resolution + fallback** (`internal/dispatch/pool.go`): `resolvePoolChain`
+  implements `RESOLVE_POOL_CHAIN` (§4.2) — a tenant's own enabled dedicated pool(s) (oldest-created
+  first) followed by AT MOST one resolved shared fallback target, replacing the Chunk 1-3
+  stand-in (`candidatePools`, removed). Kind policy (P4-3): a dedicated pool's `fallback_pool_id`
+  is followed ONLY if it resolves to an enabled `kind='shared'` pool — pointing at another
+  dedicated pool is silently ignored for routing (proven: the chain never touches another
+  tenant's dedicated account even when `fallback_pool_id` names one). Multi-shared resolution
+  (P4-4): an explicit per-pool `fallback_pool_id` wins over the config `default_shared_pool_id`
+  when both resolve. `maxFallbackHops=8` (`dedupeCapped`) is a hardcoded defense-in-depth walk
+  cap — Phase 2's cycle check already makes persisted chains acyclic, so this is a backstop,
+  not an operator dial (documented exemption from config-not-code, same class as the admin API's
+  `DailyLimitCeiling`).
+  **`default_shared_pool_id` / `shared_pool_not_configured` (§4.3):** `Config.DefaultSharedPoolID`
+  is now read (nullable — the key is seeded NULL in Phase 1; `readNullableStringKey` in
+  `config.go` is the first Phase-4 key allowed to legitimately be absent). When it is unset OR
+  points at a non-existent/disabled/dedicated pool, `resolveSharedFallback` returns no target —
+  the chain is simply shorter (empty for a base user), never an error. `selectAccountForJob`
+  surfaces this as a clean `(false, nil)`, which `resolveAndPush`'s existing requeue path already
+  handles as "no eligible account" — the job returns to `queued` with its lease cleared, no crash,
+  no special-casing needed. (The Chunk-5 pre-claim gate will additionally stop CLAIMING for such a
+  user, eliminating even the claim→requeue churn; Chunk 4 alone is still crash-free and
+  data-safe, just not yet churn-free under sustained misconfiguration.)
+  Proven by `pool_test.go`: dedicated is used 100% while it has capacity, spillover to shared
+  fires at an exact boundary (never an early split) and only after true exhaustion; a
+  `fallback_pool_id` pointing at another user's dedicated pool is ignored and the chain correctly
+  falls through to the config default instead (P4-3); an explicit fallback wins over the config
+  default when both are valid (P4-4); an unset, disabled, dedicated-typed, or nonexistent default
+  all behave identically — clean `(false, nil)`, and the SAME never-re-enqueued job dispatches on
+  the very next attempt once the operator sets a valid default (T10-equivalent, config re-read
+  per call).

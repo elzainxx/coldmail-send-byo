@@ -134,21 +134,17 @@ WHERE a.id = ea.id
 RETURNING a.id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.from_name,
           a.credential_ciphertext, a.credential_nonce, a.credential_key_id`
 
-// selectAccountForJob resolves the job's candidate pool(s) and atomically consumes the first
-// eligible account found, trying pools in order, using EACH pool's own routing_strategy (§3).
-// Chunk 2/3 scope: candidate pools are the job's tenant's own pools (dedicated first, oldest-
-// created first) plus any shared pool, mirroring Phase 3's visibility rule — but selection within
-// a pool now goes through the REAL atomic consume (§3/§7) with the pool's real strategy, not a
-// plain SELECT or a hardcoded ordering. TODO(Chunk 4): replace the candidate-pool query below with
-// RESOLVE_POOL_CHAIN (§4.2) — dedicated-first, explicit/default shared fallback, MAX_FALLBACK_HOPS
-// — without changing this function's shape (still "resolve chain, try each pool via
-// accountConsume, first hit wins").
+// selectAccountForJob resolves the job's pool chain (§4.2, RESOLVE_POOL_CHAIN — dedicated-first,
+// shared fallback) and atomically consumes the first eligible account found, trying pools in
+// order, using EACH pool's own routing_strategy (§3). An empty chain (no dedicated pool AND no
+// resolvable shared target — e.g. default_shared_pool_id unset/invalid, §4.3) is a clean "not
+// found," never an error: the caller requeues, and the job stays legally claimable.
 func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob) (selectedAccount, bool, error) {
 	cfg, err := LoadConfig(ctx, d.db)
 	if err != nil {
 		return selectedAccount{}, false, err
 	}
-	pools, err := d.candidatePools(ctx, job.userID)
+	pools, err := d.resolvePoolChain(ctx, job.userID, cfg)
 	if err != nil {
 		return selectedAccount{}, false, err
 	}
@@ -206,31 +202,6 @@ func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (st
 		return "", err
 	}
 	return strategy, nil
-}
-
-// candidatePools returns the pool ids visible to a job's tenant: the tenant's own dedicated pools
-// (oldest first, deterministic) followed by any shared pool. This is the Chunk-1..3 stand-in for
-// the real pool chain (§4.2); Chunk 4 replaces it.
-func (d *Dispatcher) candidatePools(ctx context.Context, userID string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	rows, err := d.db.Query(ctx,
-		`SELECT id FROM sender.pools
-		 WHERE enabled = TRUE AND (owner_user_id = $1 OR kind = 'shared')
-		 ORDER BY (owner_user_id IS NULL) ASC, created_at ASC`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 // accountConsume runs the atomic consume against ONE pool, using orderBy as the strategy ordering
