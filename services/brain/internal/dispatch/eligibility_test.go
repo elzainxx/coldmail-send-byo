@@ -74,7 +74,16 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	e.setAccountDailyState(t, acct, limit, 0, todayUTC(), false, nil)
 
 	const workers = 8
-	const attemptsPerWorker = 25 // 8*25 = 200 attempts >> 50 capacity — mandatory over-subscription
+	// 8*80 = 640 attempts >> 50 capacity — mandatory over-subscription. The budget is generous on
+	// purpose: with ONE row + FOR UPDATE SKIP LOCKED, a worker attempt that finds the row locked by
+	// a peer SKIPS (returns ok=false) rather than blocking, so under heavy contention a large
+	// fraction of attempts are skips. The budget must exceed 50 by enough that skips can never
+	// starve the fill of all 50 slots before the workers exhaust their attempts (a too-small budget
+	// makes the test flake at "consumes < 50" under full-suite connection pressure — an under-count,
+	// never an over-count, so the double-booking invariant is never at risk; the exact-50 assertion
+	// just needs enough non-skipped acquisitions). The invariant under test is unchanged: exactly 50
+	// consumes and daily_sent_count == 50, proving SKIP LOCKED + the CHECK prevent over-consumption.
+	const attemptsPerWorker = 80
 	if workers*attemptsPerWorker <= limit {
 		t.Fatalf("test precondition violated: demand (%d) must exceed capacity (%d)", workers*attemptsPerWorker, limit)
 	}

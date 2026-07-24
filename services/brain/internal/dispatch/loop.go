@@ -73,15 +73,24 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		if lanes <= 0 {
 			continue
 		}
-		hasEligible, err := d.poolChainHasEligible(ctx, u, cfg)
+		// Phase 5 §5.1 wait-vs-fail: evaluate the user's resolved chain once. CLAIM (≥1 eligible)
+		// adds them to the ring; WAIT (empty/unresolvable chain OR ≥1 self-recovering account) leaves
+		// their jobs untouched in queued (no churn, exactly Phase 4's P4-5 gate); FAIL (a non-empty
+		// chain whose every account is terminal_blocked) fails their ready jobs to terminal `failed`.
+		verdict, err := d.evaluateChain(ctx, u, cfg)
 		if err != nil {
-			log.Printf("dispatch: poolChainHasEligible(%s) failed: %v — skipping this user for this tick", u, err)
+			log.Printf("dispatch: evaluateChain(%s) failed: %v — skipping this user for this tick", u, err)
 			continue
 		}
-		if !hasEligible {
-			continue
+		switch verdict {
+		case verdictClaim:
+			ring = append(ring, ringSlot{userID: u, grant: lanes})
+		case verdictFail:
+			if err := d.failExhaustedJobs(ctx, u); err != nil {
+				log.Printf("dispatch: failExhaustedJobs(%s) failed: %v", u, err)
+			}
+		default: // verdictWait — leave the user's jobs queued, untouched (no claim, no write, no churn)
 		}
-		ring = append(ring, ringSlot{userID: u, grant: lanes})
 	}
 	sort.Slice(ring, func(i, j int) bool { return ring[i].userID < ring[j].userID })
 
@@ -128,27 +137,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 	return cfg, pushed, nil
 }
 
-// poolChainHasEligible is the P4-5 pre-claim gate: does userID's resolved pool chain (§4.2) have
-// AT LEAST ONE pool with an eligible account right now? Reuses resolvePoolChain + poolHasEligible
-// so the gate can never drift from the real selection logic (§4.1's own "defined identically"
-// principle). An empty chain (no dedicated pool, no resolvable shared fallback) returns false —
-// treated exactly like an exhausted chain, per §4.3.
-func (d *Dispatcher) poolChainHasEligible(ctx context.Context, userID string, cfg Config) (bool, error) {
-	pools, err := d.resolvePoolChain(ctx, userID, cfg)
-	if err != nil {
-		return false, err
-	}
-	for _, poolID := range pools {
-		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
-	}
-	return false, nil
-}
+// (The P4-5 pre-claim gate's "has ≥1 eligible account?" check is now subsumed by evaluateChain
+// (exhaustion.go), which extends it from claim/skip to claim/WAIT/FAIL — Phase 5 §5. The old
+// standalone poolChainHasEligible was removed so there is exactly ONE chain-classification path and
+// no risk of two predicates drifting.)
 
 // fairnessCursor/setFairnessCursor guard Dispatcher.fairCursor (§5.1) under its own mutex —
 // separate from rrMu (the account-cursor lock), since they protect independent state and are read
