@@ -19,3 +19,8 @@ heartbeat_missed_threshold
 job_max_processing_time_sec
 debug_log_retention_days
 default_shared_pool_id
+
+# Phase 5 — sender_0017 (+3 keys: scoring weights, backoff ladder, throttle window).
+status_score_weights
+retry_backoff_schedule
+throttle_pause_seconds

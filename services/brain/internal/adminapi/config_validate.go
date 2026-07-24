@@ -49,6 +49,14 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 				return typeErr(key, issueMalformed, "config_value_not_int_array")
 			}
 		}
+	case "json":
+		// Phase 5 §7: a json-typed value must be a well-formed JSON object (the {"v": ...} envelope
+		// is added by the store; here `value` is the UNWRAPPED inner value). Reject a non-object or
+		// malformed JSON; per-key inner-shape checks run in the semantic block below.
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(value, &obj) != nil {
+			return typeErr(key, issueMalformed, "config_value_not_json_object")
+		}
 	default:
 		// Unknown value_type in the seed contract — reject rather than write blindly.
 		return typeErr(key, issueMalformed, "config_unknown_value_type:"+valueType)
@@ -77,6 +85,87 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if n, ok := asInt(value); !ok || n <= 0 || n > DailyLimitCeiling {
 			return typeErr(key, issueOutOfRange, "config_daily_limit_default_out_of_range")
 		}
+	case "throttle_pause_seconds":
+		// Phase 5 §7: a positive integer (the throttle-pause window / requeue delay in seconds).
+		if n, ok := asInt(value); !ok || n <= 0 {
+			return typeErr(key, issueOutOfRange, "config_throttle_pause_seconds_out_of_range")
+		}
+	case "status_score_weights":
+		// Phase 5 §3.2 inner shape: all five keys present, weights/params numeric and non-negative,
+		// fail_saturation and recency_horizon_hours strictly positive (they are divisors). A bad
+		// shape is rejected at write; the module ALSO re-validates on read and falls back to the
+		// seeded default (never crashes) — this write-time check is the first line of defense.
+		if perr := validateScoreWeights(key, value); perr != nil {
+			return perr
+		}
+	case "retry_backoff_schedule":
+		// Phase 5 §6.4 inner shape: ladder_seconds a non-empty array of positive ints, max_seconds
+		// a positive int. Same write-check + read-fallback posture as status_score_weights.
+		if perr := validateBackoffSchedule(key, value); perr != nil {
+			return perr
+		}
+	}
+	return nil
+}
+
+// validateScoreWeights checks the §3.2 inner object shape of status_score_weights.
+func validateScoreWeights(key string, value json.RawMessage) *apiError {
+	var w struct {
+		WFail        *json.Number `json:"w_fail"`
+		WProx        *json.Number `json:"w_prox"`
+		WRecency     *json.Number `json:"w_recency"`
+		FailSat      *json.Number `json:"fail_saturation"`
+		RecencyHours *json.Number `json:"recency_horizon_hours"`
+	}
+	if json.Unmarshal(value, &w) != nil {
+		return typeErr(key, issueMalformed, "config_status_score_weights_malformed")
+	}
+	nonNeg := func(n *json.Number) bool {
+		if n == nil {
+			return false
+		}
+		f, err := n.Float64()
+		return err == nil && f >= 0
+	}
+	pos := func(n *json.Number) bool {
+		if n == nil {
+			return false
+		}
+		f, err := n.Float64()
+		return err == nil && f > 0
+	}
+	if !nonNeg(w.WFail) || !nonNeg(w.WProx) || !nonNeg(w.WRecency) {
+		return typeErr(key, issueForbiddenValue, "config_status_score_weights_bad_weight")
+	}
+	if !pos(w.FailSat) || !pos(w.RecencyHours) {
+		return typeErr(key, issueForbiddenValue, "config_status_score_weights_bad_divisor")
+	}
+	return nil
+}
+
+// validateBackoffSchedule checks the §6.4 inner object shape of retry_backoff_schedule.
+func validateBackoffSchedule(key string, value json.RawMessage) *apiError {
+	var s struct {
+		Ladder []json.Number `json:"ladder_seconds"`
+		Max    *json.Number  `json:"max_seconds"`
+	}
+	if json.Unmarshal(value, &s) != nil {
+		return typeErr(key, issueMalformed, "config_retry_backoff_schedule_malformed")
+	}
+	if len(s.Ladder) == 0 {
+		return typeErr(key, issueForbiddenValue, "config_retry_backoff_schedule_empty_ladder")
+	}
+	for _, n := range s.Ladder {
+		v, err := n.Int64()
+		if err != nil || v <= 0 {
+			return typeErr(key, issueForbiddenValue, "config_retry_backoff_schedule_bad_ladder")
+		}
+	}
+	if s.Max == nil {
+		return typeErr(key, issueForbiddenValue, "config_retry_backoff_schedule_missing_max")
+	}
+	if v, err := s.Max.Int64(); err != nil || v <= 0 {
+		return typeErr(key, issueForbiddenValue, "config_retry_backoff_schedule_bad_max")
 	}
 	return nil
 }
