@@ -463,3 +463,65 @@ real Mailpit) + the Node box units. Mailpit cannot emit arbitrary reply codes an
 container cannot reach an in-process controllable sink, so per-arbitrary-code end-to-end at the
 live-stack layer stays the accepted Phase-3 test-design boundary; the raw-response oracle at the Go
 layer is the faithful equivalent for the Brain-side classification Phase 5 owns.
+
+## Phase 6 state — pacing & dead-box detection (complete: 5 build chunks + review gates)
+
+Phase 6 gives the send path its cadence and its self-healing. Phase 4 made the dispatcher claim +
+route; Phase 5 made it classify + degrade; Phase 6 adds the two runtime behaviors that make it safe
+to run continuously. The ONLY structural delta is two additive seeded config rows (`sender_0018`:
+`reclaim_tick_interval_ms`, `smtp_operation_timeout_sec`); pacing state is in-memory soft state; no
+locked column, constraint, enum, or index is modified.
+
+- **Chunk 1 — per-lane pacing (`pacing.go`).** A random inter-send delay (seeded `send_delay_min_sec`
+  /`send_delay_max_sec`, 3–7s) applied INDEPENDENTLY per lane (Interpretation A, P6-1): each of a
+  user's lanes carries a soft in-memory `next_send_at`; throughput ≈ lanes ÷ avg-delay, NOT a single
+  global rate. The delay lives OFF the dispatch-tick critical path — `pacer.Admit` returns
+  `min(dbGrant, paced-ready lanes)`, a `min` so pacing can only FURTHER delay, never raise Phase 4's
+  DB-derived concurrency ceiling (subordination to the DB `in_flight` count is load-bearing, §1.1).
+  `Stamp` (fresh uniform draw) fires only on a real successful push. Soft state: resets on Brain
+  restart (an accepted bounded one-time unpaced burst, parallels the Phase 4 cursors).
+- **Chunk 2 — reclaim loop + Detector A (`reclaim.go`, `runner.go`).** A THIRD single-Brain polling
+  loop (`ReclaimRunner`, on `reclaim_tick_interval_ms`, no Kick — periodic sweep). Detector A: a box
+  silent past `heartbeat_interval_sec × heartbeat_missed_threshold` (360s default) is marked `stale`
+  and ALL its in-flight jobs mass-reclaimed in one atomic tx. `disabled` boxes excluded. Served by
+  the Phase 1 `boxes_liveness_idx` — no new index.
+- **Chunk 3 — Detector B (per-job lease expiry).** Box-liveness-INDEPENDENT backstop: any job whose
+  `lease_expires_at < NOW()` is reclaimed even on a still-heartbeating box (a wedged/hung SMTP
+  session), and catches `assigned`-state jobs stranded in Phase 4's TXN1↔TXN2 crash window. Each
+  reclaimed in its own `FOR UPDATE SKIP LOCKED` tx; both detectors converge on the ONE locked §2.4
+  reclaim transition (`assigned|sending→queued`, `actor='reclaim_loop'`, lease NULL, saturating
+  `attempt_count`, `error_class='timeout'`, `next_attempt_at` from Phase 5's backoff ladder — the
+  ladder REFERENCED, computed set-wise in SQL so a mass reclaim indexes each job's own attempt). The
+  state-guarded `WHERE` makes a job reclaimed once, never twice, and a racing report a clean no-op.
+  Served by `jobs_reclaim_idx` — no new index.
+- **Chunk 4 — the reclaim-does-NOT-score carve-out + the timeout ordering invariant (THE critical
+  chunk).** The carve-out is STRUCTURAL: `reclaimJobsWhere` writes ONLY `sender.jobs` columns — a
+  Brain-declared reclaim physically cannot touch `consecutive_failures` / `last_failure_at` /
+  `account_status_score` / flags (P6-10). A reclaim is a timeout the Brain DECLARES when no report
+  arrived (dead box / hung job) — there is no send outcome to attribute to the account, and Detector
+  A reclaims MANY blameless accounts' jobs at once, so scoring them would cascade-quarantine healthy
+  capacity. A genuinely account-caused hang instead surfaces as a box-REPORTED timeout (scored by
+  Phase 5's handler), which holds ONLY IF the box's per-operation SMTP timeout fires before the job
+  lease: `smtp_operation_timeout_sec < job_max_processing_time_sec` (P6-11), enforced at config-LOAD
+  (`config_ordering_violation`, strict `<`, never clamped — CLAUDE.md Rule 1). The seeded timeout is
+  delivered to the DB-less box on the additive `push_job.smtp.operation_timeout_sec` field. Box
+  disconnect is heartbeat-timeout-driven, not eager (P6-3): a dropped mTLS stream touches no DB and
+  reclaims nothing; only sustained silence past the window reclaims.
+- **Chunk 5 — full suite, CI, docs, DoD.** Behavioral tests (real PG, paired controls, controllable
+  clock as the only timing seam per §6): T1 delay-bound-not-capacity-bound; T2 throughput scales with
+  lanes (2 lanes ≈ 2× one — refutes a global rate); T3 dead-box mass reclaim + re-dispatch; T4 hung
+  job on a live box reclaimed by the lease backstop while a healthy sibling is untouched; T5
+  re-dispatch without double-send + idempotency no-op on a late duplicate; T6 drop/reconnect within
+  the window = no thrash (paired past-window = does reclaim); **T7 the headline carve-out** (reclaim
+  leaves score/`consecutive_failures`/`last_failure_at` byte-unchanged + writes zero `account_events`,
+  with a paired box-REPORTED-timeout positive control that the SAME class DOES score — same class,
+  different provenance) + no-cascade-quarantine (many jobs on one dead box, several accounts, zero
+  penalized); T8 a hanging account is caught by box-reported timeouts and quarantines within a bounded
+  number of attempts with ZERO `reclaim_loop` events; plus the ADR-0010 two-connection
+  reclaim-vs-outcome race (coherent + deadlock-free, both orderings). The P4-15 daily-slot refund is
+  DEFERRED (P6-4, DECIDED-DEFER) — the no-`provider_message_id` gate cannot exclude the
+  crash-after-250 window, so a general refund would silently breach never-exceed-`daily_limit`.
+
+**Scope discipline (§8):** Phase 6 builds the CONTINUOUS reclaim loop ONLY. The one-time startup
+rescan, DB-outage halt/resume, graceful-shutdown drain, and debug-log rollup are Phase 7; content
+variation is Phase 8; the daily-slot refund's safe subset is flagged (P6-6) not built.

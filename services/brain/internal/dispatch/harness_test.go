@@ -156,7 +156,19 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	d := NewDispatcher(pool, dec, px)
 	oh := NewOutcomeHandler(pool, cfg)
 
-	return &dispatchEnv{pool: pool, moduleDSN: moduleDSN, admin: admin, dec: dec, enc: enc, key: key, px: px, d: d, oh: oh, cfg: cfg}
+	env := &dispatchEnv{pool: pool, moduleDSN: moduleDSN, admin: admin, dec: dec, enc: enc, key: key, px: px, d: d, oh: oh, cfg: cfg}
+
+	// Phase 6: neutralize per-lane pacing BY DEFAULT for the existing tick-loop suites. Those tests
+	// (fairness, exhaustion, loop) drive many synthetic Tick() calls in compressed wall-clock to
+	// isolate claim/route/fairness behavior; the real 3–7s inter-send delay (§1) would withhold every
+	// lane after the first send and stall them. Setting the seeded delay to 0 makes the pacer admit
+	// immediately — the exact "delay ~0" configuration T1's anti-vacuity control uses — so pacing is
+	// off for tests that don't exercise it. The dedicated pacing behavioral tests (T1/T2) set their
+	// OWN non-zero delay via setConfigInt to exercise the real cadence. Pacing is orthogonal to these
+	// paths (§1.4), so zeroing the delay changes nothing about what they assert.
+	env.setConfigInt(t, "send_delay_min_sec", 0)
+	env.setConfigInt(t, "send_delay_max_sec", 0)
+	return env
 }
 
 // --- fixtures (real committed rows) ---

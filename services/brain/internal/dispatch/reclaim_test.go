@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // setBoxHeartbeat forces a box's last_heartbeat_at into the past (or future) to simulate silence /
@@ -281,6 +283,67 @@ func TestReclaim_NotExpiredNotReclaimed(t *testing.T) {
 	}
 	if state, _, leaseNull, _, _ := e.jobState(t, job); state != "sending" || leaseNull {
 		t.Fatalf("job state=%s leaseNull=%v, want sending/false", state, leaseNull)
+	}
+}
+
+// TestReclaim_RedispatchesToDifferentBoxNoDoubleSend (§2.5/§2.6 — T5) — a reclaimed job re-enters
+// dispatch and sends via a DIFFERENT box, exactly once. And (T5b) a reclaimed job that ALREADY has
+// a provider_message_id persisted is short-circuited by the idempotency gate — a late duplicate
+// accepted report is a clean no-op (no second push, no raw 23505), never re-sent.
+func TestReclaim_RedispatchesToDifferentBoxNoDoubleSend(t *testing.T) {
+	e := newDispatchEnv(t, "reclaimredisp")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+	e.addBox(t) // a second box so re-dispatch can land elsewhere
+
+	// (T5a) Dispatch, reclaim (dead box), then re-dispatch → sends exactly once.
+	job := e.seedQueuedJob(t, "redisp@example.com")
+	e.dispatchToSending(t, job)
+	firstBox := e.px.boxID
+	e.setBoxHeartbeat(t, firstBox, 400*time.Second) // kill the first box
+	if _, n, err := e.d.ReclaimTick(ctx); err != nil || n != 1 {
+		t.Fatalf("reclaim n=%d err=%v, want 1/nil", n, err)
+	}
+	if st, _, _, _, _ := e.jobState(t, job); st != "queued" {
+		t.Fatalf("post-reclaim state=%s, want queued", st)
+	}
+	pushesBefore := e.px.pushCount()
+	// Re-dispatch: the dead box is stale so AnyConnectedBox returns the healthy extra box.
+	e.px.freeAllBoxes()
+	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		t.Fatalf("reset next: %v", err)
+	}
+	if _, err := e.d.TryDispatch(ctx); err != nil {
+		t.Fatalf("re-dispatch: %v", err)
+	}
+	if st, _, _, _, _ := e.jobState(t, job); st != "sending" {
+		t.Fatalf("re-dispatch state=%s, want sending", st)
+	}
+	if got := e.px.pushCount() - pushesBefore; got != 1 {
+		t.Fatalf("re-dispatch produced %d pushes, want exactly 1 (no double-send)", got)
+	}
+
+	// (T5b) Persist the send (accepted with a provider_message_id).
+	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeAccepted,
+		ProviderMessageID: "PMID-REDISP-1", SMTPResponse: "250 2.0.0 Ok"})
+	if st, hasPMID, _, _, _ := e.jobState(t, job); st != "sent" || !hasPMID {
+		t.Fatalf("after accept state=%s hasPMID=%v, want sent/true", st, hasPMID)
+	}
+	// A late DUPLICATE accepted report (the crash-after-250 box that finally reported) is a clean
+	// no-op — the idempotency gate (provider_message_id already set) short-circuits it.
+	pushesNow := e.px.pushCount()
+	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeAccepted,
+		ProviderMessageID: "PMID-REDISP-DUP", SMTPResponse: "250 2.0.0 Ok"})
+	var pmid string
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+		t.Fatalf("read pmid: %v", err)
+	}
+	if pmid != "PMID-REDISP-1" {
+		t.Fatalf("duplicate report changed provider_message_id to %q — idempotency gate failed", pmid)
+	}
+	if e.px.pushCount() != pushesNow {
+		t.Fatalf("duplicate report triggered a new push — must be a clean no-op")
 	}
 }
 

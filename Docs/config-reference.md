@@ -47,11 +47,33 @@ Phase 5 seeds three new keys via `sender_0017` (and reuses the already-seeded
 hint (§6.2, ruling 4), NOT a hard per-account ceiling** — ceasing to use a failing account is
 governed by `status_score_weights` + `quarantine_threshold`, not this dial.
 
-## Both config-ordering invariants (enforced at config-load, Phase 7 §5.3 authoritative)
+## Phase 6 state (+2 keys, `sender_0018`)
 
-- `smtp_operation_timeout_sec < job_max_processing_time_sec`
-- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec`
+Phase 6 seeds two new keys via `sender_0018` (and reuses the already-seeded `send_delay_min_sec` /
+`send_delay_max_sec` / `concurrency_per_user_default` / `heartbeat_interval_sec` /
+`heartbeat_missed_threshold` / `job_max_processing_time_sec` from `sender_0010` — no duplicates).
 
-A config set violating either is rejected with external code `config_ordering_violation`.
-These keys are seeded in later phases; the gate asserts the invariants from live values
-once the keys exist.
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `reclaim_tick_interval_ms` | `{"v":15000}` | integer | sender_0018 | Milliseconds between reclaim-loop poll cycles (dead-box heartbeat scan + per-job lease-expiry backstop). Phase 6 §2. |
+| `smtp_operation_timeout_sec` | `{"v":30}` | integer | sender_0018 | Box per-operation SMTP timeout (connect/greeting/socket-read on MAIL/RCPT/DATA). Consumed by the box (delivered on `push_job.smtp.operation_timeout_sec`). MUST stay `< job_max_processing_time_sec` so an account hang surfaces as a box-reported timeout (scored/quarantined) rather than an unscored Brain lease reclaim. Phase 6 §0/§2 (P6-11). |
+
+The pacing dials (`send_delay_min_sec`/`send_delay_max_sec`, `concurrency_per_user_default`) are the
+per-lane inter-send delay + lane ceiling behind Interpretation-A throughput (≈ lanes ÷ avg-delay,
+§1.3). The heartbeat dials (`heartbeat_interval_sec` × `heartbeat_missed_threshold`) set the
+dead-box silence window (default 360s, §2.2); `job_max_processing_time_sec` is the per-job lease /
+Detector-B backstop deadline (§2.3).
+
+## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
+
+- `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6** (both keys
+  now seeded: the timeout via `sender_0018`, the lease via `sender_0010`). `LoadConfig`
+  (`services/brain/internal/dispatch/config.go`) rejects a violating set (strict `<`; equality also
+  rejected), so the Brain never runs on an inverted pair. The admin *write* path deliberately does
+  not couple the two dials at write time (spec §5.1); the reject lives at load where the whole set is
+  read together (P6-OD-1).
+- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` — Phase 7 keys, not yet seeded;
+  enforced once they exist.
+
+A config set violating either is rejected with external code `config_ordering_violation` — never
+clamped or auto-corrected (Rule 1).

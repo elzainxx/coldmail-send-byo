@@ -48,6 +48,15 @@ func newPacer() *pacer {
 	}
 }
 
+// setClock replaces the pacer's clock (the permitted timing seam, §6). Used by the T1/T2 pacing
+// behavioral tests to advance time deterministically past the real inter-send delay window instead
+// of sleeping 3–7s per send. Production never calls this — newPacer wires the wall clock.
+func (p *pacer) setClock(now func() time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.now = now
+}
+
 // uniformDelay draws a per-send delay uniformly from [minSec, maxSec] seconds (re-drawn per send,
 // which also de-synchronizes lanes so they do not align into bursts — §1.1). A degenerate range
 // (max ≤ min, e.g. both 0 for the T1 anti-vacuity "delay ~0" run) collapses to exactly minSec.

@@ -267,3 +267,46 @@ and they are deliberately placed behind the single decision seams `quarantineDec
 `autopause_enabled` can wrap them; those keys are seeded only in 9.5's `sender_0021`, not yet on
 disk, so they remain correctly UNWIRED and are recorded honestly rather than stubbed; the Brain
 singleton guard is unchanged and still green) ✅.
+
+**Phase 6's DoD status (pacing & dead-box detection):** DoD-1 (spec
+`Docs/phase-6-pacing-and-dead-box-detection.md`, closed, implemented exactly) ✅ · DoD-2 (real
+behavioral tests on real Postgres clones — the reclaim/timing/concurrency tests are NOT mocked, the
+only seams are the pacer clock [§6-permitted] and box-heartbeat/lease fixtures: T1 delay-bound;
+T2 throughput-scales-with-lanes [2 lanes ≈ 2× one, refuting a global rate]; T3 dead-box mass
+reclaim + re-dispatch; T4 hung-job-on-live-box via the lease backstop with an untouched healthy
+sibling; T5 re-dispatch no-double-send + late-duplicate idempotency no-op; T6 drop/reconnect
+within-window no-thrash paired with past-window-does-reclaim; **T7 the headline reclaim-does-not-
+score carve-out** [score/`consecutive_failures`/`last_failure_at` byte-unchanged, zero
+`account_events`] with a paired box-REPORTED-timeout positive control [same class scores] + the
+no-cascade-quarantine assertion; T8 hanging-account quarantines within a bounded attempt count with
+ZERO `reclaim_loop` events; the ADR-0010 two-connection reclaim-vs-outcome race [coherent +
+deadlock-free, both orderings]; plus the pacer register unit tests — every guard carries a
+positive/negative or paired control) ✅ · DoD-3 (docs in the same commits: the spec,
+`architecture-overview.md` gained a full Phase 6 section, `config-reference.md` +
+`config-manifest.txt` gained the two keys, the open-decisions ledger recorded P6-OD-1/2; contract/
+config drift gates green) ✅ · DoD-4 (**two new seeded config keys** — `reclaim_tick_interval_ms`,
+`smtp_operation_timeout_sec` via `sender_0018`, each with `default_value` + `description` +
+`value_type`, appended to the manifest + reference in the same change; `default_value` never
+mutated; reuses the already-seeded pacing/heartbeat/lease dials from `sender_0010`; `config_drift`
+17 -> 19) ✅ · DoD-5 (**no hardcoded tuning constant** — the delay range, lane ceiling, heartbeat
+window, lease, reclaim interval, and box SMTP timeout all resolve to seeded rows read at runtime
+[config re-read per tick]; the pacer's clock/draw are test seams, not tuning constants) ✅ · DoD-6
+(open-decisions: Phase 6 §7 shipped with an empty needs-user list; build recorded P6-OD-1 [the
+config-ordering reject-at-load vs warn-at-write reconciliation — no real conflict, and the Phase 4
+closeout pre-committed the load-time reject check] and P6-OD-2 [the additive box-timeout delivery
+wiring]; neither required a user ruling; P6-4's daily-slot-refund defer is honored — not built) ✅ ·
+DoD-7 (**additive only** — `sender_0018` seeds two config rows; no locked column/constraint/enum/
+index touched; the `push_job.smtp.operation_timeout_sec` wire field is additive [`omitempty`]; the 7
+enums frozen; the chain is contiguous 0000..0018 with paired self-recording up/down, proven by the
+runner lifecycle up->down test incl. the 0018 config-seed anti-vacuity; **grants**: two
+`sender.config` rows land where `sender_module` already holds SELECT, so no new grant —
+`TestGrantsInvariant` stays green) ✅ · DoD-8 (security unchanged — Brain remains sole decryptor; the
+box stays DB-less/KMS-less and holds credentials memory-only [the new timeout field carries no
+secret]; mTLS + STARTTLS-before-AUTH intact; the two-vocabulary rule holds — the reclaim's
+`last_error_message` [`box heartbeat missed`/`lease expired`] and the `config_ordering_violation`
+detail stay internal, never crossing a client boundary) ✅ · DoD-9 (autonomous-subsystem safety —
+the reclaim loop is a continuous autonomous sweeper, but it obeys the single-Brain discipline
+[`ReclaimRunner` is one loop in the singleton, panic-recovering per Rule 7], is race-safe via
+state-guarded `SKIP LOCKED`, and does NOT re-decide any Phase 5 policy [it references the timeout
+backoff, never redefines it]; the reclaim-does-not-score carve-out prevents a box outage from
+cascade-quarantining healthy capacity; the Brain singleton guard is unchanged and still green) ✅.
