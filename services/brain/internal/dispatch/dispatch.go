@@ -381,7 +381,14 @@ func (d *Dispatcher) readLease(ctx context.Context, jobID string) (time.Time, bo
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var t *time.Time
-	if err := d.db.QueryRow(ctx, `SELECT lease_expires_at FROM sender.jobs WHERE id=$1`, jobID).Scan(&t); err != nil || t == nil {
+	if err := d.db.QueryRow(ctx, `SELECT lease_expires_at FROM sender.jobs WHERE id=$1`, jobID).Scan(&t); err != nil {
+		log.Printf("dispatch: readLease(%s) query failed: %v — pushing without an echoed lease deadline", jobID, err)
+		return time.Time{}, false
+	}
+	if t == nil {
+		// A job just marked 'sending' must carry a non-null lease (jobs_lease_valid_check); a NULL
+		// read here means the state machine's own invariant was violated somewhere upstream.
+		log.Printf("dispatch: readLease(%s) returned a NULL lease on a job just marked sending — state-machine invariant violated", jobID)
 		return time.Time{}, false
 	}
 	return *t, true
