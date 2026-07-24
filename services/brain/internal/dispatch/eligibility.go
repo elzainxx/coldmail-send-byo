@@ -81,12 +81,28 @@ func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor boo
 // therefore exactly the §2.1 predicate MINUS the throttle OR-terms; the spec itself documents that
 // term as "inert until Phase 5 ships" (Phase 4 never sets a throttle pause), so omitting it changes
 // no observable behavior today. Phase 5 adds the terms when its migration lands.
+// The consume admits an account via three §2.1 branches: (1) stale reset cycle (counter belongs to
+// a past day → treated as 0; a daily_limit pause self-clears here); (2) current cycle under limit;
+// and — the Phase 5 coordinated edit (P5-13) — (3) an EXPIRED throttle pause
+// (pause_reason='throttle' AND NOW() >= throttle_paused_at + $4::int seconds), added ALONGSIDE the
+// daily_limit terms in BOTH cycle branches. It is strictly reason-scoped: a 'manual' pause is NEVER
+// admitted, and a throttle pause still inside its window is NEVER admitted. $4 = throttle_pause_seconds.
+//
+// On selecting an expired-throttle account, the consume SELF-CLEARS the pause (paused=FALSE,
+// pause_reason=NULL, throttle_paused_at=NULL) in the same UPDATE and writes ONE
+// account_events(actor='system', action='unpause') via a data-modifying CTE — so the whole consume
+// stays a SINGLE atomic statement and the double-booking core (SKIP LOCKED + accounts_daily_sent_check)
+// is untouched: un-pausing only makes an account eligible; the daily counter + CHECK still bound
+// every send. was_throttle is captured in the eligible CTE (pre-state) so the RETURNING knows whether
+// to audit; quarantined/disabled are FALSE in every admitted row (the predicate requires it), so the
+// audit's from/to flag snapshots use those constants.
 const accountConsumeQueryTmpl = `
 WITH today_calc AS (
     SELECT (NOW() AT TIME ZONE $1)::date AS today_in_tz
 ),
 eligible_accounts AS (
-    SELECT a.id
+    SELECT a.id,
+           (a.paused = TRUE AND a.pause_reason = 'throttle') AS was_throttle
     FROM sender.accounts a, today_calc
     WHERE a.pool_id = $2
       AND ($3::uuid IS NULL OR $3::uuid IS NOT NULL) -- always true; keeps $3 (the optional
@@ -98,41 +114,65 @@ eligible_accounts AS (
       AND a.disabled = FALSE
       AND (
             (a.daily_reset_day < today_calc.today_in_tz
-                AND (a.paused = FALSE OR a.pause_reason = 'daily_limit'))
+                AND (a.paused = FALSE
+                     OR a.pause_reason = 'daily_limit'
+                     OR (a.pause_reason = 'throttle'
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4)))
             OR
             (a.daily_reset_day = today_calc.today_in_tz
-                AND a.paused = FALSE
+                AND (a.paused = FALSE
+                     OR (a.pause_reason = 'throttle'
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4))
                 AND a.daily_sent_count < a.daily_limit)
           )
     ORDER BY %s
     LIMIT 1
     FOR UPDATE SKIP LOCKED
+),
+consumed AS (
+    UPDATE sender.accounts a
+    SET daily_sent_count = CASE
+            WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
+            ELSE a.daily_sent_count + 1
+        END,
+        daily_reset_day = (SELECT today_in_tz FROM today_calc),
+        paused = CASE
+            WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
+                 AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN FALSE
+            WHEN ea.was_throttle THEN FALSE     -- P5-13: expired throttle self-clears
+            WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
+                       ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN TRUE
+            ELSE a.paused
+        END,
+        pause_reason = CASE
+            WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
+                 AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN NULL
+            WHEN ea.was_throttle THEN NULL      -- P5-13: expired throttle self-clears
+            WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
+                       ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN 'daily_limit'
+            ELSE a.pause_reason
+        END,
+        throttle_paused_at = CASE WHEN ea.was_throttle THEN NULL ELSE a.throttle_paused_at END,
+        updated_at = NOW()
+    FROM eligible_accounts ea
+    WHERE a.id = ea.id
+    RETURNING a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.from_name,
+              a.credential_ciphertext, a.credential_nonce, a.credential_key_id, ea.was_throttle
+),
+throttle_unpause_audit AS (
+    -- One account_events(system, unpause) IFF this consume self-cleared a throttle pause (§4.3, T3/T8).
+    -- The daily_limit self-heal writes no event (Phase 1 behavior, §4.1) — only throttle does here.
+    INSERT INTO sender.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
+    SELECT id, user_id, 'system', 'unpause',
+           '{"paused":true,"pause_reason":"throttle","quarantined":false,"disabled":false}'::jsonb,
+           '{"paused":false,"pause_reason":null,"quarantined":false,"disabled":false}'::jsonb,
+           'throttle_window_expired'
+    FROM consumed WHERE was_throttle
+    RETURNING 1
 )
-UPDATE sender.accounts a
-SET daily_sent_count = CASE
-        WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
-        ELSE a.daily_sent_count + 1
-    END,
-    daily_reset_day = (SELECT today_in_tz FROM today_calc),
-    paused = CASE
-        WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
-             AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN FALSE
-        WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
-                   ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN TRUE
-        ELSE a.paused
-    END,
-    pause_reason = CASE
-        WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc)
-             AND a.paused = TRUE AND a.pause_reason = 'daily_limit' THEN NULL
-        WHEN (CASE WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
-                   ELSE a.daily_sent_count + 1 END) >= a.daily_limit THEN 'daily_limit'
-        ELSE a.pause_reason
-    END,
-    updated_at = NOW()
-FROM eligible_accounts ea
-WHERE a.id = ea.id
-RETURNING a.id, a.smtp_host, a.smtp_port, a.smtp_username, a.from_address, a.from_name,
-          a.credential_ciphertext, a.credential_nonce, a.credential_key_id`
+SELECT id, smtp_host, smtp_port, smtp_username, from_address, from_name,
+       credential_ciphertext, credential_nonce, credential_key_id
+FROM consumed`
 
 // selectAccountForJob resolves the job's pool chain (§4.2, RESOLVE_POOL_CHAIN — dedicated-first,
 // shared fallback) and atomically consumes the first eligible account found, trying pools in
@@ -147,7 +187,7 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cf
 		return selectedAccount{}, false, err
 	}
 	for _, pool := range pools {
-		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone)
+		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds)
 		if err != nil {
 			return selectedAccount{}, false, err
 		}
@@ -162,7 +202,7 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cf
 // (§3/§3.1), runs the atomic consume, and — on success under round_robin — advances that pool's
 // in-memory cursor to the consumed account's id (under rrMu, §3.1's "on success, under a per-pool
 // mutex" step). A non-round_robin strategy's cursor argument is nil and no cursor is ever written.
-func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string) (selectedAccount, bool, error) {
+func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string, throttlePauseSeconds int) (selectedAccount, bool, error) {
 	strategy, err := d.poolRoutingStrategy(ctx, poolID)
 	if err != nil {
 		return selectedAccount{}, false, err
@@ -178,7 +218,7 @@ func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTime
 		d.rrMu.Unlock()
 	}
 
-	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone)
+	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone, throttlePauseSeconds)
 	if err != nil || !ok {
 		return selectedAccount{}, false, err
 	}
@@ -209,12 +249,12 @@ func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (st
 // account-consume are separate transactions"). Returns (account, found, err); found=false means
 // the pool is exhausted/unhealthy by the §4.1 predicate (zero eligible accounts) — the caller
 // tries the next pool in the chain or requeues.
-func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string) (selectedAccount, bool, error) {
+func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string, throttlePauseSeconds int) (selectedAccount, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	query := accountConsumeQuery(orderBy)
 	var a selectedAccount
-	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor).Scan(
+	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor, throttlePauseSeconds).Scan(
 		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
 		&a.ciphertext, &a.nonce, &a.keyID)
 	if err == pgx.ErrNoRows {
@@ -231,9 +271,12 @@ func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string,
 // Defining exhaustion as "would the consume affect zero rows" via the IDENTICAL WHERE (not a
 // separately-maintained predicate) makes it impossible for the exhaustion test to drift from the
 // real selection logic.
-func (d *Dispatcher) poolHasEligible(ctx context.Context, poolID, dailyResetTimezone string) (bool, error) {
+func (d *Dispatcher) poolHasEligible(ctx context.Context, poolID, dailyResetTimezone string, throttlePauseSeconds int) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// IDENTICAL predicate to the consume's eligible_accounts CTE, incl. the P5-13 expired-throttle
+	// admission ($3 = throttle_pause_seconds) — so the pre-claim gate and the §5 exhaustion
+	// classifier can never drift from the real selection logic. Read-only (EXISTS), no consume.
 	const q = `
 SELECT EXISTS (
   WITH today_calc AS (
@@ -246,15 +289,20 @@ SELECT EXISTS (
     AND a.disabled = FALSE
     AND (
           (a.daily_reset_day < today_calc.today_in_tz
-              AND (a.paused = FALSE OR a.pause_reason = 'daily_limit'))
+              AND (a.paused = FALSE
+                   OR a.pause_reason = 'daily_limit'
+                   OR (a.pause_reason = 'throttle'
+                       AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $3)))
           OR
           (a.daily_reset_day = today_calc.today_in_tz
-              AND a.paused = FALSE
+              AND (a.paused = FALSE
+                   OR (a.pause_reason = 'throttle'
+                       AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $3))
               AND a.daily_sent_count < a.daily_limit)
         )
 )`
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, poolID).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, poolID, throttlePauseSeconds).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

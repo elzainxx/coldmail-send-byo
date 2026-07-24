@@ -207,6 +207,36 @@ promotions above are Phase 6/7's own already-planned keys (`sender_0018`/`sender
 closeout adds nothing, steals no migration number, and records the interim risk instead of
 papering over it.
 
+## Phase 5 build (error taxonomy, account status & quarantine)
+
+Phase 5's spec §8 shipped a **closed decision log with an empty needs-user list** — every item
+DECIDED-NOW / DEFER-TO-PHASE-N / FLAGGED-NOT-BUILT / CONFIRMED. Build surfaced the items below;
+none required a user ruling (they are deliberate build-structure notes recorded per CLAUDE.md
+Rule 2, not contradictions).
+
+### Phase 5 build surfaced (recorded, not silently resolved — CLAUDE.md Rule 2)
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| P5-OD-1 | The auto-quarantine / auto-pause decision seams for Phase 9.5 | **APPLIED (deliberate)** | Chunk 4's structural requirement: auto-quarantine and auto-pause each go through ONE explicit predicate — `quarantineDecision()` and `pauseDecision()` in `services/brain/internal/dispatch/account_effect.go` — with a single call site each. Every automatic quarantine/pause flows through exactly those two functions. Phase 9.5's `autoquarantine_mode` (off\|shadow\|enforce) and `autopause_enabled` kill-switches can wrap the decision by editing ONLY those functions, with NO surgical re-plumbing across the outcome handler. **9.5's config keys are NOT seeded or wired here** (they live in 9.5's own migration `sender_0021`, per the locked plan); this is purely the seam they will wrap. Recorded as deliberate scope discipline. |
+| P5-OD-2 | Migrations `0016` (columns) + `0017` (config) both land in the same build chunk | **APPLIED (chain contiguity)** | The locked plan associates `0016` with the scoring work (spec Chunk 3) and `0017` with the backoff key (spec Chunk 2). The migration chain must be contiguous (`migration_lint`) and the runner won't apply `0017` with `0016` absent, so BOTH landed together in build Chunk 2a; build Chunk 3 then implemented the scoring *formula* that consumes the `consecutive_failures` column. No spec edit; a build-sequencing note only. |
+| P5-OD-3 | `attempt_count` saturation must apply to EVERY requeue path | **APPLIED (bug fix)** | §6.2 mandates `attempt_count` saturates at `max_attempts`. The outcome handler and the pre-existing dispatch-side requeue paths (`requeueNoAccount`/`requeuePushFailed`/header-injection, `dispatch.go`) both increment the same counter; an unconditional `+1` on the dispatch side would violate `jobs_attempt_count_check` (23514) once an account auto-quarantines mid-retry and its job requeues past the cap. Both now use `LEAST(attempt_count+1, max_attempts)`. Caught by a real behavioral test before it could reach production. |
+
+**P5-13 (the coordinated Phase 4 §2.1 predicate edit) is now IMPLEMENTED, not just documented.**
+The Phase 4 spec already carried the throttle-expired OR-term in prose (applied in the Phase 4
+closeout); Phase 5's `sender_0016` adds the `throttle_paused_at` column and `sender_0017` the
+`throttle_pause_seconds` key it depends on, so the term is now live in BOTH the atomic consume
+(`accountConsumeQueryTmpl`, which additionally self-clears the pause + writes one
+`account_events(system, unpause)`) and the read-only `poolHasEligible` predicate — the two kept
+byte-identical so the pre-claim gate and the §5 exhaustion classifier can never drift from the
+real selection logic. Reason-scoped: never admits a `manual` pause, never an in-window throttle
+pause. The double-booking core (`SKIP LOCKED` + `accounts_daily_sent_check`) is untouched.
+
+**Three new config keys added (`sender_0017`): `status_score_weights`, `retry_backoff_schedule`,
+`throttle_pause_seconds`.** `config_drift` moves 14 → 17. `default_value` never mutated; both
+`json` keys validated at write (admin endpoint) AND re-validated on read (fall back to the
+documented default, never crash — §7). No locked spec touched; only additive columns + config.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

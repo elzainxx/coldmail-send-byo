@@ -139,7 +139,7 @@ func (d *Dispatcher) poolChainHasEligible(ctx context.Context, userID string, cf
 		return false, err
 	}
 	for _, poolID := range pools {
-		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone)
+		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds)
 		if err != nil {
 			return false, err
 		}
