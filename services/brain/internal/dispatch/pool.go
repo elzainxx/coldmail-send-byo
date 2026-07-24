@@ -51,7 +51,16 @@ func (d *Dispatcher) resolvePoolChain(ctx context.Context, userID string, cfg Co
 		chain = append(chain, sharedTarget)
 	}
 
-	return dedupeCapped(chain, maxFallbackHops), nil
+	resolved := dedupeCapped(chain, maxFallbackHops)
+	// An EMPTY chain means literally nothing was reachable — no dedicated pool AND no resolvable
+	// shared fallback. That is exactly the §4.3 shared_pool_not_configured condition (whether the
+	// cause is a base user with no dedicated pool, or a dedicated user whose fallback would have
+	// been the missing shared pool). Emit the throttled internal diagnostic (never per-job/per-tick
+	// — logSharedPoolNotConfigured rate-limits across the whole process).
+	if len(resolved) == 0 {
+		d.logSharedPoolNotConfigured()
+	}
+	return resolved, nil
 }
 
 // dedicatedPools returns the tenant's own enabled dedicated pools, oldest-created first

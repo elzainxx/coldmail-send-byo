@@ -28,8 +28,8 @@ type Config struct {
 	DebugLogRetentionDays     int     // debug_log_retention_days — send_logs.ttl_expires_at (§7)
 	DispatchTickIntervalMS    int     // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
 	ConcurrencyPerUserDefault int     // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
-	DailyResetTimezone       string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
-	DefaultSharedPoolID      *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
+	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
+	DefaultSharedPoolID       *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
 }
 
 // LoadConfig reads the dispatcher-consumed config keys from sender.config. Values are JSONB-wrapped

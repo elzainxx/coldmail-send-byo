@@ -44,12 +44,38 @@ type Dispatcher struct {
 	// momentarily re-orders send interleaving.
 	fairMu     sync.Mutex
 	fairCursor string
+
+	// diagMu/lastSharedPoolNotConfiguredLog throttles the §4.3 shared_pool_not_configured internal
+	// diagnostic: an operational condition (not a per-job error), logged at most once per
+	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
+	// state, so a sustained misconfiguration never floods the log (spec §4.3, test T10 assertion 5).
+	diagMu                         sync.Mutex
+	lastSharedPoolNotConfiguredLog time.Time
 }
+
+// sharedPoolNotConfiguredLogInterval bounds how often the §4.3 diagnostic repeats. Not a
+// config-not-code violation: it governs an internal LOG line's own noise floor, not send/dispatch
+// behavior — the same category of exemption as maxFallbackHops (§10 P4-19).
+const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed
 // to the admin surface.
 func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher, cfg Config) *Dispatcher {
 	return &Dispatcher{db: db, dec: dec, px: px, cfg: cfg, rrCursor: make(map[string]string)}
+}
+
+// logSharedPoolNotConfigured emits the §4.3 internal diagnostic, throttled to at most once per
+// sharedPoolNotConfiguredLogInterval across the WHOLE process (not per-user/per-job) — a sustained
+// misconfiguration affecting many users/jobs across many ticks still produces only one log line
+// per interval, never floods.
+func (d *Dispatcher) logSharedPoolNotConfigured() {
+	d.diagMu.Lock()
+	defer d.diagMu.Unlock()
+	if time.Since(d.lastSharedPoolNotConfiguredLog) < sharedPoolNotConfiguredLogInterval {
+		return
+	}
+	d.lastSharedPoolNotConfiguredLog = time.Now()
+	log.Printf("dispatch: shared_pool_not_configured — default_shared_pool_id is unset or does not resolve to an enabled shared pool; affected base/fallback campaigns stay queued cleanly until an operator sets it (§4.3)")
 }
 
 // claimQuery is the LOCKED Phase 1 claim CTE (§5.1), LIMIT 1 in Phase 3. FOR UPDATE SKIP LOCKED

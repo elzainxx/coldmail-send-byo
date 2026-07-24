@@ -287,3 +287,23 @@ build plan); this section is updated as each chunk lands.
   at a second campaign are BOTH rejected (proving the advisory lock genuinely serializes the
   check-then-insert, not just correct single-threaded); two DIFFERENT users' concurrent `run`s
   never interfere (the lock is per-user, not global).
+  **Review fixes (R1/R2, post-Chunk-6):** two correctness gaps found by the architecture review
+  passes, fixed before the code-review passes ran:
+  - **`Tick`'s per-user error handling aborted the WHOLE tick and advanced the fairness cursor
+    BEFORE the claim was even attempted.** A transient claim or gate-check failure for one user
+    (e.g. a lock-wait blip) would silently drop every ring member ordered after them for that
+    tick, and — worse — record the failed user as "serviced," directly contradicting §5.2's own
+    no-starvation argument ("every ring member is visited every tick"). Fixed: a per-user error in
+    either the pre-claim gate or the claim itself is logged and that ONE user is skipped for this
+    tick; the ring loop continues to every other member. The fairness cursor now advances AFTER
+    the claim attempt (matching §1.2's own pseudocode ordering: `batch = CLAIM_FOR_USER(...); rr_
+    cursor = U`), not before.
+  - **The §4.3-mandated `shared_pool_not_configured` throttled internal diagnostic was entirely
+    unimplemented** — test T10's assertion 5 requires it, but no log line existed anywhere in
+    `pool.go`. Fixed: `Dispatcher.logSharedPoolNotConfigured` (dispatch.go) emits one internal log
+    line, rate-limited to at most once per `sharedPoolNotConfiguredLogInterval` (1 minute) across
+    the whole process regardless of how many users/jobs/ticks hit the empty-chain state, fired
+    from `resolvePoolChain` whenever the resolved chain is empty. Proven by
+    `TestPoolChain_NotConfiguredDiagnosticIsThrottled`: fires on the first empty-chain resolution,
+    does NOT fire again immediately, and DOES fire again once the throttle window has genuinely
+    elapsed (time-based, not a one-shot latch).

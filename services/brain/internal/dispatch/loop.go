@@ -7,6 +7,7 @@ package dispatch
 
 import (
 	"context"
+	"log"
 	"sort"
 	"time"
 )
@@ -63,6 +64,9 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 	// chain from an unset/invalid default_shared_pool_id, §4.3 — is likewise skipped: their jobs
 	// stay queued, untouched, no claim/requeue churn, no job_events flooding under sustained
 	// exhaustion (the rare-race requeue in resolveAndPush remains the only backstop).
+	// A per-user gate-check error must not abort the whole tick either (same no-starvation
+	// reasoning as the claim loop below): log and skip that ONE user for this tick, leave every
+	// other active user's gate evaluation unaffected.
 	var ring []ringSlot
 	for _, u := range activeUsers {
 		lanes := cfg.ConcurrencyPerUserDefault - inFlight[u]
@@ -71,7 +75,8 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		}
 		hasEligible, err := d.poolChainHasEligible(ctx, u, cfg)
 		if err != nil {
-			return cfg, 0, err
+			log.Printf("dispatch: poolChainHasEligible(%s) failed: %v — skipping this user for this tick", u, err)
+			continue
 		}
 		if !hasEligible {
 			continue
@@ -87,12 +92,20 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 	ring = rotateRing(ring, d.fairnessCursor())
 
 	// Phase C+D: claim per active user (in rotated ring order), then resolve+push each claimed job.
+	// A per-user claim error must NOT abort the whole tick — every OTHER ring member must still be
+	// visited this tick (§5.2's no-starvation guarantee is "every ring member is visited every
+	// tick"; a transient failure on one user's claim would otherwise starve everyone ordered after
+	// them in the ring, unboundedly if the condition persists). Log and move to the next slot. The
+	// fairness cursor advances AFTER the claim attempt (§1.2's own pseudocode: "batch =
+	// CLAIM_FOR_USER(U, ...); rr_cursor = U"), not before — so a user is only recorded as
+	// "serviced" once they were actually attempted.
 	pushed := 0
 	for _, slot := range ring {
-		d.setFairnessCursor(slot.userID) // advance past this campaign as soon as it's visited
 		jobs, err := d.claimForUser(ctx, slot.userID, slot.grant, cfg.JobMaxProcessingTimeSec)
+		d.setFairnessCursor(slot.userID)
 		if err != nil {
-			return cfg, pushed, err
+			log.Printf("dispatch: claimForUser(%s) failed: %v — skipping this user for this tick, ring continues", slot.userID, err)
+			continue
 		}
 		for _, job := range jobs {
 			// Box selection is orthogonal to routing (§1.3): boxes are interchangeable, and Phase

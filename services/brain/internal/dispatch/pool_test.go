@@ -9,6 +9,7 @@ package dispatch
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestPoolChain_DedicatedTriedBeforeShared — a user with a dedicated pool (capacity 20) and a
@@ -263,6 +264,49 @@ func TestPoolChain_InvalidDefaultBehavesLikeUnset(t *testing.T) {
 	e.setDefaultSharedPool(t, "11111111-2222-3333-4444-555555555555")
 	if _, ok, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil || ok {
 		t.Fatalf("nonexistent-default: ok=%v err=%v, want (false, nil)", ok, err)
+	}
+}
+
+// TestPoolChain_NotConfiguredDiagnosticIsThrottled (review finding, spec §4.3 / T10 assertion 5)
+// — the shared_pool_not_configured internal diagnostic fires on the FIRST empty-chain resolution
+// but NOT again immediately after (rate-limited), and DOES fire again once the throttle window
+// has genuinely elapsed — proving the gate is time-based, not "never again" or "always."
+func TestPoolChain_NotConfiguredDiagnosticIsThrottled(t *testing.T) {
+	e := newDispatchEnv(t, "diagthrottle")
+	ctx := context.Background()
+	userA := e.seedUser(t, "diag-a@tenant.example")
+	e.clearDefaultSharedPool(t)
+
+	if !e.d.lastSharedPoolNotConfiguredLog.IsZero() {
+		t.Fatal("precondition: lastSharedPoolNotConfiguredLog should start zero")
+	}
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+		t.Fatalf("selectAccountForJob: %v", err)
+	}
+	first := e.d.lastSharedPoolNotConfiguredLog
+	if first.IsZero() {
+		t.Fatal("the diagnostic never fired on the FIRST empty-chain resolution")
+	}
+
+	// A second empty-chain resolution immediately after must NOT update the timestamp (throttled).
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+		t.Fatalf("selectAccountForJob (2nd): %v", err)
+	}
+	if e.d.lastSharedPoolNotConfiguredLog != first {
+		t.Fatal("the diagnostic fired again immediately — it must be rate-limited, not once-per-call")
+	}
+
+	// Once the throttle window has genuinely elapsed (simulated by backdating the timestamp), the
+	// NEXT empty-chain resolution must fire it again — proving the gate is time-based, not a
+	// one-shot latch.
+	e.d.diagMu.Lock()
+	e.d.lastSharedPoolNotConfiguredLog = time.Now().Add(-2 * sharedPoolNotConfiguredLogInterval)
+	e.d.diagMu.Unlock()
+	if _, _, err := e.d.selectAccountForJob(ctx, claimedJob{id: "n/a", userID: userA}); err != nil {
+		t.Fatalf("selectAccountForJob (3rd): %v", err)
+	}
+	if !e.d.lastSharedPoolNotConfiguredLog.After(first) {
+		t.Fatal("the diagnostic did not fire again after the throttle window elapsed")
 	}
 }
 
