@@ -384,3 +384,82 @@ the timeout triage table.
   tenant (`T3_TENANT`) per run, seeded with its own `public.users` row, so its intentionally-stuck
   job never accumulates against `SYSUSER`. Verified by running the full harness three times in a
   row on one stack — 40/40 every time (was previously only reliable on a freshly-reset volume).
+
+## Phase 5 state — error taxonomy, account status & quarantine (complete: 6 build chunks)
+
+Phase 5 turns Phase 3's single generic `error`-requeue and Phase 4's flag-*reading* dispatcher
+into the module's failure brain. Two additive `sender.accounts` columns (`sender_0016`) + three
+seeded config keys (`sender_0017`) are the only schema/config deltas; no locked column,
+constraint, or enum is modified.
+
+- **Chunk 1 — the Brain-side error classifier (`classify.go`).** `classifyReport(report) ->
+  error_class` is a PURE, deterministic, first-match-wins function of the box's RAW report
+  (outcome + `error_reason` slug + raw `smtp_response`). The box reports raw; the Brain classifies
+  (P5-1) — the single classification point. Reply CODE dominates free text; enhanced status codes
+  and text keywords only DISAMBIGUATE within a code (throttle-vs-transient, bounce-vs-policy). An
+  ambiguous `550` (no recipient-invalid signal) resolves conservatively to `unknown` (requeue),
+  never `bounce_permanent` — a wrongly-bounced valid recipient is unrecoverable. Assigns the six
+  locked classes only; adds NO enum value.
+- **Chunk 2 — per-class job + account policy (`outcome.go`, `account_effect.go`) + the retry-model
+  reconciliation.** In one transaction: `bounce_permanent` -> terminal `bounced`, NO account
+  penalty (§3.3 carve-out); `auth_failure`/`throttle`/`transport_4xx`/`timeout`/`unknown` ->
+  requeue (`sending->queued`), lease cleared, `last_error_class` = the real class, per-class
+  backoff (`auth`=NOW, `throttle`=`throttle_pause_seconds`, transient=ladder from
+  `retry_backoff_schedule`), + the account effect. **`attempt_count` now SATURATES at
+  `max_attempts`** (`LEAST(attempt_count+1, max_attempts)`) on EVERY requeue path — the old
+  unconditional `+1` would violate `jobs_attempt_count_check` (23514) on the 4th requeue; job
+  failure is fully decoupled from `attempt_count` (§6.2). The account effect goes through the two
+  decision seams `quarantineDecision()` / `pauseDecision()` — the single places Phase 9.5 will wrap
+  with its kill-switches (NOT seeded/wired here). Automatic transitions write
+  `account_events(actor='system')`.
+- **Chunk 3 — account status score (`account_score.go`).** The §3.2 weighted-penalty formula: a
+  PURE, monotone, deterministic function of send-viability signals ONLY (consecutive_failures,
+  daily proximity, time-since-success) — NO bounce data. A STORED SNAPSHOT recomputed at outcome
+  time on the ONE account (no sweep); failure degrades + increments `consecutive_failures`, success
+  resets it to 0 + recomputes upward. INDEPENDENT of the flags: a quarantined account gets no
+  outcomes, so its score simply HOLDS. Weights from the seeded `status_score_weights` key
+  (reject-malformed -> documented-default-never-crash, §7).
+- **Chunk 4 — quarantine/pause state machine + the P5-13 throttle self-heal.** Two quarantine
+  triggers, both manual-recovery-only: IMMEDIATE on `auth_failure` (regardless of score) and
+  score-below-`quarantine_threshold`. Throttle -> pause (reason-scoped), auto-clearing lazily at
+  the throttle timer (`NOW() >= throttle_paused_at + throttle_pause_seconds`). The P5-13 predicate
+  edit is now live in BOTH the atomic consume (`accountConsumeQueryTmpl`, which self-clears the
+  pause + writes one `account_events(system, unpause)` via data-modifying CTEs so the whole consume
+  stays a SINGLE atomic statement) and the read-only `poolHasEligible` — kept byte-identical so the
+  pre-claim gate and the exhaustion classifier can never drift. Reason-scoped: never admits a
+  `manual` pause, never an in-window throttle pause. The double-booking core (`SKIP LOCKED` +
+  `accounts_daily_sent_check`) is untouched. `paused` and `quarantined` stay INDEPENDENT; crossing
+  back above the threshold does NOT auto-unquarantine.
+- **Chunk 5 — terminal-failed on pool exhaustion (`exhaustion.go`).** `evaluateChain` extends the
+  pre-claim gate to claim/WAIT/FAIL (§5.1, first-match-wins): >=1 eligible -> CLAIM; empty/
+  unresolvable chain -> WAIT (P5-4b: a config gap is NOT exhaustion, ordered before fail);
+  >=1 self-recovering account -> WAIT; else (non-empty, all `terminal_blocked`) -> FAIL
+  (`queued->failed`, actor `dispatcher`, `completed_at` set). `pool_exhausted` is NOT an enum value
+  (P5-14) — it is recorded in `last_error_message`, and the platform report shows only
+  `state:"failed"`. A waiting job is clean pending, never failed, never an error (§5.4). The
+  now-dead `poolChainHasEligible` was removed so there is exactly ONE chain-classification path.
+- **Chunk 6 — full suite, CI, docs, DoD.** Live harness 40/40; all 4 CI gates green (config_drift
+  now 17 keys). Behavioral tests (real PG clones, paired positive/negative controls): the classifier
+  table (30 cases + code-dominates-text + multiline + ambiguous-550 negative control); per-class
+  policy (auth->quarantine, throttle->pause+timestamp, attempt saturation with no 23514 and never
+  failed); the pure-function score oracle (8 hand-computed exact values) + monotone degradation +
+  success reset + the bounce carve-out (T4, byte-unchanged); the state machine (score
+  auto-quarantine holds + no auto-recover, throttle auto-clear not sweeping manual, in-window
+  throttle ineligible); exhaustion (fail only on true exhaustion, self-recovering/empty-chain wait,
+  eligible-present claims); and the exit criteria (auth->sends-via-different-account, retry never
+  double-sends, system-vs-admin actor vocabularies never mix).
+
+**Scope discipline (§10, §11):** Phase 5 defines the timeout POLICY only — timeout DETECTION (the
+heartbeat-miss / lease-expiry reclaim loop that *declares* a timeout), pacing, and the daily-slot
+refund on reclaim are Phase 6; content variation is Phase 8; the 9.5 operability keys
+(`autoquarantine_mode`, `autopause_enabled`, ...) live in 9.5's own migration and are NOT seeded or
+wired here — the two decision seams are the clean wrap points they will use.
+
+**Note on classification testing (real-infra split).** Classification and per-class policy are
+100% Brain-side, so they are proven at the Go dispatch layer against **real Postgres with real raw
+SMTP response strings** — the real classifier derives the class; nothing is injected as a class.
+The box's own real SMTP-session-to-report mapping is proven by the Phase-3 live pipe (real box +
+real Mailpit) + the Node box units. Mailpit cannot emit arbitrary reply codes and the box-in-
+container cannot reach an in-process controllable sink, so per-arbitrary-code end-to-end at the
+live-stack layer stays the accepted Phase-3 test-design boundary; the raw-response oracle at the Go
+layer is the faithful equivalent for the Brain-side classification Phase 5 owns.

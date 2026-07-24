@@ -226,3 +226,44 @@ new autonomous subsystem — the polling loop replaces the Phase-3 event-only ki
 phase's own spec, not a new kill-switch-gated subsystem; `dispatch_enabled` remains correctly
 UNWIRED because it is seeded only in Phase 9.5's `sender_0021`, not yet on disk — recorded honestly
 rather than stubbed; the Brain singleton guard is unchanged and still green) ✅.
+
+---
+
+**Phase 5's DoD status (error taxonomy, account status & quarantine):** DoD-1 (spec
+`Docs/phase-5-error-taxonomy-status-quarantine.md`, closed, implemented exactly) ✅ · DoD-2 (real
+behavioral tests on real Postgres clones + the live 40/40 harness: the classifier table with
+paired throttle/transport and bounce/policy negative controls; per-class policy incl. attempt-count
+saturation with zero `23514`; the pure-function score oracle + monotone degradation + success reset
++ the bounce carve-out T4; the quarantine/pause state machine incl. auto-quarantine-holds-and-
+never-auto-recovers and throttle-auto-clear-does-not-sweep-manual; exhaustion fail-only-on-true-
+exhaustion + wait-on-self-recovering/empty-chain; and the exit criteria auth->different-account,
+retry-never-double-sends, and system-vs-admin actor separation — every guard carries a positive/
+negative control) ✅ · DoD-3 (docs in the same commits: the spec, `architecture-overview.md` gained
+a full Phase 5 section, `config-reference.md` + `config-manifest.txt` gained the three keys, the
+open-decisions ledger recorded P5-OD-1/2/3; contract/config drift gates green) ✅ · DoD-4 (**three
+new seeded config keys** — `status_score_weights`, `retry_backoff_schedule`, `throttle_pause_seconds`
+via `sender_0017`, each with `default_value` + `description` + `value_type`, appended to the
+manifest + reference in the same change; `default_value` never mutated; reuses the already-seeded
+`quarantine_threshold` + `retry_count_4xx`; `config_drift` 14 -> 17) ✅ · DoD-5 (**no hardcoded
+tuning constant** — backoff ladder, throttle window, score weights, and quarantine threshold all
+resolve to seeded rows read at runtime; the reject-malformed fallbacks mirror the seeds and are
+never a config-not-code shortcut) ✅ · DoD-6 (open-decisions: Phase 5 §8 shipped with an empty
+needs-user list; build recorded P5-OD-1 [the deliberate 9.5 decision seams — keys NOT wired],
+P5-OD-2 [0016+0017 land together for chain contiguity], P5-OD-3 [attempt saturation on every
+requeue path — a real bug caught by a test]; none required a user ruling) ✅ · DoD-7 (**additive
+only** — `sender_0016` adds two `sender.accounts` columns, `sender_0017` seeds three config rows;
+no locked column/constraint/enum touched; the 7 enums frozen; the chain is contiguous 0000..0017
+with paired self-recording up/down, proven by the runner lifecycle up->down test incl. the new
+column anti-vacuity; **grants**: the columns land on `sender.accounts` where `sender_module` already
+holds table-level DML, so no new grant — `TestGrantsInvariant` stays green, verified live) ✅ ·
+DoD-8 (security unchanged — Brain remains sole decryptor; the box is untouched by Phase 5 [it still
+reports raw, the Brain classifies], holds credentials memory-only, has no DB/KMS; mTLS + STARTTLS-
+before-AUTH intact; the two-vocabulary rule holds — `pool_exhausted` and every internal
+classification reason stay internal, the platform report shows only clean `state`, and the
+`account_events.reason` trigger strings never cross a client boundary) ✅ · DoD-9 (no new autonomous
+subsystem is turned on by default — auto-quarantine/auto-pause are the phase's autonomous actions,
+and they are deliberately placed behind the single decision seams `quarantineDecision()` /
+`pauseDecision()` so Phase 9.5's `autoquarantine_mode` [`off|shadow|enforce`, default `shadow`] and
+`autopause_enabled` can wrap them; those keys are seeded only in 9.5's `sender_0021`, not yet on
+disk, so they remain correctly UNWIRED and are recorded honestly rather than stubbed; the Brain
+singleton guard is unchanged and still green) ✅.
