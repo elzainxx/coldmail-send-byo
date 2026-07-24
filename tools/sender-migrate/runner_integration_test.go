@@ -97,7 +97,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
-		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017"}
+		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -121,11 +121,12 @@ func TestRunnerLifecycle(t *testing.T) {
 	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
 		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
 	}
-	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) = 17.
+	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
+	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) = 19.
 	// Phase 4 added NO config key (§0); Phase 5 adds status_score_weights, retry_backoff_schedule,
 	// throttle_pause_seconds.
-	if n := configKeyCount(t, admin); n != 17 {
-		t.Fatalf("after Up: sender.config has %d keys, want 17 (14 foundation + 3 Phase 5)", n)
+	if n := configKeyCount(t, admin); n != 19 {
+		t.Fatalf("after Up: sender.config has %d keys, want 19 (14 foundation + 3 Phase 5 + 2 Phase 6)", n)
 	}
 	// Phase 4's ONE additive schema delta: the per-user claim index (sender_0015, CONCURRENTLY).
 	// Proves the runner APPLIED a CONCURRENTLY migration (not a no-op) — anti-vacuity for the
@@ -167,6 +168,10 @@ func TestRunnerLifecycle(t *testing.T) {
 		if v == "0016" && (columnExists(t, admin, "accounts", "consecutive_failures") ||
 			columnExists(t, admin, "accounts", "throttle_paused_at")) {
 			t.Fatal("after Down 0016: a Phase 5 additive column is still present (down did not drop it)")
+		}
+		if v == "0018" && (configKeyExists(t, admin, "reclaim_tick_interval_ms") ||
+			configKeyExists(t, admin, "smtp_operation_timeout_sec")) {
+			t.Fatal("after Down 0018: a Phase 6 config seed is still present (down did not delete it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -226,6 +231,18 @@ func columnExists(t *testing.T, c *pgx.Conn, table, column string) bool {
 		`SELECT EXISTS(SELECT 1 FROM information_schema.columns
 		   WHERE table_schema='sender' AND table_name=$1 AND column_name=$2)`, table, column).Scan(&ok); err != nil {
 		t.Fatalf("column exists lookup %q.%q: %v", table, column, err)
+	}
+	return ok
+}
+
+// configKeyExists reports whether a sender.config row with the given key is present (for the
+// 0018-down anti-vacuity check: a Phase 6 seed must be gone after its down migration).
+func configKeyExists(t *testing.T, c *pgx.Conn, key string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM sender.config WHERE key=$1)`, key).Scan(&ok); err != nil {
+		t.Fatalf("config key exists lookup %q: %v", key, err)
 	}
 	return ok
 }

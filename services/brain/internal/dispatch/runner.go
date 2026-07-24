@@ -81,3 +81,57 @@ func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
 	}
 	return time.Duration(cfg.DispatchTickIntervalMS) * time.Millisecond
 }
+
+// ReclaimRunner drives the Phase-6 reclaim loop (§2.1): a separate single-Brain polling loop that
+// ticks every reclaim_tick_interval_ms, re-reading config each time (no redeploy for a change to
+// take effect). It has no Kick — reclaim is a periodic sweep, not event-driven; a stranded job's
+// worst-case detection latency is one tick, bounded well below both reclaim windows by the seeded
+// 15s default. It is a THIRD loop alongside the dispatch Runner and the in-tick pacing, all in the
+// one singleton Brain (Rule 7), so the reclaim/dispatch race-safety argument (§2.1) holds.
+type ReclaimRunner struct {
+	d *Dispatcher
+}
+
+func NewReclaimRunner(d *Dispatcher) *ReclaimRunner {
+	return &ReclaimRunner{d: d}
+}
+
+// Run loops until ctx is cancelled: reclaim-tick, then sleep for the freshly-read
+// reclaim_tick_interval_ms. It ticks once immediately at startup (a Brain that just came up may
+// have jobs stranded on boxes that died while it was down — the CONTINUOUS loop catches them on
+// its first pass; the one-time startup RESCAN as a distinct concern is Phase 7, P6-8).
+func (r *ReclaimRunner) Run(ctx context.Context) {
+	interval := r.tick(ctx)
+	for {
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			interval = r.tick(ctx)
+		}
+	}
+}
+
+// tick runs one Dispatcher.ReclaimTick and returns the wait before the next, derived from the
+// freshly-read reclaim_tick_interval_ms. Recovers a panic from any single tick so a reclaim failure
+// degrades to "skip this tick, retry next" rather than crashing the singleton Brain (Rule 7) —
+// identical discipline to the dispatch tick.
+func (r *ReclaimRunner) tick(ctx context.Context) (interval time.Duration) {
+	interval = defaultTickIntervalOnLoadErr
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("reclaim: tick PANIC recovered: %v — skipping this tick, will retry", rec)
+		}
+	}()
+	cfg, reclaimed, err := r.d.ReclaimTick(ctx)
+	if err != nil {
+		log.Printf("reclaim: tick error: %v", err)
+		return defaultTickIntervalOnLoadErr
+	}
+	if reclaimed > 0 {
+		log.Printf("reclaim: tick reclaimed %d job(s)", reclaimed)
+	}
+	return time.Duration(cfg.ReclaimTickIntervalMS) * time.Millisecond
+}

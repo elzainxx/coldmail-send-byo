@@ -38,6 +38,14 @@ type Config struct {
 	SendDelayMinSec int // send_delay_min_sec — lower bound of the per-lane random inter-send delay (§1.1)
 	SendDelayMaxSec int // send_delay_max_sec — upper bound of the per-lane random inter-send delay (§1.1)
 
+	// Phase 6 reclaim/heartbeat dials. reclaim_tick_interval_ms is new (sender_0018, P6-7); the
+	// heartbeat interval/threshold are already seeded (Phase 1 sender_0010) and consumed unchanged
+	// as the dead-box silence window (§2.2). job_max_processing_time_sec (above) is the per-job
+	// lease / Detector-B backstop deadline (§2.3).
+	ReclaimTickIntervalMS   int // reclaim_tick_interval_ms — reclaim loop poll interval (§2.1)
+	HeartbeatIntervalSec    int // heartbeat_interval_sec — expected heartbeat cadence (§2.2)
+	HeartbeatMissedThreshold int // heartbeat_missed_threshold — missed beats before dead; window = interval×threshold (§2.2)
+
 	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
 	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
 	ThrottlePauseSeconds int            // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
@@ -122,6 +130,15 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.SendDelayMaxSec, err = readIntKey(ctx, db, "send_delay_max_sec"); err != nil {
+		return c, err
+	}
+	if c.ReclaimTickIntervalMS, err = readIntKey(ctx, db, "reclaim_tick_interval_ms"); err != nil {
+		return c, err
+	}
+	if c.HeartbeatIntervalSec, err = readIntKey(ctx, db, "heartbeat_interval_sec"); err != nil {
+		return c, err
+	}
+	if c.HeartbeatMissedThreshold, err = readIntKey(ctx, db, "heartbeat_missed_threshold"); err != nil {
 		return c, err
 	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {

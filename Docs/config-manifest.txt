@@ -24,3 +24,7 @@ default_shared_pool_id
 status_score_weights
 retry_backoff_schedule
 throttle_pause_seconds
+
+# Phase 6 — sender_0018 (+2 keys: reclaim-loop poll interval, box SMTP-operation timeout).
+reclaim_tick_interval_ms
+smtp_operation_timeout_sec

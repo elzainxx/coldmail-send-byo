@@ -132,6 +132,13 @@ func main() {
 	runner := dispatch.NewRunner(dispatcher)
 	stream.SetOnRegister(func(string) { runner.Kick() })
 	go runner.Run(ctx)
+
+	// Phase 6 (§2): the continuous reclaim loop — a THIRD single-Brain polling loop that recovers
+	// jobs stranded on dead boxes (heartbeat scan) or hung on live ones (per-job lease backstop),
+	// applying the locked reclaim transition. Ticks every reclaim_tick_interval_ms; no Kick (a
+	// periodic sweep, not event-driven).
+	reclaimer := dispatch.NewReclaimRunner(dispatcher)
+	go reclaimer.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
 			log.Printf("boxlink stream server stopped: %v", err)
