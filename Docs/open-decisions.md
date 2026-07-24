@@ -248,7 +248,19 @@ shipped with an empty needs-user list; build surfaced one genuine spec self-cont
 P4-OD-1** (the `one_by_one` routing strategy's literal `ORDER BY` does not produce its own
 documented "exhaust one, then move on" behavior — verified empirically against real Postgres),
 which the user **RULED: a deterministic `a.id ASC` tiebreak** (inert once Phase 5 gives accounts
-distinct scores). Every Open Decision is now RULED or APPLIED; **needs-user is empty.** The
+distinct scores). Every Open Decision is now RULED or APPLIED; **needs-user is empty.**
+**Phase 4's closeout (2026-07-24)** re-verified two claimed properties with real instrumentation
+(genuine `pg_stat_activity`-observed concurrency, and confirmed `accounts_daily_sent_check` firing
+zero times across repeated runs — both held as claimed, no weaker-than-believed finding) and
+triaged every hardcoded timeout across Brain and the box: 11 safety bounds now explicitly
+documented at their sites, and 3 operational dials flagged for their rightful owning phase (two
+already planned by Phase 6/7; one genuine pre-existing gap — `heartbeat_interval_sec` was seeded
+in Phase 1 but the box was never wired to read it, flagged for whichever phase owns box↔config
+delivery). One CRITICAL interim risk is recorded explicitly, not papered over: an operator
+lowering `job_max_processing_time_sec` below the box's hardcoded 30s SMTP timeout today would
+create a live, currently-undetectable violation of the Phase-6-planned ordering invariant — closed
+only when Phase 6 ships `smtp_operation_timeout_sec` + its config-load reject check. No new config
+key was added by the closeout (`config_drift` stays 14); no locked spec was touched. The
 remaining items are the five **pre-live confirmations** (G1–G5), gates on going live, not on
 implementing a phase in the harness. Nothing here blocks the next phase from building on this
 ground.
