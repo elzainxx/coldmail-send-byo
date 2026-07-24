@@ -140,6 +140,73 @@ exercises via seeded fixtures, not build blockers.
 
 **Needs-user: empty.** P4-OD-1 is RULED and implemented; no other Phase 4 item is open.
 
+### Phase 4 closeout (2026-07-24) — hardcoded-timeout triage (Rule 1 debt, pre-existing since Phase 0)
+
+Every hardcoded timeout/interval literal across Brain and the box, enumerated and classified as
+either **(a) a safety bound** (kept hardcoded, documented — the `MAX_FALLBACK_HOPS` precedent: a
+guard rail, not an operator-facing behavior dial) or **(b) an operational tuning dial** (should be
+a seeded config key; flagged for the owning future phase, never silently promoted here — a new
+seeded key is DDL, and Rule 2/8 forbid this closeout from stealing a later phase's migration
+number).
+
+**(a) Safety bounds — kept hardcoded, now documented at each site (or already were):**
+
+| Site | Value | Why it's a bound, not a dial |
+|---|---|---|
+| `internal/dispatch/pool.go` `maxFallbackHops` | 8 | Pre-existing Phase 4 exemption (§10 P4-19) — bounds an already-acyclic walk (Phase 2 cycle check), defense-in-depth only. |
+| `internal/dispatch/dispatch.go` `sharedPoolNotConfiguredLogInterval` | 1 min | Pre-existing Phase 4 exemption — governs an internal LOG line's noise floor, not send/dispatch behavior. |
+| `internal/singleton/singleton.go` keeper ticker | 5 s | Pre-existing OD-18 exemption — infra liveness-check cadence, not a product dial. |
+| `internal/singleton/singleton.go` `backoff` (lock poll) | 200 ms | Same class as the keeper ticker — bounds how fast a losing Brain polls the advisory lock; not operator-facing. |
+| `internal/boxlink/stream.go` register-handshake read deadline | 15 s | A DoS/hang guard on an unauthenticated peer ("a silent peer cannot hold a slot forever") — the register protocol itself has no variable-length legitimate case; this bounds abuse, not a real workload. |
+| `internal/boxlink/stream.go` write deadline (push_job frame) | 10 s | Same class — bounds a wedged-peer write, not a tunable send behavior. |
+| `internal/boxlink/boxlink.go`, `internal/httpapi/health.go` `ReadHeaderTimeout` | 5 s | Standard Go `http.Server` hardening against slow-header DoS; a platform-wide Go idiom, not a product dial. |
+| `cmd/brain/main.go` shutdown grace period | 10 s | A drain-on-SIGTERM bound, not a runtime behavior a campaign/operator would ever want to tune per-deployment. |
+| `services/box/src/smtp.js` QUIT-after-DATA timeout | 2000 ms (hardcoded, NOT `timeoutMs`) | QUIT is explicitly "best-effort" (the send already succeeded by the time QUIT runs) — this bound only affects how long the box waits before moving on, never affects delivery outcome. Flagged as inconsistent with the rest of the file (every other SMTP step uses the caller-supplied `timeoutMs`) — a cosmetic inconsistency, not a correctness bug, since QUIT's outcome is discarded either way. |
+| `services/box/src/index.js` register-retry cap/interval | 30 attempts / 1000 ms | Startup-only bounded retry while the Brain may still be coming up; not a runtime behavior dial (a box that can't register in ~30s is a deployment-ordering problem, not something an operator tunes per campaign). |
+
+**(b) Operational tuning dials — FLAGGED for promotion, not silently added here:**
+
+| Site | Current value | Should become | Owning migration |
+|---|---|---|---|
+| `services/box/src/index.js`/`docker-compose.yml` `BOX_SMTP_TIMEOUT_MS` | env var default 30000 ms, hardcoded in compose | `smtp_operation_timeout_sec` — **already planned** in `Docs/phase-6-pacing-and-dead-box-detection.md` (§5, P6-11), default 30, delivered to the DB-less box via the additive `push_job.smtp.operation_timeout_sec` wire field. **This is not new scope** — Phase 6 already owns it, migration `sender_0018`. Flagging here only to record that Phase 4 leaves it exactly as Phase 6 expects to find it (still a bootstrap env default), and to surface the CRITICAL sub-check below. |
+| `services/box/src/index.js`/`docker-compose.yml` `BOX_HEARTBEAT_INTERVAL_SEC` | env var default 10s (compose sets `"10"`) | **Genuine pre-existing gap, not previously reported this precisely:** `heartbeat_interval_sec` was ALREADY seeded in Phase 1 (`sender_0010`, default `120`) per OD-18's own plan ("MUST become a seeded key... when box heartbeat lands"), but the box was never wired to read it — it still uses its own hardcoded env-var default of `10`, completely decoupled from the seeded key (which the Brain-side heartbeat-staleness logic presumably reads or will read). No migration is needed — the key already exists; only the box's wiring (reading it from `push_job`/register-ack, or some other delivery path, since the box has no DB) is missing. **Not fixed here** — wiring a DB-less box to a DB-only config key is a delivery-mechanism decision (mirroring exactly the `push_job.smtp.operation_timeout_sec` pattern Phase 6/9 already designed for the timeout key) that belongs to whichever phase owns box↔config delivery, not a surgical Phase-4 closeout fix. Flagged for that phase's owner. |
+| `services/box/src/stream.js` reconnect backoff (none currently — the box's `main` loop retries registration at a flat 1000ms; there is no NAMED "reconnect window" dial yet) | n/a (flat retry, not a window) | `startup_reconnect_window_sec` — **already planned** in `Docs/phase-7-runtime-hardening.md` (§5, P7-11), default 120, migration `sender_0019`. Not new scope; recorded so the eventual Phase 7 implementer knows the box currently has no reconnect-window concept at all (a flat retry loop), not even an unwired placeholder. |
+
+**CRITICAL sub-check (explicitly required by this closeout): does any hardcoded timeout in the send
+path or on the box↔Brain channel interact with the job lease, and could it silently violate
+`smtp_operation_timeout_sec < job_max_processing_time_sec`?**
+
+**Yes — one genuine, reportable exposure, though not yet a live violation.** `BOX_SMTP_TIMEOUT_MS`
+(currently 30000ms = 30s, compose-set) is the box's per-operation SMTP timeout — structurally the
+SAME dial `smtp_operation_timeout_sec` will become in Phase 6, just not yet coordinated with
+anything. Today it numerically satisfies the eventual invariant against the current lease default
+(`30s < job_max_processing_time_sec` = 120s), **but nothing enforces this relationship**:
+`job_max_processing_time_sec` is ALREADY a live, operator-settable `sender.config` key (seeded
+Phase 1, mutable via the Phase 2 admin config endpoint right now) — an operator could lower it to,
+say, 20s today, and the box's hardcoded 30s SMTP timeout would then EXCEED the lease with **zero
+reject-check, zero warning, anywhere in the running system**. The failure mode: an account hang
+would blow through the shorter lease first, causing an unscored Brain-side reclaim/timeout
+(Phase 6, not yet built) rather than the box's own scored timeout report — silently defeating the
+exact ordering Phase 6/P6-11 is designed to guarantee, for however long between now and Phase 6
+shipping the coordinated key + config-load reject check. This is NOT a Phase-4 regression (Phase 4
+introduces no new interaction with this pair — the lease has been operator-mutable since Phase 1,
+and the box's fixed SMTP timeout has been unenforced since Phase 3) — it is a **pre-existing,
+now-explicitly-reported latent gap** between two already-shipped pieces, closed only when Phase 6
+ships `smtp_operation_timeout_sec` + its config-load `config_ordering_violation` reject check
+exactly as already planned. **Not fixed here** — promoting a value to a seeded config key is DDL
+that belongs to Phase 6's own migration (`sender_0018`), not a surgical Phase-4 closeout change;
+fixing the SYMPTOM (e.g. hardcoding a lower box timeout) without the coordinated reject-check would
+just relocate the gap, not close it. Flagged for Phase 6, with the explicit interim risk recorded:
+**an operator lowering `job_max_processing_time_sec` below 30s between now and Phase 6 would create
+a live, currently-undetectable violation.** No other hardcoded timeout in the send path or the
+box↔Brain channel interacts with the lease (the boxlink handshake/write deadlines are connection-
+level hardening on the register/push frame itself, not per-SMTP-operation timing).
+
+**No new config key added by this closeout.** `config_drift` remains 14 keys. Both flagged
+promotions above are Phase 6/7's own already-planned keys (`sender_0018`/`sender_0019`) — this
+closeout adds nothing, steals no migration number, and records the interim risk instead of
+papering over it.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

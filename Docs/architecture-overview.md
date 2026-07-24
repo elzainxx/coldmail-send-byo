@@ -137,11 +137,13 @@ schema (every column already exists in the Phase 1 model). See `../Docs/phase-3-
   never blocks on the send; duplicate `job_item_id` is a clean idempotent no-op); `report`
   reflects only clean external state. Two-vocabulary errors throughout.
 
-## Phase 4 state — dispatcher & routing (in progress; Chunk 1 landed)
+## Phase 4 state — dispatcher & routing (complete: 6 build chunks + closeout)
 
 Turns Phase 3's straight-line send into a real arbitrator. See
-`../Docs/phase-4-dispatcher-and-routing.md`. Landing incrementally across six chunks (per the
-build plan); this section is updated as each chunk lands.
+`../Docs/phase-4-dispatcher-and-routing.md`. All 6 build chunks landed, followed by 4 review
+gates (2 architecture, 2 code-review) and a 3-chunk closeout (concurrency/CHECK verification,
+hardcoded-timeout triage, ledger). See `Docs/open-decisions.md`'s Phase 4 closeout section for
+the timeout triage table.
 
 - **One additive schema delta, the whole of it**: `jobs_claim_by_user_idx (user_id,
   next_attempt_at, created_at) WHERE state='queued'` (migration `sender_0015`, `CREATE INDEX

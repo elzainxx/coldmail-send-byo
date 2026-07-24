@@ -125,7 +125,10 @@ func (s *StreamServer) Close() error {
 func (s *StreamServer) handle(conn net.Conn) {
 	defer conn.Close()
 
-	// Bound the register handshake so a silent peer cannot hold a slot forever.
+	// SAFETY BOUND, not a config-not-code violation (Phase 4 closeout triage, Docs/open-decisions.md):
+	// bounds an UNAUTHENTICATED peer's register handshake so a silent connection cannot hold a slot
+	// forever. The register protocol has no legitimate variable-length case; this guards against
+	// abuse, not a real workload an operator would ever want to tune.
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	br := bufio.NewReader(conn)
 	enc := json.NewEncoder(conn)
@@ -281,7 +284,8 @@ func (s *StreamServer) dropConn(boxID string, bc *boxConn) {
 }
 
 // writeFrame serializes one frame to the box, serialized per-connection. A short write deadline
-// stops a wedged peer from blocking the pusher forever.
+// stops a wedged peer from blocking the pusher forever. SAFETY BOUND (Phase 4 closeout triage): a
+// wire-write timeout on an already-authenticated connection, not a tunable send-behavior dial.
 func (s *StreamServer) writeFrame(bc *boxConn, v any) error {
 	bc.wmu.Lock()
 	defer bc.wmu.Unlock()

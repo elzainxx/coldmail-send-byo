@@ -179,6 +179,9 @@ func main() {
 	<-ctx.Done()
 	log.Printf("shutdown signal received; draining")
 
+	// SAFETY BOUND (Phase 4 closeout triage, Docs/open-decisions.md): a SIGTERM drain grace
+	// period, not a runtime behavior a campaign/operator would tune — deployment/orchestration
+	// concern, same class as MAX_FALLBACK_HOPS.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = health.Shutdown(shutdownCtx)

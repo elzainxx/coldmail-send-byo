@@ -39,6 +39,9 @@ async function main() {
   });
 
   // Register with bounded retry — the Brain (and its stream listener) may still be coming up.
+  // SAFETY BOUND (Phase 4 closeout triage, Docs/open-decisions.md): a startup-ordering retry, not
+  // a runtime behavior dial — a box that can't register within ~30s is a deployment-ordering
+  // problem, not something an operator tunes per campaign.
   let connected = false;
   for (let attempt = 1; attempt <= 30 && !connected; attempt++) {
     try {
