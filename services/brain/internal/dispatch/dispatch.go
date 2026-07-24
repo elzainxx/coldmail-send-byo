@@ -359,6 +359,12 @@ func (d *Dispatcher) requeue(ctx context.Context, jobID, reason string) {
 	defer cancel()
 	err := d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
 		// Move back to queued from assigned OR sending; clear the lease (required by the CHECK).
+		// attempt_count SATURATES at max_attempts (Phase 5 §6.2): the pre-existing dispatch-side
+		// requeue paths (no_eligible_account / push_failed / header_injection) increment the same
+		// counter as the outcome handler, so they must saturate too — an unconditional +1 here would
+		// violate jobs_attempt_count_check (23514) once a job that has already hit the cap requeues
+		// again (e.g. its only account was auto-quarantined). Job failure is decoupled from
+		// attempt_count; only pool exhaustion fails a job (Chunk 5).
 		_, err := tx.Exec(ctx,
 			`UPDATE sender.jobs
 			   SET state='queued',
@@ -366,7 +372,7 @@ func (d *Dispatcher) requeue(ctx context.Context, jobID, reason string) {
 			       lease_expires_at=NULL,
 			       last_error_class='unknown',
 			       last_error_message=$2,
-			       attempt_count = attempt_count + 1,
+			       attempt_count = LEAST(attempt_count + 1, max_attempts),
 			       next_attempt_at = NOW(),
 			       updated_at=NOW()
 			 WHERE id=$1 AND state IN ('assigned','sending')`, jobID, truncate(reason, 2000))

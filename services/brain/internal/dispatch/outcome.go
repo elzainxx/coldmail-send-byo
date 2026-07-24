@@ -101,15 +101,19 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			return errNoop
 		}
 		// daily_sent_count is NOT touched here (see the doc comment above) — the atomic consume
-		// already incremented it. last_success_at is a health-tracking timestamp, not part of the
-		// double-booking invariant, so it is still updated on accept.
-		if _, err := tx.Exec(ctx,
-			`UPDATE sender.accounts a
-			   SET last_success_at = NOW(),
-			       updated_at = NOW()
-			 FROM sender.jobs j
-			 WHERE j.id = $1 AND a.id = j.assigned_account_id`, rep.JobID); err != nil {
+		// already incremented it. On success (§3.3) the account's consecutive_failures resets to 0,
+		// last_success_at=NOW(), and the status score is recomputed on the one account — the
+		// symmetric counterpart to the failure recompute in applyClassifiedFailure. Read the
+		// assigned account first so the recompute targets exactly the account that sent.
+		var acctID *string
+		if err := tx.QueryRow(ctx,
+			`SELECT assigned_account_id FROM sender.jobs WHERE id=$1`, rep.JobID).Scan(&acctID); err != nil {
 			return err
+		}
+		if acctID != nil {
+			if _, err := h.recomputeScoreOnSuccess(ctx, tx, *acctID); err != nil {
+				return err
+			}
 		}
 		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse)
 	})

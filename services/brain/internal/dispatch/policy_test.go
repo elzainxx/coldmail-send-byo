@@ -161,7 +161,16 @@ func TestPolicy_AttemptCountSaturates(t *testing.T) {
 	e := newDispatchEnv(t, "saturate")
 	ctx := context.Background()
 	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, pool, "sec")
+	// Give the account a RECENT success so the recency penalty stays ~0 and its score floors at
+	// ~40 (100 - w_fail) even when consecutive_failures saturates — keeping it ABOVE the
+	// quarantine_threshold (30). This isolates the property under test (attempt_count saturation)
+	// from auto-quarantine (§4.2b), which is exercised separately in the Chunk 4 tests. Without a
+	// recent success the never-succeeded recency penalty would (correctly) push the score < 30 and
+	// quarantine the account, ending the job's ability to reach 'sending'.
+	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at = NOW() WHERE id=$1`, acct); err != nil {
+		t.Fatalf("seed last_success_at: %v", err)
+	}
 	job := e.seedQueuedJob(t, "c@example.com")
 
 	// max_attempts defaults to 3 (locked). Drive 6 transient (timeout) requeues — well past the cap.
