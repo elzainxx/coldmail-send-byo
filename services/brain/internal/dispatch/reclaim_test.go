@@ -147,6 +147,143 @@ func TestReclaim_LiveBoxNotReclaimed(t *testing.T) {
 	}
 }
 
+// expireLease forces a job's lease_expires_at into the past (a hung/stuck send), keeping it
+// in-flight — the setup for Detector B. It bypasses the state trigger (no state change), a fixture
+// write via the admin conn.
+func (e *dispatchEnv) expireLease(t *testing.T, jobID string) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id=$1`, jobID); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+}
+
+// TestReclaim_HungJobOnLiveBoxReclaimed (Detector B, §2.3 — T4 core) — a job whose lease expires is
+// reclaimed EVEN THOUGH its box is still heartbeating; Detector A never flags the live box, and a
+// SECOND healthy in-flight job on the same live box is NOT reclaimed. This proves the per-job
+// backstop fires on lease expiry independent of box liveness — the anti-vacuity teeth.
+func TestReclaim_HungJobOnLiveBoxReclaimed(t *testing.T) {
+	e := newDispatchEnv(t, "reclaimhung")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, pool, "sec")
+
+	// Two jobs in flight on the one (live) box.
+	hung := e.seedQueuedJob(t, "hung@example.com")
+	e.dispatchToSending(t, hung)
+	e.px.freeAllBoxes()
+	healthy := e.seedQueuedJob(t, "healthy@example.com")
+	e.dispatchToSending(t, healthy)
+
+	// Box is alive (recent heartbeat). Only the hung job's lease has expired.
+	e.setBoxHeartbeat(t, e.px.boxID, 5*time.Second)
+	e.expireLease(t, hung)
+
+	_, n, err := e.d.ReclaimTick(ctx)
+	if err != nil {
+		t.Fatalf("ReclaimTick: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reclaimed %d, want 1 (only the lease-expired job)", n)
+	}
+	// (1) Detector A never flagged the live box.
+	if s := e.boxStatus(t, e.px.boxID); s != "active" {
+		t.Fatalf("box status=%s, want active (still heartbeating)", s)
+	}
+	// (2) The hung job is reclaimed by Detector B.
+	state, _, leaseNull, _, _ := e.jobState(t, hung)
+	if state != "queued" || !leaseNull {
+		t.Fatalf("hung job state=%s leaseNull=%v, want queued/true", state, leaseNull)
+	}
+	evs := e.reclaimEvents(t, hung)
+	if len(evs) != 1 || evs[0] != [3]string{"queued", "reclaim_loop", "timeout"} {
+		t.Fatalf("hung job reclaim events = %v, want one [queued reclaim_loop timeout]", evs)
+	}
+	// (3) The healthy job on the same live box is untouched.
+	if state, _, leaseNull, _, _ := e.jobState(t, healthy); state != "sending" || leaseNull {
+		t.Fatalf("healthy job state=%s leaseNull=%v, want sending/false (not reclaimed)", state, leaseNull)
+	}
+	if len(e.reclaimEvents(t, healthy)) != 0 {
+		t.Fatalf("healthy job has reclaim events, want none")
+	}
+}
+
+// TestReclaim_AssignedNeverPushedReclaimed (Detector B, §2.3) — a job stranded in 'assigned' (the
+// Phase 4 TXN1↔TXN2 crash window: claimed, lease set, never pushed to a box, assigned_box_id NULL)
+// is invisible to Detector A but reclaimed by the per-job lease backstop once its lease expires.
+func TestReclaim_AssignedNeverPushedReclaimed(t *testing.T) {
+	e := newDispatchEnv(t, "reclaimassigned")
+	ctx := context.Background()
+
+	// Seed a job and move it to 'assigned' with an expired lease and NO box (mirrors the crash
+	// window: claimForUser set state=assigned + lease, before TXN2 recorded a box).
+	job := e.seedQueuedJob(t, "assigned@example.com")
+	// Strand in 'assigned' with an expired lease inside ONE tx so the tx-local actor GUC is set for
+	// the state-change trigger (set_config(...,true) is transaction-scoped).
+	tx, err := e.admin.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','dispatcher',true)"); err != nil {
+		t.Fatalf("set actor: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE sender.jobs SET state='assigned', lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, job); err != nil {
+		t.Fatalf("strand assigned: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit strand: %v", err)
+	}
+	// Sanity: no box assigned.
+	var boxID *string
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id FROM sender.jobs WHERE id=$1`, job).Scan(&boxID); err != nil {
+		t.Fatalf("read box: %v", err)
+	}
+	if boxID != nil {
+		t.Fatalf("precondition: assigned_box_id=%v, want NULL", *boxID)
+	}
+
+	_, n, err := e.d.ReclaimTick(ctx)
+	if err != nil {
+		t.Fatalf("ReclaimTick: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("reclaimed %d, want 1 (the stranded assigned job)", n)
+	}
+	state, _, leaseNull, _, _ := e.jobState(t, job)
+	if state != "queued" || !leaseNull {
+		t.Fatalf("assigned job state=%s leaseNull=%v, want queued/true", state, leaseNull)
+	}
+	if evs := e.reclaimEvents(t, job); len(evs) != 1 || evs[0] != [3]string{"queued", "reclaim_loop", "timeout"} {
+		t.Fatalf("assigned job reclaim events = %v, want one [queued reclaim_loop timeout]", evs)
+	}
+}
+
+// TestReclaim_NotExpiredNotReclaimed (Detector B negative control) — a job whose lease is still in
+// the future is NOT reclaimed, proving Detector B keys on lease expiry, not on in-flight state alone.
+func TestReclaim_NotExpiredNotReclaimed(t *testing.T) {
+	e := newDispatchEnv(t, "reclaimfresh")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	job := e.seedQueuedJob(t, "fresh@example.com")
+	e.dispatchToSending(t, job) // lease = NOW() + 120s (job_max_processing_time_sec), still valid
+	e.setBoxHeartbeat(t, e.px.boxID, 5*time.Second)
+
+	_, n, err := e.d.ReclaimTick(ctx)
+	if err != nil {
+		t.Fatalf("ReclaimTick: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("reclaimed %d, want 0 (lease still valid, box alive)", n)
+	}
+	if state, _, leaseNull, _, _ := e.jobState(t, job); state != "sending" || leaseNull {
+		t.Fatalf("job state=%s leaseNull=%v, want sending/false", state, leaseNull)
+	}
+}
+
 // TestReclaim_DisabledBoxExcluded (§2.2) — a 'disabled' box (admin verb, intentionally offline) is
 // excluded from Detector A even when silent: it is not re-marked and its scan is skipped. (Its
 // jobs, if any, still expire by lease via Detector B — Chunk 3.)

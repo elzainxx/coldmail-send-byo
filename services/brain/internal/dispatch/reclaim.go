@@ -93,8 +93,11 @@ func (d *Dispatcher) ReclaimTick(ctx context.Context) (Config, int, error) {
 	} else {
 		reclaimed += nA
 	}
-	// Detector B (per-job lease expiry, §2.3) is added to this loop in Chunk 3; it reuses the same
-	// reclaimJobsWhere transition with a lease-expiry predicate.
+	if nB, err := d.reclaimExpiredLeases(ctx, cfg); err != nil {
+		log.Printf("reclaim: lease-expiry detector failed: %v", err)
+	} else {
+		reclaimed += nB
+	}
 	return cfg, reclaimed, nil
 }
 
@@ -147,6 +150,89 @@ func (d *Dispatcher) reclaimDeadBoxes(ctx context.Context, cfg Config) (int, err
 		total += n
 	}
 	return total, nil
+}
+
+// reclaimExpiredLeases is Detector B (§2.3): the per-job lease-expiry backstop, which fires
+// REGARDLESS of box liveness. Detector A cannot catch a job that hangs on a box that is still
+// heartbeating (a wedged SMTP session, a stuck send); the per-job lease is the backstop. A job
+// whose lease_expires_at has passed is presumed stuck and reclaimed even if its box is alive — the
+// "hung job on a live box" case (test T4). This also catches the leftover 'assigned' jobs from a
+// Brain crash in Phase 4's TXN1↔TXN2 window (assigned_box_id IS NULL, invisible to Detector A).
+//
+// Each expired job is reclaimed in its OWN transaction under FOR UPDATE SKIP LOCKED: the row is
+// re-selected and locked (skipping any a lane worker is mid-handoff on), then the locked §2.4
+// transition applies with the state guard re-asserted. A job Detector A already moved to 'queued'
+// this tick no longer matches (state guard) — reclaimed once, never twice (§2.1). Served by the
+// Phase 1 jobs_reclaim_idx (lease_expires_at, state) WHERE state IN ('assigned','sending') AND
+// lease_expires_at IS NOT NULL — no new index.
+func (d *Dispatcher) reclaimExpiredLeases(ctx context.Context, cfg Config) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Snapshot the currently-expired job ids (plain read; the per-job tx below re-checks + locks, so
+	// a job that changes state between this read and its reclaim is handled by the guard). Bounded by
+	// nothing here — a large backlog is reclaimed across ticks naturally; each row is cheap.
+	rows, err := d.db.Query(ctx,
+		`SELECT id FROM sender.jobs
+		  WHERE state IN ('assigned','sending') AND lease_expires_at < NOW()`)
+	if err != nil {
+		return 0, err
+	}
+	var expired []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		expired = append(expired, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, jobID := range expired {
+		n, err := d.reclaimOneJob(ctx, jobID, cfg)
+		if err != nil {
+			log.Printf("reclaim: lease-expiry reclaim of job %s failed: %v", jobID, err)
+			continue // a per-job error must not abort the others
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// reclaimOneJob reclaims a single lease-expired job (actor='reclaim_loop'). It re-selects the row
+// FOR UPDATE SKIP LOCKED inside the tx so a job a lane worker is mid-handoff on is skipped (not
+// blocked on) this tick and picked up next tick if it is genuinely stuck; the §2.4 transition's
+// state guard then makes a job that raced to a terminal/queued state a clean no-op. Returns 1 if
+// reclaimed, 0 if skipped/no-op.
+func (d *Dispatcher) reclaimOneJob(ctx context.Context, jobID string, cfg Config) (int, error) {
+	var n int
+	err := d.inActorTx(ctx, "reclaim_loop", func(tx pgx.Tx) error {
+		// Lock the row (skip if a worker holds it). Re-assert the lease/state predicate under the lock
+		// so we never reclaim a job whose lease was refreshed or that already left in-flight.
+		var locked string
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM sender.jobs
+			  WHERE id=$1 AND state IN ('assigned','sending') AND lease_expires_at < NOW()
+			  FOR UPDATE SKIP LOCKED`, jobID).Scan(&locked)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil // locked by a worker, or no longer expired/in-flight — clean no-op
+			}
+			return err
+		}
+		cnt, err := reclaimJobsWhere(ctx, tx, cfg, "id = $1", jobID, "lease expired")
+		if err != nil {
+			return err
+		}
+		n = cnt
+		return nil
+	})
+	return n, err
 }
 
 // reclaimJobsOnBox marks one dead box 'stale' and reclaims every in-flight job on it, in ONE
