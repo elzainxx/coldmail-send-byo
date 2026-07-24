@@ -488,12 +488,19 @@ locked column, constraint, enum, or index is modified.
 - **Chunk 3 — Detector B (per-job lease expiry).** Box-liveness-INDEPENDENT backstop: any job whose
   `lease_expires_at < NOW()` is reclaimed even on a still-heartbeating box (a wedged/hung SMTP
   session), and catches `assigned`-state jobs stranded in Phase 4's TXN1↔TXN2 crash window. Each
-  reclaimed in its own `FOR UPDATE SKIP LOCKED` tx; both detectors converge on the ONE locked §2.4
-  reclaim transition (`assigned|sending→queued`, `actor='reclaim_loop'`, lease NULL, saturating
-  `attempt_count`, `error_class='timeout'`, `next_attempt_at` from Phase 5's backoff ladder — the
-  ladder REFERENCED, computed set-wise in SQL so a mass reclaim indexes each job's own attempt). The
-  state-guarded `WHERE` makes a job reclaimed once, never twice, and a racing report a clean no-op.
-  Served by `jobs_reclaim_idx` — no new index.
+  reclaimed in its own tx; both detectors converge on the ONE locked §2.4 reclaim transition via a
+  single shared `reclaimJobLocked` (`assigned|sending→queued`, `actor='reclaim_loop'`, lease NULL,
+  saturating `attempt_count`, `error_class='timeout'`, `next_attempt_at` from Phase 5's backoff
+  ladder — REFERENCED not redefined, indexed by each job's own attempt). **Lock order (ADR-0010,
+  R4-P6-1 fix):** `reclaimJobLocked` mirrors `applyClassifiedFailure` — it locks the job's account
+  `FOR UPDATE` FIRST (account→job), then the job `FOR UPDATE SKIP LOCKED`, then applies the
+  transition; this avoids the `40P01` cycle the old bulk `UPDATE` risked (its `job_events` trigger
+  took the account `KEY SHARE` after the job row, job→account — opposite of the outcome handler).
+  Detector A's mass reclaim is therefore row-by-row (spec §2.4's endorsed "row-by-row under SKIP
+  LOCKED for large fan-outs"), stale-mark in its own tx first. Locking the account is not a write, so
+  the P6-10 carve-out holds. The state-guarded `WHERE` + SKIP LOCKED make a job reclaimed once, never
+  twice, a racing report a clean no-op, and a lane worker mid-handoff skipped not blocked. Served by
+  `jobs_reclaim_idx` / `jobs_assigned_box_id_idx` — no new index.
 - **Chunk 4 — the reclaim-does-NOT-score carve-out + the timeout ordering invariant (THE critical
   chunk).** The carve-out is STRUCTURAL: `reclaimJobsWhere` writes ONLY `sender.jobs` columns — a
   Brain-declared reclaim physically cannot touch `consecutive_failures` / `last_failure_at` /

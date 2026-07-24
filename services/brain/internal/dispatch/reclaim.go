@@ -19,36 +19,47 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// reclaimJobsWhere applies the §2.4 locked reclaim transition to every job matching `pred` (a WHERE
-// fragment referencing $1 = whereArg: a single job id for Detector B, or an assigned_box_id for
-// Detector A's mass reclaim). It runs INSIDE the caller's tx (which must have already set the actor
-// GUC to 'reclaim_loop'). It is the Phase 5 timeout JOB policy declared by the Brain:
-//   - state → 'queued' (the one locked reassignment transition, P4-20);
-//   - lease_expires_at = NULL (queued ∉ {assigned,sending} → jobs_lease_valid_check);
-//   - attempt_count saturates via LEAST(attempt_count+1, max_attempts) (Phase 5 §6.2) → never
-//     violates jobs_attempt_count_check, for any job lifetime;
-//   - last_error_class = 'timeout' (Phase 5 §1.1 row 6; the AFTER UPDATE OF state trigger copies it
-//     + last_error_message into the job_events row → auditable 'reclaim_loop' provenance);
-//   - last_error_message = the internal reason ('box heartbeat missed' / 'lease expired'); internal
-//     only, ≤2000, two-vocabulary (never crosses a client boundary);
-//   - next_attempt_at = NOW() + the Phase 5 timeout backoff. The backoff is REFERENCED, not
-//     redefined: the ladder ($3 int[]) + cap ($4) come straight from cfg.Backoff (retry_backoff_
-//     schedule, §6.4). Each row is indexed by its OWN saturating post-increment attempt, so a mass
-//     reclaim of jobs at different attempt_counts gets each job's correct backoff — in ONE
-//     statement. The rung is ladder[min(new_attempt, len(ladder))] (1-based), itself capped at $4;
-//     this is byte-equivalent to BackoffSchedule.backoffForAttempt (idx = attempt-1, saturate at
-//     the last rung, cap at MaxSeconds), expressed in SQL.
-// assigned_box_id / assigned_account_id are left as-is (historical): the claim query ignores them,
-// so the reclaimed job re-dispatches to whatever box/account routing next picks (naturally a
-// different one from the dead/hung one). This statement writes ONLY sender.jobs columns — no
-// account read, no account UPDATE, no score recompute — the structural P6-10 carve-out.
-func reclaimJobsWhere(ctx context.Context, tx pgx.Tx, cfg Config, pred string, whereArg any, reason string) (int, error) {
+// reclaimJobLocked applies the §2.4 locked reclaim transition to ONE job by id, INSIDE the caller's
+// tx (which must have set the actor GUC to 'reclaim_loop'). BOTH detectors reclaim through this one
+// per-job path (Detector A row-by-row over a dead box's jobs — spec §2.4 explicitly endorses
+// "row-by-row under SKIP LOCKED for large fan-outs"; Detector B per lease-expired job), so there is
+// exactly one reclaim code path and one lock discipline.
+//
+// LOCK ORDER (deadlock avoidance — ADR-0010, the module's recurring defect zone). The job UPDATE
+// below fires the AFTER UPDATE OF state trigger, whose job_events INSERT carries assigned_account_id
+// and so takes a FK KEY SHARE lock on that account row. Phase 5's applyClassifiedFailure locks the
+// account FOR UPDATE *before* its job requeue (account→job). If reclaim instead let the trigger grab
+// the account lock AFTER already holding the job row (job→account), the two would cycle
+// (40P01) on a shared {job, account}. So reclaim mirrors applyClassifiedFailure EXACTLY:
+//   1. read the job's assigned_account_id (stable while in-flight — requeue clears only the box);
+//   2. lock that account FOR UPDATE *first* (account→job order — matches the outcome handler);
+//   3. lock the job row FOR UPDATE SKIP LOCKED and re-assert the in-flight guard — SKIP LOCKED so a
+//      lane worker mid-handoff (markSending, job→account) is SKIPPED (retried next tick), never
+//      blocked-on, so that opposite-order pair can't cycle either;
+//   4. apply the transition on the now-locked row (the trigger's KEY SHARE on the account is a no-op
+//      re-request of the FOR UPDATE we already hold — no upgrade, no cycle).
+// Locking the account is NOT a write — the P6-10 carve-out (a Brain-declared reclaim performs no
+// account UPDATE and no score recompute) is fully preserved; a shared/exclusive row lock touches no
+// column. This function reads assigned_account_id and WRITES ONLY sender.jobs columns.
+//
+// The transition itself is Phase 5's timeout JOB policy declared by the Brain: state→'queued' (the
+// one locked reassignment, P4-20); lease NULL (jobs_lease_valid_check); attempt_count saturates via
+// LEAST(+1,max) (§6.2, never violates jobs_attempt_count_check); last_error_class='timeout' (§1.1
+// row 6, copied into job_events by the trigger → auditable 'reclaim_loop' provenance);
+// last_error_message = the internal reason (≤2000, two-vocabulary, never crosses a client boundary);
+// next_attempt_at = NOW() + the Phase 5 backoff, REFERENCED not redefined (ladder+cap from
+// cfg.Backoff, indexed by the job's own saturating post-increment attempt, byte-equivalent to
+// BackoffSchedule.backoffForAttempt). assigned_box_id/assigned_account_id are left as-is so routing
+// re-picks freely on the next dispatch. Returns 1 if reclaimed, 0 if skipped/no-op (row locked by a
+// worker, or already left in-flight — a clean idempotent no-op, retried next tick).
+func reclaimJobLocked(ctx context.Context, tx pgx.Tx, cfg Config, jobID, reason string) (int, error) {
 	ladder := cfg.Backoff.LadderSeconds
 	if len(ladder) == 0 {
 		ladder = backoffScheduleDefault.LadderSeconds
@@ -57,7 +68,39 @@ func reclaimJobsWhere(ctx context.Context, tx pgx.Tx, cfg Config, pred string, w
 	if maxSecs <= 0 {
 		maxSecs = backoffScheduleDefault.MaxSeconds
 	}
-	sql := `
+
+	// (1) Read the account this in-flight job used (unlocked; assigned_account_id is stable while the
+	// job is in {assigned,sending} — no path mutates it there). Gate on the in-flight state so a job
+	// that already left is a clean no-op.
+	var acctID *string
+	if err := tx.QueryRow(ctx,
+		`SELECT assigned_account_id FROM sender.jobs WHERE id=$1 AND state IN ('assigned','sending')`, jobID).Scan(&acctID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil // already left in-flight (reported sent/bounced/requeued) — nothing to reclaim
+		}
+		return 0, err
+	}
+
+	// (2) Lock the account FOR UPDATE FIRST (account→job order, mirroring applyClassifiedFailure).
+	if acctID != nil {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
+			return 0, err
+		}
+	}
+
+	// (3) Lock the job row, SKIP LOCKED (never block on a lane worker mid-handoff), re-asserting the
+	// in-flight guard under the lock. No row → skipped/raced → clean no-op this tick.
+	var locked string
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM sender.jobs WHERE id=$1 AND state IN ('assigned','sending') FOR UPDATE SKIP LOCKED`, jobID).Scan(&locked); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	// (4) Apply the §2.4 transition on the locked row.
+	tag, err := tx.Exec(ctx, `
 UPDATE sender.jobs
    SET state            = 'queued',
        lease_expires_at = NULL,
@@ -68,9 +111,8 @@ UPDATE sender.jobs
            ($3::int[])[LEAST(GREATEST(LEAST(attempt_count + 1, max_attempts), 1), array_length($3::int[], 1))],
            $4::int)),
        updated_at       = NOW()
- WHERE ` + pred + `
-   AND state IN ('assigned','sending')`
-	tag, err := tx.Exec(ctx, sql, whereArg, truncate(reason, 2000), ladder, maxSecs)
+ WHERE id = $1
+   AND state IN ('assigned','sending')`, jobID, truncate(reason, 2000), ladder, maxSecs)
 	if err != nil {
 		return 0, err
 	}
@@ -204,28 +246,21 @@ func (d *Dispatcher) reclaimExpiredLeases(ctx context.Context, cfg Config) (int,
 	return total, nil
 }
 
-// reclaimOneJob reclaims a single lease-expired job (actor='reclaim_loop'). It re-selects the row
-// FOR UPDATE SKIP LOCKED inside the tx so a job a lane worker is mid-handoff on is skipped (not
-// blocked on) this tick and picked up next tick if it is genuinely stuck; the §2.4 transition's
-// state guard then makes a job that raced to a terminal/queued state a clean no-op. Returns 1 if
-// reclaimed, 0 if skipped/no-op.
+// reclaimOneJob reclaims a single lease-expired job (Detector B). Thin wrapper over
+// reclaimOneJobReason with the lease-expiry reason.
 func (d *Dispatcher) reclaimOneJob(ctx context.Context, jobID string, cfg Config) (int, error) {
+	return d.reclaimOneJobReason(ctx, jobID, cfg, "lease expired")
+}
+
+// reclaimOneJobReason reclaims a single job by id in its own tx via the shared account→job-ordered,
+// SKIP-LOCKED reclaimJobLocked path, tagging the internal reason ('lease expired' / 'box heartbeat
+// missed'). Returns 1 if reclaimed, 0 if skipped/no-op (locked by a worker, or already left
+// in-flight — retried next tick). Both detectors funnel through here, so there is exactly one
+// reclaim lock discipline.
+func (d *Dispatcher) reclaimOneJobReason(ctx context.Context, jobID string, cfg Config, reason string) (int, error) {
 	var n int
 	err := d.inActorTx(ctx, "reclaim_loop", func(tx pgx.Tx) error {
-		// Lock the row (skip if a worker holds it). Re-assert the lease/state predicate under the lock
-		// so we never reclaim a job whose lease was refreshed or that already left in-flight.
-		var locked string
-		err := tx.QueryRow(ctx,
-			`SELECT id FROM sender.jobs
-			  WHERE id=$1 AND state IN ('assigned','sending') AND lease_expires_at < NOW()
-			  FOR UPDATE SKIP LOCKED`, jobID).Scan(&locked)
-		if err != nil {
-			if err == pgx.ErrNoRows {
-				return nil // locked by a worker, or no longer expired/in-flight — clean no-op
-			}
-			return err
-		}
-		cnt, err := reclaimJobsWhere(ctx, tx, cfg, "id = $1", jobID, "lease expired")
+		cnt, err := reclaimJobLocked(ctx, tx, cfg, jobID, reason)
 		if err != nil {
 			return err
 		}
@@ -235,27 +270,61 @@ func (d *Dispatcher) reclaimOneJob(ctx context.Context, jobID string, cfg Config
 	return n, err
 }
 
-// reclaimJobsOnBox marks one dead box 'stale' and reclaims every in-flight job on it, in ONE
-// transaction (actor='reclaim_loop') so the box-status change and the requeues commit atomically:
-// a crash mid-reclaim leaves the box either fully un-marked with its jobs intact, or fully marked
-// with them reclaimed — never a torn state. Returns the number of jobs reclaimed.
+// reclaimJobsOnBox marks one dead box 'stale' and reclaims every in-flight job on it. The stale-mark
+// is one small tx; each job is then reclaimed ROW-BY-ROW in its own tx via the shared account→job-
+// ordered reclaimJobLocked path (spec §2.4 explicitly endorses "row-by-row under SKIP LOCKED for
+// large fan-outs"). This is the ADR-0010 deadlock fix (R4-P6 HIGH): the previous single bulk UPDATE
+// let the job_events trigger take the account KEY SHARE AFTER the job row (job→account), cycling
+// with applyClassifiedFailure's account→job order on a shared {job,account}; reclaimJobLocked now
+// locks the account FIRST, matching the outcome handler. Marking stale FIRST also stops new dispatch
+// to the box (the dispatcher pushes only to active boxes) before the reclaims run.
+//
+// Per-job tx (not one big tx) is deliberate: it bounds lock-hold time, lets a job a worker holds
+// (SKIP LOCKED) be skipped without rolling back the others, and makes the box-stale mark durable
+// even if a later job's reclaim races. The old "atomic box+jobs" property is not needed — a box
+// marked stale with a not-yet-reclaimed in-flight job is self-correcting (the job is caught this
+// tick's later rows or next tick, and by Detector B via its lease regardless).
 func (d *Dispatcher) reclaimJobsOnBox(ctx context.Context, boxID string, cfg Config) (int, error) {
-	var n int
-	err := d.inActorTx(ctx, "reclaim_loop", func(tx pgx.Tx) error {
-		// Mark stale (active → stale only, idempotent): a box already stale stays stale; a box that
-		// reconnected to 'active' with a fresh heartbeat between the scan and here is re-marked, but
-		// its jobs' guarded reclaim below only touches still-in-flight rows and the over-mark
-		// self-heals on the box's next heartbeat (Phase 3 §3.2 returns a stale box to active).
-		if _, err := tx.Exec(ctx,
-			`UPDATE sender.boxes SET status='stale' WHERE id=$1 AND status='active'`, boxID); err != nil {
-			return err
+	// Mark stale (active → stale only, idempotent). A box that reconnected to 'active' between the
+	// scan and here is re-marked, but the per-job guarded reclaim below only touches still-in-flight
+	// rows and the over-mark self-heals on the box's next heartbeat (Phase 3 §3.2).
+	if err := d.inActorTx(ctx, "reclaim_loop", func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE sender.boxes SET status='stale' WHERE id=$1 AND status='active'`, boxID)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+
+	// Enumerate the box's in-flight jobs (served by jobs_assigned_box_id_idx), then reclaim each in
+	// its own tx via the shared account→job-ordered path.
+	rows, err := d.db.Query(ctx,
+		`SELECT id FROM sender.jobs WHERE assigned_box_id=$1 AND state IN ('assigned','sending')`, boxID)
+	if err != nil {
+		return 0, err
+	}
+	var jobIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
 		}
-		cnt, err := reclaimJobsWhere(ctx, tx, cfg, "assigned_box_id = $1", boxID, "box heartbeat missed")
+		jobIDs = append(jobIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, jobID := range jobIDs {
+		n, err := d.reclaimOneJobReason(ctx, jobID, cfg, "box heartbeat missed")
 		if err != nil {
-			return err
+			log.Printf("reclaim: box %s job %s reclaim failed: %v", boxID, jobID, err)
+			continue // a per-job error must not abort the rest of the box's jobs
 		}
-		n = cnt
-		return nil
-	})
-	return n, err
+		total += n
+	}
+	return total, nil
 }

@@ -270,6 +270,31 @@ the Phase 4 closeout already pre-committed the reject check); P6-OD-2 is additiv
 The locked P4-15 daily-slot refund stays **DEFERRED (P6-4 DECIDED-DEFER)** — not implemented, per
 spec. Every other Phase 6 item is DECIDED in the spec's own §7 log.
 
+### Phase 6 review gates (R1–R4) — findings
+
+Four narrowly-scoped review passes ran after the build (R1/R2 architect, R3/R4 code), each
+independently re-verifying against the working tree (the Phase-4/5 lesson, ADR-0010 / memory). R1
+(pacing) and R3 (pacing + reclaim core) returned zero blocking findings (R3 noted the Go-vs-SQL
+backoff-ladder formula duplication as a LOW maintainability suggestion — currently byte-equivalent,
+verified). R2 (reclaim + carve-out + invariant + scope) returned zero defects, plus two
+forward-looking non-blocking observations for Phase 9.5 (below). R4 (the deepest gate — carve-out +
+disconnect + concurrency) returned ONE REAL, tree-verified HIGH finding on the reclaim lock order,
+fixed + covered by a new two-connection regression test:
+
+| # | Finding | Severity | Fix |
+|---|---------|----------|-----|
+| P6-R4-1 | Detector A's dead-box MASS reclaim (`reclaimJobsOnBox`) was a single bulk `UPDATE sender.jobs ... WHERE assigned_box_id=$1`, whose `AFTER UPDATE OF state` trigger inserts `assigned_account_id` into `job_events` — taking an FK `KEY SHARE` on the account row AFTER already holding the job row (**job→account** order). Phase 5's `applyClassifiedFailure` locks the account `FOR UPDATE` BEFORE its job requeue (**account→job**). Opposite orders on a shared `{job, account}` → a `40P01` deadlock cycle, reachable when a heartbeat-dead box still has an in-flight job whose penalizing box report is processed concurrently. Self-healing (the reclaim tx rolls back + retries next tick; Detector B still catches the job by lease) but a genuine deadlock in exactly the ADR-0010 recurring defect zone — and the original race test (`TestReclaimRace_OutcomeVsReclaim`) only exercised the SAFE half (Detector B + an *accepted* outcome, both job→account), never this pair. | **HIGH** | Both detectors now reclaim ROW-BY-ROW through one shared `reclaimJobLocked` that mirrors `applyClassifiedFailure` EXACTLY: read `assigned_account_id`, lock that account `FOR UPDATE` FIRST (account→job), then lock the job `FOR UPDATE SKIP LOCKED` (so a lane worker mid-handoff — `markSending`, job→account — is skipped not blocked, closing that opposite-order pair too), then apply the §2.4 transition. Locking the account is NOT a write, so the P6-10 carve-out (no account mutation, no score recompute) is fully preserved — verified: `reclaimJobLocked` reads `assigned_account_id` and writes only `sender.jobs`. Detector A's mass path is now spec §2.4's explicitly-endorsed "row-by-row under SKIP LOCKED for large fan-outs" (stale-mark in its own small tx first). New `TestReclaimRace_DetectorAVsClassifiedFailure` (two real connections) races Detector A's mass reclaim against a *classified* failure on the same job/account over 40 rounds — the exact combination the old test missed — asserting no `40P01` and a coherent terminal state. |
+
+**Non-blocking forward-looking notes (recorded for Phase 9.5, NOT Phase 6 defects — the keys they
+depend on do not exist yet):** (1) a runtime `config_ordering_violation` (an operator edits one dial
+post-startup into a violating pair) degrades dispatch+reclaim to a silent skip-and-retry loop with
+only a log line — no health/alert surface until `alert_webhook_url` lands (9.5). (2) `ReclaimRunner`
+has no `dispatch_enabled` kill-switch gate — correct now (the dial is a 9.5 key, unwired everywhere),
+but 9.5's wiring must gate the reclaim loop too, not only the dispatch `Runner` (CLAUDE.md Rule 7).
+
+**Needs-user: empty** after the gates. P6-R4-1 is fixed + regression-tested; the two forward notes
+are Phase 9.5 wiring reminders, not open decisions.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
