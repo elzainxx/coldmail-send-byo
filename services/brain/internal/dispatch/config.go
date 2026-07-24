@@ -45,6 +45,7 @@ type Config struct {
 	ReclaimTickIntervalMS   int // reclaim_tick_interval_ms — reclaim loop poll interval (§2.1)
 	HeartbeatIntervalSec    int // heartbeat_interval_sec — expected heartbeat cadence (§2.2)
 	HeartbeatMissedThreshold int // heartbeat_missed_threshold — missed beats before dead; window = interval×threshold (§2.2)
+	SMTPOperationTimeoutSec int // smtp_operation_timeout_sec — box per-operation SMTP timeout (§0/§2, P6-11); MUST be < JobMaxProcessingTimeSec (enforced at load)
 
 	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
 	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
@@ -141,6 +142,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.HeartbeatMissedThreshold, err = readIntKey(ctx, db, "heartbeat_missed_threshold"); err != nil {
 		return c, err
 	}
+	if c.SMTPOperationTimeoutSec, err = readIntKey(ctx, db, "smtp_operation_timeout_sec"); err != nil {
+		return c, err
+	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {
 		return c, err
 	}
@@ -158,7 +162,43 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	// hard error (the migration seeds it); only a corrupt/edited value triggers the fallback.
 	c.Backoff = readBackoffSchedule(ctx, db)
 	c.ScoreWeights = readScoreWeights(ctx, db)
+
+	// Config-ordering INVARIANT (CLAUDE.md Rule 1, Phase 6 P6-11): the box's per-operation SMTP
+	// timeout MUST be strictly shorter than the job lease, so a genuinely account-caused hang
+	// surfaces as a box-REPORTED timeout (scored → quarantined, Phase 5) rather than an unscored
+	// Brain lease reclaim that would thrash forever (§0/§2.4). A set that violates it is REJECTED at
+	// LOAD with the external code config_ordering_violation — never clamped or auto-corrected (Rule 1:
+	// "Do not clamp or auto-correct — reject"). This is the load-time enforcement point; the admin
+	// write path deliberately does NOT couple these two independently-tuned dials at write time
+	// (Phase 6 §5.1), so the reject lives here where the Brain reads the whole set together. See
+	// P6-OD-1 (Docs/open-decisions.md) for the reconciliation of Rule 1's reject vs §5.1's warn.
+	if err := validateConfigOrdering(c); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+// ErrConfigOrderingViolation is the load-time rejection of a config set that violates a documented
+// config-ordering invariant (CLAUDE.md Rule 1). Its Error() string is the external code
+// config_ordering_violation — the two-vocabulary safe code; the specific pair that violated is
+// appended for internal logs only and never crosses a client boundary (LoadConfig callers log it,
+// they do not serialize it to a caller).
+type configOrderingError struct{ detail string }
+
+func (e *configOrderingError) Error() string { return "config_ordering_violation: " + e.detail }
+
+// validateConfigOrdering enforces the config-ordering invariants at load (CLAUDE.md Rule 1). Phase 6
+// adds invariant (a): smtp_operation_timeout_sec < job_max_processing_time_sec (P6-11). It is a
+// strict inequality — equality is also a violation (a hang that ties the lease could reclaim before
+// the box reports). Invariant (b) (box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec) is a
+// Phase 7 key set not present in Phase 6, so it is not checked here yet.
+func validateConfigOrdering(c Config) error {
+	if c.SMTPOperationTimeoutSec >= c.JobMaxProcessingTimeSec {
+		return &configOrderingError{detail: fmt.Sprintf(
+			"smtp_operation_timeout_sec (%d) must be < job_max_processing_time_sec (%d)",
+			c.SMTPOperationTimeoutSec, c.JobMaxProcessingTimeSec)}
+	}
+	return nil
 }
 
 // readBackoffSchedule reads retry_backoff_schedule ({"v": {...}}), unwrapping and validating the

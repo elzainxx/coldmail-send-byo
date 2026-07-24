@@ -260,6 +260,12 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 			Username: acct.smtpUser,
 			Secret:   string(plaintext),
 			Security: securityForPort(acct.smtpPort),
+			// Deliver the seeded box per-operation SMTP timeout (§5, P6-11) to the DB-less box. The
+			// Brain enforces smtp_operation_timeout_sec < job_max_processing_time_sec at config-load
+			// (config.go), so the value the box receives here is always strictly below its own lease —
+			// an account hang trips the box's operation timeout FIRST and is reported (scored), never a
+			// silent Brain lease reclaim (P6-10 carve-out's correctness dependency).
+			OperationTimeoutSec: cfg.SMTPOperationTimeoutSec,
 		},
 	}
 

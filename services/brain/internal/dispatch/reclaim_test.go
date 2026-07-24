@@ -284,6 +284,53 @@ func TestReclaim_NotExpiredNotReclaimed(t *testing.T) {
 	}
 }
 
+// TestReclaim_DropReconnectWithinWindowNoThrash (§3, P6-3 — T6) — box disconnect is
+// heartbeat-timeout-driven, NOT eager: a stream drop followed by a reconnect WITHIN the silence
+// window reclaims nothing (no thrash), while sustained silence PAST the window does reclaim. The
+// drop itself is modeled by last_heartbeat_at ceasing to advance (the DB timestamp is the single
+// reclaim trigger, §3.1 — a dropped mTLS stream changes no DB state). Paired positive/negative in
+// one test so it can't pass merely because reclaim never runs.
+func TestReclaim_DropReconnectWithinWindowNoThrash(t *testing.T) {
+	e := newDispatchEnv(t, "reclaimblip")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	job := e.seedQueuedJob(t, "blip@example.com")
+	e.dispatchToSending(t, job)
+
+	// (negative) Stream "dropped" but only silent 100s — WITHIN the 360s window. No reclaim.
+	e.setBoxHeartbeat(t, e.px.boxID, 100*time.Second)
+	if _, n, err := e.d.ReclaimTick(ctx); err != nil || n != 0 {
+		t.Fatalf("within-window blip: reclaimed n=%d err=%v, want 0/nil (no thrash)", n, err)
+	}
+	if s := e.boxStatus(t, e.px.boxID); s != "active" {
+		t.Fatalf("box status=%s during a brief blip, want active (never silent long enough)", s)
+	}
+	if state, _, leaseNull, _, _ := e.jobState(t, job); state != "sending" || leaseNull {
+		t.Fatalf("job state=%s leaseNull=%v during blip, want sending/false (not reclaimed)", state, leaseNull)
+	}
+
+	// (reconnect) A heartbeat arrives → last_heartbeat_at fresh again; still no reclaim ever fired.
+	e.setBoxHeartbeat(t, e.px.boxID, 1*time.Second)
+	if _, n, err := e.d.ReclaimTick(ctx); err != nil || n != 0 {
+		t.Fatalf("post-reconnect: reclaimed n=%d, want 0", n)
+	}
+	if len(e.reclaimEvents(t, job)) != 0 {
+		t.Fatalf("blip produced reclaim events, want none (heartbeat-driven, not eager — P6-3)")
+	}
+
+	// (positive) Now the box stays silent PAST the window — reclaim DOES fire. Proves the negative
+	// case above wasn't vacuous.
+	e.setBoxHeartbeat(t, e.px.boxID, 400*time.Second)
+	if _, n, err := e.d.ReclaimTick(ctx); err != nil || n != 1 {
+		t.Fatalf("past-window silence: reclaimed n=%d err=%v, want 1/nil", n, err)
+	}
+	if s := e.boxStatus(t, e.px.boxID); s != "stale" {
+		t.Fatalf("box status=%s after sustained silence, want stale", s)
+	}
+}
+
 // TestReclaim_DisabledBoxExcluded (§2.2) — a 'disabled' box (admin verb, intentionally offline) is
 // excluded from Detector A even when silent: it is not re-marked and its scan is skipped. (Its
 // jobs, if any, still expire by lease via Detector B — Chunk 3.)

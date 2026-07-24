@@ -252,6 +252,24 @@ tree-verified findings on the account-flag write path, both fixed + covered by a
 No additional findings. The consume's `SKIP LOCKED` + `accounts_daily_sent_check` double-booking
 core remained untouched by both fixes (verified: the double-booking test still lands exactly 50).
 
+## Phase 6 build (pacing & dead-box detection)
+
+Phase 6's spec shipped a **closed decision log with an empty needs-user list** (§7 — every item
+DECIDED-NOW/DECIDED-DEFER/FLAGGED/DEFER-TO-PHASE-7/CONFIRMED). One implementation-surfaced
+reconciliation is recorded here (flagged per CLAUDE.md Rule 2, not silently resolved).
+
+### Phase 6 build surfaced (recorded, not silently resolved — CLAUDE.md Rule 2)
+
+| # | Item | Disposition | Detail |
+|---|---|---|---|
+| P6-OD-1 | The config-ordering invariant `smtp_operation_timeout_sec < job_max_processing_time_sec` (P6-11) has two texts that appear to differ on enforcement: **CLAUDE.md Rule 1** (NON-NEGOTIABLE) says a violating set is **REJECTED at config-LOAD** with external code `config_ordering_violation` — "Do not clamp or auto-correct — reject"; **Phase 6 spec §5.1** says the module "logs an internal warning ... does not hard-reject, to avoid coupling two independently-tuned dials **at write time**." | **RECONCILED — reject at LOAD, no coupling at WRITE (no spec conflict)** | The two texts are scoped to different enforcement points and do not actually conflict. §5.1's "no hard-reject" is explicitly about the **admin write path** (Phase 2 config-update validates ONE key at a time and cannot see the other dial). CLAUDE.md Rule 1's reject is at **config-LOAD** — the Brain reading the whole set together and refusing to act on a violating one. The **Phase 4 closeout already committed Phase 6 to ship exactly this**: "closed only when Phase 6 ships `smtp_operation_timeout_sec` + its config-load `config_ordering_violation` reject check" (Docs/open-decisions.md, Phase 4 closeout, line ~195). Implemented as: `validateConfigOrdering` in `services/brain/internal/dispatch/config.go` — `LoadConfig` returns a `config_ordering_violation` error (strict `<`; equality also rejected) so the Brain never runs on an inverted pair; `config_validate.go` (the write path) is left uncoupled per §5.1. `TestConfigOrdering_RejectsInvertedPair` proves reject-on-inversion + load-on-valid. No locked spec edited; Rule 1 (non-negotiable) governs where the two texts meet. |
+| P6-OD-2 | `smtp_operation_timeout_sec` is *consumed by the DB-less box*, but the box had no delivery path for it (it used its own `BOX_SMTP_TIMEOUT_MS` env default, decoupled from the seeded/enforced key — the exact latent gap the Phase 4 closeout flagged). | **APPLIED (delivery wiring, additive)** | Wired via the additive `push_job.smtp.operation_timeout_sec` wire field (the delivery path the Phase 4 closeout named, line ~171): the Brain stamps the seeded value into every `push_job` (`dispatch.go`), and the box prefers it over its bootstrap env default (`services/box/src/stream.js`). `omitempty` + a `>0` guard keep it additive (older frames/tests fall back to the env default). This makes the Brain-side reject-check meaningful end-to-end: the value the box applies is always the enforced-strictly-below-lease one. |
+
+**Needs-user: empty.** P6-OD-1 is a reconciliation (no conflict once scoped to load-vs-write, and
+the Phase 4 closeout already pre-committed the reject check); P6-OD-2 is additive delivery wiring.
+The locked P4-15 daily-slot refund stays **DEFERRED (P6-4 DECIDED-DEFER)** — not implemented, per
+spec. Every other Phase 6 item is DECIDED in the spec's own §7 log.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

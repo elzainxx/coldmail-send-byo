@@ -80,6 +80,13 @@ type SMTP struct {
 	Username string `json:"username"`
 	Secret   string `json:"secret"`   // DECRYPTED plaintext SMTP password — scoped to this job
 	Security string `json:"security"` // "starttls" | "implicit_tls"
+	// OperationTimeoutSec delivers the seeded smtp_operation_timeout_sec (Phase 6 §5, P6-11) to the
+	// DB-less box: the per-operation SMTP timeout (connect/greeting/socket-read on MAIL/RCPT/DATA)
+	// the box must apply. Additive-only, omitempty so older frames/tests still parse; the box falls
+	// back to its bootstrap env default when it is 0/absent. Enforced Brain-side to stay <
+	// job_max_processing_time_sec (config-load reject) so an account hang surfaces as a box-REPORTED
+	// timeout, not an unscored Brain lease reclaim (§2.4, P6-10).
+	OperationTimeoutSec int `json:"operation_timeout_sec,omitempty"`
 }
 
 // PushJob delivers one job + its credential down the held stream (§2.3). One push = one send.

@@ -149,6 +149,12 @@ export class BoxStream {
         report = errorReport(pj.request_id, jobId, "lease_expired");
       } else {
         const dataBytes = buildDataBytes(pj.send);
+        // Per-operation SMTP timeout (Phase 6 §5, P6-11): prefer the seeded smtp_operation_timeout_sec
+        // delivered on this push_job (the Brain enforces it < the job lease at config-load), falling
+        // back to the box's bootstrap env default only when the frame omits it (older Brain / test).
+        const opTimeoutMs = pj.smtp.operation_timeout_sec > 0
+          ? pj.smtp.operation_timeout_sec * 1000
+          : this.smtpTimeoutMs;
         const result = await runSmtpSession(
           {
             smtp: { host: pj.smtp.host, port: pj.smtp.port, username: pj.smtp.username, security: pj.smtp.security },
@@ -157,7 +163,7 @@ export class BoxStream {
             dataBytes,
           },
           credential,
-          { timeoutMs: this.smtpTimeoutMs },
+          { timeoutMs: opTimeoutMs },
         );
         // Provider id: parse from the 250, else fall back to the Brain-generated Message-ID (§4.3).
         const provID = parseProviderID(result.smtpResponse) || pj.send.headers["Message-ID"] || "";
