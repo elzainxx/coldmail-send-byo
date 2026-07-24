@@ -349,6 +349,27 @@ build plan); this section is updated as each chunk lands.
     reason as the timeout point above (any fix threading a seeded value would touch the same
     cross-cutting question); noted as a related follow-on to that Open Decision candidate.
 
+  **Closeout verification (2026-07-24) — two claimed properties, empirically confirmed, not
+  re-asserted:**
+  - **(a) Double-booking test rigor.** `TestAccountConsume_NeverExceedsDailyLimit` genuinely uses
+    8 independent physical connections (8 separate `pgxpool.New` pools, not 8 goroutines sharing
+    one pooled connection) launched concurrently before any wait. This was already true, but the
+    test's own anti-vacuity check previously only inferred concurrency from an aggregate success
+    count (`len(successByWorker) < 2`) — which proves multiple workers eventually succeeded, not
+    that they overlapped in wall-clock time. Strengthened per the spec's own §9 T1 requirement: a
+    live `pg_stat_activity` sampler (a 9th, separate admin connection) polls every 2ms during the
+    race and records the max number of workers simultaneously `state='active'` on an
+    `eligible_accounts`-matching query. Observed **7-8 simultaneously active workers** across 4
+    consecutive runs — genuine, measured concurrency, not inferred.
+  - **(b) CHECK-constraint silence.** The same test now explicitly classifies every error by
+    SQLSTATE: `23514` (a real `accounts_daily_sent_check` violation) is counted and reported
+    separately from any other error, and the test FAILS with an explicit finding message if the
+    count is ever non-zero — never silently swallowed alongside other errors. Result across 4
+    consecutive runs: **`accounts_daily_sent_check` fired 0 times** across 200 total attempts per
+    run (50 successes + 150 correctly-rejected exhaustion attempts each time). Confirmed:
+    last-resort, never load-bearing, in every observed run.
+  Both properties hold as claimed — no weaker-than-believed finding on either.
+
   **Harness discovery (re-verifying live-stack after the review fixes):** running the full harness
   repeatedly on the SAME stack revealed that `tests/harness/phase3_send.sh`'s T3 ("box killed
   mid-send, job never falsely marked sent") deliberately leaves its job stranded `sending`

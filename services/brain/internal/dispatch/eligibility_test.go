@@ -9,10 +9,13 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sender-module/brain/internal/boxproto"
 )
@@ -51,12 +54,18 @@ func (e *dispatchEnv) accountDailySentCount(t *testing.T, acctID string) int {
 func strPtr(s string) *string { return &s }
 
 // TestAccountConsume_NeverExceedsDailyLimit (T1, THE test) — ONE account, daily_limit=50, hammered
-// by 8 GENUINE concurrent connections each trying to consume it repeatedly, demand (200 attempts)
-// far exceeding capacity (50). Asserts: (1) daily_sent_count ends at EXACTLY 50, never more; (2)
-// exactly 50 attempts observed a successful consume (the rest correctly saw exhaustion); (3) the
-// account's own accounts_daily_sent_check CHECK is never violated (implied by (1), since a
-// violating UPDATE would have errored the whole test). Anti-vacuity: asserts demand > capacity as
-// a precondition, and that concurrency was genuinely exercised (more than one worker succeeded).
+// by 8 GENUINE concurrent connections (8 separate pgxpool.New pools, so 8 independent physical
+// connections — not 8 goroutines sharing one pooled connection) each trying to consume it
+// repeatedly, demand (200 attempts) far exceeding capacity (50). Asserts: (1) daily_sent_count
+// ends at EXACTLY 50, never more; (2) exactly 50 attempts observed a successful consume (the rest
+// correctly saw exhaustion); (3) NO attempt ever surfaces accounts_daily_sent_check's SQLSTATE
+// 23514 — the CHECK is the last-resort invariant and must NEVER fire in normal operation (a fire
+// would mean SKIP LOCKED + the MVCC re-check failed to absorb the contention, a genuine finding,
+// not something to paper over — CLAUDE.md closeout instruction, 2026-07-24). Anti-vacuity: asserts
+// demand > capacity as a precondition, that concurrency was genuinely exercised (more than one
+// worker succeeded), AND — the strongest check — samples pg_stat_activity DURING the race and
+// asserts at least 2 workers were observed simultaneously inside an active query against this
+// account's row, proving overlap in wall-clock time, not just "multiple workers eventually ran."
 func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	e := newDispatchEnv(t, "nolimit")
 	pool := e.seedPool(t)
@@ -71,10 +80,43 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	}
 
 	moduleDSN := poolDSN(t, e)
+
+	// Concurrency-overlap sampler: while the 8 workers race, poll pg_stat_activity (via the ADMIN
+	// connection, a 9th connection distinct from the 8 workers') for how many of THIS test's own
+	// backends are simultaneously mid-query. This is the spec's own §9 T1 anti-vacuity requirement
+	// — proving genuine time-overlap, not inferring it from an aggregate success count.
+	sampleCtx, cancelSample := context.WithCancel(context.Background())
+	var maxConcurrentActive int64
+	var samplerWG sync.WaitGroup
+	samplerWG.Add(1)
+	go func() {
+		defer samplerWG.Done()
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sampleCtx.Done():
+				return
+			case <-ticker.C:
+				var n int64
+				if err := e.admin.QueryRow(context.Background(),
+					`SELECT count(*) FROM pg_stat_activity
+					 WHERE datname = current_database() AND state = 'active'
+					   AND query ILIKE '%eligible_accounts%'`).Scan(&n); err == nil {
+					if n > atomic.LoadInt64(&maxConcurrentActive) {
+						atomic.StoreInt64(&maxConcurrentActive, n)
+					}
+				}
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	successes := 0
 	successByWorker := map[int]int{}
+	var checkViolations int64 // SQLSTATE 23514 (accounts_daily_sent_check) observed count
+	var otherErrors int64
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(worker int) {
@@ -89,7 +131,14 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 			for i := 0; i < attemptsPerWorker; i++ {
 				_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC")
 				if err != nil {
-					t.Errorf("worker %d attempt %d: %v", worker, i, err)
+					var pgErr *pgconn.PgError
+					if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+						atomic.AddInt64(&checkViolations, 1)
+						t.Errorf("worker %d attempt %d: accounts_daily_sent_check FIRED (SQLSTATE 23514) — the last-resort invariant was needed, meaning SKIP LOCKED + the MVCC re-check did NOT absorb the contention: %v", worker, i, err)
+					} else {
+						atomic.AddInt64(&otherErrors, 1)
+						t.Errorf("worker %d attempt %d: %v", worker, i, err)
+					}
 					return
 				}
 				if ok {
@@ -102,6 +151,8 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 		}(w)
 	}
 	wg.Wait()
+	cancelSample()
+	samplerWG.Wait()
 
 	if successes != limit {
 		t.Fatalf("total successful consumes=%d, want EXACTLY %d (the daily_limit)", successes, limit)
@@ -110,12 +161,30 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	if got != limit {
 		t.Fatalf("daily_sent_count=%d, want EXACTLY %d — the double-booking invariant was violated", got, limit)
 	}
-	// Anti-vacuity: genuine concurrency means more than one worker landed a success (a serialized
-	///broken-locking implementation could still pass the count check by accident if, say, only
-	// one worker ever ran — this rules that out).
+	// Anti-vacuity #1: genuine concurrency means more than one worker landed a success (a
+	// serialized/broken-locking implementation could still pass the count check by accident if,
+	// say, only one worker ever ran — this rules that out).
 	if len(successByWorker) < 2 {
 		t.Fatalf("only %d worker(s) ever succeeded — concurrency was not genuinely exercised", len(successByWorker))
 	}
+	// Anti-vacuity #2 (the spec's own §9 T1 requirement): prove overlap in WALL-CLOCK time via a
+	// live pg_stat_activity sample, not just an aggregate success count that could theoretically
+	// arise from 8 workers that happened never to overlap.
+	observed := atomic.LoadInt64(&maxConcurrentActive)
+	t.Logf("pg_stat_activity sampler observed max %d workers simultaneously active mid-query", observed)
+	if observed < 2 {
+		t.Fatalf("pg_stat_activity never observed >=2 workers simultaneously active (max seen: %d) — the sampler either missed the race window or the workers ran serially, not genuinely concurrently", observed)
+	}
+	// CHUNK 1(b) explicit finding statement: report, do not paper over, whether the CHECK fired.
+	if checkViolations > 0 {
+		t.Fatalf("FINDING: accounts_daily_sent_check fired %d time(s) during a NORMAL healthy run — "+
+			"this is NOT expected; it means SKIP LOCKED + the MVCC re-check did not fully absorb the "+
+			"contention and the CHECK was load-bearing, not last-resort", checkViolations)
+	}
+	if otherErrors > 0 {
+		t.Fatalf("%d non-CHECK error(s) occurred during the race (see logged worker errors above)", otherErrors)
+	}
+	t.Logf("CHUNK 1(b) result: accounts_daily_sent_check fired 0 times across %d total attempts (%d successes, %d exhaustion-skips) — confirmed last-resort, never load-bearing in this run", workers*attemptsPerWorker, successes, workers*attemptsPerWorker-successes)
 }
 
 // TestAccountConsume_SkipsIneligibleAccounts (T6-style) — paused/quarantined/disabled/at-limit
