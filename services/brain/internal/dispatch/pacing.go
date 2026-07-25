@@ -35,7 +35,7 @@ type pacer struct {
 	mu    sync.Mutex
 	slots map[string][]time.Time // userID -> per-lane next_send_at
 
-	now       func() time.Time                 // wall clock (seam for tests)
+	now       func() time.Time                       // wall clock (seam for tests)
 	drawDelay func(minSec, maxSec int) time.Duration // uniform draw in [minSec,maxSec] seconds (seam for tests)
 }
 

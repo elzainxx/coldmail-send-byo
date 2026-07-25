@@ -72,6 +72,7 @@ func (d *Dispatcher) evaluateChain(ctx context.Context, userID string, cfg Confi
 //   - at the daily limit on the CURRENT cycle  (clears at the daily reset), OR
 //   - paused with pause_reason='throttle' whose window has NOT yet expired (clears at the throttle
 //     timer — an EXPIRED throttle pause is already `eligible` via P5-13, so it never reaches here).
+//
 // An account that is quarantined / disabled / manually-paused is terminal_blocked (manual recovery
 // only) and does NOT count as self_recovering. A stale daily_limit-paused / at-limit account also
 // self-recovers (the lazy reset re-opens it) — but if its reset day is already past it would be

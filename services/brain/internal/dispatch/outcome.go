@@ -217,6 +217,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 //  2. apply the account effect to the assigned_account_id account (quarantine / pause / none) +
 //     recompute the score, writing account_events(actor='system') on a flag change (§2, §4);
 //  3. write the send_logs row for the attempt.
+//
 // All three commit together, so a failed account effect rolls back the job requeue too (the
 // account state and the job state never disagree).
 func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string) error {

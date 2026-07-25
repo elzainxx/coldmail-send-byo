@@ -70,8 +70,14 @@ func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobAuth, Outcome: boxproto.OutcomeError, SMTPResponse: "535 5.7.8 auth failed"}) }()
-	go func() { defer wg.Done(); oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobThr, Outcome: boxproto.OutcomeError, SMTPResponse: "421 4.7.0 too many, rate limited"}) }()
+	go func() {
+		defer wg.Done()
+		oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobAuth, Outcome: boxproto.OutcomeError, SMTPResponse: "535 5.7.8 auth failed"})
+	}()
+	go func() {
+		defer wg.Done()
+		oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobThr, Outcome: boxproto.OutcomeError, SMTPResponse: "421 4.7.0 too many, rate limited"})
+	}()
 	wg.Wait()
 
 	// The auth_failure quarantine MUST have survived the concurrent throttle outcome.

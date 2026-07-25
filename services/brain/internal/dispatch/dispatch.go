@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,13 @@ type Dispatcher struct {
 	// (Chunk 4) the retention sweep so one detection pauses all three. It holds no authoritative job
 	// state — only "is the DB reachable" + the backoff — so a lost gate can never invent an outcome.
 	health *DBHealth
+
+	// draining is the Phase 7 §4 graceful-shutdown latch (P7-5): once set (SIGTERM), the dispatcher
+	// claims no new job and pushes nothing, so no fresh work enters flight while the drain waits for
+	// in-flight sends to report. It is one-way — a shutdown is not resumable — and holds no job state,
+	// so it can never cause an invented outcome; the leave-in-place guarantee is structural (drain.go
+	// writes no job row at all).
+	draining atomic.Bool
 
 	// diagMu/lastSharedPoolNotConfiguredLog throttles the §4.3 shared_pool_not_configured internal
 	// diagnostic: an operational condition (not a per-job error), logged at most once per
@@ -150,6 +158,13 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	cfg, err := LoadConfig(ctx, d.db)
 	if err != nil {
 		return "", err
+	}
+
+	// Phase 7 §4.1 step 1 (P7-5): STOP-CLAIM while draining. Same gate as Tick — the Phase-3 primitive
+	// is a second claim path (platform `run` kicks reach the Runner, but this entry point is still
+	// live), so it must honor the drain too or a SIGTERM could still put a fresh job into flight.
+	if d.draining.Load() {
+		return "", nil
 	}
 
 	// 0) Need a connected, idle box to push to (boxes are interchangeable — §2.2). If none, do

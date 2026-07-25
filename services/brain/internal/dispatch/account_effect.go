@@ -91,8 +91,10 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 // quarantineDecision is the SINGLE auto-quarantine predicate (Chunk 4, §4.2). It answers
 // "should this account be quarantined as a result of this outcome?" from the class + the freshly
 // recomputed score + the threshold + the current flags. Two triggers, both manual-recovery-only:
-//   (a) IMMEDIATE on auth_failure, regardless of score (§4.2a — a credential fault fails every send);
-//   (b) score < quarantine_threshold after the recompute (§4.2b / §3.4).
+//
+//	(a) IMMEDIATE on auth_failure, regardless of score (§4.2a — a credential fault fails every send);
+//	(b) score < quarantine_threshold after the recompute (§4.2b / §3.4).
+//
 // Idempotent: an already-quarantined account returns false (no second event, §4.2 idempotence).
 // This is the seam Phase 9.5 will wrap with autoquarantine_mode (off|shadow|enforce) — NOT here.
 func quarantineDecision(class string, newScore, threshold int, before accountFlagState) bool {

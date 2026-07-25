@@ -650,5 +650,33 @@ summary table).
   `box_outcome_buffer_ttl_sec` is consumed by the BOX (delivered on `register_ack`) but is read here
   too, because the Brain must see both keys together to reject an unsafe pair.
 
-**Remaining (chunks 5–6):** graceful SIGTERM drain / leave-in-place (Chunk 5); the full suite, CI, docs
-and DoD closeout (Chunk 6).
+- **Chunk 5 — graceful shutdown (`drain.go`, §4, P7-5).** SIGTERM runs **stop-claim → drain →
+  leave-in-place**. *Stop-claim:* a one-way `draining` latch makes both claim paths (`Tick` and the
+  Phase-3 `TryDispatch`) pure no-ops, so no new job enters flight behind a closing Brain; the flag is
+  read ONCE at the top of a tick, so a tick already past it finishes the handoffs it had initiated.
+  *Drain:* `main.go` keeps the mTLS box link and the outcome handler **up** and waits — bounded by the
+  seeded `shutdown_drain_timeout_sec` (re-read at shutdown so a change since boot is honored; the old
+  hardcoded 10s no longer governs the drain) — for in-flight jobs to report and resolve themselves
+  normally (`sent`/`bounced`/requeued). It returns the moment in-flight hits zero, so a clean deploy
+  costs far less than the window. *Leave-in-place:* whatever remains at the timeout is left **exactly
+  as stored** — `sending`/`assigned` with its lease. The Brain deliberately does NOT flip
+  `sending→queued`: that job may already have hit `250`, so an eager requeue would manufacture the
+  duplicate the design avoids (§4.2, the same reasoning as P6-5's rejection of eager reclaim).
+  **The guarantee is structural:** `drain.go` contains **no job write at all** — draining is a
+  read-only in-flight count plus a flag, so there is no shutdown-time `UPDATE` a future edit could get
+  wrong. A drain attempted while the DB is unreachable ends immediately (returns `-1`) rather than
+  hanging a deploy: nothing can be persisted and nothing is written either way.
+  **SIGKILL reduces to the same path** (§4.3) — no drain runs, so everything in-flight is left in
+  place, which is what a graceful shutdown leaves too, only more of it; the next boot's §1 rescan
+  recovers both identically. T4 asserts this as a **convergence** test: a graceful arm and a
+  SIGKILL arm (no drain called — a killed process runs no code) leave byte-identical job state, both
+  are picked up by a real fresh-`Dispatcher` `StartupRescan`, both resolve to `sent` on a late box
+  replay with exactly one `send_logs` row, and nothing is left in flight. Also asserted: no
+  `queued→assigned` claim while draining **with an anti-vacuity control** that the very same tick DOES
+  claim once the latch is cleared (so the non-claim is attributable to the drain, not to a starved
+  fixture), an in-window reporter resolving normally mid-drain, a staller left byte-unchanged
+  (state/pmid/lease/`completed_at`/`attempt_count` and zero new `job_events`), an early return when
+  everything reports, and that the drain window comes from the seeded key rather than a constant.
+
+**Remaining (chunk 6):** the full suite, CI gates (`config_drift` at 25 keys), docs and the 9-item DoD
+closeout.

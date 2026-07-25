@@ -12,9 +12,9 @@ import (
 // by the real reply code + enhanced code + text, first-match-wins, NOT by an injected class.
 func TestClassify_Table(t *testing.T) {
 	cases := []struct {
-		name    string
-		rep     boxproto.Report
-		want    string
+		name string
+		rep  boxproto.Report
+		want string
 	}{
 		// Row 1 — success has no class.
 		{"accepted_no_class", boxproto.Report{Outcome: boxproto.OutcomeAccepted}, ""},

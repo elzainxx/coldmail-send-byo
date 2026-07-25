@@ -41,7 +41,7 @@ func TestReclaimRace_OutcomeVsReclaim(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		job := e.seedQueuedJob(t, "race@example.com")
 		e.dispatchToSending(t, job)
-		e.expireLease(t, job)  // make it eligible for Detector B
+		e.expireLease(t, job) // make it eligible for Detector B
 		e.px.freeAllBoxes()
 
 		// Fire an accepted outcome and a reclaim tick CONCURRENTLY on the same sending job.

@@ -3,6 +3,7 @@
 // Each tick runs two indexed detectors:
 //   - Detector A (§2.2, this file): dead-box heartbeat scan → mark stale + mass-reclaim its jobs.
 //   - Detector B (§2.3, Chunk 3): per-job lease-expiry backstop, box-liveness-independent.
+//
 // Both converge on the ONE locked reclaim transition (§2.4, reclaimJobsWhere): assigned|sending →
 // queued, actor='reclaim_loop', lease cleared, saturating attempt_count, error_class='timeout',
 // next_attempt_at from Phase 5's timeout backoff. The account is deliberately NOT touched — no flag,
@@ -38,13 +39,14 @@ import (
 // account FOR UPDATE *before* its job requeue (account→job). If reclaim instead let the trigger grab
 // the account lock AFTER already holding the job row (job→account), the two would cycle
 // (40P01) on a shared {job, account}. So reclaim mirrors applyClassifiedFailure EXACTLY:
-//   1. read the job's assigned_account_id (stable while in-flight — requeue clears only the box);
-//   2. lock that account FOR UPDATE *first* (account→job order — matches the outcome handler);
-//   3. lock the job row FOR UPDATE SKIP LOCKED and re-assert the in-flight guard — SKIP LOCKED so a
-//      lane worker mid-handoff (markSending, job→account) is SKIPPED (retried next tick), never
-//      blocked-on, so that opposite-order pair can't cycle either;
-//   4. apply the transition on the now-locked row (the trigger's KEY SHARE on the account is a no-op
-//      re-request of the FOR UPDATE we already hold — no upgrade, no cycle).
+//  1. read the job's assigned_account_id (stable while in-flight — requeue clears only the box);
+//  2. lock that account FOR UPDATE *first* (account→job order — matches the outcome handler);
+//  3. lock the job row FOR UPDATE SKIP LOCKED and re-assert the in-flight guard — SKIP LOCKED so a
+//     lane worker mid-handoff (markSending, job→account) is SKIPPED (retried next tick), never
+//     blocked-on, so that opposite-order pair can't cycle either;
+//  4. apply the transition on the now-locked row (the trigger's KEY SHARE on the account is a no-op
+//     re-request of the FOR UPDATE we already hold — no upgrade, no cycle).
+//
 // Locking the account is NOT a write — the P6-10 carve-out (a Brain-declared reclaim performs no
 // account UPDATE and no score recompute) is fully preserved; a shared/exclusive row lock touches no
 // column. This function reads assigned_account_id and WRITES ONLY sender.jobs columns.

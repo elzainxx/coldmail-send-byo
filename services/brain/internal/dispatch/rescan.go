@@ -6,13 +6,14 @@
 // transition (P6-8: the loop and the rescan share that transition; there is no second reclaim path).
 //
 // What the rescan does, in one pass:
-//   (2) EXTEND the lease of every orphaned in-flight ({assigned,sending}) job by
-//       startup_reconnect_window_sec — opening a bounded reconnect window during which Detector B
-//       will NOT reclaim them (lease still in the future) and reconnecting boxes can replay buffered
-//       outcomes (§1.3) and resolve their job with NO duplicate.
-//   (3) REFRESH last_heartbeat_at on every non-disabled box to NOW() — the BRAIN died, not the boxes,
-//       so boxes are presumed live until they miss a heartbeat measured FROM BOOT; this stops
-//       Detector A from instantly marking a reconnectable box stale on the loop's first tick.
+//
+//	(2) EXTEND the lease of every orphaned in-flight ({assigned,sending}) job by
+//	    startup_reconnect_window_sec — opening a bounded reconnect window during which Detector B
+//	    will NOT reclaim them (lease still in the future) and reconnecting boxes can replay buffered
+//	    outcomes (§1.3) and resolve their job with NO duplicate.
+//	(3) REFRESH last_heartbeat_at on every non-disabled box to NOW() — the BRAIN died, not the boxes,
+//	    so boxes are presumed live until they miss a heartbeat measured FROM BOOT; this stops
+//	    Detector A from instantly marking a reconnectable box stale on the loop's first tick.
 //
 // THE CRITICAL PROPERTY (the Phase 6 lesson — ADR-0010): the lease-extension UPDATE (step 2) MUST be
 // genuinely EVENT-FREE. It sets ONLY lease_expires_at/updated_at and leaves state unchanged, so:
@@ -20,6 +21,7 @@
 //     is UPDATE OF state; a SET that never lists `state` is not an OF-state update), AND
 //   - even if it did fire, the trigger's first line is `IF OLD.state = NEW.state THEN RETURN NEW`
 //     (no state change ⇒ no event) —
+//
 // so NO job_events row is inserted, so the statement takes NO FK KEY SHARE on assigned_account_id,
 // so it CANNOT cycle (40P01) with a concurrent applyClassifiedFailure/reclaimJobLocked that holds an
 // exclusive account lock. It therefore needs NO account pre-lock (CLAUDE.md Rule 9 is scoped to paths

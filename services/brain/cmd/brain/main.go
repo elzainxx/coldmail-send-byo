@@ -213,15 +213,49 @@ func main() {
 
 	log.Printf("brain ready")
 	<-ctx.Done()
-	log.Printf("shutdown signal received; draining")
+	log.Printf("shutdown signal received")
 
-	// SAFETY BOUND (Phase 4 closeout triage, Docs/open-decisions.md): a SIGTERM drain grace
-	// period, not a runtime behavior a campaign/operator would tune — deployment/orchestration
-	// concern, same class as MAX_FALLBACK_HOPS.
+	// --- Phase 7 §4 (P7-5): GRACEFUL SHUTDOWN — stop-claim → drain → leave-in-place -------------
+	//
+	// STEP 1 (stop-claim). The dispatcher enters the drain: it claims no new job and pushes nothing,
+	// so no fresh work enters flight behind us. The signal ctx is already cancelled at this point, so
+	// the dispatch/reclaim/retention loop goroutines are exiting between ticks (never mid-transaction:
+	// each tick's DB work runs to commit or rolls back on its own bounded context).
+	//
+	// STEP 2 (drain). The box-link stream and the outcome handler stay UP for the whole drain window,
+	// so boxes finishing in-flight sends can still REPORT and have their outcomes persisted and acked
+	// (Chunk 2's persist-ack). Each job that reports resolves normally — sent/bounced/requeued — which
+	// is the clean terminal for it. The wait is bounded by the seeded shutdown_drain_timeout_sec
+	// (config-not-code; NOT the old hardcoded 10s), and ends early the moment in-flight hits zero.
+	//
+	// STEP 3 (leave-in-place). Whatever is still in-flight at the timeout is LEFT EXACTLY AS STORED —
+	// `sending`/`assigned` with its lease. We deliberately do NOT flip sending→queued: that job may
+	// already have hit 250 at the provider, so an eager requeue would manufacture a duplicate (§4.2).
+	// The next boot's startup rescan extends those leases so a reconnecting box can replay its buffered
+	// outcome with no duplicate, and the continuous loop reclaims the genuinely-stuck (§4.3). A SIGKILL
+	// that preempts all of this reduces to the same path — nothing was going to be written anyway.
+	drainTimeout := time.Duration(sendCfg.ShutdownDrainTimeoutSec) * time.Second
+	// Re-read the key so an operator's change since boot is honored; fall back to the boot value if the
+	// DB is unreachable (a shutdown must never block on a sick DB).
+	if freshCfg, err := dispatch.LoadConfig(context.Background(), database.Pool); err == nil {
+		drainTimeout = time.Duration(freshCfg.ShutdownDrainTimeoutSec) * time.Second
+	}
+	// The drain gets its own context, NOT the cancelled signal ctx (which would abort it instantly).
+	// Bounded a little above the drain window so the drain, not this context, decides when to stop.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), drainTimeout+5*time.Second)
+	left := dispatcher.Drain(drainCtx, drainTimeout)
+	cancelDrain()
+	if left > 0 {
+		log.Printf("shutdown: %d job(s) left in flight and RECOVERABLE (not requeued, not marked) — the next boot's rescan resolves them (§4.3)", left)
+	}
+
+	// Now the listeners come down. SAFETY BOUND (Phase 4 closeout triage,
+	// Docs/open-decisions.md): the HTTP/listener close grace is a deployment concern, not a runtime
+	// dial — same class as MAX_FALLBACK_HOPS. The DRAIN window above is the operator-tunable part.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = health.Shutdown(shutdownCtx)
 	_ = link.Shutdown(shutdownCtx)
 	_ = stream.Close()
-	log.Printf("shutdown complete")
+	log.Printf("shutdown complete (no job was requeued or marked on the way out — §4.2 leave-in-place)")
 }

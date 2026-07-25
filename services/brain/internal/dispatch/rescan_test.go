@@ -181,7 +181,7 @@ func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 		t.Fatalf("pool2: %v", err)
 	}
 	defer p2.Close()
-	oh := NewOutcomeHandler(p1, e.cfg)   // applyClassifiedFailure: account FOR UPDATE, then job requeue
+	oh := NewOutcomeHandler(p1, e.cfg)          // applyClassifiedFailure: account FOR UPDATE, then job requeue
 	rescanner := NewDispatcher(p2, e.dec, e.px) // event-free bulk lease extension
 
 	const rounds = 40

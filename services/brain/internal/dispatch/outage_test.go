@@ -158,15 +158,17 @@ func proxiedPool(t *testing.T, dsn string) *pgxpool.Pool {
 // TestOutage_LoopsPauseAndInventNothing (§2.2 + §2.4 — the phase's most important property).
 // A job is in-flight (`sending`) when the DB drops. We then drive BOTH loops' ticks against the
 // severed pool and assert:
-//   (1) both ticks report an OUTAGE (not an application error) and the shared gate halts — the loops
-//       are paused, not spinning;
-//   (2) the in-flight job is byte-unchanged: still `sending`, same lease, same attempt_count, NOT
-//       marked sent/failed/bounced/queued, and NOT ONE new job_events row anywhere — the Brain
-//       invented nothing;
-//   (3) a `queued` job is NOT claimed during the outage (dispatch really did stop claiming);
-//   (4) on restore the gate clears on its next probe and the very same loops resume from stored
-//       state — the queued job is claimed+pushed, the in-flight job is STILL `sending` (resume does
-//       not fabricate its outcome either).
+//
+//	(1) both ticks report an OUTAGE (not an application error) and the shared gate halts — the loops
+//	    are paused, not spinning;
+//	(2) the in-flight job is byte-unchanged: still `sending`, same lease, same attempt_count, NOT
+//	    marked sent/failed/bounced/queued, and NOT ONE new job_events row anywhere — the Brain
+//	    invented nothing;
+//	(3) a `queued` job is NOT claimed during the outage (dispatch really did stop claiming);
+//	(4) on restore the gate clears on its next probe and the very same loops resume from stored
+//	    state — the queued job is claimed+pushed, the in-flight job is STILL `sending` (resume does
+//	    not fabricate its outcome either).
+//
 // Anti-vacuity: (3) is paired with (4) — the same queued job that stayed put during the outage is
 // claimed immediately after resume, so the assertion is about the outage, not about a job that could
 // never be claimed.
@@ -299,12 +301,13 @@ func TestOutage_LoopsPauseAndInventNothing(t *testing.T) {
 // TestOutage_ReportDuringOutageNotAckedThenReplaysOnce (§2.3 + §2.4 step 2 — the no-duplicate proof
 // for the outage path). A box completes its send DURING the outage (SMTP is independent of the DB).
 // Its report reaches the Brain, which CANNOT persist it:
-//   (1) Handle returns resolved=false ⇒ NO report_ack ⇒ the box retains the outcome (P7-4);
-//   (2) the job stays exactly `sending` — not sent, not failed, no event, no send_logs row;
-//   (3) after recovery the box REPLAYS the identical report: it now persists, Handle returns true
-//       (the ack the box needs to drop it), the job is `sent` with the box's OWN
-//       provider_message_id, and there is EXACTLY ONE send_logs row — no double application;
-//   (4) a further replay after that is a clean idempotent no-op (still one send_logs row).
+//
+//	(1) Handle returns resolved=false ⇒ NO report_ack ⇒ the box retains the outcome (P7-4);
+//	(2) the job stays exactly `sending` — not sent, not failed, no event, no send_logs row;
+//	(3) after recovery the box REPLAYS the identical report: it now persists, Handle returns true
+//	    (the ack the box needs to drop it), the job is `sent` with the box's OWN
+//	    provider_message_id, and there is EXACTLY ONE send_logs row — no double application;
+//	(4) a further replay after that is a clean idempotent no-op (still one send_logs row).
 func TestOutage_ReportDuringOutageNotAckedThenReplaysOnce(t *testing.T) {
 	e := newDispatchEnv(t, "outagereport")
 	ctx := context.Background()
@@ -396,13 +399,14 @@ func TestOutage_ReportDuringOutageNotAckedThenReplaysOnce(t *testing.T) {
 // TestOutage_RunnersSurviveSustainedOutageAndResume (§2.2 no-crash-loop + §2.4 resume). The REAL
 // dispatch Runner and reclaim ReclaimRunner loops are started against the severed pool and left to
 // run through a sustained outage. Assert:
-//   (1) neither loop goroutine exits (no crash-loop, no panic escaping the tick) while the DB is down;
-//   (2) the retry cadence is BACKED OFF, not a tight spin — the gate's advertised wait grows past the
-//       base, and the number of connection attempts the injector observes over the outage stays far
-//       below a tight-spin count;
-//   (3) NOTHING is written during the outage (the queued job stays queued);
-//   (4) when the DB returns, the SAME still-running loops resume and claim the job — recovery does
-//       not require a restart.
+//
+//	(1) neither loop goroutine exits (no crash-loop, no panic escaping the tick) while the DB is down;
+//	(2) the retry cadence is BACKED OFF, not a tight spin — the gate's advertised wait grows past the
+//	    base, and the number of connection attempts the injector observes over the outage stays far
+//	    below a tight-spin count;
+//	(3) NOTHING is written during the outage (the queued job stays queued);
+//	(4) when the DB returns, the SAME still-running loops resume and claim the job — recovery does
+//	    not require a restart.
 func TestOutage_RunnersSurviveSustainedOutageAndResume(t *testing.T) {
 	e := newDispatchEnv(t, "outageloops")
 	ctx := context.Background()
@@ -501,6 +505,7 @@ func TestOutage_RunnersSurviveSustainedOutageAndResume(t *testing.T) {
 //   - NEGATIVE control: a genuine CHECK violation (23514) raised by real Postgres over a live
 //     connection is NOT an outage — if it were, one bad row would pause the whole Brain;
 //   - POSITIVE control: a genuine query against a severed connection IS an outage.
+//
 // Also asserts the backoff ladder is bounded (grows, then caps) — the "no crash-loop" mechanism.
 func TestIsOutage_TransportVsApplicationError(t *testing.T) {
 	e := newDispatchEnv(t, "outageclassify")

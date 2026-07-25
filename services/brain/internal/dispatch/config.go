@@ -52,9 +52,10 @@ type Config struct {
 	// granularity here. box_outcome_buffer_ttl_sec is CONSUMED BY THE BOX (delivered on register_ack,
 	// §1.3) but is READ here too, because the P7-11 ordering invariant is validated at config-LOAD
 	// against StartupReconnectWindowSec — the Brain must see both keys together to reject an unsafe
-	// pair. shutdown_drain_timeout_sec is consumed by Chunk 5's graceful shutdown.
+	// pair. shutdown_drain_timeout_sec bounds the graceful-shutdown drain (§4.1).
 	StartupReconnectWindowSec int    // startup_reconnect_window_sec — rescan reconnect-reconciliation window (§1.2)
 	BoxOutcomeBufferTTLSec    int    // box_outcome_buffer_ttl_sec — bound on the box's outcome buffer (§1.3, P7-4); INVARIANT: >= StartupReconnectWindowSec
+	ShutdownDrainTimeoutSec   int    // shutdown_drain_timeout_sec — max SIGTERM drain wait before leave-in-place (§4.1, P7-5)
 	RetentionSweepIntervalMS  int    // retention_sweep_interval_ms — the retention housekeeping loop's tick (§3.1)
 	RetentionDeleteBatchSize  int    // retention_delete_batch_size — rows per send_logs DELETE batch (§3.1, owner of Phase 1 #29)
 	RollupGranularity         string // rollup_granularity — bucket granularity for the derive-on-demand summaries (§3.2)
@@ -161,6 +162,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.BoxOutcomeBufferTTLSec, err = readIntKey(ctx, db, "box_outcome_buffer_ttl_sec"); err != nil {
+		return c, err
+	}
+	if c.ShutdownDrainTimeoutSec, err = readIntKey(ctx, db, "shutdown_drain_timeout_sec"); err != nil {
 		return c, err
 	}
 	if c.RetentionSweepIntervalMS, err = readIntKey(ctx, db, "retention_sweep_interval_ms"); err != nil {

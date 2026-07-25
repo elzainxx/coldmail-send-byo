@@ -55,8 +55,14 @@ func TestLockOrderAudit_ConcurrentAcceptedSameAccount(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobs[0], Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-LA-1", SMTPResponse: "250 ok"}) }()
-	go func() { defer wg.Done(); oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobs[1], Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-LA-2", SMTPResponse: "250 ok"}) }()
+	go func() {
+		defer wg.Done()
+		oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobs[0], Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-LA-1", SMTPResponse: "250 ok"})
+	}()
+	go func() {
+		defer wg.Done()
+		oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobs[1], Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-LA-2", SMTPResponse: "250 ok"})
+	}()
 	wg.Wait()
 
 	// Both must have committed sent (no deadlock aborted either). A 40P01 would have left one job
@@ -108,8 +114,14 @@ func TestLockOrderAudit_AcceptedVsClassifiedSameAccount(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobAcc, Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-MIX-1", SMTPResponse: "250 ok"}) }()
-	go func() { defer wg.Done(); oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobFail, Outcome: boxproto.OutcomeError, SMTPResponse: "451 4.3.0 temporary local error"}) }()
+	go func() {
+		defer wg.Done()
+		oh1.Handle(e.px.boxID, boxproto.Report{JobID: jobAcc, Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "PMID-MIX-1", SMTPResponse: "250 ok"})
+	}()
+	go func() {
+		defer wg.Done()
+		oh2.Handle(e.px.boxID, boxproto.Report{JobID: jobFail, Outcome: boxproto.OutcomeError, SMTPResponse: "451 4.3.0 temporary local error"})
+	}()
 	wg.Wait()
 
 	if st, hasPMID, _, _, _ := e.jobState(t, jobAcc); st != "sent" || !hasPMID {

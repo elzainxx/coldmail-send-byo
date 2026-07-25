@@ -48,6 +48,15 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		return Config{}, 0, err
 	}
 
+	// Phase 7 §4.1 step 1 (P7-5): STOP-CLAIM. Once SIGTERM has put us in the drain, this tick claims
+	// nothing and pushes nothing — no queued→assigned transition, so no new job enters flight behind a
+	// draining Brain. Checked ONCE here at the top rather than per-job, so a tick already past this
+	// point finishes the handoffs it had initiated ("lane workers finish only the handoffs already
+	// initiated"). Nothing is written on this path: a draining tick is a pure no-op.
+	if d.draining.Load() {
+		return cfg, 0, nil
+	}
+
 	// Phase A: snapshot ground truth (two cheap reads; §1.2 A1/A2).
 	inFlight, err := d.snapshotInFlight(ctx)
 	if err != nil {
