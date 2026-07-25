@@ -56,6 +56,63 @@ must be exercised concurrently.
    state from a background sweeper concurrently with live dispatch, a prime candidate for this
    class of bug) and every later phase touching account state.
 
+## Codebase-wide lock-ordering invariant (added Phase 6 closeout, 2026-07-25)
+
+Phase 6's review gate R4 hit this class a **third** time (P6-R4-1): Detector A's dead-box mass
+reclaim was a bulk `UPDATE sender.jobs` whose `job_events` trigger (`sender_0008`) inserts
+`assigned_account_id` and so takes an FK `KEY SHARE` on the account row **after** the job row
+(job→account), cycling `40P01` with `applyClassifiedFailure`'s `FOR UPDATE`-then-requeue
+(account→job). The root cause is **structural and permanent**: any `UPDATE sender.jobs` that leaves
+`assigned_account_id` set fires the trigger and therefore takes an account lock *after* the job-row
+lock — so a path is implicitly job→account unless it pre-locks the account.
+
+**THE INVARIANT (load-bearing, codebase-wide):**
+
+> **Any transaction that acquires an EXCLUSIVE account-row lock (`SELECT … FROM sender.accounts …
+> FOR UPDATE`) AND also writes a `sender.jobs` row MUST acquire the account lock FIRST
+> (account → job).** A path that writes a job row while touching the account only via the trigger's
+> implicit `KEY SHARE` (no exclusive account lock of its own) is safe without pre-locking, PROVIDED
+> its only concurrent same-job counterparty acquires the job with `FOR UPDATE SKIP LOCKED` (so it is
+> skipped, never blocked-on). When in doubt, take the account `FOR UPDATE` first — it only ever
+> serializes more, never less.
+
+**Why the precise scoping (not simply "account-first always"):** three current paths write a job
+row job-first (`applyAccepted`, `applyBounced`, `markSending`) and are nonetheless deadlock-free,
+because they never hold an *exclusive* account lock while waiting on a job — their account
+interaction is the trigger's `KEY SHARE` (plus, for `applyAccepted`, an in-place upgrade to
+`NO KEY UPDATE` on a row it already holds `KEY SHARE` on). The cycle in P6-R4-1 required one side to
+hold an *exclusive* account lock (`FOR UPDATE`) while blocked on a job the other side held. So the
+invariant that actually prevents the cycle is scoped to exclusive account locks; stating it as a
+blanket "account-first always" would be *false* of the three job-first paths and would mislead a
+future phase into thinking they violate it.
+
+**The current paths that lock BOTH an account and a job row (enumerated + confirmed, Phase 6
+closeout):**
+
+| Path | File | Acquires exclusive account lock? | Order | Verdict |
+|---|---|---|---|---|
+| `applyClassifiedFailure` | `outcome.go` | Yes (`FOR UPDATE` at tx entry) | **account → job** | ✓ follows the invariant |
+| `reclaimJobLocked` (both detectors) | `reclaim.go` | Yes (`FOR UPDATE` first, then job `FOR UPDATE SKIP LOCKED`) | **account → job** | ✓ follows the invariant |
+| atomic consume | `eligibility.go` | Yes (`FOR UPDATE SKIP LOCKED`) | account-only (**no job row touched** — the job was claimed in a separate earlier tx) | ✓ trivially (no job lock to invert) |
+| `applyAccepted` | `outcome.go` | No (trigger `KEY SHARE` → in-place `NO KEY UPDATE` upgrade) | job → account | ✓ safe by construction (sole mutator of its job — idempotent-gated; only same-job racer is reclaim, which uses `SKIP LOCKED`) |
+| `applyBounced` | `outcome.go` | No (trigger `KEY SHARE` only; no account mutation — bounce carve-out) | job → (account KEY SHARE) | ✓ safe (never an exclusive account lock) |
+| `markSending` | `dispatch.go` | No (trigger `KEY SHARE` only) | job → (account KEY SHARE) | ✓ safe (never an exclusive account lock) |
+
+All exclusive-account-lock paths (`applyClassifiedFailure`, `reclaimJobLocked`, the consume) follow
+account-first; the three job-first paths take no exclusive account lock and are deadlock-free by the
+construction above (confirmed empirically by `TestLockOrderAudit_ConcurrentAcceptedSameAccount`,
+`TestLockOrderAudit_AcceptedVsClassifiedSameAccount`, `TestReclaimRace_OutcomeVsReclaim`, and
+`TestReclaimRace_DetectorAVsClassifiedFailure` — all real two-connection tests, all green).
+
+**`reclaimJobLocked` is the SINGLE reclaim locking path** — both Detector A (dead-box, row-by-row
+over the box's in-flight jobs) and Detector B (lease-expiry) funnel through it via
+`reclaimOneJobReason`; there is no second, divergent reclaim UPDATE. Confirmed Phase 6 closeout.
+
+**Standing requirement for future phases:** any NEW path that will `SELECT … FROM sender.accounts …
+FOR UPDATE` and also write a job row acquires the account lock first, and ships a two-connection
+race test (per items 1–2 above). Any new job-first path that adds an exclusive account lock must
+move to account-first. This is item DoD-10 and CLAUDE.md Rule 9.
+
 ## Consequences
 
 - A small, permanent test-authoring cost per phase — offset by catching a whole defect class

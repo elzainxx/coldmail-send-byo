@@ -121,6 +121,27 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 - Every rule above maps to a locked platform decision. Treat weakening any of them
   as an incident, not a refactor.
 
+## 9. Account→job lock ordering (deadlock-avoidance invariant)
+- Any transaction that acquires an EXCLUSIVE account-row lock (`SELECT … FROM
+  sender.accounts … FOR UPDATE`) AND also writes a `sender.jobs` row MUST acquire the
+  account lock FIRST — account → job. This is load-bearing and codebase-wide, not a
+  per-phase detail.
+- WHY (structural, permanent): the `sender.jobs` `AFTER UPDATE OF state` trigger
+  (`sender_0008`) inserts `NEW.assigned_account_id` into `job_events`, so EVERY job-row
+  UPDATE that leaves the account assigned takes an FK `KEY SHARE` on the account row
+  AFTER the job-row lock. A path that separately grabs an exclusive account `FOR UPDATE`
+  after the job row cycles (`40P01`) with one that grabbed it before. This class has bitten
+  three times (Phase 4 double-book, Phase 5 lost-update-un-quarantine, Phase 6 R4-P6-1
+  reclaim) — see ADR-0010.
+- Precise scope: a path that writes a job row but touches the account ONLY via the
+  trigger's implicit `KEY SHARE` (no exclusive account lock of its own) is safe without
+  pre-locking, PROVIDED its only concurrent same-job counterparty acquires the job with
+  `FOR UPDATE SKIP LOCKED` (skipped, never blocked-on). When in doubt, take the account
+  `FOR UPDATE` first — it only ever serializes more, never less.
+- Every phase that adds or moves an account/job lock ships a genuine two-connection race
+  test that drives the two lock orders concurrently and proves no `40P01` (ADR-0010).
+- The current both-locking paths and their confirmed orders are enumerated in ADR-0010.
+
 ## Definition of Done (every phase is held to this)
 See `Docs/definition-of-done.md`. A phase is not done until all nine DoD items are
 green: spec written; real behavioral tests green on real infra; docs updated in the

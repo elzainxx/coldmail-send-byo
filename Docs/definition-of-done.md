@@ -22,6 +22,7 @@ DoD-9  CONTROL-PLANE SAFETY CONTROLS HONORED
 **DoD-2 — Real behavioral tests pass against real infra.**
 - [ ] Tests run through the `tests/harness/` harness against real Postgres + real Brain + real box(es) over real mTLS + real Mailpit — never syntax checks, never mocks, never stubbed transport.
 - [ ] Where the phase touches concurrency, the claim/consume path, idempotency, or the job state machine, those behaviors have observable-outcome assertions (state transitions, at-most-once effects, zero-loss under contention) — not "no error thrown". Every guard test carries a paired positive/negative control (anti-vacuity).
+- [ ] **Account→job lock ordering (CLAUDE.md Rule 9, ADR-0010).** If the phase adds or moves any row lock on `sender.accounts` or `sender.jobs`: (1) every path that takes an EXCLUSIVE account lock (`FOR UPDATE`) and also writes a `sender.jobs` row acquires the account lock FIRST (account → job); a job-first path takes no exclusive account lock and its only same-job racer uses `FOR UPDATE SKIP LOCKED`; (2) it ships a genuine two-connection race test driving the two lock orders concurrently, proving no `40P01` deadlock and no lost-update. This class has bitten three phases (4/5/6) — treat it as mandatory, not optional.
 - [ ] The full harness suite is green on the phase's final commit (`scripts/dev.sh test`).
 
 **DoD-3 — Docs updated in the same change (never a follow-up).**
