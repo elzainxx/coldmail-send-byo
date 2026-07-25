@@ -26,7 +26,18 @@ func NewOutcomeHandler(db *pgxpool.Pool, cfg Config) *OutcomeHandler {
 // Handle processes one report for a job produced by boxID. It is idempotent: a duplicate
 // accepted report for an already-sent job is a clean no-op (§2.5, §5.3). boxID attributes
 // provenance in job_events.
-func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
+//
+// Return value (Phase 7 §1.3, P7-4 — the persist-ack contract): Handle reports whether the outcome
+// is DURABLY RESOLVED, i.e. whether the box may DROP its buffered copy. This is true when the
+// outcome committed to the DB, AND (equally) when the report is a clean idempotent no-op — the job
+// is already sent, or already left 'sending' (some other path resolved it) — because in every one of
+// those cases the Brain owns the job's final resolution and a replay would change nothing. It is
+// FALSE only when a real (transport/DB) error prevented us from determining/committing the outcome:
+// then the box must RETAIN the outcome and replay it later (until a post-commit ack), which is
+// exactly the DB-outage / stream-drop recovery the contract exists for. The Brain NEVER acks an
+// outcome it did not persist (Rule 5: never invent an outcome; and never claim one is safely stored
+// when it is not).
+func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -34,31 +45,42 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
 	// never send/persist again. This makes a replayed/duplicate accepted a no-op.
 	already, curState, err := h.jobStatus(ctx, rep.JobID)
 	if err != nil {
+		// A DB-read failure means we do NOT know the job's state — we can neither persist nor safely
+		// declare a no-op, so DO NOT ack: the box retains + replays (P7-4). This is the DB-outage path.
 		log.Printf("outcome: cannot read job %s: %v", rep.JobID, err)
-		return
+		return false
 	}
 	if already {
-		return // already sent; ignore (clean no-op)
+		return true // already sent; clean no-op — the Brain owns it, the box may drop the buffered outcome
 	}
 	// Only a job that is in-flight (sending) can transition on a report. A report for a job in any
-	// other state (e.g. already requeued to queued, or unknown) is acknowledged and ignored (§2.5).
+	// other state (e.g. already requeued to queued, or unknown) is a clean no-op the box may drop —
+	// the Brain has already resolved this job by another path (§2.5).
 	if curState != "sending" {
-		return
+		return true
 	}
 
 	// Phase 5 (§1/§2): the Brain classifies the raw report into exactly one error_class, then
-	// applies the per-class job + account policy in one transaction. Success has no class.
+	// applies the per-class job + account policy in one transaction. Success has no class. Each apply
+	// path returns nil on a durable commit (or a clean errNoop race) and a non-nil error only on a
+	// genuine failure — mapped to resolved=false so the box retains + replays.
 	if rep.Outcome == boxproto.OutcomeAccepted {
-		h.applyAccepted(ctx, boxID, rep)
-		return
+		return h.persisted(h.applyAccepted(ctx, boxID, rep))
 	}
 	class := classifyReport(rep)
 	switch class {
 	case classBouncePermanent:
-		h.applyBounced(ctx, boxID, rep) // terminal bounced, NO account penalty (§2.1, §3.3 carve-out)
+		return h.persisted(h.applyBounced(ctx, boxID, rep)) // terminal bounced, NO account penalty (§2.1, §3.3 carve-out)
 	default: // auth_failure | throttle | transport_4xx | timeout | unknown → requeue + per-class account effect
-		h.applyClassifiedFailure(ctx, boxID, rep, class)
+		return h.persisted(h.applyClassifiedFailure(ctx, boxID, rep, class))
 	}
+}
+
+// persisted maps an apply-path result to the persist-ack decision (P7-4): a nil error OR a clean
+// errNoop race (the row already left 'sending' — the Brain owns it) means the box may DROP the
+// buffered outcome (ack); any other error means RETAIN + replay (no ack).
+func (h *OutcomeHandler) persisted(err error) bool {
+	return err == nil || errors.Is(err, errNoop)
 }
 
 // applyAccepted: one tx — set provider_message_id + state='sent' + completed_at + clear lease,
@@ -73,15 +95,14 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) {
 // eligibility check for an account's last unit of headroom. Incrementing again on accept would
 // double-count. The accepted tradeoff (§7.3): a consumed-but-never-delivered slot (send fails/
 // crashes after consume) still costs headroom; refunding it is deferred to Phase 6 (P4-15).
-func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report) {
+func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report) error {
 	if rep.ProviderMessageID == "" {
 		// Defensive: never mark sent without an idempotency key (§4.3 anomaly). Treat as a
 		// classified failure — accepted_without_id classifies as 'unknown' (§1.1 row 8), a
 		// conservative requeue with NO account penalty, which is exactly right for this anomaly.
 		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly)", rep.JobID)
 		anomaly := boxproto.Report{JobID: rep.JobID, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
-		h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly))
-		return
+		return h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly))
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
@@ -120,6 +141,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply accepted for job %s failed: %v", rep.JobID, err)
 	}
+	return err
 }
 
 // applyBounced: sending → bounced (terminal, §2.1). Sets completed_at, clears the lease,
@@ -127,7 +149,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 // does NOT set last_failure_at, does NOT touch consecutive_failures, and does NOT recompute the
 // score (the LOCKED "bounce never penalizes" carve-out, §3.3 — asserted byte-for-byte by T4).
 // Also writes a send_logs row for the attempt.
-func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report) {
+func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report) error {
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`UPDATE sender.jobs
@@ -149,6 +171,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply bounced for job %s failed: %v", rep.JobID, err)
 	}
+	return err
 }
 
 // applyClassifiedFailure applies the §2.1 per-class policy for a penalizing failure
@@ -162,7 +185,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 //  3. write the send_logs row for the attempt.
 // All three commit together, so a failed account effect rolls back the job requeue too (the
 // account state and the job state never disagree).
-func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string) {
+func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string) error {
 	detail := rep.ErrorReason
 	if rep.SMTPResponse != "" {
 		detail = rep.ErrorReason + ": " + rep.SMTPResponse
@@ -231,6 +254,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply %s for job %s failed: %v", class, rep.JobID, err)
 	}
+	return err
 }
 
 // backoffSecondsForClass returns next_attempt_at's delay (seconds) for a requeued class (§6.4):

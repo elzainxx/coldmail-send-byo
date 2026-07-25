@@ -17,6 +17,7 @@ const (
 	TypeHeartbeat   = "heartbeat"    // box → Brain: liveness ping (§3.2)
 	TypePushJob     = "push_job"     // Brain → box: one job + its decrypted credential (§2.3)
 	TypeReport      = "report"       // box → Brain: outcome of one job (§2.4)
+	TypeReportAck   = "report_ack"   // Brain → box: outcome DURABLY persisted (Phase 7 §1.3, P7-4)
 )
 
 // Outcome values (§2.4). Phase 3 does NOT classify an error taxonomy (Phase 5).
@@ -110,6 +111,20 @@ type Report struct {
 	ProviderMessageID string `json:"provider_message_id,omitempty"`
 	SMTPResponse      string `json:"smtp_response,omitempty"`
 	ErrorReason       string `json:"error_reason,omitempty"`
+}
+
+// ReportAck is the Brain's POST-PERSIST acknowledgement of a report (Phase 7 §1.3, P7-4). The Brain
+// sends it ONLY AFTER the report's outcome is durably committed to the DB (or determined to be a
+// clean idempotent no-op — already-persisted / not-in-flight, which is equally "the Brain owns this
+// job's resolution, the box may drop it"). Until a box receives report_ack for a job, it RETAINS the
+// outcome and replays it on (re)connection (bounded by box_outcome_buffer_ttl_sec). Carrying job_id
+// (not just request_id) lets the box match the ack even across a reconnect where request_ids differ.
+// Two-vocabulary: the ack carries only {job_id, request_id, accepted} — never internal reasons.
+type ReportAck struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	JobID     string `json:"job_id"`
+	Accepted  bool   `json:"accepted"` // true = durably persisted (or clean no-op) → box may drop the buffered outcome
 }
 
 // error_reason slugs (§2.4). Internal only; mapped to error_class='unknown' in Phase 3 (§5.4).

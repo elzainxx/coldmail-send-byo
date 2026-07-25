@@ -107,6 +107,17 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 | GET | `/v1/describe` | minimal Phase-3 tiers/pricing + capabilities stub (real tiers are Phase 9) |
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated
-> persistent stream on the boxlink stream port) carrying `register`/`heartbeat`/`push_job`/`report`.
-> It is not a platform-facing HTTP route and is not part of this contract surface; its security
-> properties are covered by the Phase 3 spec (§2/§3) and the behavioral suite.
+> persistent stream on the boxlink stream port) carrying
+> `register`/`register_ack`/`heartbeat`/`push_job`/`report`/`report_ack`. It is not a platform-facing
+> HTTP route and is not part of this contract surface; its security properties are covered by the
+> Phase 3 spec (§2/§3) and the behavioral suite.
+>
+> **Phase 7 (§1.3, P7-4) — the outcome persist-ack contract (additive frame `report_ack`).** The
+> Brain sends `report_ack {job_id, request_id, accepted}` back to the box ONLY AFTER the reported
+> outcome is durably committed to the DB (or determined a clean idempotent no-op the Brain already
+> owns). Until it receives that ack, the box RETAINS the outcome and replays it on (re)connection,
+> bounded by `box_outcome_buffer_ttl_sec`. One mechanism covers stream-drop, Brain-restart, and
+> DB-outage recovery: no outcome is lost to a blip, and idempotency (`provider_message_id UNIQUE` +
+> the pre-persist check) makes a replay a no-op, never a duplicate. Two-vocabulary: the ack carries
+> only `{job_id, request_id, accepted}` — never an internal reason. The Brain NEVER acks an outcome
+> it did not persist (Rule 5).

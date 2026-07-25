@@ -34,7 +34,13 @@ import (
 // ReportHandler is invoked for each box `report` frame. The dispatcher installs it; it must not
 // block the read loop for long (it does a bounded DB transaction). It is called with the box id
 // that produced the report so the outcome handler can attribute provenance.
-type ReportHandler func(boxID string, rep boxproto.Report)
+//
+// It RETURNS whether the outcome is durably resolved (Phase 7 §1.3, P7-4): true = committed to the
+// DB (or a clean idempotent no-op the Brain owns) ⇒ the stream server sends a report_ack so the box
+// may DROP its buffered copy; false = a real error prevented persistence ⇒ NO ack, the box retains
+// and replays later. This is the persist-BEFORE-ack contract: the ack is emitted only after the
+// handler confirms durability, never optimistically.
+type ReportHandler func(boxID string, rep boxproto.Report) (resolved bool)
 
 // StreamServer accepts box connections on the mTLS boxlink stream port.
 type StreamServer struct {
@@ -211,12 +217,23 @@ func (s *StreamServer) dispatchFrame(boxID string, line []byte) {
 		}
 		// Clear in-flight marker (the box has reported; it can take the next job).
 		s.mu.Lock()
-		if bc := s.boxes[boxID]; bc != nil {
+		bc := s.boxes[boxID]
+		if bc != nil {
 			bc.inFlight = ""
 		}
 		s.mu.Unlock()
 		if s.onReport != nil {
-			s.onReport(boxID, rep)
+			// PERSIST, then ACK (Phase 7 §1.3, P7-4). onReport does the bounded DB transaction and
+			// returns whether the outcome is durably resolved. We send report_ack ONLY when it is —
+			// so the box drops its buffered copy only after a real DB commit; on a non-resolved result
+			// (DB error) we send NO ack and the box retains + replays. The ack carries job_id so the box
+			// can match it across a reconnect (where request_ids differ). A best-effort write: if the
+			// stream just dropped, the box will replay on reconnect and be acked then.
+			if resolved := s.onReport(boxID, rep); resolved && bc != nil {
+				_ = s.writeFrame(bc, boxproto.ReportAck{
+					Type: boxproto.TypeReportAck, RequestID: rep.RequestID, JobID: rep.JobID, Accepted: true,
+				})
+			}
 		}
 	default:
 		// Unknown/`register`-after-handshake: ignore (defensive; never leak, never crash).
