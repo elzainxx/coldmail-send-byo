@@ -42,20 +42,26 @@ type Config struct {
 	// heartbeat interval/threshold are already seeded (Phase 1 sender_0010) and consumed unchanged
 	// as the dead-box silence window (§2.2). job_max_processing_time_sec (above) is the per-job
 	// lease / Detector-B backstop deadline (§2.3).
-	ReclaimTickIntervalMS   int // reclaim_tick_interval_ms — reclaim loop poll interval (§2.1)
-	HeartbeatIntervalSec    int // heartbeat_interval_sec — expected heartbeat cadence (§2.2)
+	ReclaimTickIntervalMS    int // reclaim_tick_interval_ms — reclaim loop poll interval (§2.1)
+	HeartbeatIntervalSec     int // heartbeat_interval_sec — expected heartbeat cadence (§2.2)
 	HeartbeatMissedThreshold int // heartbeat_missed_threshold — missed beats before dead; window = interval×threshold (§2.2)
-	SMTPOperationTimeoutSec int // smtp_operation_timeout_sec — box per-operation SMTP timeout (§0/§2, P6-11); MUST be < JobMaxProcessingTimeSec (enforced at load)
+	SMTPOperationTimeoutSec  int // smtp_operation_timeout_sec — box per-operation SMTP timeout (§0/§2, P6-11); MUST be < JobMaxProcessingTimeSec (enforced at load)
 
 	// Phase 7 runtime-hardening dials (all seeded sender_0019; config-not-code, §5). The Brain
-	// consumes the startup-rescan window here; the retention/shutdown dials are added as their
-	// consuming chunks land, and box_outcome_buffer_ttl_sec is consumed by the box (delivered on
-	// push_job), not stored here.
-	StartupReconnectWindowSec int // startup_reconnect_window_sec — rescan reconnect-reconciliation window (§1.2)
+	// consumes the rescan window, the retention sweep's cadence/batch size and the rollup
+	// granularity here. box_outcome_buffer_ttl_sec is CONSUMED BY THE BOX (delivered on register_ack,
+	// §1.3) but is READ here too, because the P7-11 ordering invariant is validated at config-LOAD
+	// against StartupReconnectWindowSec — the Brain must see both keys together to reject an unsafe
+	// pair. shutdown_drain_timeout_sec is consumed by Chunk 5's graceful shutdown.
+	StartupReconnectWindowSec int    // startup_reconnect_window_sec — rescan reconnect-reconciliation window (§1.2)
+	BoxOutcomeBufferTTLSec    int    // box_outcome_buffer_ttl_sec — bound on the box's outcome buffer (§1.3, P7-4); INVARIANT: >= StartupReconnectWindowSec
+	RetentionSweepIntervalMS  int    // retention_sweep_interval_ms — the retention housekeeping loop's tick (§3.1)
+	RetentionDeleteBatchSize  int    // retention_delete_batch_size — rows per send_logs DELETE batch (§3.1, owner of Phase 1 #29)
+	RollupGranularity         string // rollup_granularity — bucket granularity for the derive-on-demand summaries (§3.2)
 
 	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
-	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
-	ThrottlePauseSeconds int            // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
+	QuarantineThreshold  int             // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
+	ThrottlePauseSeconds int             // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
 	Backoff              BackoffSchedule // retry_backoff_schedule — the transient/timeout/unknown requeue ladder (§6.4)
 	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
 }
@@ -76,10 +82,10 @@ var backoffScheduleDefault = BackoffSchedule{LadderSeconds: []int{30, 120, 600},
 // ScoreWeights is the §3.2 status-score formula's weights + shape parameters, read from the
 // status_score_weights json config key.
 type ScoreWeights struct {
-	WFail              float64 `json:"w_fail"`
-	WProx              float64 `json:"w_prox"`
-	WRecency           float64 `json:"w_recency"`
-	FailSaturation     float64 `json:"fail_saturation"`
+	WFail               float64 `json:"w_fail"`
+	WProx               float64 `json:"w_prox"`
+	WRecency            float64 `json:"w_recency"`
+	FailSaturation      float64 `json:"fail_saturation"`
 	RecencyHorizonHours float64 `json:"recency_horizon_hours"`
 }
 
@@ -154,6 +160,18 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.StartupReconnectWindowSec, err = readIntKey(ctx, db, "startup_reconnect_window_sec"); err != nil {
 		return c, err
 	}
+	if c.BoxOutcomeBufferTTLSec, err = readIntKey(ctx, db, "box_outcome_buffer_ttl_sec"); err != nil {
+		return c, err
+	}
+	if c.RetentionSweepIntervalMS, err = readIntKey(ctx, db, "retention_sweep_interval_ms"); err != nil {
+		return c, err
+	}
+	if c.RetentionDeleteBatchSize, err = readIntKey(ctx, db, "retention_delete_batch_size"); err != nil {
+		return c, err
+	}
+	if c.RollupGranularity, err = readStringKey(ctx, db, "rollup_granularity"); err != nil {
+		return c, err
+	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {
 		return c, err
 	}
@@ -196,16 +214,33 @@ type configOrderingError struct{ detail string }
 
 func (e *configOrderingError) Error() string { return "config_ordering_violation: " + e.detail }
 
-// validateConfigOrdering enforces the config-ordering invariants at load (CLAUDE.md Rule 1). Phase 6
-// adds invariant (a): smtp_operation_timeout_sec < job_max_processing_time_sec (P6-11). It is a
-// strict inequality — equality is also a violation (a hang that ties the lease could reclaim before
-// the box reports). Invariant (b) (box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec) is a
-// Phase 7 key set not present in Phase 6, so it is not checked here yet.
+// validateConfigOrdering enforces BOTH documented config-ordering invariants at load (CLAUDE.md
+// Rule 1 lists them as (a) and (b); Phase 7 §5.3 is the authoritative table).
+//
+//	(a) P6-11: smtp_operation_timeout_sec  <  job_max_processing_time_sec  — STRICT. Equality is also
+//	    a violation (a hang that ties the lease could be reclaimed before the box reports, turning a
+//	    scored box-reported timeout into an unscored Brain reclaim that thrashes forever).
+//	(b) P7-11: box_outcome_buffer_ttl_sec  >= startup_reconnect_window_sec — NON-strict (§5.3 states
+//	    `≥`; bare equality is the theoretical floor and the spec recommends ~2× margin as an operator
+//	    GUIDELINE, deliberately not a second computed key — the box's reconnect backoff has no numeric
+//	    bound defined in Phase 3, so a margin cannot be computed, only recommended). If the buffer TTL
+//	    were shorter than the rescan window, a box reconnecting late-but-in-window would have ALREADY
+//	    DROPPED its outcome → the job is lease-reclaimed → re-sent → SILENT DUPLICATE, the exact
+//	    failure P7-2/P7-4 exist to prevent.
+//
+// Both are REJECTED at load, never clamped or auto-corrected (Rule 1: "Do not clamp or auto-correct
+// — reject"), with the external code config_ordering_violation. A refused boot is loud and instantly
+// fixable; the duplicate the unsafe pair would cause is silent and unrecoverable after the fact.
 func validateConfigOrdering(c Config) error {
 	if c.SMTPOperationTimeoutSec >= c.JobMaxProcessingTimeSec {
 		return &configOrderingError{detail: fmt.Sprintf(
 			"smtp_operation_timeout_sec (%d) must be < job_max_processing_time_sec (%d)",
 			c.SMTPOperationTimeoutSec, c.JobMaxProcessingTimeSec)}
+	}
+	if c.BoxOutcomeBufferTTLSec < c.StartupReconnectWindowSec {
+		return &configOrderingError{detail: fmt.Sprintf(
+			"box_outcome_buffer_ttl_sec (%d) must be >= startup_reconnect_window_sec (%d)",
+			c.BoxOutcomeBufferTTLSec, c.StartupReconnectWindowSec)}
 	}
 	return nil
 }

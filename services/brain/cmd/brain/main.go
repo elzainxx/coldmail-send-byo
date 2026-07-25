@@ -158,6 +158,16 @@ func main() {
 	// periodic sweep, not event-driven).
 	reclaimer := dispatch.NewReclaimRunner(dispatcher)
 	go reclaimer.Run(ctx)
+
+	// Phase 7 (§3.1): the retention sweep — a FOURTH single-Brain housekeeping loop that DELETEs raw
+	// sender.send_logs content past debug_log_retention_days, in batches of retention_delete_batch_size,
+	// every retention_sweep_interval_ms. It drops ONLY raw content: job OUTCOMES (job_events + final job
+	// states) are permanent and are never rolled up or deleted, and the per-day summaries are DERIVED ON
+	// DEMAND from job_events (P7-1, no summary table). It shares the §2 outage gate, so a DB outage
+	// pauses it too — retention is a ceiling on raw-content lifetime, not a deadline, so a delayed sweep
+	// is correct. Deliberately in-Brain rather than pg_cron (P7-7: one owner of sender.* DML).
+	retention := dispatch.NewRetentionRunner(dispatcher)
+	go retention.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
 			log.Printf("boxlink stream server stopped: %v", err)

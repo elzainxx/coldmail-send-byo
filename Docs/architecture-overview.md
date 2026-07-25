@@ -603,6 +603,52 @@ summary table).
   class, like `singleton.go`'s lock poll), not tunables: Phase 7 §5 seeds exactly six keys, and an
   outage re-probe interval is a guard rail on a dead socket, not a dial an operator would turn.
 
-**Remaining (chunks 4–6):** the debug-log retention sweep + derive-on-demand daily summaries and the
-`box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` config-load invariant (Chunk 4); graceful
-SIGTERM drain / leave-in-place (Chunk 5); the full suite, CI, docs and DoD closeout (Chunk 6).
+- **Chunk 4 — debug-log retention + derive-on-demand summaries + the buffer-TTL invariant
+  (`retention.go`, §3/§5.3).** The `RetentionRunner` is the **fourth** single-Brain loop: every
+  `retention_sweep_interval_ms` (default 1h) it DELETEs raw `sender.send_logs` rows whose
+  `ttl_expires_at` has passed, in batches of `retention_delete_batch_size` (default 1000), repeating
+  until a batch comes back short — so no single unbounded `DELETE` ever holds locks across the table.
+  Served by the Phase 1 `send_logs_ttl_expires_at_idx`. In-Brain rather than `pg_cron` (P7-7: one owner
+  of `sender.*` DML, no extension dependency). It shares the Chunk-3 `DBHealth` gate, so an outage
+  pauses it — retention is a **ceiling** on raw-content lifetime, not a deadline, so a delayed sweep is
+  correct. A per-tick batch cap (a safety bound, not a dial) stops a huge backlog from starving the
+  dispatch/reclaim loops of DB throughput and logs what it deferred rather than reading as "drained".
+  **The carve-out is structural:** the sweep's only DML is one `DELETE` against `send_logs`; it never
+  names `jobs` or `job_events`, so job OUTCOMES are permanent by construction, not by policy.
+  **Grants were CONFIRMED, not assumed** (the ADR-0008 trap): `sender_0009` makes `send_logs`
+  write-once via `REVOKE UPDATE` + a `BEFORE UPDATE` reject trigger but deliberately RETAINS `DELETE`,
+  and `sender_0012` grants `SELECT, INSERT, DELETE` to `sender_module` with a permissive RLS policy —
+  so Phase 7 needs **no** additive grants migration and stays schema-neutral.
+  `TestRetention_ModuleRoleCanDeleteButStillCannotUpdate` proves both halves as behavior: the app role
+  CAN delete (else the sweep would be a silent no-op) and STILL cannot update (Phase 7 did not weaken
+  immutability to gain its `DELETE`). Note the trigger fires for every role including the owner, so
+  even a test fixture cannot age a row by `UPDATE` — the T3 test ages the real row by driving the send
+  path with `debug_log_retention_days = 0` instead.
+  **Per-day summaries are DERIVED ON DEMAND** (`SummarizeByPeriod`, §3.2, P7-1): there is NO
+  `send_log_summaries` table and no `sender_0020`. Outcome counts are aggregated straight from the
+  permanent `job_events`, bucketed by `date_trunc` at the seeded `rollup_granularity` (validated
+  against a fixed `hour|day|week|month` allow-list — a mis-seeded value is rejected, not silently
+  defaulted, which also keeps the interpolation injection-free). A swept day therefore still summarizes
+  correctly, because its outcomes were never in `send_logs` to begin with. Accepted V1 cost (§3.2):
+  signal that lives only in raw content (recipient-domain distribution, `smtp_response` text) is not
+  retained past the drop; P7-12 records the future scaling levers, neither of which is built here.
+  T3 asserts the four properties together — expired raw content deleted, **4 observed DELETE batches**
+  for 7 rows at batch size 2 (the batch count itself is asserted, not just the total), `job_events`
+  byte-identical by fingerprint and the final `jobs` row unchanged, the derived summary identical
+  before and after the drop — with the paired anti-vacuity control that a **not-yet-expired row in the
+  same table survives** and a second sweep being a clean no-op.
+  **The P7-11 ordering invariant** is enforced at config-LOAD alongside P6-11, in
+  `validateConfigOrdering`: `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec`, **rejected**
+  with external code `config_ordering_violation`, never clamped (CLAUDE.md Rule 1). If the buffer TTL
+  were shorter than the rescan window, a box reconnecting late-but-in-window would have ALREADY dropped
+  its outcome → the job is lease-reclaimed → re-sent → **silent duplicate**, the exact failure P7-2/P7-4
+  exist to prevent. A refused boot is loud and instantly fixable; that duplicate is not. The invariant
+  is NON-strict (§5.3 states `≥`), and the equality case is asserted to LOAD so a `>` typo cannot hide
+  behind a reject-only test; the recommended ~2× margin stays an operator GUIDELINE, deliberately not a
+  computed key (the box's reconnect backoff has no numeric bound defined in Phase 3, so a margin can be
+  recommended but not derived). `LoadConfig` now reads all five Brain-visible Phase 7 keys —
+  `box_outcome_buffer_ttl_sec` is consumed by the BOX (delivered on `register_ack`) but is read here
+  too, because the Brain must see both keys together to reject an unsafe pair.
+
+**Remaining (chunks 5–6):** graceful SIGTERM drain / leave-in-place (Chunk 5); the full suite, CI, docs
+and DoD closeout (Chunk 6).
