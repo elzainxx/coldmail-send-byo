@@ -421,8 +421,12 @@ config-ordering violation is no longer misclassified as a DB outage) and whose s
 **NEEDS-USER**: the Brain has no per-attempt identity on the report path, so a stale replay from a
 superseded attempt of the same job on the SAME box is indistinguishable from the live attempt's report.
 The box-side mitigations shipped in Phase 7; the Brain-side fix is a contract+schema decision and Phase 7
-is schema-neutral. **Needs-user is therefore NO LONGER empty — exactly one item is open: P7-OD-6's
-attempt-identity ruling.** No locked spec was edited by Phase 7 or its gates.
+is schema-neutral. R4 (code review) produced **P7-OD-7** (the day-rollup's bucket boundary follows the
+implicit SESSION timezone while every other day-boundary path pins `daily_reset_timezone` explicitly —
+a contract question, and `SummarizeByPeriod` has no production caller yet, so it is filed rather than
+guessed at). **Needs-user is therefore NO LONGER empty — exactly TWO items are open: P7-OD-6's
+attempt-identity ruling and P7-OD-7's rollup timezone.** No locked spec was edited by Phase 7 or its
+gates.
 
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 
@@ -556,3 +560,38 @@ SMTP send (that is bounded by `provider_message_id UNIQUE` + the pre-persist ide
 
 **Needs-user:** YES — a ruling on whether to persist per-attempt identity (which phase, which column)
 or to accept the residual risk with the documented box-side mitigations.
+
+### P7-OD-7 — the day-rollup's bucket boundary depends on the SESSION timezone, not on config (NEEDS-USER)
+
+**Raised by:** review gate R4 (code review), Phase 7 closeout.
+
+`SummarizeByPeriod` buckets with `date_trunc('<granularity>', created_at)` on `sender.job_events.created_at`,
+which is a `TIMESTAMPTZ` (`sender_0008`). For a `TIMESTAMPTZ`, `date_trunc/2` truncates in the **session**
+`TimeZone` — and nothing in `internal/db` sets one, so the boundary is whatever the server default or the
+DSN happens to supply. Demonstrated on the live instance: `2026-07-25 02:30:00+00` buckets to `2026-07-25`
+under UTC but to `2026-07-24` under `America/New_York` — a whole day's shift in every reported figure.
+
+This is an inconsistency with the module's own established discipline, which is why it is filed rather than
+shrugged off: **every other** day-boundary in this codebase pins the zone from config explicitly —
+`eligibility.go`, `account_score.go`, `exhaustion.go` all compute `(NOW() AT TIME ZONE $n)::date` using
+`daily_reset_timezone`. In Rule-1 terms the rollup currently depends on an implicit environment constant
+where the rest of the module depends on a seeded key.
+
+**Why it is NOT fixed here (Rule 2):** what a "per-day summary" *means* to a reporting caller is a contract
+decision with three defensible answers — follow `daily_reset_timezone` (agrees with the daily-limit and
+daily-reset accounting the operator already sees), pin explicit UTC (stable, but disagrees with that
+accounting), or seed a new reporting-timezone key (which Phase 7 §5 does not authorize — it seeds exactly
+six). Picking one silently would be inventing an answer to a contract question.
+
+**Why it is MEDIUM, not HIGH:** `SummarizeByPeriod` has **no production caller** today — grep across
+`cmd/`, `httpapi`, `platformapi` and `adminapi` finds none; it is reachable only from `retention_test.go`.
+Nothing an operator or tenant can currently see is wrong. It must be pinned **before** any phase wires a
+reporting endpoint to it.
+
+Also noted by R4 and deliberately not built: `rollup_granularity` is validated at READ time by
+`truncFieldFor`'s closed four-literal allow-list (which is also what makes the `fmt.Sprintf` injection-proof
+— verified: no other interpolation path, and `user_id`/`from`/`to` are bound parameters), but the admin
+`PUT` accepts an out-of-list value and the failure only surfaces later at summary time. That is the same
+write-path validation gap P7-OD-5 already assigns to Phase 9 §4.6, so it is recorded there, not built here.
+
+**Needs-user:** YES — which timezone a day bucket follows. (Second open item alongside P7-OD-6.)

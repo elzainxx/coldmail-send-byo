@@ -858,3 +858,61 @@ runners start); `Drain` returning `-1` on a sick DB is asserted behavior, and `m
 `left > 0` is cosmetic since `Drain` logs the outage case itself; and the hardcoded 1024 / 250 ms / 15 s /
 10 s are all in the documented structural-safety-bound category (P7-OD-3), each alongside a real operator
 dial.
+
+### Review gate R4 (code review) — Supabase-down, rollup/retention, and concurrency
+
+The fourth and final Phase 7 gate. It re-verified R1/R2/R3's claimed fixes against the tree (all three
+present: the `IsOutage` config-fault branch, both box-side supersede fixes, the conditional in-flight
+clear) and then reviewed its own scope. Verdicts:
+
+**Lock ordering (CLAUDE.md Rule 9 / ADR-0010) — CLEAN, and now behaviorally asserted.** Enumerated every
+Phase 7 write path: the startup rescan, the retention sweep, and the rollup. **None takes an exclusive
+account `FOR UPDATE`**, so Rule 9's precondition never triggers — it is satisfied vacuously rather than
+by ordering discipline, which is the strongest form. The rescan's premise is that it is *event-free*:
+its `UPDATE sender.jobs SET lease_expires_at, updated_at WHERE state IN ('assigned','sending')` omits
+`state` from the SET list, so `trg_job_events_on_state_change` (`AFTER UPDATE OF state`) cannot fire, so
+no `job_events` row is inserted, so no FK `KEY SHARE` is taken on the account. That premise was a
+comment; it is now a test in both directions.
+
+**Test-strength finding (fixed, not filed).** The existing `TestRescan_LeaseExtensionVsOutcomeNoDeadlock`
+raced the two paths on real Postgres but was instrumented and shown to **never actually contend** —
+40/40 rounds completed without either connection blocking, so it proved nothing about lock ordering and
+would pass even if the rescan took an account lock. Closed by a new file,
+`services/brain/internal/dispatch/rescan_lockorder_test.go`, with two *deterministically interleaved*
+two-connection tests:
+
+- `TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome` — holds the rescan's exact lease `UPDATE`
+  open in a transaction (job row locked first) on one pool while driving the real `OutcomeHandler.Handle`
+  (account `FOR UPDATE` → job requeue) on a second. It fails if the outcome completes while the lock is
+  held (that would mean no interleave, i.e. vacuity) and confirms a genuinely blocked backend via
+  `pg_stat_activity`. After commit the outcome must resolve to `queued` — a `40P01` abort would surface
+  as `resolved=false`.
+- `TestRescan_ForcedInterleave_AccountHeldThenRescan` — the reverse order: holds an exclusive
+  `SELECT … FROM sender.accounts … FOR UPDATE` open and runs the real `StartupRescan` on another pool.
+  It fails on `40P01`, on any error, on `n < 1` (vacuity), and on a 5s timeout with the message *"the
+  rescan's lease UPDATE BLOCKED behind a held exclusive account lock — it is NOT event-free."*
+
+That second test's teeth were established the hard way. Two negative controls were **too weak and did
+not trip it**, each for an instructive reason worth recording so a future phase doesn't repeat them:
+adding `state = state` to the SET list changes nothing because the trigger *function* returns early when
+`OLD.state = NEW.state`; adding `assigned_account_id = assigned_account_id` also changes nothing because
+Postgres skips the FK re-check entirely when the key value is unchanged, so no `KEY SHARE` is taken. The
+definitive control — injecting an explicit `SELECT … FROM sender.accounts … FOR KEY SHARE` into the
+rescan transaction — made the test **FAIL** with exactly that message. `rescan.go` was then restored
+byte-identical.
+
+**Clean on the rest of scope.** (1) *Invent nothing under outage*: every apply path still requires a box
+report; the outage gate halts loops rather than assuming outcomes; nothing writes `sent`/`failed` from a
+timeout. (2) *`DBHealth` under three concurrent goroutines* (dispatch, reclaim, retention): mutex-guarded,
+and the shared-halt/shared-clear semantics are intended, not a race. (3) *Retention `DELETE` scope and
+batching*: bounded by `retention_delete_batch_size`, correctly scoped, no unbounded statement.
+(4) *Rollup injection*: the one `fmt.Sprintf` interpolation is fed only by `truncFieldFor`'s closed
+four-literal allow-list, and `user_id`/`from`/`to` are bound parameters — not injectable.
+
+**One item filed, not fixed: P7-OD-7** (`Docs/open-decisions.md`). `date_trunc('<granularity>',
+created_at)` on a `TIMESTAMPTZ` buckets in the **session** timezone, and nothing sets one — while
+`eligibility.go`, `account_score.go` and `exhaustion.go` all pin `daily_reset_timezone` explicitly for
+their day boundaries. Demonstrated on the live instance as a whole-day shift (UTC vs `America/New_York`).
+What a "day" means to a reporting caller is a contract decision with three defensible answers, so per
+Rule 2 it was flagged rather than guessed. It is MEDIUM, not HIGH, because `SummarizeByPeriod` has **no
+production caller** today — it must be pinned before any phase wires a reporting endpoint to it.
