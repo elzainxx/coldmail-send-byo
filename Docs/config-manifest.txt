@@ -28,3 +28,12 @@ throttle_pause_seconds
 # Phase 6 — sender_0018 (+2 keys: reclaim-loop poll interval, box SMTP-operation timeout).
 reclaim_tick_interval_ms
 smtp_operation_timeout_sec
+
+# Phase 7 — sender_0019 (+6 keys: startup rescan window, shutdown drain, retention sweep/batch,
+# rollup granularity, box outcome-buffer TTL). Fully schema-neutral (no new table).
+startup_reconnect_window_sec
+shutdown_drain_timeout_sec
+retention_sweep_interval_ms
+retention_delete_batch_size
+rollup_granularity
+box_outcome_buffer_ttl_sec

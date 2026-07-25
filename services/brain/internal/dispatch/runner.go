@@ -99,7 +99,10 @@ func NewReclaimRunner(d *Dispatcher) *ReclaimRunner {
 // Run loops until ctx is cancelled: reclaim-tick, then sleep for the freshly-read
 // reclaim_tick_interval_ms. It ticks once immediately at startup (a Brain that just came up may
 // have jobs stranded on boxes that died while it was down — the CONTINUOUS loop catches them on
-// its first pass; the one-time startup RESCAN as a distinct concern is Phase 7, P6-8).
+// its first pass). The one-time startup RESCAN (Phase 7 §1, dispatch.StartupRescan) runs in main.go
+// BEFORE this runner starts: it extends orphan leases + refreshes heartbeats so this loop does NOT
+// reclaim-all on its first tick, then delegates all actual reclaim back to this loop's §2.4 path
+// (P6-8: the rescan and the loop share the one reclaim transition — there is no second reclaim path).
 func (r *ReclaimRunner) Run(ctx context.Context) {
 	interval := r.tick(ctx)
 	for {

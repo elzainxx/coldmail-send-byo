@@ -97,7 +97,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
-		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018"}
+		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -122,11 +122,12 @@ func TestRunnerLifecycle(t *testing.T) {
 		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
 	}
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
-	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) = 19.
-	// Phase 4 added NO config key (§0); Phase 5 adds status_score_weights, retry_backoff_schedule,
-	// throttle_pause_seconds.
-	if n := configKeyCount(t, admin); n != 19 {
-		t.Fatalf("after Up: sender.config has %d keys, want 19 (14 foundation + 3 Phase 5 + 2 Phase 6)", n)
+	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) + Phase 7's 6 (sender_0019:
+	// startup_reconnect_window_sec, shutdown_drain_timeout_sec, retention_sweep_interval_ms,
+	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) = 25.
+	// Phase 4 added NO config key (§0); Phase 7 is fully schema-neutral (config seeds only, no table).
+	if n := configKeyCount(t, admin); n != 25 {
+		t.Fatalf("after Up: sender.config has %d keys, want 25 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7)", n)
 	}
 	// Phase 4's ONE additive schema delta: the per-user claim index (sender_0015, CONCURRENTLY).
 	// Proves the runner APPLIED a CONCURRENTLY migration (not a no-op) — anti-vacuity for the
@@ -172,6 +173,10 @@ func TestRunnerLifecycle(t *testing.T) {
 		if v == "0018" && (configKeyExists(t, admin, "reclaim_tick_interval_ms") ||
 			configKeyExists(t, admin, "smtp_operation_timeout_sec")) {
 			t.Fatal("after Down 0018: a Phase 6 config seed is still present (down did not delete it)")
+		}
+		if v == "0019" && (configKeyExists(t, admin, "startup_reconnect_window_sec") ||
+			configKeyExists(t, admin, "box_outcome_buffer_ttl_sec")) {
+			t.Fatal("after Down 0019: a Phase 7 config seed is still present (down did not delete it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with

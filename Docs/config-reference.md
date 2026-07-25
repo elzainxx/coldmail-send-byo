@@ -64,6 +64,26 @@ per-lane inter-send delay + lane ceiling behind Interpretation-A throughput (≈
 dead-box silence window (default 360s, §2.2); `job_max_processing_time_sec` is the per-job lease /
 Detector-B backstop deadline (§2.3).
 
+## Phase 7 state (+6 keys, `sender_0019`)
+
+Phase 7 seeds six new keys via `sender_0019` (and reuses the already-seeded `debug_log_retention_days`
+from `sender_0010` as the raw-content lifetime — no duplicate). Phase 7 is **fully schema-neutral**:
+per-day debug-log summaries derive on demand from the permanent `job_events` + final `jobs` states
+(P7-1), so no `sender.send_log_summaries` table is created.
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `startup_reconnect_window_sec` | `{"v":120}` | integer | sender_0019 | Startup-rescan reconnect-reconciliation window: seconds the rescan extends orphaned in-flight leases (event-free) / holds boxes before the continuous reclaim loop reclaims. Consumed by the Brain. Phase 7 §1. |
+| `shutdown_drain_timeout_sec` | `{"v":30}` | integer | sender_0019 | Max graceful-shutdown drain wait for in-flight sends to report before leaving them for the next boot's rescan. Keep below deploy SIGTERM→SIGKILL grace. Consumed by the Brain. Phase 7 §4. |
+| `retention_sweep_interval_ms` | `{"v":3600000}` | integer | sender_0019 | Housekeeping-loop tick for the `send_logs` retention sweep. Consumed by the Brain. Phase 7 §3. |
+| `retention_delete_batch_size` | `{"v":1000}` | integer | sender_0019 | Rows per `send_logs` retention DELETE batch (bounds lock/vacuum pressure). Owner of Phase 1 #29. Consumed by the Brain. Phase 7 §3. |
+| `rollup_granularity` | `{"v":"day"}` | string | sender_0019 | Bucket granularity for on-demand debug-log summaries. Introduced because Phase 1 has no `metrics_aggregation_period` key (flagged, not silently reused — P7-9). Phase 7 §3. |
+| `box_outcome_buffer_ttl_sec` | `{"v":900}` | integer | sender_0019 | Bound on the box outcome-buffer: retain/replay unacked outcomes up to this age, then drop and fall back to reclaim. Consumed by the box (coordinated Phase 3). Phase 7 §1.3. |
+
+The rescan/window keys (`startup_reconnect_window_sec`, `box_outcome_buffer_ttl_sec`) are jointly
+governed by the P7-11 ordering invariant below. The retention keys drive the single-Brain
+`send_logs` sweep (§3); job outcomes in `job_events` + final `jobs` states are **never** swept.
+
 ## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 
 - `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6** (both keys
@@ -72,8 +92,14 @@ Detector-B backstop deadline (§2.3).
   rejected), so the Brain never runs on an inverted pair. The admin *write* path deliberately does
   not couple the two dials at write time (spec §5.1); the reject lives at load where the whole set is
   read together (P6-OD-1).
-- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` — Phase 7 keys, not yet seeded;
-  enforced once they exist.
+- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` — **enforced as of Phase 7** (both keys
+  now seeded via `sender_0019`). A reconnecting box must still hold its buffered outcome when it
+  re-attaches inside the rescan window; if the buffer TTL is shorter than the window, a box that
+  reconnects late-but-in-window has already dropped its outcome → the job is lease-reclaimed and
+  re-sent → a **silent duplicate**. `LoadConfig` rejects a violating set (P7-11, §5.3). Bare equality
+  is the floor; a margin (~2×, defaults `900 ≥ 2×120`) covers reconnect-backoff. This is the exact
+  analogue of the Phase 6 invariant above — a correctness dependency between two independently-tunable
+  dials, made safe by an ordering rule rather than by coupling the dials at write time.
 
 A config set violating either is rejected with external code `config_ordering_violation` — never
 clamped or auto-corrected (Rule 1).

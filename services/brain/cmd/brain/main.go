@@ -129,6 +129,17 @@ func main() {
 	// The dispatcher pushes over the stream; a Runner drives it off a KICK signal (event-driven,
 	// NOT a polling loop — Phase 4). A box coming online kicks it too (a queued job may be waiting).
 	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream)
+
+	// Phase 7 (§1): the one-time STARTUP RESCAN — reconnect-reconciliation (P7-2). It runs ONCE,
+	// BEFORE the dispatch/reclaim loops start, so there is no window in which both it and Detector B
+	// act on the same job (§1.4). It extends orphaned in-flight leases by startup_reconnect_window_sec
+	// (EVENT-FREE — no state change, no job_events, no account lock, cannot deadlock; the Phase 6
+	// lesson) and refreshes box heartbeats, opening a bounded window for reconnecting boxes to replay
+	// buffered outcomes with no duplicate. It issues NO reclaim itself — actual reclaim stays the
+	// continuous loop's job via the shared §2.4 transition. A transient failure here does not wedge
+	// boot (the continuous loop is the backstop, §1.4).
+	dispatcher.RunStartupRescan(ctx)
+
 	runner := dispatch.NewRunner(dispatcher)
 	stream.SetOnRegister(func(string) { runner.Kick() })
 	go runner.Run(ctx)

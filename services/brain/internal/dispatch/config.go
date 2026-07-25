@@ -47,6 +47,12 @@ type Config struct {
 	HeartbeatMissedThreshold int // heartbeat_missed_threshold — missed beats before dead; window = interval×threshold (§2.2)
 	SMTPOperationTimeoutSec int // smtp_operation_timeout_sec — box per-operation SMTP timeout (§0/§2, P6-11); MUST be < JobMaxProcessingTimeSec (enforced at load)
 
+	// Phase 7 runtime-hardening dials (all seeded sender_0019; config-not-code, §5). The Brain
+	// consumes the startup-rescan window here; the retention/shutdown dials are added as their
+	// consuming chunks land, and box_outcome_buffer_ttl_sec is consumed by the box (delivered on
+	// push_job), not stored here.
+	StartupReconnectWindowSec int // startup_reconnect_window_sec — rescan reconnect-reconciliation window (§1.2)
+
 	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
 	QuarantineThreshold  int            // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
 	ThrottlePauseSeconds int            // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
@@ -143,6 +149,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.SMTPOperationTimeoutSec, err = readIntKey(ctx, db, "smtp_operation_timeout_sec"); err != nil {
+		return c, err
+	}
+	if c.StartupReconnectWindowSec, err = readIntKey(ctx, db, "startup_reconnect_window_sec"); err != nil {
 		return c, err
 	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {
