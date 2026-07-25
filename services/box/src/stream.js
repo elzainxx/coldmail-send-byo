@@ -96,6 +96,10 @@ export class BoxStream {
     // (dropped → falls back to Brain reclaim). NEVER holds a credential — only the report object.
     this.outcomeBuffer = new Map();
     this.outcomeBufferTtlMs = o.outcomeBufferTtlMs || 900_000; // overridden by register_ack
+    // The other half of §1.3's bound ("bounded by box_outcome_buffer_ttl_sec … and a max entry
+    // count"). A structural safety bound, not an operator dial — see #bufferAndSend.
+    this.outcomeBufferMaxEntries = o.outcomeBufferMaxEntries || 1024;
+    this.overflowDropped = 0; // observability/test counter: entries dropped by the cardinality bound
   }
 
   // start dials the Brain, completes the register handshake, and begins the read + heartbeat
@@ -191,17 +195,51 @@ export class BoxStream {
   // send it. The buffer entry persists until a report_ack drops it or the TTL expires it — so if this
   // send is lost to a stream drop, the outcome is replayed on reconnect (P7-4). It is a no-op to
   // re-buffer a job already present (a replay), so firstSeenMs (the TTL anchor) is not reset.
+  //
+  // MAX ENTRY COUNT (§1.3 "bounded … and a max entry count"): the second half of the buffer's bound,
+  // alongside the TTL. On overflow the OLDEST entry is dropped — the spec's named consequence is that
+  // an overflowed outcome "is dropped and the job falls back to the continuous reclaim loop", and the
+  // oldest entry is both the closest to its own TTL expiry and the most likely to already be owned by
+  // reclaim. We never refuse to buffer the NEW outcome: the freshest outcome is the one whose job the
+  // Brain is least likely to have reclaimed yet, so keeping it minimizes duplicates. Not a config key:
+  // the phase seeds exactly six (§5) and none is a buffer cardinality, so this is a structural safety
+  // bound (like the box's 30-attempt connect budget), not an operator dial. Sized far above any real
+  // buffer — a box holds at most one in-flight job, so >1 entry already means outcomes are stacking up
+  // against an unreachable/DB-down Brain, and the TTL is the bound that actually fires in practice.
   #bufferAndSend(report) {
     if (!this.outcomeBuffer.has(report.job_id)) {
+      if (this.outcomeBuffer.size >= this.outcomeBufferMaxEntries) {
+        this.#pruneExpiredOutcomes();
+        while (this.outcomeBuffer.size >= this.outcomeBufferMaxEntries) {
+          const oldest = this.outcomeBuffer.keys().next(); // Map preserves insertion order
+          if (oldest.done) break;
+          this.outcomeBuffer.delete(oldest.value);
+          this.overflowDropped++;
+          console.error(`box ${this.boxId}: outcome buffer full (${this.outcomeBufferMaxEntries}); dropped the oldest unacked outcome — that job falls back to Brain reclaim`);
+        }
+      }
       this.outcomeBuffer.set(report.job_id, { report, firstSeenMs: this.now() });
     }
     this.#send(report);
   }
 
-  // #replayBufferedOutcomes re-sends every still-unacked buffered outcome (oldest first) after a
-  // (re)connect, dropping any that have aged past the TTL (they fall back to Brain reclaim). Bounded
-  // work: at most one in-flight-per-box means the buffer is small in practice, but the TTL is the
-  // hard bound regardless.
+  // #replayBufferedOutcomes re-sends every still-unacked buffered outcome (oldest first), dropping any
+  // that have aged past the TTL (they fall back to Brain reclaim). Bounded work: at most one
+  // in-flight-per-box means the buffer is small in practice, and TTL + max-entry-count bound it hard.
+  //
+  // Called from BOTH triggers, because the spec names two distinct failure shapes:
+  //   - on register_ack — §1.3, the stream came back and must re-deliver what was never acked;
+  //   - on every heartbeat tick — §2.3, where the stream stays LIVE but the Brain "cannot persist it
+  //     (DB down), so it does not ack … the box retains the outcome and KEEPS REPLAYING until it
+  //     receives a post-commit ack". A reconnect-only trigger cannot satisfy that case: no reconnect
+  //     ever happens, so without this tick the outcome would sit unreplayed until its TTL and the
+  //     Brain's reclaim (lease 120s ≪ TTL 900s) would re-send first — a silent duplicate, which is
+  //     precisely what §1.3's no-duplicate contract exists to prevent.
+  // The cadence is the EXISTING heartbeat interval (heartbeat_interval_sec, already seeded and already
+  // delivered to the box) — deliberately NOT a new key: §5 seeds exactly six and none is a replay
+  // cadence, and inventing a seventh would violate config-not-code's "new tunable ⇒ new seeded key".
+  // Replay is idempotent by construction (§1.3: Brain-side pre-persist idempotency + provider_message_id
+  // UNIQUE), so re-sending on a tick is a no-op once persisted, and the ack drops the entry.
   #replayBufferedOutcomes() {
     this.#pruneExpiredOutcomes();
     for (const { report } of this.outcomeBuffer.values()) {
@@ -296,6 +334,15 @@ export class BoxStream {
   // replayNow re-sends all still-unacked buffered outcomes (pruning expired ones first). The box does
   // this automatically on every register_ack; this is a thin public seam so tests can trigger a
   // replay/prune deterministically without a full reconnect. Safe to call anytime.
+  // pendingOutcomeCount prunes expired entries and returns how many unacked outcomes remain. The
+  // supervise loop (index.js) uses it to decide whether exiting would DESTROY buffered outcomes: per
+  // §1.3 an outcome is dropped on "failure to reconnect within the TTL", so while entries are still
+  // inside their TTL the box must keep trying to reconnect rather than exit and lose them.
+  pendingOutcomeCount() {
+    this.#pruneExpiredOutcomes();
+    return this.outcomeBuffer.size;
+  }
+
   replayNow() {
     this.#replayBufferedOutcomes();
   }
@@ -309,6 +356,10 @@ export class BoxStream {
     this.#stopHeartbeat();
     this.hbTimer = setInterval(() => {
       this.#send({ type: "heartbeat", request_id: reqID(), box_id: this.boxId });
+      // §2.3: keep replaying unacked outcomes on a LIVE stream too (the DB-down case, where no
+      // reconnect ever occurs to trigger a replay), and prune expired entries on a real clock rather
+      // than only lazily during a reconnect. Piggybacks the heartbeat's already-seeded cadence.
+      this.#replayBufferedOutcomes();
     }, this.heartbeatSec * 1000);
     if (this.hbTimer.unref) this.hbTimer.unref();
   }

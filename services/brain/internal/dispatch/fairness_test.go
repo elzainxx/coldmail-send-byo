@@ -185,24 +185,36 @@ func TestFairness_RotateRing(t *testing.T) {
 func (e *dispatchEnv) settleAllSending(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
-	rows, err := e.admin.Query(ctx, `SELECT id FROM sender.jobs WHERE state = 'sending'`)
+	// Report each job as the box it was actually PUSHED TO (assigned_box_id), not as some fixed box:
+	// a real box only ever reports outcomes for jobs pushed to itself, and the Brain's stale-replay
+	// attribution guard (§1.3) applies a report only from the box owning the current attempt. With
+	// multi-box tests (extraBoxes) a hardcoded box id would be a mis-attributed report and get
+	// correctly dropped, leaving the jobs stuck 'sending'.
+	rows, err := e.admin.Query(ctx, `SELECT id, assigned_box_id::text FROM sender.jobs WHERE state = 'sending'`)
 	if err != nil {
 		t.Fatalf("settleAllSending query: %v", err)
 	}
-	var ids []string
+	type sendingJob struct{ id, boxID string }
+	var jobs []sendingJob
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var j sendingJob
+		var box *string
+		if err := rows.Scan(&j.id, &box); err != nil {
 			rows.Close()
 			t.Fatalf("settleAllSending scan: %v", err)
 		}
-		ids = append(ids, id)
+		if box != nil {
+			j.boxID = *box
+		} else {
+			j.boxID = e.px.boxID
+		}
+		jobs = append(jobs, j)
 	}
 	rows.Close()
-	for _, id := range ids {
-		e.oh.Handle(e.px.boxID, boxproto.Report{
-			Type: boxproto.TypeReport, JobID: id, Outcome: boxproto.OutcomeAccepted,
-			ProviderMessageID: "PMID-" + id, SMTPResponse: "250 2.0.0 Ok",
+	for _, j := range jobs {
+		e.oh.Handle(j.boxID, boxproto.Report{
+			Type: boxproto.TypeReport, JobID: j.id, Outcome: boxproto.OutcomeAccepted,
+			ProviderMessageID: "PMID-" + j.id, SMTPResponse: "250 2.0.0 Ok",
 		})
 	}
 	e.px.freeAllBoxes()

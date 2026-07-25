@@ -170,6 +170,89 @@ test("P7-4: buffered outcome REPLAYS on reconnect (stream drop → the no-duplic
   }
 });
 
+// §2.3 — the DB-down case: the stream stays LIVE, the Brain receives the report but CANNOT persist it
+// so it sends NO ack, and the spec requires the box to "keep replaying until it receives a post-commit
+// ack". This drives the PRODUCTION trigger only — the real heartbeat interval timer inside the real
+// BoxStream. It never calls replayNow() and never reconnects; if replay were reconnect-only (as it was
+// before this fix) the report count would stay at 1 forever and Brain-side reclaim (lease 120s ≪ TTL
+// 900s) would re-send the mail: a silent duplicate.
+test("P7-4/§2.3: box KEEPS REPLAYING an unacked outcome on a LIVE stream (no reconnect, no test seam)", async () => {
+  const reports = [];
+  const acked = [];
+  let ackNext = false; // Brain is "DB down" until we flip this
+  const conns = [];
+  const brain = await startFakeBrain({
+    onConnect: (c) => conns.push(c),
+    onFrame: (msg, conn) => {
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+      if (msg.type === "report") {
+        reports.push(msg.job_id);
+        // Persist FAILED (DB down) → deliberately send NO report_ack. This is the §2.3 condition.
+        if (ackNext) conn.reply({ type: "report_ack", request_id: msg.request_id, job_id: msg.job_id, accepted: true });
+      }
+    },
+  });
+  // heartbeatSec 0.15 → the real setInterval fires the production replay pass several times/second.
+  const box = makeBox(brain.port, { heartbeatSec: 0.15, onAck: (j) => acked.push(j) });
+  try {
+    await box.start();
+    brainPush(brain, "job-L");
+    assert.ok(await waitFor(() => reports.length >= 1), "Brain never received the first report");
+    // THE ASSERTION: with no ack, the SAME outcome arrives again — driven only by the box's own timer.
+    assert.ok(await waitFor(() => reports.filter((j) => j === "job-L").length >= 3, 4000),
+      `unacked outcome was NOT re-delivered on a live stream (saw ${reports.filter((j) => j === "job-L").length} deliveries) — §2.3 "keeps replaying until it receives a post-commit ack" unsatisfied`);
+    assert.equal(conns.length, 1, "the replay must come from the LIVE stream, not a reconnect");
+    assert.equal(box.outcomeBuffer.has("job-L"), true, "outcome must stay buffered while unacked");
+    assert.equal(acked.length, 0, "no ack was sent, yet the box reported one");
+
+    // NEGATIVE CONTROL (anti-vacuity): once the DB is back and the Brain acks post-commit, replaying
+    // STOPS. Without this, a test asserting "reports keep growing" would also pass a box that replays
+    // forever and ignores acks — which would hammer the Brain and never converge.
+    ackNext = true;
+    assert.ok(await waitFor(() => acked.includes("job-L"), 4000), "box never processed the post-commit ack");
+    assert.equal(box.outcomeBuffer.has("job-L"), false, "acked outcome still buffered");
+    const settled = reports.length;
+    await new Promise((r) => setTimeout(r, 700)); // several more heartbeat ticks
+    assert.equal(reports.length, settled, "box kept replaying AFTER a post-commit ack (never converges)");
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});
+
+// §1.3 requires the buffer be bounded by the TTL *and a max entry count*. Proves the cardinality bound
+// exists, evicts the OLDEST, and always retains the NEWEST outcome (the one least likely to have been
+// reclaimed already, so keeping it is what minimizes duplicates).
+test("P7-4/§1.3: buffer is bounded by a MAX ENTRY COUNT — overflow evicts the oldest, keeps the newest", async () => {
+  const brain = await startFakeBrain({
+    onFrame: (msg, conn) => {
+      // Never ack: retention is governed purely by the bounds under test.
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+    },
+  });
+  const box = makeBox(brain.port, { outcomeBufferMaxEntries: 2 });
+  try {
+    await box.start();
+    for (const id of ["job-1", "job-2"]) {
+      brainPush(brain, id);
+      assert.ok(await waitFor(() => box.outcomeBuffer.has(id)), `${id} never buffered`);
+    }
+    assert.equal(box.outcomeBuffer.size, 2, "buffer should be exactly at capacity");
+    // Positive control: at capacity, nothing has been dropped yet.
+    assert.equal(box.overflowDropped, 0, "dropped an entry before the buffer was over capacity");
+
+    brainPush(brain, "job-3");
+    assert.ok(await waitFor(() => box.outcomeBuffer.has("job-3")), "the NEWEST outcome was not buffered on overflow");
+    assert.equal(box.outcomeBuffer.size, 2, `buffer grew past its max entry count (size=${box.outcomeBuffer.size}) — unbounded, §1.3 violated`);
+    assert.equal(box.outcomeBuffer.has("job-1"), false, "overflow evicted something other than the OLDEST entry");
+    assert.equal(box.outcomeBuffer.has("job-2"), true, "overflow evicted more than it needed to");
+    assert.equal(box.overflowDropped, 1, "overflow drop was not counted");
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});
+
 test("P7-4: an outcome older than the TTL is DROPPED (bounded buffer → falls back to reclaim)", async () => {
   let clock = 1_000_000;
   const brain = await startFakeBrain({

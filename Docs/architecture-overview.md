@@ -717,3 +717,59 @@ never-invent-an-outcome guarantee:
   now globs `test/*.test.mjs` so a new box unit test cannot be silently omitted, and carries an
   anti-vacuity guard that FAILS a run executing zero tests (a mistyped path would otherwise print
   "fail 0" and pass). Box units now report 9 passed.
+
+**Review gate R1 (architect) — three spec-conformance fixes to the buffering contract.** R1 audited
+the startup rescan (event-free, delegating to Phase 6's loop), the reconnect buffering, and phase
+scope. Rescan, delegation and scope came back clean; **the buffering contract did not**, and three
+fixes landed:
+
+- **Replay was reconnect-only.** `#replayBufferedOutcomes()` fired solely on `register_ack`, so it
+  covered the stream-drop case but *not* §2.3's — where the stream stays **live**, the Brain receives
+  the report but cannot persist it (DB down) so sends **no** ack, and the spec requires the box to
+  "keep replaying until it receives a post-commit ack". With no reconnect there was no trigger: the
+  outcome would sit unreplayed while the lease (120s) expired far inside the buffer TTL (900s), and
+  Brain-side reclaim would re-dispatch and **re-send the mail — a silent duplicate**, exactly what
+  §1.3's no-duplicate contract exists to prevent. Replay + prune now also run on **every heartbeat
+  tick**. The cadence is deliberately the EXISTING `heartbeat_interval_sec` rather than a seventh
+  config key: §5 seeds exactly six, none of them a replay cadence, and inventing one would breach
+  config-not-code. Replay is idempotent by construction (§1.3), so a tick is a no-op once persisted.
+- **The "max entry count" half of the bound was missing.** §1.3 bounds the buffer "by
+  `box_outcome_buffer_ttl_sec` … **and a max entry count**"; only the TTL existed. Overflow now evicts
+  the **oldest** entry (closest to its own TTL, most likely already owned by reclaim) and always
+  retains the **newest** (least likely to have been reclaimed, so keeping it minimizes duplicates), and
+  the drop is logged. Not a config key — a structural safety bound like the box's connect budget.
+- **A 30s connect budget could destroy a 900s buffer.** The box's ~30-attempt startup-ordering guard
+  called `process.exit(1)` on exhaustion, discarding the in-memory buffer after ~30s even though §1.3
+  drops an outcome only on "failure to reconnect **within the TTL**". `connectOnce` now keeps retrying
+  past the budget while any unacked outcome is still inside its TTL, and exits only once the buffer has
+  genuinely drained (entries age out via the prune) — still bounded, no longer lossy.
+
+**R1 also surfaced a hazard the buffer itself creates — stale-replay mis-attribution (Brain side).**
+Because the TTL (900s) deliberately outlives a lease (120s), a job can be reclaimed and re-dispatched
+to a **different** box while the original box still holds and replays its old outcome. When that replay
+lands the job is legitimately `sending` again, so the `state='sending'` guard on every apply path
+matches and the stale outcome is applied to the **new** box's live attempt: measured on real Postgres,
+the job is requeued out from under the new box, one of its attempts is burned, a phantom `send_logs` row
+is written, and the account's score drops 100 → 63 for a failure it never had. That is the Brain
+recording an outcome for an attempt that did not produce it — the same family as inventing one (Rule 5).
+`Handle` now applies a report only when the reporting box owns the CURRENT in-flight attempt
+(`assigned_box_id`). The guard is conservative — it rejects only a *provable* mismatch (both ids known
+and different), so a NULL `assigned_box_id` is never treated as one — and a stale report is still
+**acked** (`resolved=true`), because a permanently-inapplicable copy should be dropped by the box, not
+replayed until its TTL for no benefit.
+
+New/changed tests, all real-infra and all shown to fail without their fix:
+- `box/test/buffer.test.mjs` — §2.3 live-stream replay driven **only** through the production
+  heartbeat timer (no `replayNow()` seam, no reconnect; asserts the connection count stays at 1), with
+  a negative control proving replay **stops** after a post-commit ack so the box converges; plus the
+  max-entry-count eviction test (oldest evicted, newest retained, counter incremented). 11 box units.
+- `internal/dispatch/staleattr_test.go` — drives a real claim → real reclaim → real re-dispatch to a
+  **second real box**, then replays the first box's outcome, asserting the job, its attempt count, its
+  send-log count and the account's counters are all untouched. Its positive control proves the OWNING
+  box's identical report still applies in full (state→queued, attempt +1, send_log +1, penalty +1), so
+  the guard cannot pass vacuously by ignoring every report.
+
+Three test fixtures needed updating and were test-side: `settleAllSending` (fairness/pacing) and two
+`drain_test.go` report sites hardcoded `e.px.boxID` while the job had been pushed to one of the
+`extraBoxes`. A real box only ever reports for jobs pushed to itself, so those fixtures were already
+unrealistic; they now report as the job's actual `assigned_box_id` via the new `jobBox` helper.

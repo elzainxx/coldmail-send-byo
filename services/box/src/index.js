@@ -59,19 +59,33 @@ async function main() {
   // connectOnce dials + registers with bounded retry. SAFETY BOUND (Phase 4 closeout triage,
   // Docs/open-decisions.md): a startup-ordering retry, not a runtime dial — a box that can't register
   // within ~30 attempts is a deployment-ordering problem, not something an operator tunes.
+  // A retry attempt is ~1s, so the budget is ~30s of dialling. That bound is a STARTUP-ORDERING
+  // guard, and it must not be allowed to destroy buffered outcomes: exiting throws away the
+  // in-memory buffer, and §1.3 says an outcome is dropped only on "failure to reconnect within the
+  // TTL" (900s default) — not after 30s. So whenever unacked outcomes are still inside their TTL,
+  // connectOnce keeps retrying past the budget instead of returning failure. Still bounded: entries
+  // age out via pendingOutcomeCount()'s prune, after which the budget applies again and the box exits
+  // for the orchestrator to restart it.
   const connectOnce = async () => {
-    for (let attempt = 1; attempt <= 30; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       if (stream.stopped) return false;
       try {
         await stream.start();
         console.log(`box ${boxId}: registered over mTLS stream; awaiting pushed jobs (buffered outcomes replayed on connect)`);
         return true;
       } catch (e) {
-        console.log(`box ${boxId}: connect attempt ${attempt} not ready (${e.message}); retrying`);
+        if (attempt >= 30) {
+          const pending = stream.pendingOutcomeCount();
+          if (pending === 0) return false;
+          if (attempt % 30 === 0) {
+            console.error(`box ${boxId}: still cannot register after ${attempt} attempts, but ${pending} unacked outcome(s) remain inside the buffer TTL — continuing to retry rather than exiting and losing them (§1.3)`);
+          }
+        } else {
+          console.log(`box ${boxId}: connect attempt ${attempt} not ready (${e.message}); retrying`);
+        }
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
-    return false;
   };
 
   // Supervise loop (Phase 7 §1.3, P7-4): on a stream drop, RECONNECT IN-PROCESS — the same BoxStream

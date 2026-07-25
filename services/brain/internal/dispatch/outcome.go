@@ -63,7 +63,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 
 	// Idempotency gate (§5.3): if the job already has a provider_message_id, it is already sent —
 	// never send/persist again. This makes a replayed/duplicate accepted a no-op.
-	already, curState, err := h.jobStatus(ctx, rep.JobID)
+	already, curState, assignedBox, err := h.jobStatus(ctx, rep.JobID)
 	if err != nil {
 		// A DB-read failure means we do NOT know the job's state — we can neither persist nor safely
 		// declare a no-op, so DO NOT ack: the box retains + replays (P7-4). This is the DB-outage path:
@@ -81,6 +81,30 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// other state (e.g. already requeued to queued, or unknown) is a clean no-op the box may drop —
 	// the Brain has already resolved this job by another path (§2.5).
 	if curState != "sending" {
+		return true
+	}
+
+	// STALE-REPLAY ATTRIBUTION GUARD (Phase 7 §1.3). Outcome buffering deliberately lets an outcome
+	// outlive its own attempt: the buffer TTL (box_outcome_buffer_ttl_sec, 900s) is much longer than a
+	// job lease (job_max_processing_time_sec, 120s), so a job whose lease expired can be reclaimed,
+	// requeued, and RE-DISPATCHED — possibly to a DIFFERENT box — while box B1 still holds and replays
+	// its old outcome. When B1's replay finally lands, the job is legitimately 'sending' again, so the
+	// `state='sending'` guard on every apply path matches, and B1's stale outcome would be applied to
+	// B2's live attempt: the account B2 is using takes a penalty for a failure it never had, and B2's
+	// genuine outcome is later discarded as an errNoop "already handled". That is the Brain attributing
+	// an outcome to an attempt that did not produce it — the same family as inventing one (Rule 5), and
+	// the one hazard the replay mechanism itself introduces.
+	//
+	// So: apply a report only when it belongs to the box that owns the CURRENT in-flight attempt. This
+	// is deliberately conservative — it rejects only a PROVABLE mismatch (both ids known and different).
+	// A NULL assigned_box_id (claimed but never pushed) is not a mismatch and is left to the apply
+	// paths' existing guards, so this can never reject a legitimate outcome.
+	//
+	// resolved=true (the box may DROP it): the stale copy is worthless — the job has moved on to a new
+	// attempt whose outcome the Brain will record — and refusing to ack would make B1 replay a
+	// permanently-inapplicable outcome until its TTL for no benefit.
+	if assignedBox != nil && boxID != "" && *assignedBox != boxID {
+		log.Printf("outcome: report for job %s from box %s does NOT match the current in-flight box %s — stale replay from a superseded attempt; dropped without applying (never attribute an outcome to an attempt that did not produce it)", rep.JobID, boxID, *assignedBox)
 		return true
 	}
 
@@ -368,14 +392,19 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 
 // jobStatus reports whether the job already has a provider_message_id (already sent), plus its
 // current state. A missing job → (false, "", err).
-func (h *OutcomeHandler) jobStatus(ctx context.Context, jobID string) (alreadySent bool, state string, err error) {
+// jobStatus reads the three facts Handle gates on: whether the job is already sent (idempotency),
+// its current state, and which box the current in-flight attempt belongs to (attribution — see the
+// stale-replay guard in Handle). assignedBox is nil when the column is NULL (claimed but never
+// pushed, or assignment cleared by a requeue).
+func (h *OutcomeHandler) jobStatus(ctx context.Context, jobID string) (alreadySent bool, state string, assignedBox *string, err error) {
 	var pmid *string
 	err = h.db.QueryRow(ctx,
-		`SELECT provider_message_id, state::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&pmid, &state)
+		`SELECT provider_message_id, state::text, assigned_box_id::text FROM sender.jobs WHERE id=$1`,
+		jobID).Scan(&pmid, &state, &assignedBox)
 	if err != nil {
-		return false, "", err
+		return false, "", nil, err
 	}
-	return pmid != nil, state, nil
+	return pmid != nil, state, assignedBox, nil
 }
 
 func (h *OutcomeHandler) inActorTx(ctx context.Context, actor string, fn func(tx pgx.Tx) error) error {

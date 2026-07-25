@@ -319,6 +319,25 @@ func (e *dispatchEnv) addBox(t *testing.T) {
 	e.px.extraBoxes = append(e.px.extraBoxes, id)
 }
 
+// jobBox returns the box a job was actually PUSHED TO (assigned_box_id), falling back to the default
+// box when the column is NULL (claimed but never pushed). Tests that feed a report into the real
+// OutcomeHandler must report AS THIS BOX: a real box only reports outcomes for jobs pushed to itself,
+// and the Brain's stale-replay attribution guard (Phase 7 §1.3) applies a report only from the box
+// owning the current attempt. In any multi-box test a hardcoded e.px.boxID is a mis-attributed report
+// and is correctly dropped, which would leave the job stuck 'sending'.
+func (e *dispatchEnv) jobBox(t *testing.T, jobID string) string {
+	t.Helper()
+	var box *string
+	if err := e.admin.QueryRow(context.Background(),
+		`SELECT assigned_box_id::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&box); err != nil {
+		t.Fatalf("read assigned box for job %s: %v", jobID, err)
+	}
+	if box == nil {
+		return e.px.boxID
+	}
+	return *box
+}
+
 // mustLoadConfig reads the CURRENT live sender.config (via the real LoadConfig, same as Tick/
 // TryDispatch use) — for tests that call selectAccountForJob directly and need the freshest
 // config after mutating a key mid-test (e.g. setDefaultSharedPool/clearDefaultSharedPool).

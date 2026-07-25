@@ -89,10 +89,13 @@ func TestDrain_StopsClaimingThenLeavesInFlightInPlace(t *testing.T) {
 	e.px.freeAllBoxes()
 
 	// (2) A job that reports WITHIN the drain window resolves normally and leaves {assigned,sending}.
-	// Report it from a goroutine mid-drain, exactly as a real box would during the window.
+	// Report it from a goroutine mid-drain, exactly as a real box would during the window. Resolve the
+	// reporting box BEFORE the goroutine starts (this test runs two boxes, so the report must come from
+	// the one the job was actually pushed to — see jobBox).
+	reporterBox := e.jobBox(t, reporter)
 	go func() {
 		time.Sleep(300 * time.Millisecond)
-		e.oh.Handle(e.px.boxID, boxproto.Report{
+		e.oh.Handle(reporterBox, boxproto.Report{
 			Type: boxproto.TypeReport, JobID: reporter, Outcome: boxproto.OutcomeAccepted,
 			ProviderMessageID: "drain-pmid-0001", SMTPResponse: "250 2.0.0 OK queued as drain-pmid-0001",
 		})
@@ -160,9 +163,10 @@ func TestDrain_ReturnsEarlyWhenEverythingReports(t *testing.T) {
 	job := e.seedQueuedJob(t, "prompt-report@example.com")
 	e.dispatchToSending(t, job)
 
+	jobBox := e.jobBox(t, job) // report as the box it was pushed to (see jobBox)
 	go func() {
 		time.Sleep(250 * time.Millisecond)
-		e.oh.Handle(e.px.boxID, boxproto.Report{
+		e.oh.Handle(jobBox, boxproto.Report{
 			Type: boxproto.TypeReport, JobID: job, Outcome: boxproto.OutcomeAccepted,
 			ProviderMessageID: "drain-early-0001", SMTPResponse: "250 2.0.0 OK queued as drain-early-0001",
 		})
@@ -257,7 +261,7 @@ func TestDrain_SigkillAndGracefulConvergeOnTheSameRecoveredState(t *testing.T) {
 	// provider_message_id and NO duplicate send_logs row.
 	for i, j := range []string{graceful, killed} {
 		pmid := []string{"replay-graceful-0001", "replay-killed-0001"}[i]
-		if !e.oh.Handle(e.px.boxID, boxproto.Report{
+		if !e.oh.Handle(e.jobBox(t, j), boxproto.Report{
 			Type: boxproto.TypeReport, JobID: j, Outcome: boxproto.OutcomeAccepted,
 			ProviderMessageID: pmid, SMTPResponse: "250 2.0.0 OK queued as " + pmid,
 		}) {

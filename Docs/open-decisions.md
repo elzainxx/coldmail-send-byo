@@ -412,3 +412,57 @@ positive control + no-cascade-quarantine assertion). Two forward-looking Phase-9
 are recorded (alert on a runtime `config_ordering_violation`; gate `ReclaimRunner` with
 `dispatch_enabled`) — reminders, not open decisions. Needs-user remains **empty**; no locked spec
 was touched by Phase 6 or its closeout.
+
+### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
+
+**Raised by:** review gate R1 (architect), Phase 7 closeout.
+
+Two fixes R1 demanded needed a knob the phase does not seed:
+
+1. a **replay cadence** for §2.3's live-stream replay ("keeps replaying until it receives a
+   post-commit ack" — with the stream up there is no reconnect to trigger a replay), and
+2. the **max entry count** that §1.3 names as the second half of the buffer's bound.
+
+Phase 7 §5 seeds exactly six keys and neither of these is among them, so adding either as a config key
+would mean inventing a seventh key and a §4 reference entry the locked spec does not contain.
+
+**Resolved as follows, with no new key and no hardcoded tuning constant:**
+
+- The replay cadence reuses the **existing** `heartbeat_interval_sec` — already seeded, already
+  delivered to the box, and already the box's "prove liveness on a schedule" tick. Replay is idempotent
+  by construction (§1.3: pre-persist idempotency + `provider_message_id UNIQUE`), so piggybacking it is
+  a no-op once the outcome is persisted. No new tunable is introduced, so config-not-code's "new
+  tunable ⇒ new seeded key" is satisfied by having no new tunable at all.
+- The max entry count is a **structural safety bound** (1024), in the same category as the box's
+  30-attempt connect budget: it is not an operator dial and it does not govern steady-state behavior
+  (a box holds at most one in-flight job, so >1 buffered entry already means outcomes are stacking up
+  against an unreachable Brain, and the TTL is the bound that fires in practice). Its consequence is
+  the one the spec names for overflow: the outcome is dropped and the job falls back to the continuous
+  reclaim loop.
+
+**Needs-user:** none. Recorded because the reasoning — why neither became a config key — is the part
+worth auditing, not the values.
+
+### P7-OD-4 — stale-replay mis-attribution: guard added, and why it acks rather than retains
+
+**Raised by:** review gate R1 (architect), Phase 7 closeout.
+
+The buffer TTL (900s) deliberately outlives a job lease (120s), so an outcome can outlive its own
+attempt: the job gets reclaimed and re-dispatched, possibly to another box, and the original box's
+replay then lands on a *different* attempt that is legitimately `sending`. Measured on real Postgres,
+applying it requeues the live attempt, burns one of its retries, writes a phantom `send_logs` row, and
+drops the account score 100 → 63 for a failure that never happened.
+
+Two sub-decisions, both taken conservatively rather than by preference:
+
+- **The guard rejects only a PROVABLE mismatch** (`assigned_box_id` and the reporting box both known
+  and different). A NULL `assigned_box_id` — claimed but never pushed, or assignment cleared by a
+  requeue — is NOT treated as a mismatch, so the guard can never reject a legitimate outcome; those
+  cases stay with the apply paths' existing `state='sending'` guards.
+- **A stale report is ACKED (`resolved=true`), not retained.** It can never become applicable (the job
+  has moved to a new attempt whose outcome the Brain will record), so withholding the ack would make the
+  box replay a permanently-dead outcome until its TTL for no benefit. Acking here does not weaken the
+  persist-ack contract: that contract exists so the box does not drop an outcome the Brain FAILED to
+  persist — this is an outcome the Brain has correctly determined it must not persist at all.
+
+**Needs-user:** none.
