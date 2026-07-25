@@ -628,7 +628,13 @@ summary table).
   `send_log_summaries` table and no `sender_0020`. Outcome counts are aggregated straight from the
   permanent `job_events`, bucketed by `date_trunc` at the seeded `rollup_granularity` (validated
   against a fixed `hour|day|week|month` allow-list — a mis-seeded value is rejected, not silently
-  defaulted, which also keeps the interpolation injection-free). A swept day therefore still summarizes
+  defaulted, which also keeps the interpolation injection-free). **A bucket boundary is a
+  `daily_reset_timezone` boundary** (P7-OD-7, RULED 2026-07-26): the module has ONE authoritative
+  definition of "a day" and it governs capacity, so a report must not draw its day edges anywhere else —
+  otherwise an operator sees partial days of capacity. Implemented as
+  `date_trunc(field, created_at AT TIME ZONE $tz)` with the zone BOUND, never interpolated;
+  `DaySummary.Bucket` is consequently wall-clock in that zone, not UTC. Any future reporting endpoint
+  inherits this definition. A swept day therefore still summarizes
   correctly, because its outcomes were never in `send_logs` to begin with. Accepted V1 cost (§3.2):
   signal that lives only in raw content (recipient-domain distribution, `smtp_response` text) is not
   retained past the drop; P7-12 records the future scaling levers, neither of which is built here.
@@ -916,3 +922,6 @@ their day boundaries. Demonstrated on the live instance as a whole-day shift (UT
 What a "day" means to a reporting caller is a contract decision with three defensible answers, so per
 Rule 2 it was flagged rather than guessed. It is MEDIUM, not HIGH, because `SummarizeByPeriod` has **no
 production caller** today — it must be pinned before any phase wires a reporting endpoint to it.
+**RULED 2026-07-26 and implemented in the closeout: follow `daily_reset_timezone`** (see the rollup
+bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
+fail against the unpinned query.

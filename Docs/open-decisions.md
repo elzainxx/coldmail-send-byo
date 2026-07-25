@@ -424,9 +424,9 @@ The box-side mitigations shipped in Phase 7; the Brain-side fix is a contract+sc
 is schema-neutral. R4 (code review) produced **P7-OD-7** (the day-rollup's bucket boundary follows the
 implicit SESSION timezone while every other day-boundary path pins `daily_reset_timezone` explicitly —
 a contract question, and `SummarizeByPeriod` has no production caller yet, so it is filed rather than
-guessed at). **Needs-user is therefore NO LONGER empty — exactly TWO items are open: P7-OD-6's
-attempt-identity ruling and P7-OD-7's rollup timezone.** No locked spec was edited by Phase 7 or its
-gates.
+guessed at) — **P7-OD-7 was RULED on 2026-07-26: follow `daily_reset_timezone`**, implemented and tested
+in the closeout. **Needs-user is therefore back to exactly ONE open item: P7-OD-6's attempt-identity
+ruling.** No locked spec was edited by Phase 7, its gates, or its closeout.
 
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 
@@ -561,7 +561,7 @@ SMTP send (that is bounded by `provider_message_id UNIQUE` + the pre-persist ide
 **Needs-user:** YES — a ruling on whether to persist per-attempt identity (which phase, which column)
 or to accept the residual risk with the documented box-side mitigations.
 
-### P7-OD-7 — the day-rollup's bucket boundary depends on the SESSION timezone, not on config (NEEDS-USER)
+### P7-OD-7 — the day-rollup's bucket boundary depends on the SESSION timezone, not on config — **RULED 2026-07-26: FOLLOW `daily_reset_timezone`**
 
 **Raised by:** review gate R4 (code review), Phase 7 closeout.
 
@@ -594,4 +594,39 @@ Also noted by R4 and deliberately not built: `rollup_granularity` is validated a
 `PUT` accepts an out-of-list value and the failure only surfaces later at summary time. That is the same
 write-path validation gap P7-OD-5 already assigns to Phase 9 §4.6, so it is recorded there, not built here.
 
-**Needs-user:** YES — which timezone a day bucket follows. (Second open item alongside P7-OD-6.)
+**RULING (2026-07-26, user): FOLLOW `daily_reset_timezone`.** Not UTC, and no new config key.
+
+*Reasoning of record.* The system already has ONE authoritative definition of "a day", and that
+definition governs daily limits, account scoring and pool exhaustion. A reported day whose boundaries
+did not match the capacity-reset boundaries would show operators **partial days of capacity** — a day
+showing 40 of a 100/day limit consumed because the other 60 fell in the report's neighbouring bucket.
+Consistency with the existing definition beats introducing a second one. This also keeps the boundary
+config-driven (Rule 1) instead of inherited from an implicit session/server setting.
+
+**Implemented** in `retention.go` `SummarizeByPeriod`: `date_trunc('<field>', created_at AT TIME ZONE $4)`
+with `cfg.DailyResetTimezone` as a **bound parameter** (the granularity stays the allow-listed
+interpolation; the zone is never interpolated). `created_at AT TIME ZONE $tz` converts the `TIMESTAMPTZ`
+to local wall-clock `TIMESTAMP` in that zone, and `date_trunc` over a plain `TIMESTAMP` is
+zone-independent — so the boundary is pinned by config and cannot be inherited from the session.
+
+`DaySummary.Bucket` is therefore **wall-clock time in `daily_reset_timezone`, not UTC** — documented on
+the struct field, because a caller that re-labels it as UTC would reintroduce the same off-by-a-day.
+
+**Standing note for any FUTURE reporting endpoint.** `SummarizeByPeriod` still has no production caller,
+but its day definition is now pinned, and **any endpoint wired to it inherits that definition** — a
+reported day is a `daily_reset_timezone` day. A future phase that wants a different reporting zone must
+raise a new Open Decision and seed a key; it must not change this call site silently, because that would
+re-desynchronize reports from capacity accounting.
+
+**Tests** (`internal/dispatch/rollup_timezone_test.go`, real Postgres, real dispatch + real outcome path):
+`TestRollup_BucketsFollowDailyResetTimezone` picks a zone whose local date differs from UTC's *at the hour
+the suite runs* (Pacific/Midway before 11:00 UTC, else Pacific/Kiritimati — one always applies), drives a
+real send, then asserts the summary bucket equals the `sender.accounts.daily_reset_day` the **real consume
+path** stamped, and explicitly asserts the bucket is NOT the UTC day.
+`TestRollup_ChangingDailyResetTimezoneShiftsBuckets` reads ONE `job_events` row at `02:30 UTC` under two
+configs and asserts the bucket moves UTC-day → New-York-day (R4's exact demonstrated shift), with a paired
+control that the UTC day is *gone* from the second read and the row total is conserved. Both were verified
+to **FAIL** against the previous unpinned query (`no summary bucket for 2026-07-26 … buckets are
+map[2026-07-25:4]`, and `bucketed as map[2026-07-24:1], want {2026-07-23:1}`).
+
+**Needs-user:** none (ruled). One open item remains: P7-OD-6.

@@ -176,8 +176,11 @@ func (r *RetentionRunner) tick(ctx context.Context) (interval time.Duration) {
 // PERMANENT job_events ledger. It carries no raw content (there is none left to carry after a sweep)
 // and no credential-adjacent field — only counts, which is exactly what the locked "per-day summary"
 // reports.
+//
+// Bucket is WALL-CLOCK TIME IN daily_reset_timezone, not UTC — see SummarizeByPeriod (P7-OD-7). A
+// caller rendering it must not re-interpret it as UTC.
 type DaySummary struct {
-	Bucket  time.Time      // start of the bucket (day/hour/… per rollup_granularity)
+	Bucket  time.Time      // start of the bucket in daily_reset_timezone (day/hour/… per rollup_granularity)
 	ByState map[string]int // to_state → count (sent/bounced/failed/queued/assigned/sending)
 	ByClass map[string]int // error_class → count ("" excluded; only classified transitions)
 	Total   int            // total transitions in the bucket
@@ -192,6 +195,22 @@ type DaySummary struct {
 // date_trunc field. An unrecognized value is REJECTED rather than silently defaulted — a mis-seeded
 // granularity that quietly became "day" would make a reporting caller believe it got hourly data.
 // Served by the Phase 1 job_events (user_id, created_at) index.
+//
+// BUCKET BOUNDARY (P7-OD-7, RULED): a bucket is truncated in daily_reset_timezone, the module's ONE
+// authoritative definition of "a day" — the same boundary the daily-limit reset, account scoring and
+// pool exhaustion already use (eligibility.go, account_score.go, exhaustion.go all do
+// `(NOW() AT TIME ZONE $n)::date`). created_at is TIMESTAMPTZ, and date_trunc on a TIMESTAMPTZ would
+// otherwise silently truncate in the SESSION timezone — an implicit environment value, which Rule 1
+// does not permit to govern behavior. Worse, a reported day whose edges did not line up with the
+// capacity-reset edges would show an operator PARTIAL days of capacity: a "day" with 40 of a 100/day
+// limit consumed, because the other 60 landed in the report's neighbouring bucket. Consistency with
+// the existing definition beats introducing a second one, so this follows daily_reset_timezone rather
+// than hardcoding UTC or seeding a new key.
+//
+// Mechanically: `created_at AT TIME ZONE $tz` converts the TIMESTAMPTZ to local wall-clock TIMESTAMP
+// in that zone, and date_trunc on a plain TIMESTAMP is zone-independent — so the boundary is pinned
+// by the parameter, never inherited from the session. The returned Bucket is therefore wall-clock in
+// daily_reset_timezone (documented on DaySummary).
 func (d *Dispatcher) SummarizeByPeriod(ctx context.Context, cfg Config, userID string, from, to time.Time) ([]DaySummary, error) {
 	field, err := truncFieldFor(cfg.RollupGranularity)
 	if err != nil {
@@ -201,16 +220,17 @@ func (d *Dispatcher) SummarizeByPeriod(ctx context.Context, cfg Config, userID s
 	defer cancel()
 
 	// date_trunc's field is validated against a fixed allow-list above and interpolated as an
-	// identifier-free literal — never caller-controlled text (no injection surface).
+	// identifier-free literal — never caller-controlled text (no injection surface). The timezone is a
+	// BOUND parameter ($4), not interpolated.
 	rows, err := d.db.Query(ctx, fmt.Sprintf(`
-		SELECT date_trunc('%s', created_at) AS bucket,
+		SELECT date_trunc('%s', created_at AT TIME ZONE $4) AS bucket,
 		       to_state::text,
 		       COALESCE(error_class::text, '') AS class,
 		       COUNT(*)
 		  FROM sender.job_events
 		 WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		 GROUP BY 1, 2, 3
-		 ORDER BY 1`, field), userID, from, to)
+		 ORDER BY 1`, field), userID, from, to, cfg.DailyResetTimezone)
 	if err != nil {
 		return nil, err
 	}

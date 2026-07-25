@@ -361,6 +361,16 @@ func (e *dispatchEnv) setConfigInt(t *testing.T, key string, v int) {
 	}
 }
 
+// setConfigStr is setConfigInt for a string-valued key (default_value again left untouched, Rule 1).
+func (e *dispatchEnv) setConfigStr(t *testing.T, key, v string) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.config SET value = jsonb_build_object('v', $2::text), updated_at = NOW() WHERE key = $1`,
+		key, v); err != nil {
+		t.Fatalf("set config %s: %v", key, err)
+	}
+}
+
 // seedQueuedJob seeds a job_item + a queued sender.jobs row (genesis event) and returns the job id.
 func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
 	return e.seedQueuedJobSubject(t, recipient, "Subj")
