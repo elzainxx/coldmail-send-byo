@@ -823,3 +823,38 @@ Both ship with paired controls in `services/box/test/buffer.test.mjs` (13 box un
 test has a positive control that nothing is counted superseded before the second push, and the ack test
 has a negative control proving the **matching** ack still drops the entry. `staleattr_test.go` now states
 its scope explicitly, so the uncovered same-box branch reads as a filed gap rather than as coverage.
+
+**Review gate R3 (code review) — one HIGH defect at the seam Phase 7 created.** R3 audited the startup
+rescan, the buffering/persist-ack path, and the drain, and independently re-verified all seven fixes
+claimed by R1 and R2 as present-and-doing-what-was-claimed in the tree. Rescan and drain came back clean.
+The one real defect was at the exact seam Phase 7 introduced:
+
+**`report` became a REPEATABLE frame, and the one-in-flight marker was not told.** Before Phase 7 a
+`report` arrived once per job, so `boxlink/stream.go`'s `dispatchFrame` could clear `boxConn.inFlight`
+unconditionally. Phase 7 §1.3/§2.3 made a report replayable — on every heartbeat tick and every reconnect
+until it is acked — so a replay for an OLD job could arrive while the box was mid-SMTP on a NEW one and
+clear the LIVE job's marker. `AnyConnectedBox` then reported that box as idle, `PushJob` no longer refused
+it, and the box — whose `#runJob` is fire-and-forget — would run a SECOND concurrent SMTP session holding
+a SECOND decrypted credential. That breaks Phase 3 §2.5 one-job-in-flight-per-box and puts two plaintext
+credentials on one box at once.
+
+The clear is now conditional on `bc.inFlight == rep.JobID`. A mismatched report still reaches the outcome
+handler (it is a real outcome that may need persisting — swallowing it would lose it and the box would
+replay forever); only the marker is left alone. A genuinely stale marker is cleared by the reconnect that
+replaces the `boxConn`, since the marker is per-connection.
+
+`internal/boxlink/stream_inflight_test.go` is new (the package had no test file) and drives the REAL
+`StreamServer` state machine — real `boxConn`, real `dispatchFrame`, real `PushJob`, real
+`AnyConnectedBox` — over an in-process socket pair; only the TLS listener and the register handshake are
+bypassed, both proven by the live-stack mTLS suite. It asserts the concrete harm directly: after the
+replay, a second `PushJob` must be REFUSED. Two paired controls stop it passing vacuously — the report for
+the job actually held DOES clear the marker and the box DOES become eligible again (otherwise the guard
+would wedge every box after its first job), and a replay on an already-idle box leaves it eligible.
+Verified failing with the fix reverted.
+
+R3's remaining notes were non-defects and are recorded rather than acted on: the rescan's lease `UPDATE`
+is deliberately unqualified (spec §1.2 step 2 verbatim, and it is boot-only — called before all three
+runners start); `Drain` returning `-1` on a sick DB is asserted behavior, and `main.go` logging only for
+`left > 0` is cosmetic since `Drain` logs the outage case itself; and the hardcoded 1024 / 250 ms / 15 s /
+10 s are all in the documented structural-safety-bound category (P7-OD-3), each alongside a real operator
+dial.

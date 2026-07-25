@@ -219,10 +219,17 @@ func (s *StreamServer) dispatchFrame(boxID string, line []byte) {
 		if json.Unmarshal(line, &rep) != nil {
 			return
 		}
-		// Clear in-flight marker (the box has reported; it can take the next job).
+		// Clear the in-flight marker ONLY when this report is for the job the box is actually holding.
+		// Phase 7 §1.3/§2.3 made a `report` REPEATABLE and no longer necessarily about the current job:
+		// an unacked outcome is replayed on every heartbeat tick and on every reconnect, so a replay for
+		// an OLD job can arrive while the box is mid-SMTP on a NEW one. Clearing unconditionally there
+		// would tell the dispatcher the box is idle (AnyConnectedBox) and let it push a SECOND job to a
+		// box already running one — breaking one-job-in-flight-per-box (§2.5) and putting TWO plaintext
+		// credentials on one box at once. A mismatched report leaves the live marker alone; the marker is
+		// per-connection, so a genuinely stale one is cleared by the reconnect that replaces boxConn.
 		s.mu.Lock()
 		bc := s.boxes[boxID]
-		if bc != nil {
+		if bc != nil && bc.inFlight == rep.JobID {
 			bc.inFlight = ""
 		}
 		s.mu.Unlock()
