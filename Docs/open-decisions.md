@@ -370,3 +370,26 @@ itself checked for deadlock with a two-connection test — because account-state
 concurrent outcomes is the recurring defect surface (Phase 4's double-book and Phase 5's
 lost-update un-quarantine + its fix's deadlock all live there). Needs-user remains **empty**; no
 locked spec was touched by Phase 5 or its closeout.
+
+**Phase 6 (pacing & dead-box detection, `sender_0018` + the pacing/reclaim logic in
+`internal/dispatch`)** is built and green on real infra (live harness 40/40, all 4 CI gates green,
+`config_drift` 17 → 19). Its spec §7 shipped with an empty needs-user list; build recorded P6-OD-1
+(the config-ordering reject-at-load vs warn-at-write reconciliation — no real conflict; the Phase 4
+closeout had pre-committed the load-time reject check) and P6-OD-2 (additive box-timeout delivery
+via `push_job.smtp.operation_timeout_sec`). The four review gates (R1/R2 architect, R3/R4 code) each
+re-verified against the working tree — R1/R2/R3 clean, **R4 found one real HIGH** (P6-R4-1): Detector
+A's bulk reclaim UPDATE was job→account (its `job_events` trigger takes the account FK KEY SHARE
+after the job row), cycling `40P01` with `applyClassifiedFailure`'s account→job order — the third
+appearance of the ADR-0010 defect class its own §3 predicted for the reclaim loop. Fixed by routing
+both detectors through one shared `reclaimJobLocked` that locks account-first (mirroring the outcome
+handler) then job `FOR UPDATE SKIP LOCKED`; covered by a new two-connection regression test driving
+the exact combination the original test missed. **Phase 6's closeout (2026-07-25)** promoted the
+account→job lock ordering to a codebase-wide invariant (CLAUDE.md Rule 9, ADR-0010 with a full path
+table, DoD-2) — honestly scoped to *exclusive* account locks after enumerating that three job-first
+paths (`applyAccepted`/`applyBounced`/`markSending`) are safe without pre-locking (they take no
+exclusive account lock; only the trigger's KEY SHARE), confirmed by new two-connection audit tests;
+and confirmed the reclaim-does-not-score carve-out is non-vacuous (paired box-reported-timeout
+positive control + no-cascade-quarantine assertion). Two forward-looking Phase-9.5 wiring reminders
+are recorded (alert on a runtime `config_ordering_violation`; gate `ReclaimRunner` with
+`dispatch_enabled`) — reminders, not open decisions. Needs-user remains **empty**; no locked spec
+was touched by Phase 6 or its closeout.
