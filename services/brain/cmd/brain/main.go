@@ -130,6 +130,14 @@ func main() {
 	// NOT a polling loop — Phase 4). A box coming online kicks it too (a queued job may be waiting).
 	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream)
 
+	// Phase 7 (§2, P7-3): the Supabase-down gate. The dispatcher owns the ONE shared DBHealth so the
+	// dispatch loop, the reclaim loop and the retention sweep all pause on a single detection; the
+	// outcome handler shares it as an OBSERVER only — it always attempts a report (a commit is what
+	// ends an outage) and merely reports what the DB did, so a failure there also pauses the loops
+	// and a success resumes them promptly. The Brain writes NO job state while the DB is unreachable;
+	// it stays alive on bounded backoff and never crash-loops.
+	outcome.WithHealth(dispatcher.Health())
+
 	// Phase 7 (§1): the one-time STARTUP RESCAN — reconnect-reconciliation (P7-2). It runs ONCE,
 	// BEFORE the dispatch/reclaim loops start, so there is no window in which both it and Detector B
 	// act on the same job (§1.4). It extends orphaned in-flight leases by startup_reconnect_window_sec

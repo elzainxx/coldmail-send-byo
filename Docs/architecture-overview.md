@@ -532,3 +532,77 @@ locked column, constraint, enum, or index is modified.
 **Scope discipline (§8):** Phase 6 builds the CONTINUOUS reclaim loop ONLY. The one-time startup
 rescan, DB-outage halt/resume, graceful-shutdown drain, and debug-log rollup are Phase 7; content
 variation is Phase 8; the daily-slot refund's safe subset is flagged (P6-6) not built.
+
+## Phase 7 state — runtime hardening (IN PROGRESS: chunks 1–3 of 6 landed)
+
+Phase 7 makes the running system survive the three things that actually happen in production — the
+Brain restarts, a box's stream drops, Supabase goes away — without ever violating the one property
+everything else rests on: **the Brain never claims an outcome the box did not report.** The only
+structural delta is six additive seeded config rows (`sender_0019`); no table, column, constraint,
+enum, index, or trigger is added or altered (P7-1 chose derive-on-demand summaries, so there is no
+summary table).
+
+- **Chunk 1 — the one-time startup rescan (`rescan.go`, §1).** Strategy (b) reconnect-reconciliation
+  (P7-2), NOT reclaim-all: one pass at boot, BEFORE the dispatch/reclaim loops start, that (a) extends
+  every orphaned in-flight (`assigned`/`sending`) lease by `startup_reconnect_window_sec` and (b)
+  refreshes `last_heartbeat_at` on every non-`disabled` box (the BRAIN died, not the boxes — so
+  staleness is measured from boot). It issues **no reclaim of its own**: actual reclaim stays the Phase
+  6 continuous loop's ONE §2.4 transition (P6-8, no second reclaim path). **The critical property:** the
+  lease UPDATE is genuinely EVENT-FREE — it sets only `lease_expires_at`/`updated_at`, so `sender_0008`'s
+  `AFTER UPDATE OF state` trigger does not fire (and would early-return on `OLD.state = NEW.state`
+  anyway), so no `job_events` row is written, so the statement takes NO account FK `KEY SHARE` and
+  cannot cycle `40P01` with a concurrent `applyClassifiedFailure`/`reclaimJobLocked` holding an
+  exclusive account lock (ADR-0010; CLAUDE.md Rule 9 is scoped to paths that take an *exclusive*
+  account lock, which this is not). Idempotent across repeated restarts; a transient failure logs and
+  proceeds (the continuous loop is the backstop, §1.4).
+- **Chunk 2 — box outcome buffering + persist-ack (§1.3, P7-4).** ONE mechanism covers stream-drop,
+  Brain restart, and DB outage: the box RETAINS every outcome it produced (keyed by `job_id`, in memory,
+  credential NEVER buffered) and replays it on every (re)connect until it receives a `report_ack`. The
+  Brain emits `report_ack` **only after the DB commit** (or a clean idempotent no-op — a job already
+  `sent`, or already out of `sending`, which the Brain owns either way); a report it could not persist
+  is deliberately NOT acked, so the outcome survives on the box instead of being lost. `register_ack`
+  delivers `box_outcome_buffer_ttl_sec`, which bounds retention (expired entries are pruned; the
+  first-seen timestamp is not reset by a replay). The box reconnects IN-PROCESS so the buffer survives
+  a dropped stream. Disk persistence across a box PROCESS restart is FLAGGED (P7-6), not built.
+- **Chunk 3 — Supabase-down handling (`dbhealth.go`, §2 — the "invent nothing" chunk, P7-3).** The
+  guarantee is **structural, not policy**: every terminal/reassignment write in the module is a SQL
+  statement (`applyAccepted`/`applyBounced`/`applyClassifiedFailure`, `reclaimJobLocked`, the claim), so
+  a DB that cannot be reached cannot be written — there is no in-memory shadow ledger that could later
+  flush an invented outcome (§2.3). `DBHealth` adds the two things that property does not give for free:
+  (1) **PAUSE** — one shared gate consulted by the dispatch loop, the reclaim loop, and (Chunk 4) the
+  retention sweep, so a single detection stops all three claiming/pushing/reclaiming/sweeping; a halted
+  tick costs one cheap `SELECT 1` probe instead of a whole tick of failing queries; (2) **NO CRASH-LOOP**
+  — the Brain logs, stays alive, and re-probes on a bounded exponential ladder (500ms → 30s cap), so a
+  long outage never thrashes the process (which would also re-trigger the §1 rescan on every restart).
+  **Detection (§2.1)** splits transport unavailability from application logic by whether the SERVER
+  answered: a `*pgconn.PgError` means it did, so a CHECK/UNIQUE/FK/deadlock is handled inline and does
+  NOT pause the loops — except the SQLSTATEs that mean the connection is going away (class `08`,
+  `57P01/02/03`, `53300/53400`); `context.Canceled` (deliberate shutdown) and `pgx.ErrNoRows` are never
+  outages; anything else defaults to outage, because pausing is always harmless and hammering a dead
+  socket is not. `Tick`/`ReclaimTick` now RETURN a transport error instead of degrading per-user or
+  per-detector (an application error still only skips that one user/detector — §5.2 no-starvation is
+  preserved), so an outage that begins mid-tick reaches the gate. The outcome handler is an OBSERVER of
+  the gate, not a gated participant: a box report is ALWAYS attempted (its commit is exactly what ends
+  an outage), and what the DB did is fed back — so a failure there pauses the loops and a success
+  resumes them promptly. **RESUME (§2.4) needs no reconciliation code at all, and that is the point:**
+  nothing was invented, so jobs are exactly where the DB left them; a successful probe clears the halt
+  and the same loops continue against stored state, while boxes replay retained outcomes that commit
+  idempotently and are acked only afterwards. Genuinely-stuck jobs still reclaim later via the normal
+  §2.4 timeout path.
+  Behavioral tests (`outage_test.go`) inject a **real** outage: a real TCP proxy in front of real
+  Postgres, severed for real (live connections closed mid-query, new ones refused) with the real
+  `pgxpool` on the other side — nothing mocked. They assert an in-flight `sending` job is byte-unchanged
+  across the outage (state, `provider_message_id`, lease, `completed_at`, `attempt_count`, and zero new
+  `job_events`), that a `queued` job is not claimed while halted **and IS claimed right after recovery**
+  (the paired anti-vacuity control), that the real `Runner`/`ReclaimRunner` goroutines survive a
+  sustained outage with a backed-off (not spinning) probe count and resume with no restart, that a
+  report produced during the outage is NOT acked and then replays to `sent` with the box's OWN
+  `provider_message_id` and EXACTLY ONE `send_logs` row (a further replay staying a no-op), and — the
+  paired negative control — that a real `23514` from a reachable server does NOT pause the loops.
+  Backoff cadences here are documented SAFETY BOUNDS (the `Docs/open-decisions.md` Phase-4-closeout
+  class, like `singleton.go`'s lock poll), not tunables: Phase 7 §5 seeds exactly six keys, and an
+  outage re-probe interval is a guard rail on a dead socket, not a dial an operator would turn.
+
+**Remaining (chunks 4–6):** the debug-log retention sweep + derive-on-demand daily summaries and the
+`box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` config-load invariant (Chunk 4); graceful
+SIGTERM drain / leave-in-place (Chunk 5); the full suite, CI, docs and DoD closeout (Chunk 6).

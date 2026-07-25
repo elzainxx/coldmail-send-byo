@@ -71,11 +71,25 @@ func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
 			log.Printf("dispatch: tick PANIC recovered: %v — skipping this tick, will retry", rec)
 		}
 	}()
+	// Phase 7 §2.2 (P7-3): the outage gate. While the DB is unreachable this loop is PAUSED — it
+	// does not claim (queued→assigned) and does not push, so no new work enters flight and nothing
+	// is written. We return the gate's bounded backoff, so a long outage re-probes on an
+	// exponentially-backed-off cadence and the Brain stays alive (never a crash-loop).
+	if ok, wait := r.d.health.Ready(ctx); !ok {
+		return wait
+	}
 	cfg, pushed, err := r.d.Tick(ctx)
 	if err != nil {
+		// Distinguish transport unavailability (halt the loop cleanly) from an application error
+		// (log and retry next tick, exactly as before). Note() clears the halt on a nil error, so a
+		// successful tick is also what ends an outage.
+		if r.d.health.Note(err) {
+			return r.d.health.RetryIn()
+		}
 		log.Printf("dispatch: tick error: %v", err)
 		return defaultTickIntervalOnLoadErr
 	}
+	r.d.health.Note(nil)
 	if pushed > 0 {
 		log.Printf("dispatch: tick pushed %d job(s)", pushed)
 	}
@@ -128,11 +142,22 @@ func (r *ReclaimRunner) tick(ctx context.Context) (interval time.Duration) {
 			log.Printf("reclaim: tick PANIC recovered: %v — skipping this tick, will retry", rec)
 		}
 	}()
+	// Phase 7 §2.2 (P7-3): the SAME outage gate the dispatch loop uses (shared via the Dispatcher),
+	// so one detection pauses both loops. A paused reclaim loop is load-bearing for the
+	// invent-nothing guarantee: it must not act on stale in-memory assumptions, and (structurally) it
+	// cannot write the §2.4 transition without the DB anyway.
+	if ok, wait := r.d.health.Ready(ctx); !ok {
+		return wait
+	}
 	cfg, reclaimed, err := r.d.ReclaimTick(ctx)
 	if err != nil {
+		if r.d.health.Note(err) {
+			return r.d.health.RetryIn()
+		}
 		log.Printf("reclaim: tick error: %v", err)
 		return defaultTickIntervalOnLoadErr
 	}
+	r.d.health.Note(nil)
 	if reclaimed > 0 {
 		log.Printf("reclaim: tick reclaimed %d job(s)", reclaimed)
 	}

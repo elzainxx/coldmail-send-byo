@@ -122,8 +122,14 @@ UPDATE sender.jobs
 // ReclaimTick runs one full reclaim cycle (§2.1): re-read config fresh (Phase 2 OD-14 — a config
 // change takes effect next tick, no redeploy), then Detector A followed by Detector B. Returns the
 // Config it read (so the caller times the next wait) and the number of jobs reclaimed this tick.
-// A per-detector error is logged and does not abort the other detector or the tick — a transient
-// failure degrades to "retry next tick", never crashes the singleton Brain (Rule 7).
+// A per-detector APPLICATION error is logged and does not abort the other detector or the tick — a
+// transient failure degrades to "retry next tick", never crashes the singleton Brain (Rule 7).
+//
+// Phase 7 §2.2 (P7-3): a detector error that is TRANSPORT unavailability is instead RETURNED, so the
+// caller's outage gate trips and the loop pauses. Without this, an outage that began mid-tick (after
+// LoadConfig succeeded) would be swallowed per-detector and the loop would keep hammering a dead
+// socket every interval instead of halting. It changes no write behavior: both detectors are
+// state-guarded and simply do nothing when their statements cannot reach the DB.
 func (d *Dispatcher) ReclaimTick(ctx context.Context) (Config, int, error) {
 	cfg, err := LoadConfig(ctx, d.db)
 	if err != nil {
@@ -131,11 +137,17 @@ func (d *Dispatcher) ReclaimTick(ctx context.Context) (Config, int, error) {
 	}
 	reclaimed := 0
 	if nA, err := d.reclaimDeadBoxes(ctx, cfg); err != nil {
+		if IsOutage(err) {
+			return cfg, reclaimed, err
+		}
 		log.Printf("reclaim: dead-box detector failed: %v", err)
 	} else {
 		reclaimed += nA
 	}
 	if nB, err := d.reclaimExpiredLeases(ctx, cfg); err != nil {
+		if IsOutage(err) {
+			return cfg, reclaimed, err
+		}
 		log.Printf("reclaim: lease-expiry detector failed: %v", err)
 	} else {
 		reclaimed += nB

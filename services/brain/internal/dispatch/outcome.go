@@ -17,10 +17,30 @@ import (
 type OutcomeHandler struct {
 	db  *pgxpool.Pool
 	cfg Config
+
+	// health is the OPTIONAL Phase 7 §2 outage gate (P7-3), shared with the loops when wired by
+	// main.go. The handler never gates ITS OWN work on it — a report must always be attempted, since
+	// a successful commit is exactly what ends an outage — it only REPORTS what it observed, so a DB
+	// failure seen here pauses the loops too, and a success here resumes them promptly instead of
+	// waiting out the backoff. nil in tests that don't wire it (Note/Ready are nil-safe).
+	health *DBHealth
 }
 
 func NewOutcomeHandler(db *pgxpool.Pool, cfg Config) *OutcomeHandler {
 	return &OutcomeHandler{db: db, cfg: cfg}
+}
+
+// WithHealth wires the shared outage gate (§2). Returns the handler for chaining at the call site.
+func (h *OutcomeHandler) WithHealth(hh *DBHealth) *OutcomeHandler {
+	h.health = hh
+	return h
+}
+
+// noteHealth feeds an observed DB result to the shared gate when one is wired (nil-safe).
+func (h *OutcomeHandler) noteHealth(err error) {
+	if h.health != nil {
+		h.health.Note(err)
+	}
 }
 
 // Handle processes one report for a job produced by boxID. It is idempotent: a duplicate
@@ -46,10 +66,14 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	already, curState, err := h.jobStatus(ctx, rep.JobID)
 	if err != nil {
 		// A DB-read failure means we do NOT know the job's state — we can neither persist nor safely
-		// declare a no-op, so DO NOT ack: the box retains + replays (P7-4). This is the DB-outage path.
-		log.Printf("outcome: cannot read job %s: %v", rep.JobID, err)
+		// declare a no-op, so DO NOT ack: the box retains + replays (P7-4). This is the DB-outage path:
+		// the job stays EXACTLY as stored (sending), the Brain marks nothing, and the outcome survives
+		// on the box until a post-commit ack (§2.3). Report it to the shared gate so the loops pause too.
+		h.noteHealth(err)
+		log.Printf("outcome: cannot read job %s: %v — NOT acked; the box retains and will replay (§2.3, nothing invented)", rep.JobID, err)
 		return false
 	}
+	h.noteHealth(nil) // the DB answered: strongest possible liveness proof, ends any halt promptly
 	if already {
 		return true // already sent; clean no-op — the Brain owns it, the box may drop the buffered outcome
 	}
@@ -79,8 +103,18 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 // persisted maps an apply-path result to the persist-ack decision (P7-4): a nil error OR a clean
 // errNoop race (the row already left 'sending' — the Brain owns it) means the box may DROP the
 // buffered outcome (ack); any other error means RETAIN + replay (no ack).
+//
+// It also feeds the shared outage gate (§2): an apply that failed on transport pauses the loops, and
+// one that committed proves the DB is back. A resolved outcome is never invented here — `persisted`
+// only ever reports what the transaction actually did.
 func (h *OutcomeHandler) persisted(err error) bool {
-	return err == nil || errors.Is(err, errNoop)
+	ok := err == nil || errors.Is(err, errNoop)
+	if ok {
+		h.noteHealth(nil)
+	} else {
+		h.noteHealth(err)
+	}
+	return ok
 }
 
 // applyAccepted: one tx — set provider_message_id + state='sent' + completed_at + clear lease,

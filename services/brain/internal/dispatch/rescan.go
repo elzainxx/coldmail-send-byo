@@ -110,8 +110,14 @@ func (d *Dispatcher) startupRescanWithWindow(ctx context.Context, windowSec int)
 func (d *Dispatcher) RunStartupRescan(ctx context.Context) {
 	n, err := d.StartupRescan(ctx)
 	if err != nil {
+		// Phase 7 §2 (P7-3): if the failure is transport unavailability (the DB went down between the
+		// boot ping and here), trip the shared outage gate so the loops start already PAUSED rather
+		// than each discovering the outage with a full failing tick. Boot still proceeds — the Brain
+		// stays alive on bounded backoff and never crash-loops.
+		d.health.Note(err)
 		log.Printf("startup rescan: FAILED (%v) — proceeding; the continuous reclaim loop is the backstop", err)
 		return
 	}
+	d.health.Note(nil)
 	log.Printf("startup rescan: extended %d orphaned in-flight lease(s) + refreshed box heartbeats (reconnect window opened; reclaim delegated to the continuous loop)", n)
 }

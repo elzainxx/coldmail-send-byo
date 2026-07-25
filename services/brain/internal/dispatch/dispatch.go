@@ -51,6 +51,11 @@ type Dispatcher struct {
 	// the accepted one-time unpaced burst (§1.1), never load-bearing for correctness.
 	pace *pacer
 
+	// health is the Phase 7 §2 outage gate (P7-3), SHARED by the dispatch loop, the reclaim loop and
+	// (Chunk 4) the retention sweep so one detection pauses all three. It holds no authoritative job
+	// state — only "is the DB reachable" + the backoff — so a lost gate can never invent an outcome.
+	health *DBHealth
+
 	// diagMu/lastSharedPoolNotConfiguredLog throttles the §4.3 shared_pool_not_configured internal
 	// diagnostic: an operational condition (not a per-job error), logged at most once per
 	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
@@ -69,8 +74,12 @@ const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
 // point (TryDispatch, Tick) loads config fresh at its own start, so a config change is visible on
 // the very next attempt with no stale in-memory copy (§0 OD-14).
 func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher) *Dispatcher {
-	return &Dispatcher{db: db, dec: dec, px: px, rrCursor: make(map[string]string), pace: newPacer()}
+	return &Dispatcher{db: db, dec: dec, px: px, rrCursor: make(map[string]string), pace: newPacer(), health: NewDBHealth(db)}
 }
+
+// Health exposes the Phase 7 §2 outage gate so every loop driven off this Dispatcher (dispatch,
+// reclaim, retention) consults the SAME halt state — one detection pauses all of them (§2.2).
+func (d *Dispatcher) Health() *DBHealth { return d.health }
 
 // logSharedPoolNotConfigured emits the §4.3 internal diagnostic, throttled to at most once per
 // sharedPoolNotConfiguredLogInterval across the WHOLE process (not per-user/per-job) — a sustained

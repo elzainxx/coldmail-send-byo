@@ -79,6 +79,14 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		// chain whose every account is terminal_blocked) fails their ready jobs to terminal `failed`.
 		verdict, err := d.evaluateChain(ctx, u, cfg)
 		if err != nil {
+			// Phase 7 §2.2 (P7-3): a TRANSPORT failure aborts the whole tick and surfaces to the
+			// caller's outage gate, which pauses the loop. Skipping per-user is only correct for an
+			// application error (that user's chain is unreadable); with the DB unreachable no other
+			// user can be served either, so there is no starvation cost to aborting — and continuing
+			// would hammer a dead socket once per active user, per tick.
+			if IsOutage(err) {
+				return cfg, 0, err
+			}
 			log.Printf("dispatch: evaluateChain(%s) failed: %v — skipping this user for this tick", u, err)
 			continue
 		}
@@ -123,6 +131,13 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		jobs, err := d.claimForUser(ctx, slot.userID, slot.grant, cfg.JobMaxProcessingTimeSec)
 		d.setFairnessCursor(slot.userID)
 		if err != nil {
+			// Same §2.2 split as the gate check above: a transport failure aborts the tick (the loop
+			// pauses; the claim transaction rolled back, so NOTHING was claimed — no job moved to
+			// assigned, nothing to reconcile on resume). An application error still only skips this one
+			// user, preserving §5.2's no-starvation reasoning.
+			if IsOutage(err) {
+				return cfg, pushed, err
+			}
 			log.Printf("dispatch: claimForUser(%s) failed: %v — skipping this user for this tick, ring continues", slot.userID, err)
 			continue
 		}
