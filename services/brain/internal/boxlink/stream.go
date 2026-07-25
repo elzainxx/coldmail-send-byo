@@ -174,7 +174,11 @@ func (s *StreamServer) handle(conn net.Conn) {
 	s.mu.Unlock()
 	defer s.dropConn(reg.BoxID, bc)
 
-	if err := s.writeFrame(bc, boxproto.RegisterAck{Type: boxproto.TypeRegisterAck, RequestID: reg.RequestID, Accepted: true}); err != nil {
+	// Deliver the seeded box_outcome_buffer_ttl_sec on accept (Phase 7 §1.3, P7-4): the DB-less box
+	// consumes it for its outcome-buffer bound (config-not-code). A read failure is non-fatal — the
+	// box falls back to its bootstrap default; we never block registration on it.
+	ttlSec := s.readOutcomeBufferTTLSec()
+	if err := s.writeFrame(bc, boxproto.RegisterAck{Type: boxproto.TypeRegisterAck, RequestID: reg.RequestID, Accepted: true, OutcomeBufferTTLSec: ttlSec}); err != nil {
 		return
 	}
 	log.Printf("boxlink stream: box registered id=%q (token verified, mTLS client cert)", reg.BoxID)
@@ -350,6 +354,26 @@ func (s *StreamServer) markActive(reg boxproto.Register) error {
 		       box_metadata = COALESCE($2, box_metadata)
 		 WHERE id = $1`, reg.BoxID, meta)
 	return err
+}
+
+// readOutcomeBufferTTLSec reads the seeded box_outcome_buffer_ttl_sec ({"v":N}) to deliver to the
+// DB-less box on register_ack (Phase 7 §1.3, P7-4 — config-not-code). Returns 0 on any read/parse
+// failure; the box then falls back to its bootstrap default (never blocks registration).
+func (s *StreamServer) readOutcomeBufferTTLSec() int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='box_outcome_buffer_ttl_sec'`).Scan(&raw); err != nil {
+		log.Printf("boxlink stream: box_outcome_buffer_ttl_sec unreadable (%v) — box uses its bootstrap default", err)
+		return 0
+	}
+	var wrap struct {
+		V *int `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return 0
+	}
+	return *wrap.V
 }
 
 // touchHeartbeat refreshes last_heartbeat_at and returns a stale box to active (§3.2).

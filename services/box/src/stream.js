@@ -10,11 +10,40 @@
 // The plaintext credential from push_job is held ONLY in a MemoryCredential for the one session
 // and zeroed on EVERY exit path — accept, error, exception (§4.4, S1/S3). The box has NO DB and
 // NO KMS: it receives an already-decrypted secret and returns only an outcome (§3.4).
+//
+// Phase 7 §1.3 (P7-4) — OUTCOME BUFFERING + PERSIST-ACK. A report the box cannot confirm was
+// durably stored (stream down, Brain restarting, DB outage — the box can't tell which) is RETAINED
+// in an in-memory buffer keyed by job_id and REPLAYED on every (re)connect until the Brain returns
+// a `report_ack` for that job — an ack the Brain sends ONLY AFTER the outcome is committed. On ack
+// the entry is dropped. The buffer is bounded by box_outcome_buffer_ttl_sec (delivered on
+// register_ack): an entry older than the TTL is dropped and the job falls back to Brain reclaim +
+// the accepted duplicate. The CREDENTIAL is never buffered — only the outcome (§4.4 unchanged).
+// Idempotency (provider_message_id UNIQUE + the Brain's pre-persist check) makes a replay a clean
+// no-op, never a second send. This one mechanism covers stream-drop, Brain-restart, and DB-outage.
 
 import tls from "node:tls";
 import fs from "node:fs";
 import { MemoryCredential } from "./creds.js";
 import { runSmtpSession, SMTPError } from "./smtp.js";
+
+// defaultDial is the PRODUCTION transport: a mutual-TLS connection to the Brain (§3.3). It is the
+// only transport the box ever uses in production. A test may inject an alternative dial (o.dial) to
+// drive the REAL read loop / outcome buffer / replay over a plain OS socket — substituting ONLY the
+// TLS wrap, which is proven separately by the live-stack mTLS suite + the S4 handshake test. This is
+// the same "stand in only the already-proven wire" philosophy the Go dispatch harness uses for SMTP.
+function defaultDial(o, tlsMaterial, onSecure) {
+  const sock = tls.connect({
+    host: o.host,
+    port: o.port,
+    cert: tlsMaterial.cert,
+    key: tlsMaterial.key,
+    ca: tlsMaterial.ca,
+    servername: o.serverName || "brain",
+    rejectUnauthorized: true, // verify the Brain (§3.3) — refuse a Brain we can't authenticate
+  });
+  sock.once("secureConnect", onSecure);
+  return sock;
+}
 
 export class BoxStream {
   /**
@@ -31,6 +60,10 @@ export class BoxStream {
    * @param {number} o.smtpTimeoutMs per-operation SMTP timeout (from push_job/config)
    * @param {object} o.metadata optional {box_version, hostname, started_at}
    * @param {function} o.onZeroed optional test hook: called (jobId) after the credential is zeroed
+   * @param {number} o.outcomeBufferTtlMs bound on the outcome buffer (P7-4); overridden by the
+   *        Brain's register_ack (box_outcome_buffer_ttl_sec). Default 900_000 (15 min).
+   * @param {function} o.onAck optional test hook: called (jobId) after a report_ack drops a buffered entry
+   * @param {function} o.now optional clock seam (returns epoch ms) for TTL tests
    */
   constructor(o) {
     this.host = o.host;
@@ -42,6 +75,11 @@ export class BoxStream {
     this.smtpTimeoutMs = o.smtpTimeoutMs || 30000;
     this.metadata = o.metadata || {};
     this.onZeroed = o.onZeroed || null;
+    this.onAck = o.onAck || null;
+    this.now = o.now || (() => Date.now());
+    // dial is the transport factory: production uses defaultDial (mutual-TLS). Tests may inject one
+    // to exercise the real read loop/buffer/replay over a plain socket (TLS proven elsewhere).
+    this.dial = o.dial || defaultDial;
     this.tls = {
       cert: fs.readFileSync(o.certPath),
       key: fs.readFileSync(o.keyPath),
@@ -52,25 +90,23 @@ export class BoxStream {
     this.hbTimer = null;
     this.registered = false;
     this.stopped = false;
+
+    // Phase 7 (§1.3, P7-4): the outcome buffer. Map<job_id, {report, firstSeenMs}>. An outcome lives
+    // here from the moment it is produced until the Brain acks it (dropped) or it ages past the TTL
+    // (dropped → falls back to Brain reclaim). NEVER holds a credential — only the report object.
+    this.outcomeBuffer = new Map();
+    this.outcomeBufferTtlMs = o.outcomeBufferTtlMs || 900_000; // overridden by register_ack
   }
 
   // start dials the Brain, completes the register handshake, and begins the read + heartbeat
   // loops. Resolves once registered (or rejects on a rejected register / TLS failure).
   start() {
+    // Reset per-connection state so a reconnect (P7-4) starts clean. The outcome buffer is NOT reset
+    // — it deliberately survives the reconnect so unacked outcomes replay on the new register_ack.
+    this.registered = false;
+    this.buf = "";
     return new Promise((resolve, reject) => {
-      const sock = tls.connect({
-        host: this.host,
-        port: this.port,
-        cert: this.tls.cert,
-        key: this.tls.key,
-        ca: this.tls.ca,
-        servername: this.serverName,
-        rejectUnauthorized: true, // verify the Brain (§3.3) — refuse a Brain we can't authenticate
-      });
-      this.sock = sock;
-      sock.setEncoding("utf8");
-
-      sock.once("secureConnect", () => {
+      const onSecure = () => {
         // First frame MUST be register (§3.1).
         this.#send({
           type: "register",
@@ -81,7 +117,10 @@ export class BoxStream {
           hostname: this.metadata.hostname,
           started_at: this.metadata.started_at,
         });
-      });
+      };
+      const sock = this.dial(this, this.tls, onSecure);
+      this.sock = sock;
+      sock.setEncoding("utf8");
 
       sock.on("data", (d) => this.#onData(d, resolve, reject));
       sock.once("error", (e) => { if (!this.registered) reject(e); });
@@ -116,7 +155,15 @@ export class BoxStream {
       case "register_ack":
         if (msg.accepted) {
           this.registered = true;
+          // Adopt the Brain-delivered outcome-buffer TTL (config-not-code; P7-4). Falls back to the
+          // bootstrap default when the frame omits it (older Brain / test).
+          if (msg.outcome_buffer_ttl_sec > 0) {
+            this.outcomeBufferTtlMs = msg.outcome_buffer_ttl_sec * 1000;
+          }
           this.#startHeartbeat();
+          // REPLAY any outcomes still unacked from before this (re)connect (§1.3): a stream that just
+          // came back must re-deliver what the Brain never acked. Prune expired entries first.
+          this.#replayBufferedOutcomes();
           if (resolve) resolve(true);
         } else {
           // Clean reject code only (two-vocabulary); close and let start() reject.
@@ -128,9 +175,53 @@ export class BoxStream {
         // Do not await here — process the job then report; keep the read loop responsive.
         this.#runJob(msg).catch(() => { /* #runJob never throws credential detail; already handled */ });
         break;
+      case "report_ack":
+        // The Brain durably persisted (or cleanly no-op'd) this job's outcome — drop the buffered copy
+        // so we stop replaying it (P7-4). Keyed by job_id so it matches across a reconnect.
+        if (msg.job_id && this.outcomeBuffer.delete(msg.job_id) && this.onAck) {
+          try { this.onAck(msg.job_id); } catch { /* test hook only */ }
+        }
+        break;
       default:
         // Unknown frame: ignore.
     }
+  }
+
+  // #bufferAndSend records the outcome in the replay buffer (keyed by job_id) and then attempts to
+  // send it. The buffer entry persists until a report_ack drops it or the TTL expires it — so if this
+  // send is lost to a stream drop, the outcome is replayed on reconnect (P7-4). It is a no-op to
+  // re-buffer a job already present (a replay), so firstSeenMs (the TTL anchor) is not reset.
+  #bufferAndSend(report) {
+    if (!this.outcomeBuffer.has(report.job_id)) {
+      this.outcomeBuffer.set(report.job_id, { report, firstSeenMs: this.now() });
+    }
+    this.#send(report);
+  }
+
+  // #replayBufferedOutcomes re-sends every still-unacked buffered outcome (oldest first) after a
+  // (re)connect, dropping any that have aged past the TTL (they fall back to Brain reclaim). Bounded
+  // work: at most one in-flight-per-box means the buffer is small in practice, but the TTL is the
+  // hard bound regardless.
+  #replayBufferedOutcomes() {
+    this.#pruneExpiredOutcomes();
+    for (const { report } of this.outcomeBuffer.values()) {
+      this.#send(report);
+    }
+  }
+
+  // #pruneExpiredOutcomes drops buffer entries older than the TTL (P7-4 "bounded" teeth): past the
+  // TTL the Brain-side reclaim loop owns the job, so retaining/replaying would only risk a late,
+  // now-meaningless duplicate. Returns the number dropped (for tests/logs).
+  #pruneExpiredOutcomes() {
+    const cutoff = this.now() - this.outcomeBufferTtlMs;
+    let dropped = 0;
+    for (const [jobId, entry] of this.outcomeBuffer) {
+      if (entry.firstSeenMs <= cutoff) {
+        this.outcomeBuffer.delete(jobId);
+        dropped++;
+      }
+    }
+    return dropped;
   }
 
   // #runJob is the credential lifecycle boundary (§4.4). It wraps the plaintext in a
@@ -197,7 +288,16 @@ export class BoxStream {
       credential.zero();
       if (this.onZeroed) { try { this.onZeroed(jobId); } catch { /* test hook only */ } }
     }
-    this.#send(report);
+    // Buffer-then-send (P7-4): retain the outcome (never the credential — already zeroed above) so a
+    // lost send is replayed on reconnect, until the Brain acks it.
+    this.#bufferAndSend(report);
+  }
+
+  // replayNow re-sends all still-unacked buffered outcomes (pruning expired ones first). The box does
+  // this automatically on every register_ack; this is a thin public seam so tests can trigger a
+  // replay/prune deterministically without a full reconnect. Safe to call anytime.
+  replayNow() {
+    this.#replayBufferedOutcomes();
   }
 
   #send(obj) {

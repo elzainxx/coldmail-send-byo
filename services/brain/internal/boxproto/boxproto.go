@@ -53,6 +53,13 @@ type RegisterAck struct {
 	RequestID string `json:"request_id"`
 	Accepted  bool   `json:"accepted"`
 	Code      string `json:"code,omitempty"` // e.g. "unauthenticated" on reject
+	// OutcomeBufferTTLSec delivers the seeded box_outcome_buffer_ttl_sec (Phase 7 §1.3, P7-4) to the
+	// DB-less box on accept: the box retains/replays unacked outcomes up to this age, then drops them
+	// and falls back to Brain reclaim. Additive-only, omitempty so older boxes/tests still parse; the
+	// box falls back to its bootstrap env default when it is 0/absent. Config-not-code: the box holds
+	// no seeded value of its own — it consumes what the Brain reads from sender.config (the same
+	// pattern as smtp_operation_timeout_sec on push_job).
+	OutcomeBufferTTLSec int `json:"outcome_buffer_ttl_sec,omitempty"`
 }
 
 // Heartbeat refreshes last_heartbeat_at even when idle (§3.2).
