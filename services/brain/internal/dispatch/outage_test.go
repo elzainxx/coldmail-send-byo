@@ -17,11 +17,14 @@ package dispatch
 //   §2.4  on recovery the loops resume from STORED state and the replayed outcome persists ONCE.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -494,6 +497,180 @@ func TestOutage_RunnersSurviveSustainedOutageAndResume(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("a loop did not exit after ctx cancel")
 		}
+	}
+}
+
+// --- a CONFIG fault is not a DB outage (review gate R2 finding 4) --------------------------------
+
+// logCapture is a concurrency-safe sink for the standard logger, so a test can assert on what the
+// REAL loops logged. Needed because the loops log from their own goroutines.
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *logCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *logCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+func (c *logCapture) count(sub string) int {
+	return strings.Count(c.String(), sub)
+}
+
+// captureLogs redirects the standard logger into a capture sink for the duration of one test.
+func captureLogs(t *testing.T) *logCapture {
+	t.Helper()
+	c := &logCapture{}
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(io.MultiWriter(prevOut, c))
+	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
+	return c
+}
+
+// TestConfigOrdering_IsNotADBOutage (§2.1 classification × §5.3). A config-ordering violation and a DB
+// outage are DIFFERENT faults with different correct responses, and the §2.1 gate must not confuse
+// them. The DB is perfectly healthy here: it answered the config read completely and the Brain then
+// REFUSED to act on an unsafe pair (Rule 1 — reject, never clamp). That is an application-level fault:
+// log it and retry on the normal cadence, with every loop still correctly declining to act.
+//
+// Misclassifying it as transport unavailability is not cosmetic. `Note` would trip the halt and log
+// "db outage DETECTED" naming a DB that is up; the very next tick's `Ready` probe (`SELECT 1`) would
+// succeed against that healthy DB and `clear()` it — which RESETS `failures` to 0. So the §2.2 bounded
+// exponential ladder could never grow past its base and all three loops would flap DETECTED/RESOLVED
+// at 500ms forever, burying the one log line an operator needs (the offending config pair) under noise
+// about an outage that is not happening.
+//
+// Real infra throughout: a real Postgres clone, a real violating row in `sender.config`, the REAL
+// dispatch Runner goroutine, and the real standard logger captured verbatim. Paired controls:
+//   - NEGATIVE (the behavior under test): a config violation must NOT halt the gate and must log NO
+//     outage line;
+//   - POSITIVE (proves the assertion can fail): a real severed connection on the same gate DOES halt
+//     and DOES log the outage line;
+//   - ANTI-VACUITY: the loop that claimed nothing during the violation claims immediately once the
+//     config pair is fixed — so the non-claim was the reject, not a broken fixture.
+func TestConfigOrdering_IsNotADBOutage(t *testing.T) {
+	e := newDispatchEnv(t, "cfgnotoutage")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+	queued := e.seedQueuedJob(t, "cfgfault@example.com")
+
+	// A REAL violating pair (buffer TTL 900 < window 901) → a real *configOrderingError from LoadConfig.
+	e.setConfigInt(t, "startup_reconnect_window_sec", 901)
+	_, cfgErr := LoadConfig(ctx, e.pool)
+	if cfgErr == nil {
+		t.Fatal("precondition: LoadConfig accepted the violating pair — cannot test the classification")
+	}
+	var ordErr *configOrderingError
+	if !errors.As(cfgErr, &ordErr) {
+		t.Fatalf("precondition: wanted a *configOrderingError, got %T (%v)", cfgErr, cfgErr)
+	}
+
+	// (a) CLASSIFICATION. Not transport unavailability.
+	if IsOutage(cfgErr) {
+		t.Fatalf("a config-ordering violation was classified as a DB OUTAGE (%v) — the DB answered fine; this is a configuration fault, and calling it an outage flaps the §2.2 backoff at its base forever", cfgErr)
+	}
+	h := NewDBHealth(e.pool)
+	if h.Note(cfgErr) || h.Halted() {
+		t.Fatal("the gate halted on a config-ordering violation — the loops would report a DB outage for a healthy DB")
+	}
+	if got := h.RetryIn(); got != 0 {
+		t.Fatalf("gate advertises a %s outage backoff after a config fault, want 0 (it is not halted)", got)
+	}
+
+	// (b) THE REAL LOOP, over ~3 ticks of the violation. Fast tick so several land in the window.
+	e.setConfigInt(t, "dispatch_tick_interval_ms", 50)
+	logs := captureLogs(t)
+	runner := NewRunner(e.d)
+	loopCtx, cancelLoop := context.WithCancel(ctx)
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); runner.Run(loopCtx) }()
+	time.Sleep(2500 * time.Millisecond)
+
+	// The loop is alive and did notice the fault repeatedly (anti-vacuity for the log assertions below:
+	// if the loop had died or never ticked, "no outage line" would be trivially true).
+	select {
+	case <-loopDone:
+		cancelLoop()
+		t.Fatal("the dispatch Runner EXITED on a config-ordering violation — a bad config must not kill the loop")
+	default:
+	}
+	if n := logs.count("config_ordering_violation"); n < 2 {
+		cancelLoop()
+		<-loopDone
+		t.Fatalf("the loop logged the config violation %d time(s) over 2.5s, want >=2 — it is not actually retrying against the violating pair, so this test would be vacuous.\nlog:\n%s", n, logs.String())
+	}
+	// THE POINT: no outage was ever declared for a healthy DB, and therefore no DETECTED/RESOLVED flap.
+	if n := logs.count("db outage DETECTED"); n != 0 {
+		cancelLoop()
+		<-loopDone
+		t.Fatalf("the loop logged %d \"db outage DETECTED\" line(s) while the DB was HEALTHY and only the config was unsafe — a config fault must never be reported as transport unavailability.\nlog:\n%s", n, logs.String())
+	}
+	if n := logs.count("db outage RESOLVED"); n != 0 {
+		cancelLoop()
+		<-loopDone
+		t.Fatalf("the loop logged %d \"db outage RESOLVED\" line(s) — the DETECTED/RESOLVED flap that pins the §2.2 backoff at its base.\nlog:\n%s", n, logs.String())
+	}
+	if e.d.Health().Halted() {
+		cancelLoop()
+		<-loopDone
+		t.Fatal("the shared gate is HALTED because of a config fault — dispatch, reclaim AND retention would all be paused by a mislabeled outage")
+	}
+	// Nothing was written: a loop that cannot load a safe config claims nothing (§2 invent-nothing).
+	if st, _, leaseNull, _, attempt := e.jobState(t, queued); st != "queued" || !leaseNull || attempt != 0 {
+		cancelLoop()
+		<-loopDone
+		t.Fatalf("job is state=%s leaseNull=%v attempt=%d during a config-ordering violation, want queued/true/0 — nothing may be claimed on unsafe values", st, leaseNull, attempt)
+	}
+
+	// (c) ANTI-VACUITY: fix the pair and the SAME still-running loop claims the job immediately.
+	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		st, _, _, _, _ := e.jobState(t, queued)
+		if st == "assigned" || st == "sending" {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancelLoop()
+			<-loopDone
+			t.Fatalf("job still %q after the config pair was fixed — the non-claim above was not caused by the reject (vacuous test)", st)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	cancelLoop()
+	select {
+	case <-loopDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the loop did not exit after ctx cancel")
+	}
+
+	// (d) POSITIVE CONTROL for the log assertions: a REAL outage on a REAL severed connection DOES halt
+	// and DOES log the DETECTED line — so "no outage line" above is a real observation, not a logger
+	// that was never wired up.
+	proxy, proxyDSN := startPGProxy(t, e.moduleDSN)
+	ppool := proxiedPool(t, proxyDSN)
+	proxy.cut()
+	var one int
+	transportErr := ppool.QueryRow(ctx, `SELECT 1`).Scan(&one)
+	if transportErr == nil {
+		t.Fatal("precondition: SELECT 1 succeeded on a severed connection")
+	}
+	before := logs.count("db outage DETECTED")
+	h2 := NewDBHealth(ppool)
+	if !h2.Note(transportErr) || !h2.Halted() {
+		t.Fatal("control: the gate did not halt on a REAL transport error")
+	}
+	if got := logs.count("db outage DETECTED"); got != before+1 {
+		t.Fatalf("control: a REAL outage logged %d DETECTED line(s) (was %d) — the capture is not observing the logger, so the zero-count assertions above prove nothing", got, before)
 	}
 }
 

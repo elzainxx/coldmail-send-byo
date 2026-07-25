@@ -100,6 +100,7 @@ export class BoxStream {
     // count"). A structural safety bound, not an operator dial — see #bufferAndSend.
     this.outcomeBufferMaxEntries = o.outcomeBufferMaxEntries || 1024;
     this.overflowDropped = 0; // observability/test counter: entries dropped by the cardinality bound
+    this.supersededDropped = 0; // entries replaced because the job was pushed again (a new attempt)
   }
 
   // start dials the Brain, completes the register handshake, and begins the read + heartbeat
@@ -181,9 +182,19 @@ export class BoxStream {
         break;
       case "report_ack":
         // The Brain durably persisted (or cleanly no-op'd) this job's outcome — drop the buffered copy
-        // so we stop replaying it (P7-4). Keyed by job_id so it matches across a reconnect.
-        if (msg.job_id && this.outcomeBuffer.delete(msg.job_id) && this.onAck) {
-          try { this.onAck(msg.job_id); } catch { /* test hook only */ }
+        // so we stop replaying it (P7-4). Keyed by job_id so it matches across a reconnect (the buffer
+        // survives the reconnect, and a replay re-sends the report VERBATIM, so the ack's echoed
+        // request_id still identifies which ATTEMPT was acked). When both agree on the attempt we drop;
+        // an ack echoing a DIFFERENT request_id than the buffered entry is an ack for a SUPERSEDED
+        // attempt (review gate R2) and must NOT drop the live attempt's outcome — dropping it there
+        // would stop the replay of an outcome the Brain never committed, losing it silently.
+        if (msg.job_id) {
+          const held = this.outcomeBuffer.get(msg.job_id);
+          if (held && msg.request_id && held.report.request_id !== msg.request_id) {
+            console.error(`box ${this.boxId}: ignoring report_ack for job ${msg.job_id} attempt ${msg.request_id} — the buffered outcome belongs to attempt ${held.report.request_id} and is still unacked`);
+          } else if (this.outcomeBuffer.delete(msg.job_id) && this.onAck) {
+            try { this.onAck(msg.job_id); } catch { /* test hook only */ }
+          }
         }
         break;
       default:
@@ -206,7 +217,24 @@ export class BoxStream {
   // bound (like the box's 30-attempt connect budget), not an operator dial. Sized far above any real
   // buffer — a box holds at most one in-flight job, so >1 entry already means outcomes are stacking up
   // against an unreachable/DB-down Brain, and the TTL is the bound that actually fires in practice.
+  // SUPERSEDING ATTEMPT (review gate R2). The key is the job_id, so a job this box is pushed a SECOND
+  // time (Brain reclaimed the first attempt after the ack was lost, then re-dispatched to this same
+  // box) would find its own stale entry already present and — under a plain has()-guard — never buffer
+  // the LIVE attempt's outcome at all: a lost send would then replay attempt 1's result forever while
+  // attempt 2's real outcome was gone. push_job.request_id is minted per attempt and echoed in the
+  // report, so a differing request_id for the same job is a positive identification of a NEW attempt.
+  // We REPLACE the entry (fresh firstSeenMs — this outcome's own TTL starts now) and DISCARD the
+  // superseded one: attempt 1's outcome describes a send the Brain has already reclaimed and re-sent,
+  // so applying it to the live row would attribute the wrong attempt's result. Dropping it costs at
+  // most scoring signal for a dead attempt (§1.3 already names "dropped ⇒ falls back to reclaim" as an
+  // acceptable outcome); retaining it risks a wrong terminal state, which is not acceptable.
   #bufferAndSend(report) {
+    const prior = this.outcomeBuffer.get(report.job_id);
+    if (prior && prior.report.request_id !== report.request_id) {
+      this.outcomeBuffer.delete(report.job_id);
+      this.supersededDropped++;
+      console.error(`box ${this.boxId}: job ${report.job_id} was pushed again (new attempt ${report.request_id}); discarding the superseded unacked outcome from attempt ${prior.report.request_id} and buffering the live one instead`);
+    }
     if (!this.outcomeBuffer.has(report.job_id)) {
       if (this.outcomeBuffer.size >= this.outcomeBufferMaxEntries) {
         this.#pruneExpiredOutcomes();

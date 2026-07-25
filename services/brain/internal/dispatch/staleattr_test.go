@@ -77,6 +77,14 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	if b2 == b1 {
 		t.Fatalf("re-dispatch landed on the SAME box (%s) despite it being in-flight — no second attempt owner, so this test would be vacuous", b2)
 	}
+	// SCOPE, stated so the gap is not mistaken for coverage (review gate R2; Docs/open-decisions.md
+	// P7-OD-6): this test covers the DIFFERENT-box case, which is the only case the guard can decide.
+	// A re-dispatch to the SAME box is NOT covered and is NOT guarded — the Brain has no per-attempt
+	// identity on the report path (`report.request_id` is echoed but never read or persisted, and
+	// Phase 7 is schema-neutral), so a stale replay from a superseded attempt on the same box is
+	// indistinguishable from the live attempt's report. It is filed for a ruling rather than guarded
+	// by a guess. The box-side half of that hazard IS fixed and covered
+	// (services/box/test/buffer.test.mjs, the two P7-4/R2 tests).
 	if st, _, _, _, _ := e.jobState(t, job); st != "sending" {
 		t.Fatalf("precondition: job state=%s, want sending (B2 is mid-attempt — this is what makes the stale replay dangerous)", st)
 	}

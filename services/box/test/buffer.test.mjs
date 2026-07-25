@@ -100,6 +100,14 @@ function brainPush(brain, jobId) {
   if (conn) conn.reply(expiredPushJob(jobId));
 }
 
+// brainPushAttempt pushes the SAME job with a DIFFERENT push_job.request_id — i.e. the Brain
+// reclaimed a first attempt and re-dispatched the job to this same box. request_id is minted per
+// attempt by the Brain and echoed in the box's report, so it is the box's only attempt identity.
+function brainPushAttempt(brain, jobId, requestID) {
+  const conn = brain.server._lastConn;
+  if (conn) conn.reply({ ...expiredPushJob(jobId), request_id: requestID });
+}
+
 test("P7-4: box buffers an outcome and DROPS it only on report_ack", async () => {
   const reports = [];
   const acked = [];
@@ -247,6 +255,87 @@ test("P7-4/§1.3: buffer is bounded by a MAX ENTRY COUNT — overflow evicts the
     assert.equal(box.outcomeBuffer.has("job-1"), false, "overflow evicted something other than the OLDEST entry");
     assert.equal(box.outcomeBuffer.has("job-2"), true, "overflow evicted more than it needed to");
     assert.equal(box.overflowDropped, 1, "overflow drop was not counted");
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});
+
+// Review gate R2 findings 1–2. The buffer is keyed by job_id, but a job can be pushed to this SAME box
+// TWICE: attempt 1's ack is lost, the Brain reclaims the lease and re-dispatches, and the box gets the
+// same job_id again with a NEW push_job.request_id. Two distinct hazards follow, both proved here.
+test("P7-4/R2: a job pushed AGAIN buffers the LIVE attempt's outcome (the superseded one is discarded)", async () => {
+  const reports = [];
+  const brain = await startFakeBrain({
+    onFrame: (msg, conn) => {
+      // Never ack: the buffer's contents are the whole subject of this test.
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+      if (msg.type === "report") reports.push(msg);
+    },
+  });
+  const box = makeBox(brain.port);
+  try {
+    await box.start();
+
+    // Attempt 1: pushed, reported, never acked → buffered.
+    brainPushAttempt(brain, "job-R", "req-attempt-1");
+    assert.ok(await waitFor(() => box.outcomeBuffer.has("job-R")), "attempt 1's outcome never buffered");
+    assert.equal(box.outcomeBuffer.get("job-R").report.request_id, "req-attempt-1");
+    // Positive control: with only one attempt seen, nothing was superseded.
+    assert.equal(box.supersededDropped, 0, "counted a superseded entry before any second push");
+
+    // Attempt 2: the Brain reclaimed and re-dispatched the SAME job to this box.
+    brainPushAttempt(brain, "job-R", "req-attempt-2");
+    assert.ok(
+      await waitFor(() => box.outcomeBuffer.get("job-R")?.report.request_id === "req-attempt-2"),
+      "the LIVE attempt's outcome was NOT buffered — a stale entry for the same job_id blocked it, so a lost send would replay the dead attempt's result forever and lose the real one",
+    );
+    assert.equal(box.outcomeBuffer.size, 1, "both attempts are buffered under one job_id — only the live attempt may be retained");
+    assert.equal(box.supersededDropped, 1, "the superseded entry was not counted as dropped");
+
+    // And a replay now carries the LIVE attempt only.
+    reports.length = 0;
+    box.replayNow();
+    assert.ok(await waitFor(() => reports.length > 0), "replay sent nothing");
+    assert.equal(reports[0].request_id, "req-attempt-2", "replay re-sent the SUPERSEDED attempt's outcome");
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});
+
+test("P7-4/R2: a report_ack for a SUPERSEDED attempt does not drop the live attempt's outcome", async () => {
+  const acked = [];
+  let lastConn = null;
+  const brain = await startFakeBrain({
+    onFrame: (msg, conn) => {
+      lastConn = conn;
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+    },
+  });
+  const box = makeBox(brain.port, { onAck: (j) => acked.push(j) });
+  try {
+    await box.start();
+    brainPushAttempt(brain, "job-S", "req-attempt-1");
+    assert.ok(await waitFor(() => box.outcomeBuffer.has("job-S")), "attempt 1 never buffered");
+    brainPushAttempt(brain, "job-S", "req-attempt-2");
+    assert.ok(await waitFor(() => box.outcomeBuffer.get("job-S")?.report.request_id === "req-attempt-2"), "attempt 2 never buffered");
+
+    // A LATE ack for attempt 1 arrives (the Brain committed the first attempt's outcome, or an ack was
+    // merely delayed in flight). It must NOT drop attempt 2's still-unacked outcome.
+    lastConn.reply({ type: "report_ack", request_id: "req-attempt-1", job_id: "job-S", accepted: true });
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(
+      box.outcomeBuffer.has("job-S"), true,
+      "an ack for the SUPERSEDED attempt dropped the live attempt's outcome — the box would stop replaying an outcome the Brain never committed, losing it silently",
+    );
+    assert.equal(acked.length, 0, "onAck fired for an attempt whose outcome is not the buffered one");
+
+    // NEGATIVE CONTROL: the matching ack DOES drop it (so the assertion above is about the mismatch,
+    // not about an ack path that never works).
+    lastConn.reply({ type: "report_ack", request_id: "req-attempt-2", job_id: "job-S", accepted: true });
+    assert.ok(await waitFor(() => acked.includes("job-S")), "the MATCHING report_ack did not drop the buffered outcome");
+    assert.equal(box.outcomeBuffer.has("job-S"), false, "buffered outcome survived its own ack (would replay forever)");
   } finally {
     box.stop();
     await brain.close();

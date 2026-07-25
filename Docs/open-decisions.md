@@ -413,6 +413,17 @@ are recorded (alert on a runtime `config_ordering_violation`; gate `ReclaimRunne
 `dispatch_enabled`) — reminders, not open decisions. Needs-user remains **empty**; no locked spec
 was touched by Phase 6 or its closeout.
 
+**Phase 7's review gates (2026-07-25) changed the needs-user line for the first time since Phase 4.**
+R1 (architect) produced P7-OD-3/P7-OD-4 (both resolved, needs-user none). R2 (architect) produced
+**P7-OD-5** (scope: §5.3's live-`PUT` reject is owned by Phase 9 §4.6/E4, so Phase 7 deliberately ships
+only the config-LOAD half — flagged, not built ahead) and **P7-OD-6**, whose first half is FIXED (a
+config-ordering violation is no longer misclassified as a DB outage) and whose second half is
+**NEEDS-USER**: the Brain has no per-attempt identity on the report path, so a stale replay from a
+superseded attempt of the same job on the SAME box is indistinguishable from the live attempt's report.
+The box-side mitigations shipped in Phase 7; the Brain-side fix is a contract+schema decision and Phase 7
+is schema-neutral. **Needs-user is therefore NO LONGER empty — exactly one item is open: P7-OD-6's
+attempt-identity ruling.** No locked spec was edited by Phase 7 or its gates.
+
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 
 **Raised by:** review gate R1 (architect), Phase 7 closeout.
@@ -466,3 +477,82 @@ Two sub-decisions, both taken conservatively rather than by preference:
   persist — this is an outcome the Brain has correctly determined it must not persist at all.
 
 **Needs-user:** none.
+
+### P7-OD-5 — §5.3's config_ordering_violation on a live `PUT` is OWNED BY PHASE 9 (deliberately not built here)
+
+**Raised by:** review gate R2 (architect), Phase 7 closeout.
+
+Phase 7 §5.3 states the P7-11 invariant is enforced with external code `config_ordering_violation`
+without naming an enforcement point. Phase 7 implements the **config-LOAD** half only
+(`validateConfigOrdering` in `LoadConfig`, zeroed Config on reject, never a clamp). The admin
+**write-path** half — `PUT /v1/admin/config/{key}` refusing a value that would break the pair — is
+**not** implemented, and that is a scope decision, not an omission:
+
+- `Docs/phase-9-polish-and-documentation.md` **§4.6** is the authoritative statement of both ordering
+  invariants for the admin surface; its **error-code table** lists `config_ordering_violation` with the
+  trigger "A config `PUT` would break invariant §4.6"; its **endpoint table** maps the config `PUT`
+  route to "invariant checks (§4.6) → `config_ordering_violation`"; and Phase 9 test **E4** is exactly
+  that assertion, for **both** pairs, including the clean-envelope check.
+- Building it in Phase 7 would therefore be out-of-phase work (the mandate: no Phase-9 polish, flag
+  instead of building ahead), and would land the behavior without Phase 9's envelope/logging test.
+
+This is the same load-vs-write split P6-OD-1 already reconciled for the P6-11 pair (reject at LOAD;
+the write path validates one key at a time and is left uncoupled until the phase that owns it). P7-OD-5
+records that the split now applies to P7-11 as well, so the divergence from §5.3's unqualified sentence
+is on the record rather than silently resolved.
+
+**Consequence while it is unbuilt (and why it is safe):** an operator CAN `PUT` a violating value. The
+Brain then REFUSES to run on it — `LoadConfig` rejects, every loop's tick errors on the normal cadence
+and claims nothing, and (see below) it is correctly reported as a configuration fault, not a DB outage.
+The unsafe pair can never take effect; the cost is that the rejection is discovered at the next tick
+rather than at the `PUT`. No duplicate, no invented outcome.
+
+**Needs-user:** none — this is a scope boundary, not a contradiction. It closes when Phase 9 ships §4.6
++ E4.
+
+### P7-OD-6 — a config-ordering violation is NOT a DB outage (fixed), and Brain-side ATTEMPT identity (open)
+
+**Raised by:** review gate R2 (architect), Phase 7 closeout.
+
+**Fixed in Phase 7.** `IsOutage` defaults UNKNOWN errors to "outage" (the safe direction for transport
+faults), which swept up `*configOrderingError` — an error raised *after* a completely successful read
+from a completely healthy DB. Consequences, all real: a false `db outage DETECTED` line naming a healthy
+DB; the halt then cleared by the next tick's successful `SELECT 1` probe, which resets `failures` to 0,
+so the §2.2 bounded exponential ladder could never grow and all three loops would flap
+DETECTED/RESOLVED at the 500ms base forever, burying the one line an operator needs (the offending
+pair). `IsOutage` now returns false for it, routing it to the callers' application-error branch: log
+and retry on the normal cadence, with the loops still correctly declining to act (a rejected load hands
+back a ZEROED Config, so nothing runs on bad values). Covered by
+`TestConfigOrdering_IsNotADBOutage` — the real dispatch Runner over a real violating row, asserting no
+outage line, no halt, nothing claimed, then an anti-vacuity resume once the pair is fixed and a real
+severed-connection positive control proving the log assertions can fail.
+
+**OPEN (design, needs a ruling): the Brain has no ATTEMPT identity on the report path.** The §1.3
+attribution guard added by R1 rejects a stale replay only when the reporting box differs from
+`assigned_box_id`. When a reclaimed job is re-dispatched to the **SAME** box, a late replay from the
+superseded attempt is indistinguishable from the live attempt's report and WILL be applied. The wire
+already carries what would be needed — `push_job.request_id` is minted per attempt and echoed in
+`report.request_id` — but the Brain neither reads it in `OutcomeHandler.Handle` nor persists it, and
+`sender.jobs` has no per-attempt identity column (only `attempt_count`/`max_attempts`). A real fix is a
+CONTRACT + SCHEMA decision (persist the in-flight attempt's `request_id`, or add an attempt token, both
+additive-only per Rule 5) and Phase 7 is deliberately **schema-neutral** (`sender_0019` seeds config
+only, no `sender_0020`). Per Rule 2 this is filed, not invented.
+
+**What Phase 7 DID fix on the box side** (both no-schema, both covered by new tests in
+`services/box/test/buffer.test.mjs`, each with a paired control):
+
+- A job pushed AGAIN to the same box no longer fails to buffer the LIVE attempt's outcome. The buffer is
+  keyed by `job_id`, so the stale entry previously blocked it entirely — a lost send would then replay
+  the dead attempt's result forever and the real outcome would be gone. The live attempt now REPLACES
+  the entry (fresh TTL anchor) and the superseded one is discarded and counted.
+- A `report_ack` echoing a DIFFERENT `request_id` than the buffered entry no longer drops that entry.
+  Acking a superseded attempt would otherwise stop the replay of an outcome the Brain never committed —
+  a silent loss, the precise failure P7-4 exists to prevent.
+
+**Residual risk while the Brain-side half is open:** narrow but real — it needs an ack lost in flight,
+a lease expiry, AND the re-dispatch landing on the same box. Its blast radius is one job's scoring/state
+being attributed to the wrong attempt of the SAME job on the SAME box; it can never produce a second
+SMTP send (that is bounded by `provider_message_id UNIQUE` + the pre-persist idempotency check).
+
+**Needs-user:** YES — a ruling on whether to persist per-attempt identity (which phase, which column)
+or to accept the residual risk with the documented box-side mitigations.

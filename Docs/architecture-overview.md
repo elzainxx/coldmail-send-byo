@@ -773,3 +773,53 @@ Three test fixtures needed updating and were test-side: `settleAllSending` (fair
 `drain_test.go` report sites hardcoded `e.px.boxID` while the job had been pushed to one of the
 `extraBoxes`. A real box only ever reports for jobs pushed to itself, so those fixtures were already
 unrealistic; they now report as the job's actual `assigned_box_id` via the new `jobBox` helper.
+
+**Review gate R2 (architect) — one fix, two flags, and the attempt-identity gap.** R2 audited the
+Supabase-down "invent nothing" guarantee, resume-without-double-processing, the buffer-TTL ordering
+invariant, and the debug-log rollup. The outage gate, resume path, and rollup came back clean and all
+four R1 fixes were independently re-verified present in the tree. Two findings survived verification:
+
+- **FIXED — a config fault was being reported as a DB outage.** `IsOutage` defaults UNKNOWN errors to
+  "outage" (the safe direction for a transport fault), which swept up `*configOrderingError` — an error
+  raised *after* a completely successful read from a completely healthy DB. The damage was not cosmetic:
+  `Note` tripped the halt and logged `db outage DETECTED` naming a healthy DB, the next tick's `SELECT 1`
+  probe then succeeded and cleared it, and clearing **resets the failure counter** — so the §2.2 bounded
+  exponential ladder could never grow and all three loops flapped DETECTED/RESOLVED at the 500 ms base
+  indefinitely, burying the one log line an operator needs (the offending config pair). `IsOutage` now
+  returns false for it, routing it to the callers' application-error branch: log, retry on the normal
+  cadence, and keep declining to act (a rejected load hands back a **zeroed** Config, so nothing can run
+  on unsafe values). `TestConfigOrdering_IsNotADBOutage` drives the real dispatch Runner against a real
+  violating row and asserts no outage line, no halt, and nothing claimed — with an anti-vacuity resume
+  once the pair is fixed, and a real severed-connection positive control proving the log assertions can
+  fail.
+- **FLAGGED, not built — the live-`PUT` reject belongs to Phase 9** (`Docs/open-decisions.md` P7-OD-5).
+  §5.3 names `config_ordering_violation` without an enforcement point; Phase 9 §4.6, its error-code
+  table, its endpoint table and its test E4 all own the admin write-path reject for **both** pairs.
+  Phase 7 ships the config-LOAD half only. Same load-vs-write split P6-OD-1 already reconciled for the
+  P6-11 pair. While it is unbuilt an operator *can* store a violating value, and the Brain simply refuses
+  to run on it — no duplicate, no invented outcome, discovered at the next tick instead of at the `PUT`.
+
+**The attempt-identity gap (P7-OD-6, needs a ruling).** The R1 attribution guard can only decide a
+*different-box* mismatch. When a reclaimed job is re-dispatched to the **same** box, a late replay from
+the superseded attempt is indistinguishable from the live attempt's report. The wire already carries what
+a fix would need — `push_job.request_id` is minted per attempt and echoed in `report.request_id` — but
+the Brain neither reads it in `Handle` nor persists it, and `sender.jobs` has no per-attempt identity
+column. That makes a real fix a contract + schema decision, and Phase 7 is deliberately schema-neutral
+(`sender_0019` seeds config only), so it is filed under Rule 2 rather than guessed at. Blast radius is
+one job's state/scoring attributed to the wrong attempt of the same job on the same box; it can never
+cause a second SMTP send (bounded by `provider_message_id UNIQUE` + the pre-persist idempotency check).
+
+Both halves of the hazard that need no schema **were** fixed, on the box:
+
+- A job pushed **again** to the same box now buffers the LIVE attempt's outcome. The buffer is keyed by
+  `job_id`, so the superseded entry previously blocked it outright — a lost send would replay the dead
+  attempt's result forever while the real outcome was never retained at all. The live attempt now
+  replaces the entry (fresh TTL anchor) and the superseded one is discarded and counted.
+- A `report_ack` echoing a **different** `request_id` than the buffered entry no longer drops it. Acking
+  a superseded attempt would otherwise stop the replay of an outcome the Brain never committed — a silent
+  loss, the exact failure P7-4 exists to prevent.
+
+Both ship with paired controls in `services/box/test/buffer.test.mjs` (13 box units): the superseding
+test has a positive control that nothing is counted superseded before the second push, and the ack test
+has a negative control proving the **matching** ack still drops the entry. `staleattr_test.go` now states
+its scope explicitly, so the uncovered same-box branch reads as a filed gap rather than as coverage.
