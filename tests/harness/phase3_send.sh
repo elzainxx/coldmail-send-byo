@@ -134,15 +134,31 @@ JI3="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,
 # A job is born 'queued' (the genesis event requires to_state='queued'), then transitioned to the
 # in-flight 'sending' state via a REAL state UPDATE with the actor GUC — exactly what a push does.
 # The box is killed, so NO report can arrive. This is the precise T3 in-flight condition.
-JOB3="$(PSQL1 "INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at) VALUES ('$JI3','${T3_TENANT}','${T3_TENANT}','t3@example.com','S','<p>x</p>','queued',NOW()) RETURNING id" || true)"
+# next_attempt_at is seeded in the FUTURE, deliberately. The job must be born 'queued' (the genesis
+# event requires to_state='queued'), but T3 was written in Phase 3 when dispatch was event-kicked
+# only; Phase 4 added the 1-second POLLING loop, which claims any ready queued job. That loop would
+# otherwise claim this job in the gap between this INSERT and the UPDATE below, fail to push it (the
+# box is killed on purpose), requeue it, and churn queued→assigned→queued once per tick — so the
+# assertion below could sample the job mid-churn in 'queued' and report a failure that is really a
+# fixture race, not a broken invariant (provider_message_id stays NULL throughout either way, so the
+# never-falsely-sent property was never at risk). A future next_attempt_at makes the job invisible to
+# the claim predicate (state='queued' AND next_attempt_at <= NOW()) and to the exhaustion sweep, so
+# the ONLY thing that moves this job is this fixture — which is what T3 intends to test.
+JOB3="$(PSQL1 "INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at) VALUES ('$JI3','${T3_TENANT}','${T3_TENANT}','t3@example.com','S','<p>x</p>','queued',NOW()+INTERVAL '1 hour') RETURNING id" || true)"
 PSQL "BEGIN; SELECT set_config('sender.actor','dispatcher',true); UPDATE sender.jobs SET state='assigned', assigned_box_id='$BOX_UUID', assigned_account_id='$ACCT', lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id='$JOB3'; UPDATE sender.jobs SET state='sending' WHERE id='$JOB3'; COMMIT;" >/dev/null 2>&1 || true
 sleep 2
 T3STATE="$(PSQL "SELECT state FROM sender.jobs WHERE id='$JOB3'" || true)"
 T3PMID="$(PSQL "SELECT provider_message_id IS NULL FROM sender.jobs WHERE id='$JOB3'" || true)"
-if [[ "$T3STATE" == "sending" && "$T3PMID" == "t" ]]; then
-  ok "T3: no report (box killed) — job stays sending with no provider_message_id (never falsely sent)"
+# The load-bearing half of T3 is the pmid/terminal-state half: with no box able to report, the job
+# must NEVER have reached a sent/bounced terminal and must NEVER have gained a provider_message_id.
+# Assert that over the job's whole EVENT HISTORY, not just its current row — a job that briefly
+# touched 'sent' and moved on would pass a current-state check but is exactly the fabrication this
+# test exists to catch (Phase 7's core guarantee: never invent an outcome the box did not report).
+T3TERM="$(PSQL "SELECT count(*) FROM sender.job_events WHERE job_id='$JOB3' AND to_state IN ('sent','bounced')" || true)"
+if [[ "$T3STATE" == "sending" && "$T3PMID" == "t" && "$T3TERM" == "0" ]]; then
+  ok "T3: no report (box killed) — job stays sending, never gained a provider_message_id, and never once touched a terminal state (never falsely sent)"
 else
-  bad "T3: state=$T3STATE pmid_null=$T3PMID (a job must never be sent without a reported provider_message_id)"
+  bad "T3: state=$T3STATE pmid_null=$T3PMID terminal_events=$T3TERM (a job must never be sent without a reported provider_message_id)"
 fi
 $DC up -d box >/dev/null 2>&1 || true   # bring the box back
 

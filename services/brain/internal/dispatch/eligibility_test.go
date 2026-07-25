@@ -56,16 +56,33 @@ func strPtr(s string) *string { return &s }
 // TestAccountConsume_NeverExceedsDailyLimit (T1, THE test) — ONE account, daily_limit=50, hammered
 // by 8 GENUINE concurrent connections (8 separate pgxpool.New pools, so 8 independent physical
 // connections — not 8 goroutines sharing one pooled connection) each trying to consume it
-// repeatedly, demand (200 attempts) far exceeding capacity (50). Asserts: (1) daily_sent_count
-// ends at EXACTLY 50, never more; (2) exactly 50 attempts observed a successful consume (the rest
-// correctly saw exhaustion); (3) NO attempt ever surfaces accounts_daily_sent_check's SQLSTATE
-// 23514 — the CHECK is the last-resort invariant and must NEVER fire in normal operation (a fire
-// would mean SKIP LOCKED + the MVCC re-check failed to absorb the contention, a genuine finding,
-// not something to paper over — CLAUDE.md closeout instruction, 2026-07-24). Anti-vacuity: asserts
-// demand > capacity as a precondition, that concurrency was genuinely exercised (more than one
-// worker succeeded), AND — the strongest check — samples pg_stat_activity DURING the race and
-// asserts at least 2 workers were observed simultaneously inside an active query against this
-// account's row, proving overlap in wall-clock time, not just "multiple workers eventually ran."
+// repeatedly, with demand far exceeding capacity. Asserts: (1) daily_sent_count ends at EXACTLY 50,
+// never more; (2) exactly 50 attempts observed a successful consume; (3) once capacity is gone,
+// EVERY further attempt is refused — the 51st send never happens (the confirm phase below); (4) NO
+// attempt ever surfaces accounts_daily_sent_check's SQLSTATE 23514 — the CHECK is the last-resort
+// invariant and must NEVER fire in normal operation (a fire would mean SKIP LOCKED + the MVCC
+// re-check failed to absorb the contention, a genuine finding, not something to paper over —
+// CLAUDE.md closeout instruction, 2026-07-24). Anti-vacuity: asserts observed demand > capacity,
+// that concurrency was genuinely exercised (more than one worker succeeded), AND — the strongest
+// check — samples pg_stat_activity DURING the race and asserts at least 2 workers were observed
+// simultaneously inside an active query against this account's row, proving overlap in wall-clock
+// time, not just "multiple workers eventually ran."
+//
+// FIXTURE SHAPE (Phase 7 Chunk 6 fix). Two earlier flakes — "only 1 worker ever succeeded" in
+// isolation and "consumes < 50" under full-suite connection pressure — were both the FIXTURE, not
+// the invariant (an under-count and a single-winner never risk over-consumption). Cause: each
+// worker used to open its pgxpool INSIDE the race, so the first worker to finish its TCP+TLS+auth
+// handshake could drain all 50 slots while its peers were still connecting, and a fixed per-worker
+// attempt budget could then be spent entirely on SKIP LOCKED skips. Both are fixed structurally
+// rather than by loosening an assertion:
+//   - every pool is created AND Ping()ed (forcing a real physical connection) BEFORE the race, and
+//     all 8 workers are released together by a start barrier, so contention is simultaneous by
+//     construction instead of by luck;
+//   - the fixed budget is replaced by race-to-capacity (bounded by a hard attempt cap and a
+//     wall-clock deadline, both safety bounds — not tuning dials) followed by a CONFIRM phase in
+//     which every worker attempts again and must be refused. That is a STRONGER assertion than the
+//     old budget: it proves the 51st consume is impossible, rather than hoping the budget was big
+//     enough to fill 50.
 func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	e := newDispatchEnv(t, "nolimit")
 	pool := e.seedPool(t)
@@ -74,21 +91,31 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	e.setAccountDailyState(t, acct, limit, 0, todayUTC(), false, nil)
 
 	const workers = 8
-	// 8*80 = 640 attempts >> 50 capacity — mandatory over-subscription. The budget is generous on
-	// purpose: with ONE row + FOR UPDATE SKIP LOCKED, a worker attempt that finds the row locked by
-	// a peer SKIPS (returns ok=false) rather than blocking, so under heavy contention a large
-	// fraction of attempts are skips. The budget must exceed 50 by enough that skips can never
-	// starve the fill of all 50 slots before the workers exhaust their attempts (a too-small budget
-	// makes the test flake at "consumes < 50" under full-suite connection pressure — an under-count,
-	// never an over-count, so the double-booking invariant is never at risk; the exact-50 assertion
-	// just needs enough non-skipped acquisitions). The invariant under test is unchanged: exactly 50
-	// consumes and daily_sent_count == 50, proving SKIP LOCKED + the CHECK prevent over-consumption.
-	const attemptsPerWorker = 80
-	if workers*attemptsPerWorker <= limit {
-		t.Fatalf("test precondition violated: demand (%d) must exceed capacity (%d)", workers*attemptsPerWorker, limit)
-	}
+	// Safety bounds on the race, NOT tuning dials: the race ends when capacity is exhausted. These
+	// only stop a broken implementation from spinning forever. maxAttemptsPerWorker is far above the
+	// number of attempts a healthy run needs (skips are cheap, so a worker burns a few hundred at
+	// most); raceDeadline is the wall-clock backstop.
+	const maxAttemptsPerWorker = 4000
+	const confirmAttemptsPerWorker = 5
+	const raceDeadline = 60 * time.Second
 
 	moduleDSN := poolDSN(t, e)
+
+	// Pre-connect ALL workers before any of them races. Ping() forces the pool to establish a real
+	// physical connection (handshake + auth complete), so no worker is still connecting while
+	// another is already consuming — the cause of the single-winner flake.
+	dispatchers := make([]*Dispatcher, workers)
+	for w := 0; w < workers; w++ {
+		p, err := pgxpool.New(context.Background(), moduleDSN)
+		if err != nil {
+			t.Fatalf("worker %d pool: %v", w, err)
+		}
+		defer p.Close()
+		if err := p.Ping(context.Background()); err != nil {
+			t.Fatalf("worker %d ping (pool must hold a live physical connection BEFORE the race): %v", w, err)
+		}
+		dispatchers[w] = NewDispatcher(p, e.dec, e.px)
+	}
 
 	// Concurrency-overlap sampler: while the 8 workers race, poll pg_stat_activity (via the ADMIN
 	// connection, a 9th connection distinct from the 8 workers') for how many of THIS test's own
@@ -124,47 +151,105 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	var mu sync.Mutex
 	successes := 0
 	successByWorker := map[int]int{}
+	var totalAttempts int64
 	var checkViolations int64 // SQLSTATE 23514 (accounts_daily_sent_check) observed count
 	var otherErrors int64
+
+	// consumeOnce runs one real accountConsume and records the outcome. Shared by the race phase and
+	// the confirm phase so BOTH exercise the identical code path.
+	consumeOnce := func(worker int, d *Dispatcher) (ok bool, fatal bool) {
+		atomic.AddInt64(&totalAttempts, 1)
+		_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 900)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23514" {
+				atomic.AddInt64(&checkViolations, 1)
+				t.Errorf("worker %d: accounts_daily_sent_check FIRED (SQLSTATE 23514) — the last-resort invariant was needed, meaning SKIP LOCKED + the MVCC re-check did NOT absorb the contention: %v", worker, err)
+			} else {
+				atomic.AddInt64(&otherErrors, 1)
+				t.Errorf("worker %d: %v", worker, err)
+			}
+			return false, true
+		}
+		if ok {
+			mu.Lock()
+			successes++
+			successByWorker[worker]++
+			mu.Unlock()
+		}
+		return ok, false
+	}
+
+	// The start barrier: all 8 pre-connected workers are released at the same instant, so the
+	// contention on the single account row is simultaneous by CONSTRUCTION, not by scheduling luck.
+	start := make(chan struct{})
+	deadline := time.Now().Add(raceDeadline)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func(worker int) {
+		go func(worker int, d *Dispatcher) {
 			defer wg.Done()
-			p, err := pgxpool.New(context.Background(), moduleDSN)
-			if err != nil {
-				t.Errorf("worker %d pool: %v", worker, err)
-				return
-			}
-			defer p.Close()
-			d := NewDispatcher(p, e.dec, e.px)
-			for i := 0; i < attemptsPerWorker; i++ {
-				_, ok, err := d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 900)
-				if err != nil {
-					var pgErr *pgconn.PgError
-					if errors.As(err, &pgErr) && pgErr.Code == "23514" {
-						atomic.AddInt64(&checkViolations, 1)
-						t.Errorf("worker %d attempt %d: accounts_daily_sent_check FIRED (SQLSTATE 23514) — the last-resort invariant was needed, meaning SKIP LOCKED + the MVCC re-check did NOT absorb the contention: %v", worker, i, err)
-					} else {
-						atomic.AddInt64(&otherErrors, 1)
-						t.Errorf("worker %d attempt %d: %v", worker, i, err)
-					}
+			<-start
+			// RACE PHASE: keep attempting until capacity is provably gone (this worker sees a run of
+			// consecutive refusals with the total already at the limit), bounded by the safety caps.
+			for i := 0; i < maxAttemptsPerWorker; i++ {
+				ok, fatal := consumeOnce(worker, d)
+				if fatal {
 					return
 				}
-				if ok {
+				if !ok {
+					// A refusal is either contention (a peer holds the row — SKIP LOCKED) or genuine
+					// exhaustion. Stop only when the aggregate has reached capacity; otherwise keep
+					// racing, so skips can never starve the fill of all 50 slots.
 					mu.Lock()
-					successes++
-					successByWorker[worker]++
+					done := successes >= limit
 					mu.Unlock()
+					if done {
+						return
+					}
+				}
+				if time.Now().After(deadline) {
+					t.Errorf("worker %d hit the %s race deadline with the aggregate still below capacity — the consume is not making progress", worker, raceDeadline)
+					return
 				}
 			}
-		}(w)
+			t.Errorf("worker %d exhausted its %d-attempt safety cap without capacity being filled — the consume is not making progress", worker, maxAttemptsPerWorker)
+		}(w, dispatchers[w])
+	}
+	close(start)
+	wg.Wait()
+
+	// CONFIRM PHASE (the real over-consumption assertion): capacity is spent, so EVERY further
+	// concurrent attempt must be refused. This is what makes "never exceeds" observed rather than
+	// assumed — a guard that only worked until the budget ran out would fail here.
+	successesAfterRace := successes
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int, d *Dispatcher) {
+			defer wg.Done()
+			for i := 0; i < confirmAttemptsPerWorker; i++ {
+				if ok, fatal := consumeOnce(worker, d); fatal {
+					return
+				} else if ok {
+					t.Errorf("worker %d consumed slot #%d AFTER the daily_limit of %d was reached — OVER-CONSUMPTION", worker, successes, limit)
+				}
+			}
+		}(w, dispatchers[w])
 	}
 	wg.Wait()
 	cancelSample()
 	samplerWG.Wait()
 
+	if successes != successesAfterRace {
+		t.Fatalf("the confirm phase landed %d extra consume(s) past the limit — the daily cap is not enforced once capacity is spent", successes-successesAfterRace)
+	}
 	if successes != limit {
 		t.Fatalf("total successful consumes=%d, want EXACTLY %d (the daily_limit)", successes, limit)
+	}
+	// Anti-vacuity #0: the run must genuinely have been over-subscribed — more attempts were made
+	// than there was capacity to satisfy. (Replaces the old compile-time budget precondition, which
+	// could not see what actually happened.)
+	if att := atomic.LoadInt64(&totalAttempts); att <= int64(limit) {
+		t.Fatalf("only %d attempt(s) were made against a capacity of %d — demand did not exceed capacity, so this run could not have detected over-consumption", att, limit)
 	}
 	got := e.accountDailySentCount(t, acct)
 	if got != limit {
@@ -193,7 +278,9 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	if otherErrors > 0 {
 		t.Fatalf("%d non-CHECK error(s) occurred during the race (see logged worker errors above)", otherErrors)
 	}
-	t.Logf("CHUNK 1(b) result: accounts_daily_sent_check fired 0 times across %d total attempts (%d successes, %d exhaustion-skips) — confirmed last-resort, never load-bearing in this run", workers*attemptsPerWorker, successes, workers*attemptsPerWorker-successes)
+	att := atomic.LoadInt64(&totalAttempts)
+	t.Logf("CHUNK 1(b) result: accounts_daily_sent_check fired 0 times across %d total attempts (%d successes, %d contention/exhaustion refusals, %d workers landed a success) — confirmed last-resort, never load-bearing in this run",
+		att, successes, att-int64(successes), len(successByWorker))
 }
 
 // TestAccountConsume_SkipsIneligibleAccounts (T6-style) — paused/quarantined/disabled/at-limit

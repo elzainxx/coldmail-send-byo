@@ -295,6 +295,25 @@ but 9.5's wiring must gate the reclaim loop too, not only the dispatch `Runner` 
 **Needs-user: empty** after the gates. P6-R4-1 is fixed + regression-tested; the two forward notes
 are Phase 9.5 wiring reminders, not open decisions.
 
+## Phase 7 build (runtime hardening: rescan, buffering, outage, retention, shutdown)
+
+Phase 7's spec shipped **closed**, and the build implemented it exactly — schema-neutral apart from
+`sender_0019`'s six config seeds (P7-1's derive-on-demand summaries mean there is NO summary table
+and no `sender_0020`). No locked spec was edited. Nothing out-of-phase was built: no content
+variation (Phase 8), no 9.5 operability keys, no Phase-9 quote/describe polish.
+
+### Phase 7 build surfaced (recorded, not silently resolved — CLAUDE.md Rule 2)
+
+| # | Item | Disposition | Detail |
+|---|------|-------------|--------|
+| P7-OD-1 | §3.1's retention sweep must `DELETE` from `sender.send_logs`, but `sender_0009` makes that table write-once. Does the sweep need an additive grants migration? | **CONFIRMED — no migration needed (verified by behavior, not by reading)** | `sender_0009` revokes UPDATE and installs a BEFORE UPDATE reject trigger but DELIBERATELY RETAINS DELETE; `sender_0012_grants_and_rls.up.sql:26` grants `SELECT, INSERT, DELETE` to `sender_module` with a permissive RLS policy. Discharges OD-22 (above) with a paired privilege test: `TestRetention_ModuleRoleCanDeleteButStillCannotUpdate` — the app role's DELETE affects 1 row (positive), its UPDATE errors and the subject is unchanged (negative control). NOTE recorded during the build: the reject trigger fires for **every** role INCLUDING the table owner, so no fixture can age a row by UPDATE — the retention test instead sets `debug_log_retention_days = 0` (config-not-code) and lets the real send path write an at-boundary row. |
+| P7-OD-2 | Three TEST-side defects surfaced while closing the phase (Chunk 6). Recorded rather than quietly patched, because two of them had been reported as "pre-existing failures" in earlier commit messages and the third means a CI gate was under-collecting. | **FIXED at the cause; none is a product defect** | (a) `TestAccountConsume_NeverExceedsDailyLimit` built its 8 worker pools INSIDE the race, so one worker could drain all 50 slots during its peers' handshake — an UNDER-count (over-consumption was never at risk). Now pools are pre-connected + `Ping()`ed and released by a start barrier, and the fixed attempt budget is replaced by race-to-capacity + a CONFIRM phase where all 8 workers must be refused — strictly stronger (it proves the 51st consume is impossible). (b) Harness **T3** seeded a job `queued`/`next_attempt_at=NOW()` then moved it to `sending` in a second statement; Phase 4's polling loop (T3 predates it) claimed it in the gap and churned it, so the assertion could sample `queued`. `provider_message_id` was NULL throughout. Fixed by seeding `next_attempt_at` in the future, and the assertion now scans the whole event history for any `sent`/`bounced` transition. (c) Harness SUITE 7 hand-listed `smtp.test.mjs`, so Chunk 2b's `buffer.test.mjs` never ran in CI; it now globs `test/*.test.mjs` and FAILS a zero-test run. |
+
+**Needs-user: empty.** P7-OD-1 is a confirmation (the required grants already exist, now proven by a
+paired test); P7-OD-2 is test-infrastructure repair with no product change. The one guarantee the
+phase exists to protect — the Brain never fabricates an outcome the box did not report — is unaffected
+by all three and is asserted under restart, outage, and shutdown.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

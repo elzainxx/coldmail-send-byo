@@ -678,5 +678,42 @@ summary table).
   (state/pmid/lease/`completed_at`/`attempt_count` and zero new `job_events`), an early return when
   everything reports, and that the drain window comes from the seeded key rather than a constant.
 
-**Remaining (chunk 6):** the full suite, CI gates (`config_drift` at 25 keys), docs and the 9-item DoD
-closeout.
+**Chunk 6 — suite, CI, docs, DoD closeout.** Phase 7 closes with the whole thing verified end to end
+on a genuinely CLEAN-SLATE stack (`dev.sh down` → empty volume → `up` → `seed` → `test`), not an
+already-warm one: **the harness is 40 passed / 0 failed**, every Go package is green
+(`internal/dispatch`, `adminapi`, `platformapi`, `credential`, the migrate runner), and all four
+BLOCKING CI gates pass — `config_drift` at exactly **25 keys** (19 → 25, live == manifest ==
+config-reference), `contract_drift`, `migration_lint` (chain contiguous/paired/self-tracking through
+`0019`), `no_secret_leak` — plus `gofmt`/`go vet` clean. `TestRunnerLifecycle` proves `sender_0019`
+applies cleanly and idempotently and that its DOWN removes the six Phase 7 seeds; the clean-slate
+boot is itself the proof that BOTH config-ordering invariants pass at a real Brain startup (a
+violation would have refused the boot).
+
+Three fixture defects surfaced during the closeout and were fixed at the cause rather than by
+loosening an assertion. All three were TEST-side; none was a product regression and none touched the
+never-invent-an-outcome guarantee:
+- **`TestAccountConsume_NeverExceedsDailyLimit`** (carried in from before Phase 7, disclosed in the
+  Chunk 4/5 commits) built its 8 worker pools INSIDE the race, so the first worker to finish its
+  TCP+TLS+auth handshake could drain all 50 slots while its peers were still connecting — failing as
+  "only 1 worker ever succeeded" in isolation and as an under-count under full-suite connection
+  pressure. Both are under-counts, so over-consumption was never at risk. Now every pool is created
+  AND `Ping()`ed before the race and all 8 workers are released by a start barrier (contention is
+  simultaneous by construction), and the fixed attempt budget is replaced by race-to-capacity plus a
+  **CONFIRM phase** in which all 8 workers attempt again and must all be refused. That is strictly
+  stronger than the old budget: it proves the 51st consume is impossible instead of hoping the budget
+  was large enough. Observed: 8/8 workers land successes, 8–9 backends simultaneously active per
+  `pg_stat_activity`, ~18k attempts against capacity 50, exactly 50 consumes, `23514` never fires.
+- **Harness T3** (never-falsely-sent, live) seeded its job `queued` with `next_attempt_at=NOW()` and
+  moved it to `sending` in a second statement. T3 was written in Phase 3 when dispatch was
+  event-kicked only; Phase 4's 1-second POLLING loop now claims that job in the gap, fails to push to
+  the deliberately-killed box, requeues it, and churns `queued→assigned→queued` once per tick, so the
+  assertion could sample it mid-churn in `queued`. `provider_message_id` stayed NULL the whole time.
+  Fixed by seeding `next_attempt_at` in the future so the claim predicate cannot see the job — the
+  fixture is then the only thing that moves it, which is what T3 means to test — and the assertion is
+  strengthened to check the job's whole EVENT HISTORY for any `sent`/`bounced` transition, not just
+  its current row (a job that briefly touched `sent` is precisely the fabrication T3 exists to catch).
+- **Box units were under-collected by CI**: SUITE 7 hand-listed `smtp.test.mjs`, so Chunk 2b's
+  `buffer.test.mjs` (P7-4 ack/replay/TTL) was passing locally but never ran in the harness. SUITE 7
+  now globs `test/*.test.mjs` so a new box unit test cannot be silently omitted, and carries an
+  anti-vacuity guard that FAILS a run executing zero tests (a mistyped path would otherwise print
+  "fail 0" and pass). Box units now report 9 passed.

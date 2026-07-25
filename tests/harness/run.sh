@@ -194,22 +194,33 @@ else
   bad "a dev credential (token or hash) leaked into service logs"
 fi
 
-hr; echo "SUITE 7: Phase 3 box SMTP unit tests (real local sink; S1/S3/S5 credential paths)"; hr
-# The REAL src/smtp.js run against a REAL controllable local SMTP server (no mocks): failed-AUTH
-# scrub (S1), zeroing on every exit path incl. exception (S3), abort-before-AUTH on no-STARTTLS
-# (S5). Node's built-in test runner; judged on its own PASS/FAIL summary.
+hr; echo "SUITE 7: box unit tests (real local sink / real stream; credential + outcome-buffer paths)"; hr
+# The REAL box sources run against REAL local servers (no mocks):
+#   smtp.test.mjs   — Phase 3 S1 failed-AUTH scrub, S3 zeroing on every exit path incl. exception,
+#                     S5 abort-before-AUTH when STARTTLS is unavailable (real controllable SMTP sink).
+#   buffer.test.mjs — Phase 7 P7-4 outcome buffering: drop-only-on-report_ack, replay on reconnect,
+#                     TTL-bounded expiry (real stream server, real reconnect).
+# Matches every *.test.mjs by GLOB rather than hand-listing files, so a new box unit test cannot be
+# silently left out of CI (buffer.test.mjs was added in Phase 7 Chunk 2b and this is what wires it
+# in). Quoted so node expands the pattern itself — a bare `test/` directory arg is treated as a
+# module by some Node versions and fails to resolve. Judged on its own PASS/FAIL summary.
 if command -v node >/dev/null 2>&1; then
-  BOX_TEST_OUT="$( { cd services/box && node --test test/smtp.test.mjs 2>&1; } || true )"
+  BOX_TEST_OUT="$( { cd services/box && node --test "test/*.test.mjs" 2>&1; } || true )"
   # Node's built-in runner prints "ℹ pass N" / "ℹ fail N" and "✔"/"✖" lines. Judge on fail count.
   ( echo "$BOX_TEST_OUT" | grep -E "(pass|fail) [0-9]+" | tail -4 ) || true
   fails="$(echo "$BOX_TEST_OUT" | grep -oE "fail [0-9]+" | grep -oE "[0-9]+" | tail -1 || true)"
-  if [[ "${fails:-1}" == "0" ]]; then
-    ok "box SMTP units (S1 scrub / S3 zeroing / S5 STARTTLS-before-AUTH)"
+  passes="$(echo "$BOX_TEST_OUT" | grep -oE "pass [0-9]+" | grep -oE "[0-9]+" | tail -1 || true)"
+  # Anti-vacuity: a run that executed ZERO tests must not be reported as green (a mistyped path or a
+  # renamed directory would otherwise print "fail 0" and pass this gate).
+  if [[ "${fails:-1}" == "0" && "${passes:-0}" -ge 1 ]]; then
+    ok "box units: ${passes} passed (S1 scrub / S3 zeroing / S5 STARTTLS-before-AUTH + P7-4 buffer ack/replay/TTL)"
+  elif [[ "${passes:-0}" -lt 1 ]]; then
+    bad "box units ran ZERO tests — the test path or runner invocation is wrong (vacuous green)"
   else
-    bad "box SMTP units failed (fail=${fails:-?}): $(echo "$BOX_TEST_OUT" | grep -iE 'not ok|✖' | head -3 | tr '\n' ' ')"
+    bad "box units failed (fail=${fails:-?}): $(echo "$BOX_TEST_OUT" | grep -iE 'not ok|✖' | head -3 | tr '\n' ' ')"
   fi
 else
-  bad "node not found on PATH — cannot run box SMTP unit tests"
+  bad "node not found on PATH — cannot run box unit tests"
 fi
 
 hr; echo "SUITE 8: Phase 3 dispatch + credential Go tests (real Postgres clones)"; hr

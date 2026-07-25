@@ -311,3 +311,80 @@ the reclaim loop is a continuous autonomous sweeper, but it obeys the single-Bra
 state-guarded `SKIP LOCKED`, and does NOT re-decide any Phase 5 policy [it references the timeout
 backoff, never redefines it]; the reclaim-does-not-score carve-out prevents a box outage from
 cascade-quarantining healthy capacity; the Brain singleton guard is unchanged and still green) ✅.
+
+**Phase 7's DoD status (runtime hardening: rescan, outcome buffering, Supabase-down, retention,
+graceful shutdown):** DoD-1 (spec `Docs/phase-7-runtime-hardening.md`, closed, implemented exactly;
+no locked spec edited) ✅ · DoD-2 (real behavioral tests on real infra, verified on a genuinely
+CLEAN-SLATE stack — `dev.sh down` → empty Docker volume → `up` → `seed` → `test` — **harness 40
+passed, 0 failed**; every Go package green (`internal/dispatch`, `adminapi`, `platformapi`,
+`credential`, the migrate runner) plus 9 box units. NOTHING about the restart/outage/shutdown paths
+is mocked: the DB outage is a REAL severed TCP connection via an in-test proxy (`startPGProxy` cut/
+restore), the box replay is the REAL `services/box` stream over a real socket, the "SIGTERM" is the
+exact code path `main.go`'s signal handler runs, and the "SIGKILL" control is the real ABSENCE of
+that path. Per chunk: §1 startup rescan — EVENT-FREE lease extension proven event-free (zero
+`job_events`, byte-identical account row) with a two-connection test racing the rescan's lease UPDATE
+against a concurrent outcome (no `40P01`); §1.3/P7-4 box buffering — drop-only-on-`report_ack`,
+replay-on-reconnect, TTL-bounded expiry; §2/P7-3 Supabase-down — dispatch AND reclaim AND the
+retention sweep all PAUSE, the Brain invents nothing, never crash-loops, and resumes from stored
+state with NO double-processing (a job replayed after restore lands exactly one `send_logs` row);
+§3.1 retention — 7 expired rows deleted in an OBSERVED 4 batches at batch size 2, the live row
+survives, and the outcome fingerprint (`job_events` + final job row + derived summary counts) is
+byte-identical before and after; §4 shutdown — stop-claim/drain/leave-in-place with a stalled job
+byte-unchanged (state/pmid/lease/`completed_at`/`attempt_count`, zero new events) and SIGKILL-vs-
+graceful convergence on the same recovered state. Every guard carries a paired positive/negative or
+anti-vacuity control (the drain test clears the latch and proves the SAME tick then claims; the
+retention test proves the module role CAN delete but still CANNOT update; SUITE 7 fails a zero-test
+run). **Lock ordering (Rule 9 / ADR-0010):** Phase 7 adds NO exclusive account lock — the rescan's
+lease UPDATE is deliberately event-free so it takes no account FK lock and cannot deadlock, and
+`drain.go` contains no job write at all; both are STRUCTURAL, and the two-connection race test proves
+it) ✅ · DoD-3 (docs updated in the same commits: `architecture-overview.md` gained a full Phase 7
+section covering all six chunks, `config-reference.md` + `config-manifest.txt` gained the six keys
+and BOTH ordering invariants, `open-decisions.md` records P7-OD-1/2; all four drift gates green) ✅ ·
+DoD-4 (**six new seeded config keys** via `sender_0019` — `startup_reconnect_window_sec` (120),
+`shutdown_drain_timeout_sec` (30), `retention_sweep_interval_ms` (3600000),
+`retention_delete_batch_size` (1000), `rollup_granularity` ("day"), `box_outcome_buffer_ttl_sec`
+(900) — each with `default_value` + `description` + `value_type`, appended to the manifest +
+reference in the same change; `default_value` never mutated; `config_drift` **19 → 25**, live ==
+manifest == reference. BOTH ordering invariants are enforced at config-LOAD with REJECT, never
+clamped: (a) `smtp_operation_timeout_sec < job_max_processing_time_sec` (strict), (b)
+`box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` (non-strict — equality must LOAD, and
+does). `TestConfigOrdering_RejectsShortOutcomeBufferTTL` asserts the exact
+`config_ordering_violation` string, that the returned Config is ZEROED, and that stored config is not
+mutated; the clean-slate boot is itself proof both invariants pass at a real startup) ✅ · DoD-5 (**no
+hardcoded tuning constant** — all six dials resolve to seeded rows read at runtime, config re-read
+per tick/at shutdown so an operator change since boot is honored; the remaining literals in
+`retention.go`/`drain.go`/`rescan.go` are documented statement-timeout and poll-granularity SAFETY
+BOUNDS in the pre-existing exempt class (Phase 4 closeout triage / `maxFallbackHops` / singleton lock
+poll), not runtime-tunable behavior) ✅ · DoD-6 (open-decisions: P7-OD-1 CONFIRMED — the retention
+sweep's `send_logs` DELETE grant already exists and is now proven by a paired privilege test,
+discharging carried OD-22; P7-OD-2 records three TEST-side defects fixed at the cause (the
+daily-limit fixture race, harness T3's polling-loop race, and SUITE 7 under-collecting box units) —
+none a product defect. needs-user empty) ✅ · DoD-7 (**additive only** — `sender_0019` seeds six
+`sender.config` rows; NO table, column, enum, index or contract field added, changed or removed
+(P7-1's derive-on-demand summaries mean there is no summary table and no `sender_0020`); the 7 enums
+frozen; chain contiguous `0000..0019` with paired self-recording up/down, proven by
+`TestRunnerLifecycle` rolling `0019` down and back up and asserting the six seeds disappear and
+return; **grants**: six rows land on `sender.config` where `sender_module` already holds SELECT, so
+no new grant is needed — `TestGrantsInvariant` + its anti-vacuity control stay green (ADR-0008)) ✅ ·
+DoD-8 (security re-verified: Brain remains the SOLE decryptor (Phase 7 touches no credential path);
+the box still holds credentials in memory only and zeroes them on every exit path, and remains
+DB-less and KMS-less — the new outcome buffer holds only `{job_id, outcome, provider_message_id, smtp
+response}`, NEVER a credential, and is memory-only (a restarted box buffers nothing, which is exactly
+why the Brain-side rescan exists); box↔Brain mTLS and STARTTLS-before-AUTH unchanged; two-vocabulary
+rule holds — `config_ordering_violation`'s detail, the outage gate's notes, and the retention sweep's
+counts are internal-log-only and cross no client boundary; and the phase's CORE guarantee is
+re-verified under all three failure modes: **the Brain never records an outcome the box did not
+report** — not on restart (rescan extends leases, invents no state), not during an outage (it writes
+nothing at all), not at shutdown (leave-in-place, structurally no job write)) ✅ · DoD-9
+(control-plane safety: the retention sweep is a FOURTH autonomous single-Brain loop and obeys the
+same discipline as the others — one loop inside the singleton, panic-recovering per Rule 7, sharing
+the ONE `DBHealth` gate so an outage pauses it too, and bounded by seeded cadence/batch dials;
+retention is a ceiling on raw-content lifetime rather than a deadline, so a delayed sweep is correct.
+It is deliberately in-Brain rather than `pg_cron` (P7-7: one owner of `sender.*` DML) and its DML is
+structurally carved out — the only statement it issues is one DELETE against `send_logs`; it never
+names `jobs` or `job_events`, so outcomes are permanent by construction. `dispatch_enabled` and the
+other 9.5 dials remain correctly UNWIRED (seeded only in 9.5's `sender_0021`, not yet on disk) and
+are recorded honestly rather than stubbed; the Phase 6 note that 9.5's wiring must gate the reclaim
+loop now extends to this retention loop too. The Brain singleton guard is unchanged and still green,
+and SIGKILL still auto-releases it — which is precisely why the §4.3 SIGKILL path reduces to the same
+startup-rescan recovery) ✅.
