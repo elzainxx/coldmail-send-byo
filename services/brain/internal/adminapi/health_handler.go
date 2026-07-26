@@ -109,13 +109,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// active_conditions (§4, B4) is populated in health_alerts.go (Chunk 4); Chunk 3 wires the
-	// field with a real (never-nil) empty slice so the response shape is already final.
+	// active_conditions (§4, B4): pool_exhausted / account_quarantined (enforce) / box_death.
 	conditions, err := buildActiveConditions(ctx, s.db, snap)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "health_conditions_failed: "+err.Error()))
 		return
 	}
+
+	// §4.3 the optional webhook: fire on each NEW rising edge, never on every poll (dedup). Reads
+	// alert_webhook_url fresh (no redeploy needed for an operator to set/unset it) and fans out in
+	// its own goroutine so a slow/unreachable operator endpoint can never delay this response —
+	// this GET is otherwise entirely read-only.
+	webhookURL, err := readConfigString(ctx, s.db, "alert_webhook_url")
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "health_webhook_url_read_failed: "+err.Error()))
+		return
+	}
+	go fireWebhooks(webhookURL, conditions)
 
 	resp := healthResponse{
 		GeneratedAt: snap.GeneratedAt.Format("2006-01-02T15:04:05Z"),

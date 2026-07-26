@@ -3,6 +3,7 @@ package adminapi
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"time"
 
 	// Embed the IANA tz database so daily_reset_timezone validation (time.LoadLocation) works
@@ -174,6 +175,37 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateRateFraction(key, value); perr != nil {
 			return perr
 		}
+	case "autoquarantine_mode":
+		// Phase 9.5 B2 §2.1: the three-way shadow ladder. The Brain-side seam (account_effect.go)
+		// ALSO degrades an unrecognized value to "shadow" defensively — this write-time check is the
+		// operator-feedback layer, same posture as the other enum-string keys above, so a typo is
+		// rejected loudly here rather than silently landing on the safe default.
+		if perr := validateEnumString(key, value, "off", "shadow", "enforce"); perr != nil {
+			return perr
+		}
+	case "alert_webhook_url":
+		// Phase 9.5 B4 §6: empty (disabled) or an http(s):// URL. Rejecting a garbage value here,
+		// rather than at webhook-fire time, means a typo'd URL is caught by the write, not silently
+		// swallowed as "every delivery attempt fails" with no operator-visible signal.
+		if perr := validateWebhookURL(key, value); perr != nil {
+			return perr
+		}
+	}
+	return nil
+}
+
+// validateWebhookURL enforces §6's allowed range for alert_webhook_url: empty (the disabled
+// default) or a string beginning with http:// or https://.
+func validateWebhookURL(key string, value json.RawMessage) *apiError {
+	var s string
+	if json.Unmarshal(value, &s) != nil {
+		return typeErr(key, issueMalformed, "config_value_not_string")
+	}
+	if s == "" {
+		return nil
+	}
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		return typeErr(key, issueForbiddenValue, "config_alert_webhook_url_invalid")
 	}
 	return nil
 }
