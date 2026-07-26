@@ -30,6 +30,7 @@ type Config struct {
 	DispatchTickIntervalMS    int     // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
 	ConcurrencyPerUserDefault int     // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
 	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
+	DailyResetHour            int     // daily_reset_hour — hour-of-day (0-23) the daily boundary falls at within DailyResetTimezone (§11, Phase 1; wired in the Config Consumption Sweep closeout — was seeded/validated since sender_0010 but never read)
 	DefaultSharedPoolID       *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
 
 	// Phase 6 pacing dials (both ALREADY seeded in Phase 1's sender_0010; Phase 6 consumes them
@@ -236,6 +237,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.DailyResetTimezone, err = readStringKey(ctx, db, "daily_reset_timezone"); err != nil {
+		return c, err
+	}
+	if c.DailyResetHour, err = readIntKey(ctx, db, "daily_reset_hour"); err != nil {
 		return c, err
 	}
 	if c.DefaultSharedPoolID, err = readNullableStringKey(ctx, db, "default_shared_pool_id"); err != nil {

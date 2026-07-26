@@ -217,6 +217,10 @@ func queryWaitingForCapacity(ctx context.Context, db *pgxpool.Pool) (int, error)
 	if err != nil {
 		return 0, err
 	}
+	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
+	if err != nil {
+		return 0, err
+	}
 	const q = `
 WITH queued_users AS (
     SELECT DISTINCT user_id FROM sender.jobs WHERE state = 'queued'
@@ -239,17 +243,18 @@ SELECT COUNT(*) FROM (
       )
 ) waiting`
 	var n int
-	if err := db.QueryRow(ctx, q, tz, throttleSec).Scan(&n); err != nil {
+	if err := db.QueryRow(ctx, q, tz, throttleSec, hour).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
 }
 
 // eligibleAccountsSubqueryUsingCTEPoolID is the §2.1 eligibility predicate (including the P5-13
-// expired-throttle admission), referencing up.pool_id (the enclosing CTE's column) since it is
-// nested inside queryWaitingForCapacity's own query rather than invoked as a standalone statement.
-// $1/$2 bind to that OUTER query's parameters ($1=daily_reset_timezone, $2=throttle_pause_seconds)
-// — see the call site above (db.QueryRow(ctx, q, tz, throttleSec)).
+// expired-throttle admission and the daily_reset_hour boundary offset), referencing up.pool_id
+// (the enclosing CTE's column) since it is nested inside queryWaitingForCapacity's own query
+// rather than invoked as a standalone statement. $1/$2/$3 bind to that OUTER query's parameters
+// ($1=daily_reset_timezone, $2=throttle_pause_seconds, $3=daily_reset_hour) — see the call site
+// above (db.QueryRow(ctx, q, tz, throttleSec, hour)).
 const eligibleAccountsSubqueryUsingCTEPoolID = `
     SELECT 1
     FROM sender.accounts a
@@ -257,13 +262,13 @@ const eligibleAccountsSubqueryUsingCTEPoolID = `
       AND a.quarantined = FALSE
       AND a.disabled = FALSE
       AND (
-            (a.daily_reset_day < (NOW() AT TIME ZONE $1)::date
+            (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
                 AND (a.paused = FALSE
                      OR a.pause_reason = 'daily_limit'
                      OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
                          AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2)))
             OR
-            (a.daily_reset_day = (NOW() AT TIME ZONE $1)::date
+            (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
                 AND (a.paused = FALSE
                      OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
                          AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2))
@@ -346,6 +351,10 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 	if err != nil {
 		return accountCounts{}, err
 	}
+	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
+	if err != nil {
+		return accountCounts{}, err
+	}
 	var a accountCounts
 	err = db.QueryRow(ctx,
 		`SELECT
@@ -354,9 +363,9 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 		   COUNT(*) FILTER (WHERE paused = TRUE),
 		   COUNT(*) FILTER (WHERE quarantined = TRUE),
 		   COUNT(*) FILTER (WHERE disabled = TRUE),
-		   COUNT(*) FILTER (WHERE daily_reset_day = (NOW() AT TIME ZONE $1)::date
+		   COUNT(*) FILTER (WHERE daily_reset_day = ((NOW() - INTERVAL '1 hour' * $2) AT TIME ZONE $1)::date
 		                       AND daily_sent_count >= daily_limit)
-		 FROM sender.accounts`, tz).
+		 FROM sender.accounts`, tz, hour).
 		Scan(&a.Healthy, &a.Paused, &a.Quarantined, &a.Disabled, &a.AtDailyLimit)
 	return a, err
 }
@@ -374,17 +383,21 @@ func queryPoolHeadroom(ctx context.Context, db *pgxpool.Pool) ([]poolHeadroom, e
 	if err != nil {
 		return nil, err
 	}
+	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 SELECT p.id::text, p.kind::text,
        COUNT(a.id) FILTER (WHERE
             a.quarantined = FALSE AND a.disabled = FALSE AND (
-              (a.daily_reset_day < (NOW() AT TIME ZONE $1)::date
+              (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
                   AND (a.paused = FALSE
                        OR a.pause_reason = 'daily_limit'
                        OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
                            AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2)))
               OR
-              (a.daily_reset_day = (NOW() AT TIME ZONE $1)::date
+              (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
                   AND (a.paused = FALSE
                        OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
                            AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2))
@@ -396,7 +409,7 @@ LEFT JOIN sender.accounts a ON a.pool_id = p.id
 WHERE p.enabled = TRUE
 GROUP BY p.id, p.kind
 ORDER BY p.created_at`
-	rows, err := db.Query(ctx, q, tz, throttleSec)
+	rows, err := db.Query(ctx, q, tz, throttleSec, hour)
 	if err != nil {
 		return nil, err
 	}

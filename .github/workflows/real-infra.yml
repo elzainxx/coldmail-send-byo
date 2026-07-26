@@ -45,6 +45,10 @@ jobs:
         if: always()
         run: bash tests/harness/checks/migration_lint.sh
 
+      - name: Consumption gate — every seeded config key has a real consumer or is RESERVED (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/config_consumption.sh
+
       - name: Security gate — no credential leak in service logs (BLOCKING)
         if: always()
         run: bash tests/harness/checks/no_secret_leak.sh

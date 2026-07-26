@@ -1,0 +1,75 @@
+# config-consumers.txt — the Config Consumption Sweep's permanent ledger (Phase 9.5 CLOSEOUT,
+# 2026-07-27). One line per seeded sender.config key (must match config-manifest.txt exactly, in
+# any order): a real dial cannot pass config_drift alone — it must ALSO have a genuine consumer
+# cited here, or be explicitly marked RESERVED (never both silent AND passing).
+#
+# Format: key|grep-ERE-pattern-proving-consumption
+#     or: key|RESERVED
+#
+# The pattern is checked by tests/harness/checks/config_consumption.sh with:
+#   grep -rlE '<pattern>' --include=*.go --include=*.js <repo root> \
+#     | grep -vE '_test\.go$|/dispatch/config\.go$|/adminapi/config_validate\.go$'
+# i.e. it must appear SOMEWHERE OTHER than the loader (dispatch/config.go), the write-time
+# validator (adminapi/config_validate.go), or a test file — a genuine runtime consumer, not just
+# "this key is known to exist." RESERVED entries additionally require the literal marker
+# "RESERVED / NOT-YET-CONSUMED" to appear in Docs/config-reference.md for that key (checked
+# separately) — so a key cannot be silently downgraded to RESERVED without a documented reason an
+# operator can actually read.
+#
+# Maintenance rule (mirrors the ADR-0008 grants-invariant discipline): every new seeded key gets a
+# line here in the SAME change that adds the migration — the gate fails a key with no line at all,
+# so a key can never silently ship undocumented-as-to-consumption.
+
+daily_limit_default|resolveDailyLimit
+daily_reset_timezone|DailyResetTimezone
+daily_reset_hour|DailyResetHour
+quarantine_threshold|QuarantineThreshold
+retry_count_4xx|RESERVED
+dispatch_tick_interval_ms|DispatchTickIntervalMS
+send_delay_min_sec|SendDelayMinSec
+send_delay_max_sec|SendDelayMaxSec
+concurrency_per_user_default|ConcurrencyPerUserDefault
+heartbeat_interval_sec|HeartbeatIntervalSec
+heartbeat_missed_threshold|HeartbeatMissedThreshold
+job_max_processing_time_sec|JobMaxProcessingTimeSec
+debug_log_retention_days|DebugLogRetentionDays
+default_shared_pool_id|DefaultSharedPoolID
+status_score_weights|ScoreWeights
+retry_backoff_schedule|Backoff\.
+throttle_pause_seconds|ThrottlePauseSeconds
+reclaim_tick_interval_ms|ReclaimTickIntervalMS
+smtp_operation_timeout_sec|SMTPOperationTimeoutSec
+startup_reconnect_window_sec|StartupReconnectWindowSec
+shutdown_drain_timeout_sec|ShutdownDrainTimeoutSec
+retention_sweep_interval_ms|RetentionSweepIntervalMS
+retention_delete_batch_size|RetentionDeleteBatchSize
+rollup_granularity|RollupGranularity
+box_outcome_buffer_ttl_sec|box_outcome_buffer_ttl_sec
+variation_html_minify|VariationHTMLMinify
+variation_comment_injection|VariationCommentInjection
+variation_comment_intensity|VariationCommentIntensity\b
+variation_css_micro|VariationCSSMicro\b
+variation_css_magnitude_px|VariationCSSMagnitudePx
+variation_unique_url_params|VariationUniqueURLParams
+variation_zero_width|VariationZeroWidth\b
+variation_zero_width_rate|VariationZeroWidthRate\b
+variation_encoding_rotation|VariationEncodingRotation
+variation_mime_boundary_rotation|VariationMIMEBoundaryRotation
+variation_dynamic_preheader|VariationDynamicPreheader
+variation_preheader_templates|VariationPreheaderTemplates
+variation_header_style|VariationHeaderStyle
+variation_user_agent_injection|VariationUserAgentInjection
+variation_user_agent_rate|VariationUserAgentRate
+variation_precedence|VariationPrecedence
+variation_thread_index|VariationThreadIndex
+dispatch_enabled|DispatchEnabled
+autoquarantine_mode|AutoquarantineMode
+autopause_enabled|AutopauseEnabled
+variation_enabled|VariationEnabled
+alert_webhook_url|alert_webhook_url
+health_metrics_window_sec|health_metrics_window_sec
+brain_singleton_acquire_timeout_sec|readSingletonAcquireTimeout
+unit_price_credits|readUnitPriceCredits
+variation_comment_intensity_rates|VariationCommentIntensityRates
+variation_zero_width_rate_pct|RESERVED
+variation_css_micro_params|VariationCSSMicroParams

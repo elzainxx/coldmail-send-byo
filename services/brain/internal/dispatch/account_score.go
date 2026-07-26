@@ -118,8 +118,8 @@ func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accoun
 		    SET `+setClause+`
 		  WHERE id = $1
 		  RETURNING consecutive_failures, daily_sent_count, daily_limit, daily_reset_day,
-		            last_success_at, (NOW() AT TIME ZONE $2)::date, NOW()`,
-		accountID, cfg.DailyResetTimezone)
+		            last_success_at, ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $2)::date, NOW()`,
+		accountID, cfg.DailyResetTimezone, cfg.DailyResetHour)
 	if err := row.Scan(&in.consecutiveFailures, &in.dailySentCount, &in.dailyLimit,
 		&in.dailyResetDay, &in.lastSuccessAt, &in.nowInTZ, &in.now); err != nil {
 		return 0, err

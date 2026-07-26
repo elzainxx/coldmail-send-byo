@@ -98,7 +98,7 @@ func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor boo
 // audit's from/to flag snapshots use those constants.
 const accountConsumeQueryTmpl = `
 WITH today_calc AS (
-    SELECT (NOW() AT TIME ZONE $1)::date AS today_in_tz
+    SELECT ((NOW() - INTERVAL '1 hour' * $5) AT TIME ZONE $1)::date AS today_in_tz
 ),
 eligible_accounts AS (
     SELECT a.id,
@@ -198,7 +198,7 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cf
 		return selectedAccount{}, false, err
 	}
 	for _, pool := range pools {
-		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds)
+		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
 		if err != nil {
 			return selectedAccount{}, false, err
 		}
@@ -213,7 +213,7 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cf
 // (§3/§3.1), runs the atomic consume, and — on success under round_robin — advances that pool's
 // in-memory cursor to the consumed account's id (under rrMu, §3.1's "on success, under a per-pool
 // mutex" step). A non-round_robin strategy's cursor argument is nil and no cursor is ever written.
-func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string, throttlePauseSeconds int) (selectedAccount, bool, error) {
+func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
 	strategy, err := d.poolRoutingStrategy(ctx, poolID)
 	if err != nil {
 		return selectedAccount{}, false, err
@@ -229,7 +229,7 @@ func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTime
 		d.rrMu.Unlock()
 	}
 
-	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone, throttlePauseSeconds)
+	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone, dailyResetHour, throttlePauseSeconds)
 	if err != nil || !ok {
 		return selectedAccount{}, false, err
 	}
@@ -260,12 +260,12 @@ func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (st
 // account-consume are separate transactions"). Returns (account, found, err); found=false means
 // the pool is exhausted/unhealthy by the §4.1 predicate (zero eligible accounts) — the caller
 // tries the next pool in the chain or requeues.
-func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string, throttlePauseSeconds int) (selectedAccount, bool, error) {
+func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	query := accountConsumeQuery(orderBy)
 	var a selectedAccount
-	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor, throttlePauseSeconds).Scan(
+	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor, throttlePauseSeconds, dailyResetHour).Scan(
 		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
 		&a.ciphertext, &a.nonce, &a.keyID)
 	if err == pgx.ErrNoRows {
@@ -282,16 +282,17 @@ func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string,
 // Defining exhaustion as "would the consume affect zero rows" via the IDENTICAL WHERE (not a
 // separately-maintained predicate) makes it impossible for the exhaustion test to drift from the
 // real selection logic.
-func (d *Dispatcher) poolHasEligible(ctx context.Context, poolID, dailyResetTimezone string, throttlePauseSeconds int) (bool, error) {
+func (d *Dispatcher) poolHasEligible(ctx context.Context, poolID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// IDENTICAL predicate to the consume's eligible_accounts CTE, incl. the P5-13 expired-throttle
-	// admission ($3 = throttle_pause_seconds) — so the pre-claim gate and the §5 exhaustion
-	// classifier can never drift from the real selection logic. Read-only (EXISTS), no consume.
+	// admission ($3 = throttle_pause_seconds) and the daily_reset_hour boundary offset ($4) — so the
+	// pre-claim gate and the §5 exhaustion classifier can never drift from the real selection logic.
+	// Read-only (EXISTS), no consume.
 	const q = `
 SELECT EXISTS (
   WITH today_calc AS (
-      SELECT (NOW() AT TIME ZONE $1)::date AS today_in_tz
+      SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $1)::date AS today_in_tz
   )
   SELECT 1
   FROM sender.accounts a, today_calc
@@ -313,7 +314,7 @@ SELECT EXISTS (
         )
 )`
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, poolID, throttlePauseSeconds).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, poolID, throttlePauseSeconds, dailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

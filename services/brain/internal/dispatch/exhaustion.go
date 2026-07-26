@@ -45,7 +45,7 @@ func (d *Dispatcher) evaluateChain(ctx context.Context, userID string, cfg Confi
 
 	// (1) Any eligible account across the chain → CLAIM.
 	for _, poolID := range pools {
-		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds)
+		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
 		if err != nil {
 			return verdictWait, err
 		}
@@ -85,7 +85,7 @@ func (d *Dispatcher) chainHasSelfRecovering(ctx context.Context, pools []string,
 	// throttle-paused-still-in-window). Manual pauses and quarantine/disable are excluded → they are
 	// terminal_blocked. today_in_tz uses the config daily-reset tz to match the eligibility notion.
 	const q = `
-WITH today_calc AS (SELECT (NOW() AT TIME ZONE $2)::date AS today_in_tz)
+WITH today_calc AS (SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $2)::date AS today_in_tz)
 SELECT EXISTS (
   SELECT 1
   FROM sender.accounts a, today_calc
@@ -106,7 +106,7 @@ SELECT EXISTS (
         )
 )`
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, pools, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, q, pools, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds, cfg.DailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

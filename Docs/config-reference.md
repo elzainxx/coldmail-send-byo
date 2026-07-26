@@ -18,9 +18,9 @@ hardcoded tuning constant" structurally checkable. `default_value` is never muta
 |-----|---------------|-----------|-------------------|-------------|
 | `daily_limit_default` | `{"v": 500}` | integer | sender_0010 | Default max sends per account per day. |
 | `daily_reset_timezone` | `{"v": "UTC"}` | string | sender_0010 | Timezone (IANA tz name) defining the calendar "day" for limits. |
-| `daily_reset_hour` | `{"v": 0}` | integer | sender_0010 | Hour of day (0–23, in tz) when daily counters reset. |
+| `daily_reset_hour` | `{"v": 0}` | integer | sender_0010 | Hour of day (0–23, in tz) when daily counters reset. Consumed by every daily-reset-boundary computation (eligibility/consume, pool exhaustion, account scoring, the admin health endpoint) — wired in the Phase 9.5 CLOSEOUT config-consumption sweep (2026-07-27); seeded/validated since sender_0010 but not read by any of them before that. |
 | `quarantine_threshold` | `{"v": 30}` | integer | sender_0010 | account_status_score below which an account is auto-quarantined (Phase 5). |
-| `retry_count_4xx` | `{"v": 3}` | integer | sender_0010 | Same-account 4xx retries before requeue (Phase 5). |
+| `retry_count_4xx` | `{"v": 3}` | integer | sender_0010 | **RESERVED / NOT-YET-CONSUMED** (flagged in the Phase 9.5 CLOSEOUT config-consumption sweep, 2026-07-27). Documented in Phase 5 §6.2 (ruling 4) as a SOFT/approximate early-life same-account retry hint, but V1 has no per-job avoid-set or per-(job,account) attempt tracker to hook it into (Phase 5's own §6.3 text) — `backoffSecondsForClass` requeues transient classes purely off the exponential `retry_backoff_schedule` ladder, with zero reference to this key. Writing it today has NO effect on requeue behavior. Wiring it requires designing the avoid-set/attempt-tracking mechanism Phase 5 explicitly deferred — an Open Decision for whichever phase takes it on, not a surgical fix. |
 | `dispatch_tick_interval_ms` | `{"v": 1000}` | integer | sender_0010 | Dispatcher poll interval / config re-read cadence (Phase 4). |
 | `send_delay_min_sec` | `{"v": 3}` | integer | sender_0010 | Lower bound of the random inter-send delay per lane (Phase 6). |
 | `send_delay_max_sec` | `{"v": 7}` | integer | sender_0010 | Upper bound of the random inter-send delay per lane (Phase 6). |
@@ -44,9 +44,11 @@ Phase 5 seeds three new keys via `sender_0017` (and reuses the already-seeded
 | `retry_backoff_schedule` | `{"v":{"ladder_seconds":[30,120,600],"max_seconds":600}}` | json | sender_0017 | Exponential backoff ladder (seconds) for transient/timeout/unknown requeues, capped at max_seconds (Phase 5 §6.4). |
 | `throttle_pause_seconds` | `{"v":900}` | integer | sender_0017 | Duration (seconds) of a throttle pause before lazy auto-clear, and the throttle-class requeue delay (Phase 5 §4.3/§6.4). |
 
-**`retry_count_4xx` (seeded `sender_0010`) is a SOFT/approximate early-life same-account retry
-hint (§6.2, ruling 4), NOT a hard per-account ceiling** — ceasing to use a failing account is
-governed by `status_score_weights` + `quarantine_threshold`, not this dial.
+**`retry_count_4xx` (seeded `sender_0010`) is documented as a SOFT/approximate early-life
+same-account retry hint (§6.2, ruling 4), NOT a hard per-account ceiling** — but see the
+**RESERVED / NOT-YET-CONSUMED** note on its own row above: no code path reads this key today.
+Ceasing to use a failing account is governed by `status_score_weights` + `quarantine_threshold`,
+not this dial.
 
 ## Phase 6 state (+2 keys, `sender_0018`)
 
@@ -137,8 +139,8 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 | `brain_singleton_acquire_timeout_sec` | `{"v":60}` | integer | sender_0021 | B5 bounded wait (seconds) for the Brain startup singleton advisory lock before exiting non-zero. `0` = fail-fast, no wait. Phase 9.5 §5.2. |
 | `unit_price_credits` | `{"v":1}` | integer | sender_0021 | S10 — credits charged per recipient (`quote`/`describe`). Was a documented constant; default unchanged, now retunable without a redeploy. Phase 9.5 §2.4. |
 | `variation_comment_intensity_rates` | `{"v":{"low":5,"medium":15,"high":30}}` | json | sender_0021 | S11 — percent of closing tags injected per `variation_comment_intensity` bucket. Was hardcoded 5/15/30; default unchanged. Box-consumed via `push_job.variation`. Phase 9.5 §2.4. |
-| `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). **(P9.5-OD-3, RULED) NOT wired** — a documented duplicate of the already-wired `variation_zero_width_rate` (P8-OD-1, fraction 0–1); that key remains the sole source of truth for this rate to avoid two competing dials driving the same box behavior. Phase 9.5 §2.4. |
-| `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). `skip_below_px` is box-consumed via `push_job.variation` (P9.5-OD-3). `delta_px` is **NOT wired** — a documented duplicate of the already-wired `variation_css_magnitude_px` (P8-OD-1), which remains the sole source of truth for the CSS magnitude. Phase 9.5 §2.4. |
+| `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_zero_width_rate` (P8-OD-1, fraction 0–1); that key remains the sole source of truth for this rate to avoid two competing dials driving the same box behavior. Phase 9.5 §2.4. |
+| `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). `skip_below_px` is box-consumed via `push_job.variation` (P9.5-OD-3) — that sub-field is CONSUMED. `delta_px` is **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_css_magnitude_px` (P8-OD-1), which remains the sole source of truth for the CSS magnitude. Phase 9.5 §2.4. |
 
 ## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 

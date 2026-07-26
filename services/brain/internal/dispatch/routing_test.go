@@ -28,7 +28,7 @@ func TestRouting_RoundRobin(t *testing.T) {
 	var lastAcct string
 	backToBack := 0
 	for i := 0; i < 40; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 900)
+		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
 		if err != nil {
 			t.Fatalf("consumeFromPool: %v", err)
 		}
@@ -66,13 +66,13 @@ func TestRouting_RoundRobin_CursorSurvivesAcrossPools(t *testing.T) {
 
 	// Consume from A twice (cycles a1,a2) then from B once — B must still see b1 (its own pool's
 	// cursor is untouched by A's activity).
-	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 900); err != nil || !ok {
+	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 0, 900); err != nil || !ok {
 		t.Fatalf("consume A#1: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 900); err != nil || !ok {
+	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 0, 900); err != nil || !ok {
 		t.Fatalf("consume A#2: ok=%v err=%v", ok, err)
 	}
-	got, ok, err := e.d.consumeFromPool(context.Background(), poolB, "UTC", 900)
+	got, ok, err := e.d.consumeFromPool(context.Background(), poolB, "UTC", 0, 900)
 	if err != nil || !ok {
 		t.Fatalf("consume B#1: ok=%v err=%v", ok, err)
 	}
@@ -97,7 +97,7 @@ func TestRouting_OneByOne(t *testing.T) {
 
 	var sequence []string
 	for i := 0; i < 25; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 900)
+		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
 		if err != nil {
 			t.Fatalf("consumeFromPool: %v", err)
 		}
@@ -159,7 +159,7 @@ func TestRouting_Random(t *testing.T) {
 
 	counts := map[string]int{}
 	for i := 0; i < 500; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 900)
+		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
 		if err != nil {
 			t.Fatalf("consumeFromPool: %v", err)
 		}
@@ -213,7 +213,7 @@ func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
 		if full {
 			break
 		}
-		if _, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 900); err != nil || !ok {
+		if _, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900); err != nil || !ok {
 			t.Fatalf("drain consume %d: ok=%v err=%v", i, ok, err)
 		}
 	}
@@ -230,7 +230,7 @@ func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
 		`UPDATE sender.pools SET routing_strategy='round_robin' WHERE id=$1`, pool); err != nil {
 		t.Fatalf("flip strategy: %v", err)
 	}
-	got, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 900)
+	got, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("consumeFromPool after flip: %v", err)
 	}
