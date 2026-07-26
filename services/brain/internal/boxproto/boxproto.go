@@ -135,12 +135,25 @@ type Variation struct {
 	HTMLMinify       bool   `json:"html_minify,omitempty"`
 	CommentInjection bool   `json:"comment_injection,omitempty"`
 	CommentIntensity string `json:"comment_intensity,omitempty"`
-	CSSMicro         bool   `json:"css_micro,omitempty"`
+	// CommentIntensityRates is a Phase 9.5 S11 addition (§2.4): the per-bucket comment-injection
+	// rate table (percent 0-100), replacing the box's own hardcoded {low:5,medium:15,high:30}. Nil
+	// (a pre-9.5 Brain, or the field simply omitted) means "use the box's own built-in defaults" —
+	// the box's resolver degrades to that exactly as it does for every other absent field (§4).
+	CommentIntensityRates *CommentIntensityRates `json:"comment_intensity_rates,omitempty"`
+	CSSMicro              bool                   `json:"css_micro,omitempty"`
 	// CSSMagnitudePx/ZeroWidthRate/UserAgentRate deliberately have NO omitempty (unlike every other
 	// field here): each is a numeric parameter whose valid range includes 0, so "0" and "field
 	// absent" must stay distinguishable — an operator-set rate of 0 must reach the box as a real 0,
 	// never silently collapse to the box's own default via the omitted-field fallback path (P8-OD-1).
-	CSSMagnitudePx       int      `json:"css_magnitude_px"` // param of CSSMicro (amended, P8-OD-1 RULED-WIDEN)
+	CSSMagnitudePx int `json:"css_magnitude_px"` // param of CSSMicro (amended, P8-OD-1 RULED-WIDEN)
+	// CSSSkipBelowPx, like CSSMagnitudePx/ZeroWidthRate/UserAgentRate, deliberately has NO omitempty:
+	// the px value below which css_micro leaves a padding/margin declaration untouched
+	// (variation_css_micro_params.skip_below_px, replacing the box's own hardcoded "<3px"). The
+	// spec's own §6 range for this sub-key is 0-20 — an operator-set 0 ("vary every declaration, no
+	// matter how small") is a legitimate, real value that must reach the box as a real 0, never
+	// silently collapse to the box's own default via the omitted-field fallback path (same class of
+	// bug P8-OD-1 fixed for the other three numeric params).
+	CSSSkipBelowPx       int      `json:"css_skip_below_px"`
 	UniqueURLParams      bool     `json:"unique_url_params,omitempty"`
 	ZeroWidth            bool     `json:"zero_width,omitempty"`
 	ZeroWidthRate        float64  `json:"zero_width_rate"` // param of ZeroWidth (amended, P8-OD-1 RULED-WIDEN)
@@ -153,6 +166,14 @@ type Variation struct {
 	UserAgentRate        float64  `json:"user_agent_rate"` // param of UserAgentInjection (amended, P8-OD-1 RULED-WIDEN)
 	Precedence           string   `json:"precedence,omitempty"`
 	ThreadIndex          bool     `json:"thread_index,omitempty"`
+}
+
+// CommentIntensityRates is the wire shape of variation_comment_intensity_rates (Phase 9.5 S11,
+// §2.4): percent (0-100) of closing tags injected per variation_comment_intensity bucket.
+type CommentIntensityRates struct {
+	Low    int `json:"low"`
+	Medium int `json:"medium"`
+	High   int `json:"high"`
 }
 
 // Report is the box's outcome for one job (§2.4). provider_message_id present iff accepted.

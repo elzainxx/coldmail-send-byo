@@ -153,6 +153,50 @@ func TestVariation_RateParametersReachPushJob(t *testing.T) {
 	}
 }
 
+// TestVariation_S11RatesReachPushJob — Phase 9.5 S11 (§2.4): the two genuinely-new sub-values
+// (variation_comment_intensity_rates' per-bucket table, variation_css_micro_params.skip_below_px)
+// are read live and stamped onto push_job.variation. The other two sub-values in the S11 keys
+// (variation_zero_width_rate_pct, variation_css_micro_params.delta_px) are documented duplicates
+// of Phase 8's already-wired variation_zero_width_rate/variation_css_magnitude_px (P9.5-OD-3,
+// RULED) and are deliberately NOT re-tested here — TestVariation_RateParametersReachPushJob above
+// already covers those two dials.
+func TestVariation_S11RatesReachPushJob(t *testing.T) {
+	e := newDispatchEnv(t, "variations11")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	if _, err := e.admin.Exec(ctx,
+		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('low',10,'medium',20,'high',40)) WHERE key='variation_comment_intensity_rates'`); err != nil {
+		t.Fatalf("set variation_comment_intensity_rates: %v", err)
+	}
+	if _, err := e.admin.Exec(ctx,
+		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',9)) WHERE key='variation_css_micro_params'`); err != nil {
+		t.Fatalf("set variation_css_micro_params: %v", err)
+	}
+
+	job := e.seedQueuedJob(t, "s11rates@example.com")
+	if _, err := e.d.TryDispatch(ctx); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if st, _, _, _, _ := e.jobState(t, job); st != "sending" {
+		t.Fatalf("precondition: state=%s, want sending", st)
+	}
+	pj, ok := e.px.lastPush()
+	if !ok || pj.JobID != job {
+		t.Fatalf("push did not target the expected job (got %+v)", pj)
+	}
+	if pj.Variation.CommentIntensityRates == nil {
+		t.Fatal("comment_intensity_rates is nil on the wire — S11 must always stamp the table")
+	}
+	if got := pj.Variation.CommentIntensityRates; got.Low != 10 || got.Medium != 20 || got.High != 40 {
+		t.Errorf("comment_intensity_rates = %+v, want {10 20 40}", got)
+	}
+	if pj.Variation.CSSSkipBelowPx != 9 {
+		t.Errorf("css_skip_below_px = %d, want 9", pj.Variation.CSSSkipBelowPx)
+	}
+}
+
 // TestVariation_PreheaderTemplatesOverrideReachesPushJob — the array<string> toggle-parameter
 // reads correctly too (not just booleans/strings), and an operator-supplied override replaces the
 // seeded default list rather than merging with it.

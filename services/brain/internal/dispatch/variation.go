@@ -23,11 +23,25 @@ func variationSnapshot(cfg Config) *boxproto.Variation {
 		return nil
 	}
 	return &boxproto.Variation{
-		HTMLMinify:           cfg.VariationHTMLMinify,
-		CommentInjection:     cfg.VariationCommentInjection,
-		CommentIntensity:     cfg.VariationCommentIntensity,
+		HTMLMinify:       cfg.VariationHTMLMinify,
+		CommentInjection: cfg.VariationCommentInjection,
+		CommentIntensity: cfg.VariationCommentIntensity,
+		// Phase 9.5 S11 (§2.4): variation_comment_intensity_rates and the CSS skip-below-px
+		// threshold, stamped onto the already-existing wire block (no new mechanism). The
+		// zero-width RATE and the CSS magnitude stay driven by Phase 8's own already-wired
+		// variation_zero_width_rate/variation_css_magnitude_px (P8-OD-1) — sender_0021's
+		// variation_zero_width_rate_pct and variation_css_micro_params.delta_px are documented
+		// duplicates of those same two parameters under a different unit/shape (P9.5-OD-3, RULED);
+		// only the genuinely new sub-values (the intensity rate table, the skip-below threshold)
+		// are wired here.
+		CommentIntensityRates: &boxproto.CommentIntensityRates{
+			Low:    cfg.VariationCommentIntensityRates.Low,
+			Medium: cfg.VariationCommentIntensityRates.Medium,
+			High:   cfg.VariationCommentIntensityRates.High,
+		},
 		CSSMicro:             cfg.VariationCSSMicro,
 		CSSMagnitudePx:       cfg.VariationCSSMagnitudePx,
+		CSSSkipBelowPx:       cfg.VariationCSSMicroParams.SkipBelowPx,
 		UniqueURLParams:      cfg.VariationUniqueURLParams,
 		ZeroWidth:            cfg.VariationZeroWidth,
 		ZeroWidthRate:        cfg.VariationZeroWidthRate,

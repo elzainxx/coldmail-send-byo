@@ -55,8 +55,14 @@ export const VARIATION_DEFAULTS = Object.freeze({
   html_minify: false,
   comment_injection: false,
   comment_intensity: "low",
+  // comment_intensity_rates amended Phase 9.5 S11 (RULED, P9.5-OD-3): was a fixed
+  // {low:0.05,medium:0.15,high:0.30} in code; promoted to a dial. Values here are FRACTIONS
+  // (0-1) — the wire block carries PERCENT (0-100) per sender_0021's integer convention; the
+  // conversion happens in resolveVariation.
+  comment_intensity_rates: Object.freeze({ low: 0.05, medium: 0.15, high: 0.30 }),
   css_micro: false,
   css_magnitude_px: 1, // amended post-Chunk-5 (P8-OD-1, RULED-WIDEN): was a fixed +/-1 in code
+  css_skip_below_px: 3, // amended Phase 9.5 S11 (RULED, P9.5-OD-3): was a fixed <3px in code
   unique_url_params: false,
   zero_width: false,
   zero_width_rate: 0.05, // amended post-Chunk-5 (P8-OD-1, RULED-WIDEN): was a fixed 0.05 in code
@@ -84,6 +90,22 @@ const strArray = (x, dflt) =>
 // posture every other resolver in this function already has.
 const num = (x, dflt, min, max) =>
   typeof x === "number" && Number.isFinite(x) && x >= min && x <= max ? x : dflt;
+// pct01 validates a wire PERCENT (0-100) and converts it to a FRACTION (0-1) for box-side use,
+// falling back to dflt (already a fraction) on anything malformed — same safe-direction posture.
+const pct01 = (x, dflt) =>
+  typeof x === "number" && Number.isFinite(x) && x >= 0 && x <= 100 ? x / 100 : dflt;
+
+// intensityRates resolves the wire comment_intensity_rates object (percent 0-100 per bucket) into
+// the box's internal fraction (0-1) shape, falling back per-bucket to the default so a partially-
+// malformed object degrades gracefully rather than discarding the whole thing.
+function intensityRates(x, dflt) {
+  const o = x && typeof x === "object" ? x : {};
+  return {
+    low: pct01(o.low, dflt.low),
+    medium: pct01(o.medium, dflt.medium),
+    high: pct01(o.high, dflt.high),
+  };
+}
 
 // resolveVariation normalizes whatever arrived on push_job into a complete, valid toggle set.
 //
@@ -98,8 +120,10 @@ export function resolveVariation(block) {
     html_minify: bool(b.html_minify, d.html_minify),
     comment_injection: bool(b.comment_injection, d.comment_injection),
     comment_intensity: oneOf(b.comment_intensity, COMMENT_INTENSITIES, d.comment_intensity),
+    comment_intensity_rates: intensityRates(b.comment_intensity_rates, d.comment_intensity_rates),
     css_micro: bool(b.css_micro, d.css_micro),
     css_magnitude_px: num(b.css_magnitude_px, d.css_magnitude_px, 1, 1000),
+    css_skip_below_px: num(b.css_skip_below_px, d.css_skip_below_px, 0, 1000),
     unique_url_params: bool(b.unique_url_params, d.unique_url_params),
     zero_width: bool(b.zero_width, d.zero_width),
     zero_width_rate: num(b.zero_width_rate, d.zero_width_rate, 0, 1),

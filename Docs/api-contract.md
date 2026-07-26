@@ -165,3 +165,15 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > so an operator-set value of exactly `0` reaches the box as a real `0` rather than collapsing to the
 > box's own internal default via the omitted-field fallback. Growing `sender_0020` from fourteen keys
 > to seventeen.
+>
+> **Amended 2026-07-26 (Phase 9.5 S11, §2.4, P9.5-OD-3 RULED) — two more additive fields:**
+> `comment_intensity_rates` (object `{low,medium,high}`, percent 0–100 — the per-bucket comment-
+> injection rate table, replacing the box's own hardcoded `{low:5,medium:15,high:30}`) and
+> `css_skip_below_px` (integer, `omitempty` — the px value below which `css_micro` leaves a
+> padding/margin declaration untouched, replacing the box's own hardcoded `<3px`). **P9.5-OD-3**
+> (recorded in `Docs/open-decisions.md`): `sender_0021`'s `variation_zero_width_rate_pct` and
+> `variation_css_micro_params.delta_px` are documented DUPLICATES of the already-wired
+> `variation_zero_width_rate`/`variation_css_magnitude_px` (P8-OD-1) under a different unit/shape —
+> ruled to wire only the two genuinely-new sub-values (the rate table, the skip-below threshold) onto
+> the existing keys' already-established delivery mechanism, and leave the two duplicate parameters
+> unconsumed rather than introduce a second, competing source of truth for the same box behavior.

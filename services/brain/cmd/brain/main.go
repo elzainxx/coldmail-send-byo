@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sender-module/brain/internal/adminapi"
 	"github.com/sender-module/brain/internal/boxlink"
@@ -52,11 +55,20 @@ func main() {
 	// Singleton guard: exactly one active Brain. Bounded-wait-then-fail. A second Brain
 	// that cannot acquire the session-level advisory lock exits non-zero and does nothing.
 	// Uses a DEDICATED standalone connection (its own DSN), independent of the pool.
-	guard, err := singleton.Acquire(ctx, cfg.DatabaseURL, cfg.SingletonAcquireTimeout)
+	//
+	// brain_singleton_acquire_timeout_sec (Phase 9.5 B5, §5.2, seeded sender_0021) is config-not-code
+	// (CLAUDE.md Rule 1) — the env var BRAIN_SINGLETON_ACQUIRE_TIMEOUT_SEC is ONLY the Phase-0
+	// bootstrap default (OD-18: before sender.config existed) and is used ONLY as the fallback when
+	// the DB read fails (e.g. a genuinely pre-migration database — the runner hasn't applied
+	// sender_0021 yet). The already-connected pool can read the live value BEFORE the singleton
+	// lock is attempted; a bad/missing row degrades to the env default rather than blocking startup
+	// on a config problem the singleton guard itself has nothing to do with.
+	acquireTimeout := readSingletonAcquireTimeout(ctx, database.Pool, cfg.SingletonAcquireTimeout)
+	guard, err := singleton.Acquire(ctx, cfg.DatabaseURL, acquireTimeout)
 	if err != nil {
 		if errors.Is(err, singleton.ErrNotAcquired) {
 			// This is the correct, clean exit for a second Brain — not a crash.
-			log.Printf("singleton lock not acquired within %s: another Brain is active; exiting cleanly", cfg.SingletonAcquireTimeout)
+			log.Printf("singleton lock not acquired within %s: another Brain is active; exiting cleanly", acquireTimeout)
 			database.Close()
 			os.Exit(3)
 		}
@@ -258,4 +270,26 @@ func main() {
 	_ = link.Shutdown(shutdownCtx)
 	_ = stream.Close()
 	log.Printf("shutdown complete (no job was requeued or marked on the way out — §4.2 leave-in-place)")
+}
+
+// readSingletonAcquireTimeout reads the live brain_singleton_acquire_timeout_sec (Phase 9.5 B5,
+// §5.2) from the already-connected pool, falling back to envDefault (the Phase-0 bootstrap value,
+// OD-18) on any read/parse failure — a missing row (pre-sender_0021 database) or a transient DB
+// blip must not block startup on a config problem the singleton guard itself has nothing to do
+// with. This is a minimal, scoped-to-one-key reader rather than a full dispatch.LoadConfig call:
+// at this point in startup the send-path config (job_max_processing_time_sec etc.) has not been
+// validated yet, and a config-ordering violation elsewhere must not prevent the singleton guard
+// itself from running.
+func readSingletonAcquireTimeout(ctx context.Context, pool *pgxpool.Pool, envDefault time.Duration) time.Duration {
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'brain_singleton_acquire_timeout_sec'`).Scan(&raw); err != nil {
+		return envDefault
+	}
+	var wrap struct {
+		V *int `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil || *wrap.V < 0 {
+		return envDefault
+	}
+	return time.Duration(*wrap.V) * time.Second
 }

@@ -1,6 +1,7 @@
 package platformapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,11 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// QuoteUnitCredits is the Phase-3 documented unit cost per recipient (§6.1). This is a pricing
-// CONSTANT of the trivial pass-through quote stub, NOT a behavioral tuning dial (config-not-code
-// governs runtime send behavior; the quote unit is a documented contract value that Phase 9's
-// real pricing tiers replace). Same category as the describe stub's static tier document.
-const QuoteUnitCredits = 1
+// defaultQuoteUnitCredits is the fallback used ONLY if unit_price_credits is unreadable (should
+// never happen post-sender_0021 — the key is seeded with this exact value). Not itself a tuning
+// dial: the real, live-retunable value is read fresh from sender.config on every request via
+// readUnitPriceCredits (Phase 9.5 S10, §2.4) — config-not-code, no redeploy needed for a price
+// change to take effect.
+const defaultQuoteUnitCredits = 1
 
 // uuidRe validates a canonical hyphenated UUID (job_item_id / job_id inputs).
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -38,9 +40,12 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 			withDetails(fieldDetail{Field: "recipient_count", Issue: issueRequired}))
 		return
 	}
+	ctx, cancel := dbCtx(r.Context())
+	defer cancel()
+	unit := s.readUnitPriceCredits(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"recipient_count": *req.RecipientCount,
-		"cost":            *req.RecipientCount * QuoteUnitCredits,
+		"cost":            *req.RecipientCount * unit,
 		"currency":        "credits",
 	})
 }
@@ -161,17 +166,40 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 // --- GET /v1/describe — minimal tiers/pricing stub (§6.4) ---
 
 func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := dbCtx(r.Context())
+	defer cancel()
+	unit := s.readUnitPriceCredits(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"module":       "sender",
 		"phase":        3,
 		"capabilities": []string{"single_send"},
 		"pricing": map[string]any{
 			"tier":     "flat",
-			"unit":     QuoteUnitCredits,
+			"unit":     unit,
 			"currency": "credits",
 			"note":     "Phase 3 flat pricing stub; real tiers land in Phase 9.",
 		},
 	})
+}
+
+// readUnitPriceCredits reads unit_price_credits fresh from sender.config (Phase 9.5 S10, §2.4) —
+// live-retunable, no redeploy. platformapi does NOT import internal/dispatch's LoadConfig
+// (structural package isolation, OD-7's precedent — mirrors internal/adminapi's own local config
+// readers), so this is a minimal, scoped-to-one-key local reader. Falls back to the seeded default
+// on any read/parse failure rather than failing the request — quote/describe are read-mostly,
+// low-stakes endpoints and a transient config-read blip must not 500 every quote in flight.
+func (s *Server) readUnitPriceCredits(ctx context.Context) int {
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'unit_price_credits'`).Scan(&raw); err != nil {
+		return defaultQuoteUnitCredits
+	}
+	var wrap struct {
+		V *int `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return defaultQuoteUnitCredits
+	}
+	return *wrap.V
 }
 
 // --- helpers ---

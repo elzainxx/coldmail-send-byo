@@ -190,6 +190,89 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateWebhookURL(key, value); perr != nil {
 			return perr
 		}
+	case "unit_price_credits":
+		// Phase 9.5 S10 §6: 0-1000 credits/recipient (0 is a legitimate "free" tier, not an error).
+		if n, ok := asInt(value); !ok || n < 0 || n > 1000 {
+			return typeErr(key, issueOutOfRange, "config_unit_price_credits_out_of_range")
+		}
+	case "health_metrics_window_sec":
+		// Phase 9.5 B3 §6: 60-86400 seconds (1 minute to 1 day).
+		if n, ok := asInt(value); !ok || n < 60 || n > 86400 {
+			return typeErr(key, issueOutOfRange, "config_health_metrics_window_sec_out_of_range")
+		}
+	case "brain_singleton_acquire_timeout_sec":
+		// Phase 9.5 B5 §6: 0-600 seconds (0 = fail-fast, no wait).
+		if n, ok := asInt(value); !ok || n < 0 || n > 600 {
+			return typeErr(key, issueOutOfRange, "config_brain_singleton_acquire_timeout_sec_out_of_range")
+		}
+	case "variation_comment_intensity_rates":
+		// Phase 9.5 S11 §6 inner shape: low/medium/high all present, each 0-100. Same write-check +
+		// read-fallback posture as status_score_weights/retry_backoff_schedule.
+		if perr := validateIntensityRates(key, value); perr != nil {
+			return perr
+		}
+	case "variation_zero_width_rate_pct":
+		// Phase 9.5 S11 §6: 0-100 (a documented duplicate of variation_zero_width_rate, P9.5-OD-3 —
+		// validated the same regardless of consumption status).
+		if n, ok := asInt(value); !ok || n < 0 || n > 100 {
+			return typeErr(key, issueOutOfRange, "config_variation_zero_width_rate_pct_out_of_range")
+		}
+	case "variation_css_micro_params":
+		// Phase 9.5 S11 §6 inner shape: delta_px 0-5, skip_below_px 0-20.
+		if perr := validateCSSMicroParams(key, value); perr != nil {
+			return perr
+		}
+	}
+	return nil
+}
+
+// validateIntensityRates checks the §6 inner object shape of variation_comment_intensity_rates:
+// low/medium/high all present, each an integer percent 0-100.
+func validateIntensityRates(key string, value json.RawMessage) *apiError {
+	var r struct {
+		Low    *json.Number `json:"low"`
+		Medium *json.Number `json:"medium"`
+		High   *json.Number `json:"high"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.UseNumber()
+	if err := dec.Decode(&r); err != nil {
+		return typeErr(key, issueMalformed, "config_variation_comment_intensity_rates_malformed")
+	}
+	pct := func(n *json.Number) bool {
+		if n == nil {
+			return false
+		}
+		v, err := n.Int64()
+		return err == nil && v >= 0 && v <= 100
+	}
+	if !pct(r.Low) || !pct(r.Medium) || !pct(r.High) {
+		return typeErr(key, issueForbiddenValue, "config_variation_comment_intensity_rates_out_of_range")
+	}
+	return nil
+}
+
+// validateCSSMicroParams checks the §6 inner object shape of variation_css_micro_params:
+// delta_px 0-5, skip_below_px 0-20.
+func validateCSSMicroParams(key string, value json.RawMessage) *apiError {
+	var p struct {
+		DeltaPx     *json.Number `json:"delta_px"`
+		SkipBelowPx *json.Number `json:"skip_below_px"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.UseNumber()
+	if err := dec.Decode(&p); err != nil {
+		return typeErr(key, issueMalformed, "config_variation_css_micro_params_malformed")
+	}
+	inRange := func(n *json.Number, max int64) bool {
+		if n == nil {
+			return false
+		}
+		v, err := n.Int64()
+		return err == nil && v >= 0 && v <= max
+	}
+	if !inRange(p.DeltaPx, 5) || !inRange(p.SkipBelowPx, 20) {
+		return typeErr(key, issueForbiddenValue, "config_variation_css_micro_params_out_of_range")
 	}
 	return nil
 }

@@ -533,16 +533,28 @@ the manifest + reference in the same change; `default_value` never mutated; `con
 deliberately does NOT add `brain_singleton_acquire_timeout_sec` ≥ `shutdown_drain_timeout_sec` as a
 third reject-enforced invariant (documented operational guidance only, §6's own note, avoiding
 over-constraining two independently-owned dials)) ✅ · DoD-5 (**no hardcoded tuning constant** —
-every one of the eleven dials resolves to a seeded row; `OutcomeHandler`'s pre-existing staleness bug
-(P9.5-OD-2) meant several ALREADY-SEEDED Phase 5/6/7 dials — `quarantine_threshold`,
-`throttle_pause_seconds`, the backoff ladder, the score weights — were silently stale-since-boot on
-the report-handling path; fixed by threading a freshly-`LoadConfig`'d `Config` through the whole
-`Handle()`→`applyAccountEffect`→`recomputeScoreOn{Success,Failure}`→`backoffSecondsForClass`→
-`writeSendLog` call chain, so every dial on that path — old and new — now takes effect on the very
-next report, no restart, matching `Tick`/`ReclaimTick`'s own established pattern) ✅ · DoD-6 (Open
-Decisions: P9.5-OD-1 and P9.5-OD-2 are both **RULED**, full dispositions recorded, no contradiction
-silently resolved, no locked decision reinterpreted in code without a recorded ruling; needs-user is
-empty) ✅ · DoD-7 (**additive only** — `sender_0021` seeds eleven config rows only, zero DDL, zero
+every one of the eleven dials resolves to a seeded row AND is genuinely consumed downstream, not
+merely loaded into `Config` and left there: R2's review-gate pass (P9.5-OD-3) caught that `quote`/
+`describe` still used the old hardcoded `QuoteUnitCredits` constant (S10) and that S11's rate table/
+skip-threshold never reached `push_job.variation`, despite the spec's own §2.4 text and an earlier
+draft of this closeout both claiming they were wired — both fixed before sign-off (`platformapi`
+now reads `unit_price_credits` fresh per request via its own local `sender.config` reader, mirroring
+`adminapi`'s package-isolation pattern; `variationSnapshot`/box-side `resolveVariation` now carry
+the comment-intensity rate table and the CSS skip-below threshold). The other two S11 sub-values
+(`variation_zero_width_rate_pct`, `variation_css_micro_params.delta_px`) were found to be genuine
+duplicates of the already-wired Phase 8 `variation_zero_width_rate`/`variation_css_magnitude_px`
+(P8-OD-1) and are deliberately left unconsumed rather than wired as a second, competing source of
+truth for the same box behavior — see P9.5-OD-3's full disposition. Separately, `OutcomeHandler`'s
+pre-existing staleness bug (P9.5-OD-2) meant several ALREADY-SEEDED Phase 5/6/7 dials —
+`quarantine_threshold`, `throttle_pause_seconds`, the backoff ladder, the score weights — were
+silently stale-since-boot on the report-handling path; fixed by threading a freshly-`LoadConfig`'d
+`Config` through the whole `Handle()`→`applyAccountEffect`→`recomputeScoreOn{Success,Failure}`→
+`backoffSecondsForClass`→`writeSendLog` call chain, so every dial on that path — old and new — now
+takes effect on the very next report, no restart, matching `Tick`/`ReclaimTick`'s own established
+pattern) ✅ · DoD-6 (Open Decisions: P9.5-OD-1, P9.5-OD-2, and P9.5-OD-3 are all **RULED**, full
+dispositions recorded, no contradiction silently resolved, no locked decision reinterpreted in code
+without a recorded ruling; needs-user is empty) ✅ · DoD-7 (**additive only** — `sender_0021` seeds
+eleven config rows only, zero DDL, zero
 enum/column/table/constraint/index touched, matching the spec's own §10 confirmation; chain
 contiguous `0000..0021`; `runner_integration_test.go` proves both the 11-key apply and the 11-key
 removal on Down; **grants**: all eleven rows land on the pre-existing `sender.config` table

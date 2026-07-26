@@ -85,6 +85,21 @@ test("comment_injection: injected comments are never rendered content (semantic 
   assert.equal(a.replace(/<!--[0-9a-f]{8}-->/g, ""), body);
 });
 
+test("comment_injection: Phase 9.5 S11 — an explicit rates table overrides the hardcoded COMMENT_RATE per bucket", () => {
+  const bigBody = "<div>" + "<p>text</p>".repeat(400) + "</div>";
+  const countAt = (intensity, rates) =>
+    (injectComments(bigBody, intensity, "job-s11-rate", rates).match(/<!--[0-9a-f]{8}-->/g) || []).length;
+  // A rates table with "low" cranked up to the hardcoded "high" rate must inject roughly as many
+  // comments as the hardcoded "high" bucket does — proving the override, not the built-in table, drove it.
+  const overriddenLow = countAt("low", { low: 0.30, medium: 0.15, high: 0.30 });
+  const defaultLow = countAt("low", undefined);
+  assert.ok(overriddenLow > defaultLow, `overridden low-as-high (${overriddenLow}) should inject far more than the default low rate (${defaultLow})`);
+  // No rates argument at all falls back to the original hardcoded table (backward compatible).
+  const noArg = countAt("low", undefined);
+  const explicitDefault = countAt("low", { low: 0.05, medium: 0.15, high: 0.30 });
+  assert.equal(noArg, explicitDefault, "omitting rates must behave identically to passing the hardcoded defaults explicitly");
+});
+
 // --- Toggle 3: CSS micro-variation ------------------------------------------------------------------
 
 test("css_micro: varies padding/margin by seeded {-1,0,+1}px, skips <3px, never negative", () => {
@@ -122,6 +137,26 @@ test("css_micro: variation_css_magnitude_px (amended, P8-OD-1) widens the spread
     if (Math.abs(varied - 100) > 1) sawLargeDelta = true;
   }
   assert.ok(sawLargeDelta, "magnitude=10 across 30 job_ids never produced a delta >1px — the parameter is not reaching the transform");
+});
+
+test("css_micro: Phase 9.5 S11 — an explicit skipBelowPx overrides the hardcoded <3px threshold", () => {
+  const body = `<div style="padding: 5px; margin: 2px;"></div>`;
+  // With skipBelowPx=9, a 5px declaration (which the default <3px threshold would vary) must now
+  // be skipped too — proving the parameter, not the hardcoded 3, drove the skip decision.
+  const out = applyCssVariation(body, "job-css-skip", 1, 9);
+  assert.ok(out.includes("padding: 5px"), "padding=5px must be skipped when skipBelowPx=9 (5 < 9)");
+  assert.ok(out.includes("margin: 2px"), "margin=2px stays skipped either way (2 < 9)");
+  // Omitting skipBelowPx falls back to the original hardcoded 3px threshold (backward compatible):
+  // across several job_ids, a 5px declaration (>=3) must vary on at least one draw (a magnitude-1
+  // draw of exactly 0 is possible on any single job_id, so check across a small sample rather than
+  // asserting a single draw).
+  let variedAtLeastOnce = false;
+  for (let i = 0; i < 10; i++) {
+    const outDefault = applyCssVariation(body, `job-css-skip2-${i}`, 1);
+    const paddingMatch = outDefault.match(/padding:\s*(\d+)px/);
+    if (paddingMatch[1] !== "5") variedAtLeastOnce = true;
+  }
+  assert.ok(variedAtLeastOnce, "padding=5px (>=3) never varied across 10 job_ids when skipBelowPx is omitted (default 3) — the skip is not falling back correctly");
 });
 
 // --- Toggle 4: unique link/image URL params (NOT tracking) -------------------------------------

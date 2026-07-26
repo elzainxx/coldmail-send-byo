@@ -63,15 +63,21 @@ export function htmlMinify(body) {
 
 // --- Toggle 2: invisible comment injection (variation_comment_injection + _intensity, ref B2) ----
 
+// COMMENT_RATE is the fallback used when the caller passes no `rates` (or an incomplete one) —
+// the Phase 8 original hardcoded table. Phase 9.5 S11 (RULED, P9.5-OD-3) promotes these three
+// numbers to the `variation_comment_intensity_rates` config dial, delivered per-call via
+// injectComments' 4th argument rather than as a second hardcoded constant, so there is exactly
+// one source of truth once the caller supplies rates (variation.js's resolved `rates` object).
 const COMMENT_RATE = { low: 0.05, medium: 0.15, high: 0.30 };
 
 // injectComments: after each closing tag, seeded-decide (per occurrence, in document order) whether
 // to append an invisible `<!--{8 seeded hex chars}-->`. Two draws per closing tag from the SAME
 // job+"comments"-seeded stream — one for the rate decision, four (one per byte) for the hex payload
 // when it fires — so the whole injection is reproducible for a given job_id and unaffected by any
-// OTHER toggle's own stream (§7/P8-6 no hidden coupling).
-export function injectComments(body, intensity, jobId) {
-  const rate = COMMENT_RATE[intensity] ?? COMMENT_RATE.low;
+// OTHER toggle's own stream (§7/P8-6 no hidden coupling). `rates` (optional, {low,medium,high} as
+// fractions 0-1) overrides COMMENT_RATE per bucket when provided — Phase 9.5 S11.
+export function injectComments(body, intensity, jobId, rates) {
+  const rate = (rates && rates[intensity]) ?? COMMENT_RATE[intensity] ?? COMMENT_RATE.low;
   const rng = prngFor(jobId, "comments");
   return body.replace(/(<\/\w+>)/g, (match) => {
     if (rng() < rate) {
@@ -87,16 +93,19 @@ export function injectComments(body, intensity, jobId) {
 
 // applyCssVariation: vary integer `padding`/`margin` px values by a seeded
 // {-magnitudePx, ..., +magnitudePx} (magnitudePx amended post-Chunk-5 from a fixed ±1 to the
-// variation_css_magnitude_px config parameter, P8-OD-1 RULED-WIDEN). Skips values <3px and decimal
-// values (preserve precision, matching the reference); never lets the result go below 0. One draw
-// per matched declaration from the job+"css" stream.
-export function applyCssVariation(body, jobId, magnitudePx) {
+// variation_css_magnitude_px config parameter, P8-OD-1 RULED-WIDEN). Skips values below
+// skipBelowPx (amended Phase 9.5 S11, RULED P9.5-OD-3: was a fixed <3px in code; defaults to 3
+// when omitted, preserving the original threshold) and decimal values (preserve precision,
+// matching the reference); never lets the result go below 0. One draw per matched declaration
+// from the job+"css" stream.
+export function applyCssVariation(body, jobId, magnitudePx, skipBelowPx) {
   const magnitude = magnitudePx ?? 1;
+  const skipBelow = skipBelowPx ?? 3;
   const span = magnitude * 2 + 1; // number of integers in [-magnitude, +magnitude]
   const rng = prngFor(jobId, "css");
   return body.replace(/(padding|margin):\s*(\d+(?:\.\d+)?)px/g, (match, prop, px) => {
     const original = parseFloat(px);
-    if (original < 3) return match;
+    if (original < skipBelow) return match;
     if (px.includes(".")) return match;
     const delta = Math.floor(rng() * span) - magnitude;
     const varied = Math.round(original) + delta;
@@ -183,12 +192,12 @@ export const contentStages = [
   {
     name: "comment_injection",
     active: (v) => v.comment_injection,
-    apply: (msg, v, jobId) => withBody(msg, injectComments(msg.body, v.comment_intensity, jobId)),
+    apply: (msg, v, jobId) => withBody(msg, injectComments(msg.body, v.comment_intensity, jobId, v.comment_intensity_rates)),
   },
   {
     name: "css_micro",
     active: (v) => v.css_micro,
-    apply: (msg, v, jobId) => withBody(msg, applyCssVariation(msg.body, jobId, v.css_magnitude_px)),
+    apply: (msg, v, jobId) => withBody(msg, applyCssVariation(msg.body, jobId, v.css_magnitude_px, v.css_skip_below_px)),
   },
   {
     name: "unique_url_params",

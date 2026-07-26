@@ -101,6 +101,22 @@ test("resolveVariation: the three amended rate/magnitude parameters (P8-OD-1) pa
   assert.equal(boundary.user_agent_rate, 1);
 });
 
+test("resolveVariation: Phase 9.5 S11 — comment_intensity_rates (percent 0-100 wire -> fraction 0-1) and css_skip_below_px pass through when valid, degrade per-bucket/whole when malformed", () => {
+  const valid = resolveVariation({ comment_intensity_rates: { low: 10, medium: 20, high: 40 }, css_skip_below_px: 9 });
+  assert.deepEqual(valid.comment_intensity_rates, { low: 0.1, medium: 0.2, high: 0.4 });
+  assert.equal(valid.css_skip_below_px, 9);
+
+  // A partially-malformed rates object degrades ONLY the bad bucket, not the whole object.
+  const partial = resolveVariation({ comment_intensity_rates: { low: 10, medium: "bad", high: 200 } });
+  assert.equal(partial.comment_intensity_rates.low, 0.1);
+  assert.equal(partial.comment_intensity_rates.medium, VARIATION_DEFAULTS.comment_intensity_rates.medium, "non-numeric medium must degrade to the default fraction");
+  assert.equal(partial.comment_intensity_rates.high, VARIATION_DEFAULTS.comment_intensity_rates.high, "out-of-range (>100) high must degrade to the default fraction");
+
+  // Absent/malformed block ⇒ the full default table, never throws.
+  assert.deepEqual(resolveVariation(undefined).comment_intensity_rates, VARIATION_DEFAULTS.comment_intensity_rates);
+  assert.equal(resolveVariation({ css_skip_below_px: -1 }).css_skip_below_px, VARIATION_DEFAULTS.css_skip_below_px, "a negative skip-below must degrade to the default");
+});
+
 test("isNeutral: true for defaults/absent, and toggle PARAMETERS alone never flip it", () => {
   assert.equal(isNeutral(resolveVariation(undefined)), true);
   assert.equal(isNeutral(resolveVariation({})), true);
@@ -113,6 +129,9 @@ test("isNeutral: true for defaults/absent, and toggle PARAMETERS alone never fli
   assert.equal(isNeutral(resolveVariation({ css_magnitude_px: 10 })), true);
   assert.equal(isNeutral(resolveVariation({ zero_width_rate: 0.9 })), true);
   assert.equal(isNeutral(resolveVariation({ user_agent_rate: 0.9 })), true);
+  // Same claim for the two Phase 9.5 S11 parameters.
+  assert.equal(isNeutral(resolveVariation({ comment_intensity_rates: { low: 90, medium: 90, high: 90 } })), true);
+  assert.equal(isNeutral(resolveVariation({ css_skip_below_px: 0 })), true);
 });
 
 test("isNeutral: false once a real body/content toggle is switched on (Chunk 3 stages registered)", () => {
