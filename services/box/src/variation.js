@@ -32,11 +32,16 @@
 // stage draws from its OWN independently-seeded stream (`prngFor(jobId, "css")` etc.), which is what
 // makes the toggles genuinely independent — enabling one cannot shift another's draws (§8 T2).
 //
-// STAGES land across Phase 8's chunks: this file ships the pipeline, the resolver, and the
-// determinism primitives; the body/content transforms and the header/MIME transforms register
-// themselves in STAGES below.
+// STAGES lands across Phase 8's chunks: this file ships the pipeline + the resolver; the
+// determinism primitives live in variation-seed.js (re-exported below for existing importers); the
+// body/content transforms (Chunk 3, variation-content.js) and the header/MIME transforms (Chunk 4)
+// register themselves into STAGES here, each from their own module so a chunk's transforms stay
+// reviewable independently of this file's scaffolding.
 
-import crypto from "node:crypto";
+import { prngFor, hashFor, pickSeeded } from "./variation-seed.js";
+import { contentStages } from "./variation-content.js";
+
+export { prngFor, hashFor, pickSeeded };
 
 // VARIATION_DEFAULTS is the resolved shape of an ABSENT variation block, and the value of every key
 // at its seeded default (§6.1). This set IS the Phase 3 identity — see the header. It is not a tuning
@@ -105,41 +110,6 @@ export function isNeutral(v) {
   return !STAGES.some((s) => s.active(v));
 }
 
-// --- determinism (§7, P8-5) ---------------------------------------------------------------------
-
-// prngFor returns a deterministic PRNG for (jobId, stream). `stream` NAMESPACES the sequence so each
-// toggle draws independently: enabling one toggle cannot shift another's draws, which is exactly what
-// makes the toggles independent (§8 T2, and P8-6's no-hidden-coupling requirement). The algorithm is
-// a 32-bit xorshift seeded from a hash of `${jobId}:${stream}` — deterministic, dependency-free, and
-// NOT security-relevant (it selects whitespace and px values; it never touches a credential, a key,
-// or anything that must be unpredictable).
-export function prngFor(jobId, stream) {
-  const h = crypto.createHash("md5").update(`${jobId}:${stream}`).digest();
-  let s = h.readUInt32BE(0) || 0x9e3779b9; // a zero seed would make xorshift degenerate to zero
-  return () => {
-    s ^= s << 13;
-    s >>>= 0;
-    s ^= s >>> 17;
-    s ^= s << 5;
-    s >>>= 0;
-    return s / 0x100000000;
-  };
-}
-
-// hashFor returns a stable lowercase hex digest of (jobId, stream), truncated to `len` chars — the
-// primitive behind the inert URL cache-buster and the seeded comment payloads. Same job ⇒ same value,
-// different jobs ⇒ different values.
-export function hashFor(jobId, stream, len) {
-  return crypto.createHash("md5").update(`${jobId}:${stream}`).digest("hex").slice(0, len);
-}
-
-// pickSeeded chooses one element of `list` deterministically for (jobId, stream). Returns undefined
-// for an empty list so a caller can treat "no candidates" as "do nothing".
-export function pickSeeded(list, jobId, stream) {
-  if (!Array.isArray(list) || list.length === 0) return undefined;
-  return list[Math.floor(prngFor(jobId, stream)() * list.length) % list.length];
-}
-
 // --- the pipeline -------------------------------------------------------------------------------
 
 // STAGES is the ordered transform list of §4.2. Each entry is
@@ -154,10 +124,12 @@ export function pickSeeded(list, jobId, stream) {
 // Order matters and follows the reference: body/content first (preheader → minify → comments → css →
 // url params → zero-width), then encoding/MIME/header engineering.
 //
-// The body/content stages (toggles 1-5, 8) and the header/MIME stages (toggles 6, 7, 9-12) are
-// registered by later Phase 8 chunks. An empty STAGES list means the layer is unconditionally the
-// identity function — which is exactly the Phase 3 behavior, so the intermediate state is safe.
-export const STAGES = [];
+// Chunk 3 registers the five body/content stages (toggles 1, 2, 3, 4, 5 — dynamic preheader,
+// toggle 8, is body/content too but ships in Chunk 4 alongside the still-open toggles, inserted
+// before minify per §1.1's order when it lands). The header/MIME stages (toggles 6, 7, 9-12) are
+// registered by Chunk 4. A STAGES entry runs only when its own `active` predicate is true, so an
+// empty/undefined toggle set still yields the identity function (§4) regardless of what's registered.
+export const STAGES = [...contentStages];
 
 // applyVariation runs the pipeline. With an all-default toggle set NO stage is active, so the
 // message object is returned UNCHANGED (identity, §4.2) — the assembler then serializes exactly the

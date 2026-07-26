@@ -927,7 +927,7 @@ production caller** today — it must be pinned before any phase wires a reporti
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
 
-## Phase 8 state — content variation (IN PROGRESS: chunk 2 of 6 landed)
+## Phase 8 state — content variation (IN PROGRESS: chunk 3 of 6 landed)
 
 Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
 from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
@@ -1063,3 +1063,66 @@ client boundary carries this field — it is internal to the mTLS box channel.
 **Deferred to later chunks, deliberately not built here:** every actual toggle (Chunk 3 body/content,
 Chunk 4 encoding/headers/deterministic seeding), the `sender_0020` config seeds + intensities
 (Chunk 5), and the full T1–T9/S1–S2 suite + CI/docs/DoD closeout (Chunk 6).
+
+### Chunk 3 — body/content toggles (§5 toggles 1-5)
+
+**What landed.** The five body/content transforms, ported from the reference
+(`Docs/mailflow-worker (Sender Inspiration)/src/features/content-variation.ts`, B1/B2/B3/B4+B5/B6)
+with ONE deliberate adaptation: every random draw goes through the Chunk 2 job_id+stream-seeded
+PRNG (`variation-seed.js`, split out of `variation.js` this chunk to avoid an import cycle between
+the pipeline and the new per-toggle stage modules) instead of the reference's bare `Math.random()`
+— so the same job always produces the same variation (§7, proven ahead of schedule in Chunk 2's T1
+and now exercised for real by these stages).
+
+- **`services/box/src/variation-content.js`** (new): `htmlMinify` (strip HTML comments, PRESERVE
+  Outlook conditionals `<!--[if`/`<!--<![endif]-->`, collapse inter-tag/repeated whitespace,
+  trim/collapse empty lines — deterministic, no seed needed); `injectComments` (seeded per-closing-
+  tag decision at `low`/`medium`/`high` = 5%/15%/30%, each injected comment an 8-hex-char payload
+  drawn from the SAME job+"comments" stream); `applyCssVariation` (seeded {-1,0,+1}px on integer
+  `padding`/`margin`, skip <3px and decimal values, floor at 0); `addUniqueURLParams` (toggle 4 —
+  **NOT tracking**, appends `_ref=`/`_v=` derived from `job_id` alone, so every link/image in ONE
+  message shares one stable per-recipient hash, matching the reference's per-contact-not-per-link
+  design; skips an already-`_ref`/`_v`-bearing URL; appends no new domain/redirect/callback — see
+  the forward boundary in `variation.js`'s header and spec §9 P8-10); `insertZeroWidth` (toggle 5,
+  **default OFF** — ZWJ U+200D before ~5% of word-boundary spaces in visible text nodes only, skips
+  text under 5 chars and any space immediately after an HTML entity so an entity is never split).
+  All five register into `contentStages`, consumed by `variation.js`'s `STAGES` in the locked §1.1
+  order (minify → comments → css → url params → zero-width; toggle 8's preheader stage is body/
+  content too but ships in Chunk 4 alongside the still-open toggles, inserted before minify per
+  §1.1 when it lands).
+- **`services/box/src/variation-seed.js`** (new, extracted from `variation.js`): `prngFor`/
+  `hashFor`/`pickSeeded` now live here so `variation-content.js` (and Chunk 4's header/MIME module)
+  can import them without a cycle through `variation.js`, which imports `contentStages` to build
+  `STAGES`. `variation.js` re-exports all three unchanged for existing importers.
+
+**Tests** (`services/box/test/variation-content.test.mjs`, 24 tests, all real code paths — no
+mocks). Per-toggle: minify strips/preserves per spec and is toggle-gated; comment injection rate
+scales low<medium<high on a 400-tag body and strips back to the exact original (semantic no-op);
+CSS varies by ≤1px, skips <3px and decimals; URL params are stable per job_id, unique across two
+different job_ids, skip an already-tagged URL, and — the forward-boundary assertion — introduce no
+`mail-track`/`redirect`/tracking-domain string anywhere in the output; zero-width defaults off
+(`resolveVariation` never turns it on unasked), a default-toggle assembly contains zero U+200D,
+an enabled one inserts ZWJ only immediately before a space in visible text (never inside a tag,
+attribute, URL, or immediately after an entity), and a short text node is left untouched. **§8
+T2** (independence): flipping `css_micro`/`unique_url_params`/`html_minify` alone against a shared
+baseline changes only that toggle's own effect (comments/URLs/CSS respectively left alone by the
+other two). Full-pipeline determinism: two `assembleDataBytes` calls with the same `job_id` and the
+same profile are byte-identical; variation on vs off differs. `variation.test.mjs`'s
+`isNeutral`/T1 tests were updated in place: `isNeutral` now correctly reports `false` once a real
+stage (e.g. `html_minify`) is active — the Chunk 2 placeholder documenting "no stages yet" is gone,
+superseded by this chunk's real registration.
+
+**Full suite re-verified.** `npm run check` (syntax) clean on the two new modules + the split
+`variation-seed.js`; `node --test services/box/test/*.test.mjs` 44/44 green (T1 byte-identity from
+Chunk 2 unaffected — the empty-toggle path still traverses zero active stages); `config_drift`/
+`migration_lint` unaffected (box-only chunk, no Go/migration/config change).
+
+**Security surface: unchanged.** Every stage operates on `msg.body`/`msg.headers` only; none reads
+`smtp.js`/`creds.js` or touches the credential/TLS/STARTTLS path. `addUniqueURLParams` is verified
+(by test, not just design intent) to introduce no callback/redirect/tracking surface.
+
+**Deferred to later chunks:** toggles 6-12 + deterministic Message-ID/seeding proof at the full-
+message level (Chunk 4), the `sender_0020` config seeds for all fourteen keys + intensities
+(Chunk 5, still pending — Chunk 3's toggles are driven by literal test fixtures, not yet by
+`sender.config`, since `defaultVariationSnapshot()` remains the Chunk 2 placeholder), and the full
+T1–T9/S1–S2 suite + CI/docs/DoD closeout (Chunk 6).

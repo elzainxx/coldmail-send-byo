@@ -92,13 +92,9 @@ test("isNeutral: true for defaults/absent, and toggle PARAMETERS alone never fli
   assert.equal(isNeutral(resolveVariation({ preheader_templates: ["custom"] })), true);
 });
 
-test("isNeutral: false once STAGES contains an active entry (forward-looking, no live stages yet)", () => {
-  // Chunk 2 ships STAGES empty (later chunks register real transforms) — assert that honestly
-  // rather than asserting isNeutral(true-toggle)===false, which would be vacuous until a stage
-  // exists to consult. This documents the current state so a later chunk's registration is the
-  // thing that flips this test's premise, not a silent behavior change.
+test("isNeutral: false once a real body/content toggle is switched on (Chunk 3 stages registered)", () => {
   const anyToggleOn = resolveVariation({ html_minify: true });
-  assert.equal(isNeutral(anyToggleOn), true, "no stages registered yet — isNeutral is unconditionally true until Chunk 3 adds the first one");
+  assert.equal(isNeutral(anyToggleOn), false, "html_minify is a registered stage — isNeutral must report non-neutral");
 });
 
 test("determinism: prngFor/pickSeeded are stable for the same (jobId, stream) and diverge across streams/jobs", () => {
