@@ -330,6 +330,36 @@ by all three and is asserted under restart, outage, and shutdown.
 
 **Needs-user: empty.** P9.5-OD-2 is RULED and implemented; the full dispatch/adminapi/platformapi suites and the live harness (53/53) are green with the fix in place.
 
+### Phase 9.5 closeout (Chunk 5 — B5 re-verification + B6/E11 load test)
+
+B5 (Brain singleton) was confirmed ALREADY BUILT in Phase 0, not rebuilt this phase — re-verified
+live with a genuine second Brain process (`docker compose run --rm --no-deps brain` against the
+SAME Postgres): it exits non-zero within its bounded `brain_singleton_acquire_timeout_sec`, logs
+"another Brain is active; exiting cleanly", and issues zero claim/push; the first Brain's `/readyz`
+confirms `singleton_lock:true` throughout, unaffected. This is also `tests/harness/run.sh`'s
+pre-existing SUITE 4, re-run green as part of the full harness.
+
+B6/E11 (the single-Brain throughput-ceiling scale gate) shipped as `tests/harness/load_e11.sh`,
+recording its numbers in the new `Docs/load-test-results.md` per **OD-7's ruling** (a committed,
+versioned doc artifact, not a dashboard). One methodological correction surfaced and fixed WHILE
+authoring the script, recorded here rather than silently patched: the first draft measured
+`send_rate_per_min` with the Phase 6 per-lane pacing delay (`send_delay_min_sec`/`send_delay_max_sec`,
+default 3-7s) still active, which throttles throughput at roughly `lanes/avg_delay` long before the
+Brain's own per-tick capacity is stressed — confounding exactly the variable §7 wants isolated (the
+same reasoning Phase 6's own T1 test uses in the opposite direction to prove its pacing IS
+delay-bound). Fixed by zeroing both keys for the run's duration (restored on exit, via the script's
+EXIT trap) and by shrinking `health_metrics_window_sec` to the run's own measurement window (the
+seeded 3600s default otherwise dilutes a short burst's rate into "per hour," reading near-zero). A
+second draft's saturation heuristic (comparing raw queue depth step-over-step) was also corrected:
+because each ramp step seeds MORE volume than the last, a bigger queue is expected regardless of
+saturation, so the real signal used is whether `send_rate_per_min` itself plateaus/regresses as
+lanes grow with boxes still active — exactly §7's own "backlog growth despite idle boxes" reasoning,
+applied to the metric that is actually comparable across steps.
+
+**Needs-user: empty.** No new Open Decision from Chunk 5; both B5 and B6/E11 close out per the
+spec's own §5/§7 without contradiction. Phase 9.5's five chunks are complete; see
+`Docs/definition-of-done.md`'s Phase 9.5 status block for the full nine-item closeout.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
@@ -481,6 +511,26 @@ deterministic realization with the harness's current primitives without either v
 single-registration invariant or introducing a hoped-for race Rule 10 would then require re-litigating).
 **Needs-user: empty** — every Phase 8 item is RULED, APPLIED, or a recorded, non-blocking FLAG. No
 locked spec was edited; both amendments were additive per CLAUDE.md §8.
+
+**Phase 9.5 (operability & control-plane safety, 2026-07-26) is built and closed.** All five
+chunks landed (B1 the global dispatch panic switch, B2 the shadow-quarantine ladder + auto-pause/
+variation kill-switches, B3 the read-only `/v1/admin/health` endpoint, B4 minimal alerting incl. the
+optional two-vocabulary-clean webhook, B5 re-verification + B6/E11 the single-Brain throughput-
+ceiling load test). Two items were filed rather than silently resolved: **P9.5-OD-1** (the build
+mandate's own instruction to gate `ReclaimRunner` on `dispatch_enabled` directly contradicted the
+spec's own §1.2 text and its O1 test) — **RULED: follow the spec, reclaim is NOT gated** — and
+**P9.5-OD-2** (a genuine pre-existing bug found while wiring B2: `OutcomeHandler.cfg` was captured
+once at construction and never refreshed, so several already-seeded Phase 5/6/7 dials were silently
+stale-since-boot on the report-handling path) — **RULED: thread fresh config through the whole call
+chain**, fixing every dial on that path at once. B5 (the Brain singleton) was confirmed
+ALREADY BUILT in Phase 0, not rebuilt — re-verified live with a genuine second Brain process. B6/E11
+shipped as `tests/harness/load_e11.sh`, recording a real measured ceiling (46→194→238→370→322
+sends/min across a 6-box ramp) in the new `Docs/load-test-results.md` per **OD-7's ruling**
+(committed, versioned doc artifact). The full clean-slate harness ran **52/53 green** — the one
+failure is the documented, pre-existing Phase 8 `comment_injection` intermittent (unrelated to and
+unaffected by this phase; that test file is locked). **Needs-user: empty** — both P9.5-OD-1 and
+P9.5-OD-2 are RULED and implemented; no locked spec was edited (only additive config seeds, one
+read-only route, one optional webhook, per the spec's own §10 confirmation).
 
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 

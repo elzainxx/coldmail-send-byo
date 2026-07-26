@@ -474,3 +474,95 @@ pending 9.5; note the NAME COLLISION on the record: the pre-existing Phase 9.5-r
 `variation_*` toggles — Phase 8 seeds none of the twelve toggles as a single on/off master switch, so
 when 9.5 seeds `variation_enabled` it will need to gate the whole `push_job.variation` stamp, exactly
 the same pattern 9.5 already owns for `dispatch_enabled`/reclaim/retention) ✅.
+
+**Phase 9.5's DoD status (operability & control-plane safety):** DoD-1 (spec
+`Docs/phase-9_5-operability-and-control-plane-safety.md`, PLAN-ONLY status header, implemented
+EXACTLY across five chunks — B1 panic switch, B2 shadow ladder + kill-switches, B3 observability
+endpoint, B4 minimal alerting, B5 verification + B6 load test/closeout; the one instruction-vs-spec
+contradiction the build mandate surfaced (whether `ReclaimRunner` gates on `dispatch_enabled`) was
+filed as P9.5-OD-1 and RULED to follow the spec's own §1.2 text, not silently picked either way) ✅ ·
+DoD-2 (real behavioral tests on real infra: the full clean-slate harness (`tests/harness/run.sh`) is
+**52/53 green** — the one failure is the PRE-EXISTING Phase 8 `comment_injection` intermittent miss
+(documented ~49% true-miss rate from its own fixture's two-closing-tag/30%-skip-per-tag math,
+Chunk 3's own commit message; unrelated to and unaffected by any Phase 9.5 change, and Phase 8's
+test file is locked/out-of-scope to modify here). `internal/dispatch` green (51.5s, including new
+`panicswitch_test.go` — B1 halts claim/push with zero loss, reclaim still runs per the P9.5-OD-1
+ruling — and `shadowmode_test.go` — B2's shadow mode logs without acting, with a PAIRED POSITIVE
+CONTROL that enforce acts on the identical condition, plus each kill-switch independently disabling
+only its own behavior). `internal/adminapi` green (5.4s, including `health_test.go`'s O4 — every
+`/v1/admin/health` field asserted against a direct DB `COUNT` under a known seeded mix, not merely
+"200 OK" — and `health_alerts_test.go`'s O5 — all three §4.1 conditions fire with NEGATIVE CONTROLS
+per condition (a healthy pool, an unused-but-exhausted pool, a shadow observation, an active box —
+proving each detection query discriminates real state, not "something exists"), the webhook fires
+EXACTLY ONCE across repeated polls of an unchanged condition (dedup), stays silent when
+`alert_webhook_url` is unset, and a failing webhook endpoint never blocks or slows the health
+response it rides with). B5 (Brain singleton) was ALREADY BUILT in Phase 0 — re-verified live in
+this phase, not rebuilt: a real second Brain process against the same Postgres exits non-zero within
+its bounded `brain_singleton_acquire_timeout_sec` reporting "another Brain is active; exiting
+cleanly", issues zero claim/push, and the first Brain's `/readyz` confirms `singleton_lock:true`
+throughout (`tests/harness/run.sh` SUITE 4, pre-existing, re-run green). B6/E11 (the single-Brain
+throughput-ceiling scale gate, §7): a new `tests/harness/load_e11.sh` provisions N real,
+distinctly-identified box processes (OD-15 option b) against the real Mailpit sink, zeroes the Phase
+6 per-lane pacing delay so the measurement isolates the Brain's own per-tick ceiling rather than the
+deliberate pacing throttle, and ramps `concurrency_per_user_default` while polling `GET
+/v1/admin/health`. A real run (6 boxes, dev host, 4 vCPU/8GiB) measured throughput climbing
+46→194→238→370 sends/min then plateauing to 322/min at lanes=12 — a genuine, non-mocked saturation
+signal — recorded per **OD-7's ruling** as a versioned doc artifact in `Docs/load-test-results.md`
+(not a dashboard), with the run's own caveat that 6 boxes were likely a partial co-bottleneck and a
+future capacity decision should re-run with more boxes before treating the number as the Brain's
+isolated ceiling. **Lock ordering:** Phase 9.5 adds no new account/job lock of its own — every B1-B4
+control is a read (health/alert queries) or a config-check gate at the top of an EXISTING code path
+(`Tick`/`TryDispatch`/`applyAccountEffect`'s two existing decision seams); the account `FOR UPDATE`
+in `readAccountEffectState` (Phase 5) and the account-before-job order it establishes are unchanged
+by wrapping its two callers in `autoquarantine_mode`/`autopause_enabled` checks) ✅ · DoD-3 (docs
+updated in the same commits throughout: `Docs/api-contract.md` gained the `GET /v1/admin/health`
+route description covering B3+B4; `Docs/config-reference.md` + `Docs/config-manifest.txt` carry the
+full eleven-key §4.7 section; `Docs/open-decisions.md` records P9.5-OD-1 (ReclaimRunner gating,
+RULED — follow the spec) and P9.5-OD-2 (the pre-existing `OutcomeHandler.cfg` staleness bug found
+while wiring B2, RULED — thread fresh config through the whole call chain) with full dispositions;
+`Docs/load-test-results.md` is the new OD-7-mandated artifact for E11; all four drift gates
+(`config_drift`/`contract_drift`/`migration_lint`/`no_secret_leak`) green at every commit) ✅ ·
+DoD-4 (**eleven new seeded config keys** via `sender_0021` (config-seed-only, no DDL) — five
+operability controls (`dispatch_enabled`, `autoquarantine_mode`, `autopause_enabled`,
+`variation_enabled`, `alert_webhook_url`) + two B3/B5 dials (`health_metrics_window_sec`,
+`brain_singleton_acquire_timeout_sec`) + four S10/S11 config-not-code completeness dials
+(`unit_price_credits`, `variation_comment_intensity_rates`, `variation_zero_width_rate_pct`,
+`variation_css_micro_params`) — each with `default_value`/`description`/`value_type`, appended to
+the manifest + reference in the same change; `default_value` never mutated; `config_drift`
+**42 → 53** keys; both pre-existing config-ordering invariants re-verified unaffected — Phase 9.5
+deliberately does NOT add `brain_singleton_acquire_timeout_sec` ≥ `shutdown_drain_timeout_sec` as a
+third reject-enforced invariant (documented operational guidance only, §6's own note, avoiding
+over-constraining two independently-owned dials)) ✅ · DoD-5 (**no hardcoded tuning constant** —
+every one of the eleven dials resolves to a seeded row; `OutcomeHandler`'s pre-existing staleness bug
+(P9.5-OD-2) meant several ALREADY-SEEDED Phase 5/6/7 dials — `quarantine_threshold`,
+`throttle_pause_seconds`, the backoff ladder, the score weights — were silently stale-since-boot on
+the report-handling path; fixed by threading a freshly-`LoadConfig`'d `Config` through the whole
+`Handle()`→`applyAccountEffect`→`recomputeScoreOn{Success,Failure}`→`backoffSecondsForClass`→
+`writeSendLog` call chain, so every dial on that path — old and new — now takes effect on the very
+next report, no restart, matching `Tick`/`ReclaimTick`'s own established pattern) ✅ · DoD-6 (Open
+Decisions: P9.5-OD-1 and P9.5-OD-2 are both **RULED**, full dispositions recorded, no contradiction
+silently resolved, no locked decision reinterpreted in code without a recorded ruling; needs-user is
+empty) ✅ · DoD-7 (**additive only** — `sender_0021` seeds eleven config rows only, zero DDL, zero
+enum/column/table/constraint/index touched, matching the spec's own §10 confirmation; chain
+contiguous `0000..0021`; `runner_integration_test.go` proves both the 11-key apply and the 11-key
+removal on Down; **grants**: all eleven rows land on the pre-existing `sender.config` table
+(`sender_module` already holds its DML since `sender_0010`) — no new table, so no new grant,
+`TestGrantsInvariant` stays green) ✅ · DoD-8 (security re-verified: Brain remains the SOLE decryptor
+— B1-B4 touch no credential/KMS path at all, being panic-switch/shadow-mode/health-read/alert logic
+layered over the EXISTING send path, never a new one; the box's memory-only/zeroed credential
+contract, mTLS, and STARTTLS-before-AUTH are all unchanged and unaffected; two-vocabulary rule holds
+and is EXTENDED explicitly to the new B4 webhook (CLAUDE.md Rule 5's own amendment) — its payload
+carries only condition codes/subject ids/timestamps, verified by `health_alerts_test.go`'s payload
+field allowlist assertion; the admin surface gained exactly one new READ-ONLY route
+(`GET /v1/admin/health`), no new write path, and `adminapi` still imports nothing from
+`internal/dispatch` (OD-7's package-isolation precedent honored — B3's eligibility predicate is
+duplicated as raw SQL, documented in `health_store.go`, rather than shared as Go code)) ✅ · DoD-9
+(control-plane safety: this IS the phase that seeds the five kill-switches CLAUDE.md Rule 7 has
+referenced since Phase 0 — `dispatch_enabled` (default `true`, panic-stops claim/route/push with
+zero job loss, reclaim/outcome/heartbeat/config-read all continue per §1.2 and the RULED P9.5-OD-1),
+`autoquarantine_mode` (default `shadow`, the documented launch-safety choice — decides without
+acting, logs a schema-neutral `account_events` observation row, promotes to `enforce` with one
+config write), `autopause_enabled` and `variation_enabled` (simple on/off kill-switches, risk-scaled
+below the quarantine ladder per the spec's own justification), `alert_webhook_url` (empty = off,
+conditions still visible via the endpoint either way). Brain singleton (re-verified, not rebuilt)
+remains the enforcement of "no second dispatch path" this rule also names) ✅.

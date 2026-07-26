@@ -41,7 +41,7 @@ func TestAlerts_PoolExhaustedFires(t *testing.T) {
 
 	exhaustedPool := e.seedHealthPool(t, "alert-pool-exhausted")
 	e.seedHealthAccount(t, exhaustedPool, true, false, false, 0, 50) // only account, paused -> 0 eligible
-	e.seedHealthJob(t, "queued")                                    // system user's queued job waits on this pool (shared)
+	e.seedHealthJob(t, "queued")                                     // system user's queued job waits on this pool (shared)
 
 	healthyPool := e.seedHealthPool(t, "alert-pool-healthy")
 	e.seedHealthAccount(t, healthyPool, false, false, false, 0, 100)

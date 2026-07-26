@@ -92,17 +92,17 @@ type Config struct {
 
 	// Phase 9.5 operability & control-plane safety dials (all eleven seeded sender_0021;
 	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
-	DispatchEnabled                  bool               // dispatch_enabled — B1 global panic switch (§1.1)
-	AutoquarantineMode               string             // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
-	AutopauseEnabled                 bool               // autopause_enabled — B2 kill-switch (§2.2)
-	VariationEnabled                 bool               // variation_enabled — B2 master kill-switch (§2.3)
-	AlertWebhookURL                  string             // alert_webhook_url — B4 optional outbound webhook (§4.3); "" = disabled
-	HealthMetricsWindowSec           int                // health_metrics_window_sec — B3 rolling window (§3.2)
-	BrainSingletonAcquireTimeoutSec  int                // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
-	UnitPriceCredits                 int                // unit_price_credits — S10 (§2.4)
-	VariationCommentIntensityRates   IntensityRates     // variation_comment_intensity_rates — S11 (§2.4)
-	VariationZeroWidthRatePct        int                // variation_zero_width_rate_pct — S11 (§2.4)
-	VariationCSSMicroParams          CSSMicroParams     // variation_css_micro_params — S11 (§2.4)
+	DispatchEnabled                 bool           // dispatch_enabled — B1 global panic switch (§1.1)
+	AutoquarantineMode              string         // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
+	AutopauseEnabled                bool           // autopause_enabled — B2 kill-switch (§2.2)
+	VariationEnabled                bool           // variation_enabled — B2 master kill-switch (§2.3)
+	AlertWebhookURL                 string         // alert_webhook_url — B4 optional outbound webhook (§4.3); "" = disabled
+	HealthMetricsWindowSec          int            // health_metrics_window_sec — B3 rolling window (§3.2)
+	BrainSingletonAcquireTimeoutSec int            // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
+	UnitPriceCredits                int            // unit_price_credits — S10 (§2.4)
+	VariationCommentIntensityRates  IntensityRates // variation_comment_intensity_rates — S11 (§2.4)
+	VariationZeroWidthRatePct       int            // variation_zero_width_rate_pct — S11 (§2.4)
+	VariationCSSMicroParams         CSSMicroParams // variation_css_micro_params — S11 (§2.4)
 }
 
 // IntensityRates is the §2.4 S11 inner shape of variation_comment_intensity_rates: percent (0-100)
@@ -119,7 +119,7 @@ var intensityRatesDefault = IntensityRates{Low: 5, Medium: 15, High: 30}
 
 // CSSMicroParams is the §2.4 S11 inner shape of variation_css_micro_params.
 type CSSMicroParams struct {
-	DeltaPx      int `json:"delta_px"`
+	DeltaPx     int `json:"delta_px"`
 	SkipBelowPx int `json:"skip_below_px"`
 }
 

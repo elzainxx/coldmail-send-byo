@@ -1476,3 +1476,175 @@ disposition was reviewed; none is silently unresolved — every "Needs-user" lin
 **Full suite re-verified after both chunks.** Dispatch green (84.5s, incl. the strengthened
 attempttoken tests), adminapi green (8.5s), box suite green (75/75), gofmt/vet clean, all 4 CI gates
 green at 42 keys, full harness re-run clean-slate.
+
+## Phase 9.5 state — operability & control-plane safety (CLOSED: all five chunks landed, DoD green)
+
+Phase 9.5 is the layer that lets a human safely RUN an autonomous email sender — a panic switch, a
+shadow-first autonomy ladder, an observability endpoint, minimal alerting, and a verified single-
+writer guarantee. It runs BEFORE Phase 9's consolidated docs pass so that pass can describe the
+finished config surface once, not twice. Everything is additive and operator-side: one migration
+(`sender_0021`, config-seed-only, no DDL), one new read-only route, one optional outbound webhook.
+No locked object — table, column, enum, constraint, index — is touched (§10's own confirmation).
+
+### Chunk 1 — B1, the global dispatch panic switch (§1)
+
+`dispatch_enabled` (boolean, default `true`) is checked at the very top of both `Tick()` (the
+production polling loop) and `TryDispatch` (the Phase-3 legacy single-shot path), BEFORE any claim.
+`false` ⇒ the tick performs no claim, no route, no push, and writes nothing — queued jobs stay
+exactly queued (no state change, no `job_events` row), throttled to one "paused by operator" log
+line per interval so a long pause doesn't flood logs. The loop keeps ticking at its normal interval
+(never sleeps-forever), so it resumes the instant the key flips back — zero redeploy, zero lost
+work either direction.
+
+**The one contradiction this chunk surfaced (P9.5-OD-1, RULED):** the chunk's own execution
+instructions said to also gate `ReclaimRunner` on `dispatch_enabled` ("the Phase 6 wiring
+reminder"), but the spec's own §1.2 prose and O1 test say the opposite — "the reclaim loop still
+reclaims... a paused dispatcher must not strand in-flight work." Filed rather than silently picked;
+ruled to follow the spec. `ReclaimTick()`/`ReclaimRunner` carry zero `dispatch_enabled` references
+and run unconditionally; the outcome handler, heartbeats, and config reads were never claim paths
+and were never gated either.
+
+**Tests** (`panicswitch_test.go`, real Postgres, real Dispatcher): OFF halts both `Tick` and
+`TryDispatch` with zero claim/push and zero job loss; reclaim still runs while paused (proving the
+ruling, not just asserting it); the seeded default is `true`.
+
+### Chunk 2 — B2, shadow mode + kill-switches (§2)
+
+The risk-scaled control set the spec itself justifies: a three-way SHADOW LADDER for the one
+irreversible-recovery behavior (auto-quarantine), and simple on/off KILL-SWITCHES for the two
+self-reversing/cosmetic behaviors (auto-pause, content variation). Dispatch itself gets no shadow
+mode — B1's panic switch already covers it.
+
+- **`autoquarantine_mode`** (string, default **`shadow`** — the one deliberate launch-safety
+  default, spec's own recommended disposition #1): `off` — `quarantineDecision` is never even
+  evaluated, no row. `shadow` — the decision seam evaluates normally but does NOT set the flag;
+  instead it appends a SEPARATE observation row using ONLY the LOCKED `account_events` columns
+  (§2.1's schema-neutral encoding, no new column/enum value): `action='updated'`,
+  `from_flags==to_flags` (the equality IS the signal nothing mutated), `reason` = the exact
+  structured marker `"shadow_would_quarantine: score=<X> threshold=<T> trigger=<...>"`. `enforce` —
+  the pre-existing Phase 5 behavior, unchanged. An unrecognized mode value defensively falls back to
+  `shadow` (never silently gains the ability to act).
+- **`autopause_enabled`** (boolean, default `true`): `false` ⇒ `pauseDecision` is never evaluated —
+  no ladder, no shadow row (auto-pause is self-reversing, so it gets the simpler treatment).
+- **`variation_enabled`** (boolean, default `true`): `false` ⇒ `variationSnapshot` returns `nil`
+  before touching any Phase 8 toggle — bypasses the WHOLE layer regardless of individual toggles,
+  byte-identical to the Phase 3 baseline.
+- **The seam Phase 5 deliberately left (P5-OD-1) paid off exactly as intended:** wrapping
+  `quarantineDecision`/`pauseDecision`'s single call sites in `applyAccountEffect` was the ENTIRE
+  change — no re-plumbing of the outcome handler, no new call chain.
+
+**The genuine pre-existing bug this chunk surfaced (P9.5-OD-2, RULED):** `OutcomeHandler.cfg` was a
+`Config` snapshot captured ONCE at construction (Phase 5) and never refreshed, unlike every other
+loop (`Tick`/`ReclaimTick`/the startup rescan/the retention sweep all call `LoadConfig` fresh every
+iteration). This meant `quarantine_threshold`, `throttle_pause_seconds`, the backoff ladder, and the
+score weights were ALREADY silently stale-since-boot on the report-handling path — a pre-existing
+Phase 5/6/7 gap the new B2 keys would have inherited. Ruled to thread a freshly-loaded `Config`
+through the whole `Handle()`→`applyAccountEffect`→`recomputeScoreOn{Success,Failure}`→
+`backoffSecondsForClass`→`writeSendLog` call chain (mirroring `Tick`'s own pattern) rather than
+patch only the two new keys or document it as a known limitation — fixes every dial on that path at
+once, with no data race (a local parameter, never a shared mutable field).
+
+**Tests** (`shadowmode_test.go`): shadow mode logs the exact marker WITHOUT setting the flag — the
+account stays eligible and keeps sending — with a PAIRED POSITIVE CONTROL that `enforce` DOES set
+the flag on the IDENTICAL condition (not just "shadow doesn't act", but "the same trigger acts once
+promoted"); `off` disables the decision entirely (zero rows, zero flag changes); each kill-switch
+independently disables only its own behavior (autopause off ≠ variation off ≠ quarantine off).
+Pre-existing Phase 5 tests (`TestPolicy_AuthFailureQuarantines` etc.) needed `autoquarantine_mode`
+pinned to `enforce` in the shared harness setup once the seeded default became `shadow` — a fixture
+update, not a behavior change.
+
+### Chunk 3 — B3, the observability endpoint (§3)
+
+One new read-only route, `GET /v1/admin/health` (Domain B, the same operator-key gate every other
+`/v1/admin/*` route uses). Every field derives from `COUNT`/`GROUP BY` over EXISTING tables
+(`sender.jobs`, `sender.boxes`, `sender.accounts`, `sender.job_events`, `sender.account_events`)
+plus the live `dispatch_enabled`/`autoquarantine_mode` config values — no schema change, no new
+persisted state (§3.1's own constraint). The response shape is exactly §3.2's documented jsonc:
+`dispatch` (paused/ticks/sends/rate), `queue` (per-state counts + `waiting_for_capacity`), `boxes`
+(active/stale/disabled + oldest-heartbeat-age), `accounts` (healthy/paused/quarantined/disabled/
+at-limit), `pools` (per-pool eligible headroom), `errors_last_window` (the fixed six-class
+vocabulary, always present with 0 defaults), `shadow` (the B2 would-quarantine summary), and
+`active_conditions` (wired with its final never-nil shape here; populated for real by Chunk 4).
+
+**Package isolation preserved (OD-7's precedent):** `adminapi` does NOT import `internal/dispatch`
+— the Phase 4 eligibility predicate (`waiting_for_capacity`, per-pool `eligible_accounts`) is
+duplicated as raw SQL in `health_store.go`, documented explicitly as intentional duplication rather
+than a shared Go dependency across that package boundary, mirroring "admin never gets Decrypt."
+
+**Tests** (`health_test.go`, O4): with a fully-known seeded mix (queued/sending/sent/failed/bounced
+jobs, a stale box, paused/quarantined/disabled accounts, one deliberately-exhausted pool alongside
+one healthy pool), EVERY response field is asserted against a DIRECT DB `COUNT` — not merely "200
+OK" — including a live `dispatch_enabled` flip-and-recheck proving `dispatch_paused` mirrors the
+LIVE config, not a cached value.
+
+### Chunk 4 — B4, minimal alerting (§4)
+
+Two additive mechanisms, both fed by the §4.1 three-condition table: the `active_conditions[]` block
+in the B3 endpoint (always available, no config needed) and an optional outbound webhook.
+
+- **`pool_exhausted`** fires when an eligible pool has ZERO eligible accounts WHILE ≥1 job is
+  waiting on it — reusing the exact `waiting_for_capacity`/`eligible_accounts` predicate B3 already
+  computes, scoped per-pool, so a brand-new unused pool with zero accounts never alarms an operator
+  who hasn't routed anything to it yet.
+- **`account_quarantined`** fires ONLY on a REAL enforce-mode quarantine (`account_events`
+  `action='quarantine'`, `actor='system'`) — a shadow observation (`action='updated'` with the
+  `shadow_would_quarantine:` marker) is a structurally different `action` value and can never match
+  this query, so shadow mode can never spuriously alarm.
+- **`box_death`** fires for every box CURRENTLY `status='stale'` — a live-row-state query, so a box
+  that reconnects (stale→active on its next heartbeat, `boxlink/stream.go`'s `touchHeartbeat`) drops
+  out of the query on the very next poll, giving §4.2's "conditions clear automatically" property
+  for free from the existing state rather than needing any new bookkeeping.
+- **The optional webhook** (`alert_webhook_url`, default `""`): unset ⇒ no HTTP attempted at all,
+  conditions still visible via the endpoint (the documented minimal default). Set ⇒ fires ONCE per
+  rising edge, deduped by an in-memory `(condition, subject_id)` tracker cleared when the condition
+  drops (so a genuine re-occurrence fires again); each delivery attempt runs in its OWN goroutine so
+  a slow/dead operator endpoint can never delay the `/v1/admin/health` response it rides with;
+  bounded retries (3 attempts, short backoff) then dropped with a log line. The payload is
+  two-vocabulary clean (CLAUDE.md Rule 5's own explicit extension to this webhook) — condition code,
+  `{type, id}` subject, clean detail fields, timestamps, `module:"sender"` — never a credential, SQL,
+  internal hostname, or send content.
+- **Write-time validation added** for `autoquarantine_mode` (`off|shadow|enforce`) and
+  `alert_webhook_url` (empty or `http(s)://…`) matching their already-documented §6 allowed ranges —
+  a typo is now rejected loudly at the `PUT`, not just degraded safely at read time.
+
+**Tests** (`health_alerts_test.go`, O5): each of the three conditions fires against real seeded
+state WITH a negative control per condition (a healthy pool that must not also report exhausted; an
+exhausted-but-unused pool that must NOT fire per the "waiting job" requirement; a shadow observation
+that must NOT fire `account_quarantined`; an active box that must not report `box_death`) — proving
+each query discriminates real state, not "something exists." A REAL httptest webhook sink asserts:
+exactly one POST across four repeated polls of an unchanged condition (dedup holds); zero POSTs when
+`alert_webhook_url` is unset; a failing sink still receives its bounded retry attempts (proving
+delivery was genuinely tried) while the health response itself completes well under any timeout.
+
+### Chunk 5 — B5 re-verification + B6/E11 load test + closeout
+
+**B5 (Brain singleton) was already built in Phase 0** — this chunk re-verifies it live rather than
+rebuilding it. A real second Brain process (`docker compose run --rm --no-deps brain` against the
+SAME Postgres) exits non-zero within its bounded `brain_singleton_acquire_timeout_sec`, logging
+"another Brain is active; exiting cleanly," issuing zero claim/push; the first Brain's `/readyz`
+confirms `singleton_lock:true` unaffected throughout. This is also `tests/harness/run.sh`'s
+pre-existing SUITE 4 (from Phase 0), re-run green as part of the full harness — not new coverage,
+confirmed coverage.
+
+**B6/E11** (the single-Brain throughput-ceiling scale gate, §7 — a before-you-SCALE gate, not a
+launch blocker) shipped as `tests/harness/load_e11.sh`: provisions N real, distinctly-identified box
+processes (OD-15 option b — a shared box identity would make the boxes NOT independent, defeating
+"the box side is never the bottleneck"), over-provisions accounts against the real Mailpit sink,
+zeroes the Phase 6 per-lane pacing delay for the run's duration (otherwise that DELIBERATE throttle,
+not the Brain, sets the observed ceiling — the same delay-bound-vs-capacity-bound reasoning Phase
+6's own T1 test uses in the opposite direction), and ramps `concurrency_per_user_default` while
+polling `GET /v1/admin/health` for `send_rate_per_min`/`ticks_per_min`/`queue.queued`. A real run (6
+boxes, dev host) measured throughput climbing 46→194→238→370 sends/min then plateauing to 322/min
+at lanes=12 — a genuine saturation signal (rate stops climbing despite more lanes/boxes still
+active), recorded per **OD-7's ruling** in the new `Docs/load-test-results.md` as a committed,
+versioned doc artifact (not a dashboard), with the run's own honest caveat that 6 boxes were likely
+still a partial co-bottleneck.
+
+**Full suite re-verified.** `internal/dispatch` green (51.5s), `internal/adminapi` green (5.4s,
+including all seven new `TestAlerts_*` tests), `tools/sender-migrate` green, the full clean-slate
+harness (`tests/harness/run.sh`) **52/53 green** — the one failure is the documented PRE-EXISTING
+Phase 8 `comment_injection` intermittent (~49% true-miss rate from its own fixture math, unrelated
+to and unaffected by any Phase 9.5 change; Phase 8's test file is locked and out of scope here). All
+four CI gates (`config_drift`/`contract_drift`/`migration_lint`/`no_secret_leak`) green at 53 keys.
+No locked spec edited; both Open Decisions this build surfaced (P9.5-OD-1, P9.5-OD-2) are RULED with
+full dispositions recorded, needs-user empty.

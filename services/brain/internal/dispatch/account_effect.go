@@ -218,14 +218,16 @@ func (h *OutcomeHandler) writeSystemAccountEvent(ctx context.Context, tx pgx.Tx,
 // have quarantined this account, but autoquarantine_mode=shadow means it decided WITHOUT acting.
 // Schema-neutral encoding (§2.1's own justification, restated): NO new column, NO new account_events
 // `action` value — the row uses only the locked sender_0014 columns.
-//   action = 'updated'        (an existing CHECK-allowed value; a system OBSERVATION, not a real
-//                              state change)
-//   actor  = 'system'
-//   from_flags == to_flags    (both the account's CURRENT, unchanged flags — the equality is
-//                              itself the signal that nothing was actually mutated)
-//   reason = "shadow_would_quarantine: score=<X> threshold=<T> trigger=<score|auth_failure>"
-//            (the exact structured marker string §2.1 specifies, used verbatim by §3's
-//            GET /v1/admin/health shadow.recent surface and by direct-query review)
+//
+//	action = 'updated'        (an existing CHECK-allowed value; a system OBSERVATION, not a real
+//	                           state change)
+//	actor  = 'system'
+//	from_flags == to_flags    (both the account's CURRENT, unchanged flags — the equality is
+//	                           itself the signal that nothing was actually mutated)
+//	reason = "shadow_would_quarantine: score=<X> threshold=<T> trigger=<score|auth_failure>"
+//	         (the exact structured marker string §2.1 specifies, used verbatim by §3's
+//	         GET /v1/admin/health shadow.recent surface and by direct-query review)
+//
 // Never called when the account is ALREADY quarantined — quarantineDecision's own idempotence
 // (`before.Quarantined` short-circuits to false) means this function is only reached on a genuine
 // fresh would-quarantine decision, so shadow mode does not spam a duplicate row on every subsequent
