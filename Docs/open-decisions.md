@@ -314,6 +314,16 @@ paired test); P7-OD-2 is test-infrastructure repair with no product change. The 
 phase exists to protect — the Brain never fabricates an outcome the box did not report — is unaffected
 by all three and is asserted under restart, outage, and shutdown.
 
+## Phase 9.5 build (operability & control-plane safety)
+
+### Phase 9.5 build surfaced (flagged, not silently resolved — CLAUDE.md Rule 2)
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| P9.5-OD-1 | The Chunk 1 execution instructions directed "gate the ReclaimRunner with `dispatch_enabled` (the Phase 6 wiring reminder)" — the two forward-looking notes Phase 6's closeout recorded (`Docs/open-decisions.md`, Phase 6 section). But the authoritative Phase 9.5 spec (`phase-9_5-operability-and-control-plane-safety.md` §1.2) states the opposite in plain prose: *"The reclaim loop (Phase 6) still reclaims dead-box / lease-expired jobs back to `queued` — a paused dispatcher must not strand in-flight work."* Its own **O1** behavioral test asserts *"reclaim still runs"* while `dispatch_enabled=false`, and the Phase 0 groundwork spec's O1 entry says the same. Gating `ReclaimRunner` on `dispatch_enabled` would directly contradict the spec's own text and fail its own O1 as written. Surfaced before writing any gating code; flagged per Rule 2 rather than silently picking one side. | **RULED (2026-07-26) — follow the spec: `ReclaimRunner` is NOT gated on `dispatch_enabled`** | The user ruled that the Phase 6 closeout's forward note was written before §1.2's exact wording existed in the now-authoritative Phase 9.5 spec, and does not override it. `Tick()` (dispatch) and `TryDispatch` (the Phase-3 legacy claim path) both check `dispatch_enabled` at their top and perform no claim/route/push when it is `false`; `ReclaimTick()`/`ReclaimRunner` carry NO `dispatch_enabled` reference and run unconditionally, exactly matching §1.2's "still reclaims" language and the O1 test. The outcome handler, heartbeats, and config reads are likewise never gated (they were never claim paths). |
+
+**Needs-user: empty.** P9.5-OD-1 is RULED and implemented as the spec's own §1.2 requires.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

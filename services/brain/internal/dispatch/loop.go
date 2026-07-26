@@ -57,6 +57,18 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		return cfg, 0, nil
 	}
 
+	// Phase 9.5 B1 (§1.2): the global dispatch panic switch. Checked at the very top, before any
+	// claim/route/push — this tick performs NO claim, no route, no push, and writes NOTHING. Queued
+	// jobs stay exactly queued (no state change, no job_events row); the reclaim loop, the outcome
+	// handler, heartbeats, and config reads all continue independently (they are driven by their own
+	// loops/handlers, not gated here). The loop keeps ticking at its normal interval — it does not
+	// sleep-forever or exit — so it resumes the instant the key flips back to true. Throttled so a
+	// long pause produces one log line per interval, never a flood.
+	if !cfg.DispatchEnabled {
+		d.logDispatchPausedByOperator()
+		return cfg, 0, nil
+	}
+
 	// Phase A: snapshot ground truth (two cheap reads; §1.2 A1/A2).
 	inFlight, err := d.snapshotInFlight(ctx)
 	if err != nil {

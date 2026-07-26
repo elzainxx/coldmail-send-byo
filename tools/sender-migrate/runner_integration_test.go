@@ -98,7 +98,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020"}
+		"0020", "0021"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -128,10 +128,12 @@ func TestRunnerLifecycle(t *testing.T) {
 	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) + Phase 8's 17
 	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
 	// migration-filename deviation, Docs/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
-	// P8-OD-1 RULED-WIDEN) = 42.
-	// Phase 4 added NO config key (§0); Phase 7 is fully schema-neutral (config seeds only, no table).
-	if n := configKeyCount(t, admin); n != 42 {
-		t.Fatalf("after Up: sender.config has %d keys, want 42 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8)", n)
+	// P8-OD-1 RULED-WIDEN) + Phase 9.5's 11 (sender_0021: B1-B5 operability controls + S10/S11
+	// completeness dials) = 53.
+	// Phase 4 added NO config key (§0); Phase 7 and Phase 9.5 are fully schema-neutral (config seeds
+	// only, no table).
+	if n := configKeyCount(t, admin); n != 53 {
+		t.Fatalf("after Up: sender.config has %d keys, want 53 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -164,6 +166,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	// reject a stale replay from a superseded attempt (P7-OD-6).
 	if !columnExists(t, admin, "jobs", "attempt_token") {
 		t.Fatal("after Up: sender.jobs.attempt_token missing (sender_0020 not applied)")
+	}
+	// Phase 9.5's eleven operability + completeness config seeds (sender_0021) — anti-vacuity.
+	for _, key := range []string{
+		"dispatch_enabled", "autoquarantine_mode", "autopause_enabled", "variation_enabled",
+		"alert_webhook_url", "health_metrics_window_sec", "brain_singleton_acquire_timeout_sec",
+		"unit_price_credits", "variation_comment_intensity_rates", "variation_zero_width_rate_pct",
+		"variation_css_micro_params",
+	} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: sender.config missing %q (sender_0021 Phase 9.5 seed not applied)", key)
+		}
 	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -206,6 +219,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0020" && configKeyExists(t, admin, "variation_html_minify") {
 			t.Fatal("after Down 0020: a Phase 8 content-variation config seed is still present (down did not delete it)")
+		}
+		if v == "0021" && configKeyExists(t, admin, "dispatch_enabled") {
+			t.Fatal("after Down 0021: a Phase 9.5 operability config seed is still present (down did not delete it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with

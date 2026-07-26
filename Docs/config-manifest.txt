@@ -63,3 +63,17 @@ variation_user_agent_injection
 variation_user_agent_rate
 variation_precedence
 variation_thread_index
+
+# Phase 9.5 — sender_0021 (+11 keys: B1-B5 operability controls + S10/S11 config-not-code
+# completeness dials). Fully schema-neutral (no DDL, no new table/column/enum/constraint/index).
+dispatch_enabled
+autoquarantine_mode
+autopause_enabled
+variation_enabled
+alert_webhook_url
+health_metrics_window_sec
+brain_singleton_acquire_timeout_sec
+unit_price_credits
+variation_comment_intensity_rates
+variation_zero_width_rate_pct
+variation_css_micro_params

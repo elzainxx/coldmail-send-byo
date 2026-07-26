@@ -89,7 +89,42 @@ type Config struct {
 	VariationUserAgentRate        float64  // variation_user_agent_rate — param of toggle 10 (fraction 0-1; amended, P8-OD-1)
 	VariationPrecedence           string   // variation_precedence — toggle 11
 	VariationThreadIndex          bool     // variation_thread_index — toggle 12, inert (P8-8)
+
+	// Phase 9.5 operability & control-plane safety dials (all eleven seeded sender_0021;
+	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
+	DispatchEnabled                  bool               // dispatch_enabled — B1 global panic switch (§1.1)
+	AutoquarantineMode               string             // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
+	AutopauseEnabled                 bool               // autopause_enabled — B2 kill-switch (§2.2)
+	VariationEnabled                 bool               // variation_enabled — B2 master kill-switch (§2.3)
+	AlertWebhookURL                  string             // alert_webhook_url — B4 optional outbound webhook (§4.3); "" = disabled
+	HealthMetricsWindowSec           int                // health_metrics_window_sec — B3 rolling window (§3.2)
+	BrainSingletonAcquireTimeoutSec  int                // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
+	UnitPriceCredits                 int                // unit_price_credits — S10 (§2.4)
+	VariationCommentIntensityRates   IntensityRates     // variation_comment_intensity_rates — S11 (§2.4)
+	VariationZeroWidthRatePct        int                // variation_zero_width_rate_pct — S11 (§2.4)
+	VariationCSSMicroParams          CSSMicroParams     // variation_css_micro_params — S11 (§2.4)
 }
+
+// IntensityRates is the §2.4 S11 inner shape of variation_comment_intensity_rates: percent (0-100)
+// of closing tags injected per variation_comment_intensity bucket.
+type IntensityRates struct {
+	Low    int `json:"low"`
+	Medium int `json:"medium"`
+	High   int `json:"high"`
+}
+
+// intensityRatesDefault mirrors the sender_0021 seed — the §7-style reject-and-fall-back value for
+// a malformed stored json (never a hardcoded shortcut on the healthy path).
+var intensityRatesDefault = IntensityRates{Low: 5, Medium: 15, High: 30}
+
+// CSSMicroParams is the §2.4 S11 inner shape of variation_css_micro_params.
+type CSSMicroParams struct {
+	DeltaPx      int `json:"delta_px"`
+	SkipBelowPx int `json:"skip_below_px"`
+}
+
+// cssMicroParamsDefault mirrors the sender_0021 seed.
+var cssMicroParamsDefault = CSSMicroParams{DeltaPx: 1, SkipBelowPx: 3}
 
 // BackoffSchedule is the §6.4 exponential ladder for transient/timeout/unknown requeues. The
 // saturating attempt_count indexes the ladder; past the last rung the delay saturates at
@@ -273,6 +308,39 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 
+	// Phase 9.5's eleven operability + completeness keys (sender_0021). Missing keys are a hard
+	// error like every other dial above — the migration seeds them, so an absent row means a
+	// pre-sender_0021 schema, not a legitimate operator override.
+	if c.DispatchEnabled, err = readBoolKey(ctx, db, "dispatch_enabled"); err != nil {
+		return c, err
+	}
+	if c.AutoquarantineMode, err = readStringKey(ctx, db, "autoquarantine_mode"); err != nil {
+		return c, err
+	}
+	if c.AutopauseEnabled, err = readBoolKey(ctx, db, "autopause_enabled"); err != nil {
+		return c, err
+	}
+	if c.VariationEnabled, err = readBoolKey(ctx, db, "variation_enabled"); err != nil {
+		return c, err
+	}
+	if c.AlertWebhookURL, err = readStringKey(ctx, db, "alert_webhook_url"); err != nil {
+		return c, err
+	}
+	if c.HealthMetricsWindowSec, err = readIntKey(ctx, db, "health_metrics_window_sec"); err != nil {
+		return c, err
+	}
+	if c.BrainSingletonAcquireTimeoutSec, err = readIntKey(ctx, db, "brain_singleton_acquire_timeout_sec"); err != nil {
+		return c, err
+	}
+	if c.UnitPriceCredits, err = readIntKey(ctx, db, "unit_price_credits"); err != nil {
+		return c, err
+	}
+	c.VariationCommentIntensityRates = readIntensityRates(ctx, db)
+	if c.VariationZeroWidthRatePct, err = readIntKey(ctx, db, "variation_zero_width_rate_pct"); err != nil {
+		return c, err
+	}
+	c.VariationCSSMicroParams = readCSSMicroParams(ctx, db)
+
 	// Config-ordering INVARIANT (CLAUDE.md Rule 1, Phase 6 P6-11): the box's per-operation SMTP
 	// timeout MUST be strictly shorter than the job lease, so a genuinely account-caused hang
 	// surfaces as a box-REPORTED timeout (scored → quarantined, Phase 5) rather than an unscored
@@ -374,6 +442,50 @@ func readScoreWeights(ctx context.Context, db *pgxpool.Pool) ScoreWeights {
 		wrap.V.FailSaturation <= 0 || wrap.V.RecencyHorizonHours <= 0 {
 		log.Printf("dispatch: status_score_weights malformed — using documented default (§7)")
 		return scoreWeightsDefault
+	}
+	return *wrap.V
+}
+
+// readIntensityRates reads variation_comment_intensity_rates ({"v": {...}}), unwrapping and
+// validating; on any malformation it logs and returns intensityRatesDefault (§7 never-crash
+// posture, same as readScoreWeights/readBackoffSchedule). Each bucket must be within [0,100].
+func readIntensityRates(ctx context.Context, db *pgxpool.Pool) IntensityRates {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='variation_comment_intensity_rates'`).Scan(&raw); err != nil {
+		log.Printf("dispatch: variation_comment_intensity_rates unreadable (%v) — using documented default", err)
+		return intensityRatesDefault
+	}
+	var wrap struct {
+		V *IntensityRates `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
+		wrap.V.Low < 0 || wrap.V.Low > 100 || wrap.V.Medium < 0 || wrap.V.Medium > 100 ||
+		wrap.V.High < 0 || wrap.V.High > 100 {
+		log.Printf("dispatch: variation_comment_intensity_rates malformed — using documented default (§7)")
+		return intensityRatesDefault
+	}
+	return *wrap.V
+}
+
+// readCSSMicroParams reads variation_css_micro_params ({"v": {...}}), unwrapping and validating;
+// on any malformation it logs and returns cssMicroParamsDefault (§7 never-crash posture).
+func readCSSMicroParams(ctx context.Context, db *pgxpool.Pool) CSSMicroParams {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='variation_css_micro_params'`).Scan(&raw); err != nil {
+		log.Printf("dispatch: variation_css_micro_params unreadable (%v) — using documented default", err)
+		return cssMicroParamsDefault
+	}
+	var wrap struct {
+		V *CSSMicroParams `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
+		wrap.V.DeltaPx < 0 || wrap.V.DeltaPx > 5 || wrap.V.SkipBelowPx < 0 || wrap.V.SkipBelowPx > 20 {
+		log.Printf("dispatch: variation_css_micro_params malformed — using documented default (§7)")
+		return cssMicroParamsDefault
 	}
 	return *wrap.V
 }

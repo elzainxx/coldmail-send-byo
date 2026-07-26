@@ -118,6 +118,28 @@ snapshot the Brain stamps per job (§2.2) — the box itself never reads `sender
 | `variation_precedence` | `{"v":"auto"}` | string | sender_0020 | Toggle 11 — Precedence header control (`auto`/`marketing`/`personal`). `marketing` adds `Precedence: bulk`; `auto`/`personal` omit (= Phase 3). |
 | `variation_thread_index` | `{"v":false}` | boolean | sender_0020 | Toggle 12 — Thread-Index header. **Inert no-op in V1** (P8-8): emits nothing on or off (no sequences to index). |
 
+## Phase 9.5 state (+11 keys, `sender_0021`)
+
+Phase 9.5 seeds eleven new keys via `sender_0021` — the operability & control-plane safety layer
+(B1–B5) plus the two config-not-code completeness dials (S10, S11). Fully schema-neutral: no table,
+column, enum, constraint, or index is added or altered. Every default preserves current behavior
+except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safety choice (Phase 5's
+`enforce` behavior is reached by one config write — see `Docs/open-decisions.md`).
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `dispatch_enabled` | `{"v":true}` | boolean | sender_0021 | B1 global dispatch panic switch. `false` = the tick claims/routes/pushes nothing; queued jobs stay queued, nothing lost; reclaim/outcome/heartbeat/config-read continue. Phase 9.5 §1. |
+| `autoquarantine_mode` | `{"v":"shadow"}` | string | sender_0021 | B2 auto-quarantine shadow ladder: `off\|shadow\|enforce`. **Default `shadow`** (launch-safety) decides but does not act, logging an `account_events` row; `enforce` is the Phase 5 behavior; `off` disables the decision entirely. Phase 9.5 §2.1. |
+| `autopause_enabled` | `{"v":true}` | boolean | sender_0021 | B2 auto-pause (throttle) kill-switch. `false` = the module does not auto-pause accounts on a throttle outcome (manual pause/unpause unaffected). Phase 9.5 §2.2. |
+| `variation_enabled` | `{"v":true}` | boolean | sender_0021 | B2 content-variation master kill-switch. `false` = bypass the entire Phase 8 variation layer regardless of individual toggles (baseline Phase 3 assembly, byte-identical). Phase 9.5 §2.3. |
+| `alert_webhook_url` | `{"v":""}` | string | sender_0021 | B4 optional outbound alert webhook. Empty (default) = disabled, conditions remain visible only via `GET /v1/admin/health`. Set = POST a two-vocabulary-clean payload on each condition's rising edge, deduped until it clears. Phase 9.5 §4.3. |
+| `health_metrics_window_sec` | `{"v":3600}` | integer | sender_0021 | B3 rolling window (seconds) for the rate/error/shadow counts in `GET /v1/admin/health`. Phase 9.5 §3.2. |
+| `brain_singleton_acquire_timeout_sec` | `{"v":60}` | integer | sender_0021 | B5 bounded wait (seconds) for the Brain startup singleton advisory lock before exiting non-zero. `0` = fail-fast, no wait. Phase 9.5 §5.2. |
+| `unit_price_credits` | `{"v":1}` | integer | sender_0021 | S10 — credits charged per recipient (`quote`/`describe`). Was a documented constant; default unchanged, now retunable without a redeploy. Phase 9.5 §2.4. |
+| `variation_comment_intensity_rates` | `{"v":{"low":5,"medium":15,"high":30}}` | json | sender_0021 | S11 — percent of closing tags injected per `variation_comment_intensity` bucket. Was hardcoded 5/15/30; default unchanged. Box-consumed via `push_job.variation`. Phase 9.5 §2.4. |
+| `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). Was hardcoded ~5; default unchanged. Box-consumed via `push_job.variation`. Phase 9.5 §2.4. |
+| `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). Was hardcoded ±1px / skip <3px; default unchanged. Box-consumed via `push_job.variation`. Phase 9.5 §2.4. |
+
 ## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 
 - `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6** (both keys

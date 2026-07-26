@@ -68,14 +68,18 @@ type Dispatcher struct {
 	// diagnostic: an operational condition (not a per-job error), logged at most once per
 	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
 	// state, so a sustained misconfiguration never floods the log (spec §4.3, test T10 assertion 5).
+	// lastDispatchPausedLog is the Phase 9.5 B1 analogue for dispatch_enabled=false (§1.2).
 	diagMu                         sync.Mutex
 	lastSharedPoolNotConfiguredLog time.Time
+	lastDispatchPausedLog          time.Time
 }
 
 // sharedPoolNotConfiguredLogInterval bounds how often the §4.3 diagnostic repeats. Not a
 // config-not-code violation: it governs an internal LOG line's own noise floor, not send/dispatch
-// behavior — the same category of exemption as maxFallbackHops (§10 P4-19).
+// behavior — the same category of exemption as maxFallbackHops (§10 P4-19). dispatchPausedLogInterval
+// is the same exemption for the Phase 9.5 B1 panic-switch diagnostic (§1.2).
 const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
+const dispatchPausedLogInterval = 1 * time.Minute
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed
 // to the admin surface. There is no config snapshot stored on the Dispatcher itself — every entry
@@ -101,6 +105,19 @@ func (d *Dispatcher) logSharedPoolNotConfigured() {
 	}
 	d.lastSharedPoolNotConfiguredLog = time.Now()
 	log.Printf("dispatch: shared_pool_not_configured — default_shared_pool_id is unset or does not resolve to an enabled shared pool; affected base/fallback campaigns stay queued cleanly until an operator sets it (§4.3)")
+}
+
+// logDispatchPausedByOperator emits the Phase 9.5 B1 internal diagnostic (§1.2), throttled to at
+// most once per dispatchPausedLogInterval across the whole process — a sustained operator pause
+// produces one log line per interval, never a flood, regardless of how many ticks elapse.
+func (d *Dispatcher) logDispatchPausedByOperator() {
+	d.diagMu.Lock()
+	defer d.diagMu.Unlock()
+	if time.Since(d.lastDispatchPausedLog) < dispatchPausedLogInterval {
+		return
+	}
+	d.lastDispatchPausedLog = time.Now()
+	log.Printf("dispatch: dispatch_paused_by_operator — dispatch_enabled=false; this tick claimed/routed/pushed nothing, queued jobs are untouched, reclaim/outcome/heartbeat continue (§1.2)")
 }
 
 // claimQuery is the LOCKED Phase 1 claim CTE (§5.1), LIMIT 1 in Phase 3. FOR UPDATE SKIP LOCKED
@@ -164,6 +181,14 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 	// is a second claim path (platform `run` kicks reach the Runner, but this entry point is still
 	// live), so it must honor the drain too or a SIGTERM could still put a fresh job into flight.
 	if d.draining.Load() {
+		return "", nil
+	}
+	// Phase 9.5 B1 (§1.2): the same panic switch Tick honors. TryDispatch is no longer wired into
+	// main.go's live loop (the Runner drives Tick), but it remains a public claim path any future
+	// caller could invoke directly, so it honors dispatch_enabled too rather than relying on callers
+	// to remember the gate — consistent with the drain check just above it.
+	if !cfg.DispatchEnabled {
+		d.logDispatchPausedByOperator()
 		return "", nil
 	}
 
