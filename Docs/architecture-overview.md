@@ -1400,3 +1400,79 @@ what code review already implied: variation touches nothing in `smtp.js`/`creds.
 **Phase 8 is CLOSED.** All six chunks landed; the DoD block above is green on all nine items; no
 locked spec was edited (only additively amended, with the one ruled exception recorded); no
 out-of-phase logic was built (no 9.5 keys, no Phase 9 quote/describe polish, no doc consolidation).
+
+### Closeout — sequential re-verification of the review gates, and two mandate claims re-checked
+
+The four review gates (R1–R4) that closed Phase 8 were run in PARALLEL. This closeout exists because
+that made cross-verification structurally impossible: no gate could check another's fix, since none
+of the fixes existed yet when the gates ran. All R3/R4 findings were then fixed in a single commit
+with no independent re-verification.
+
+**Chunk 1 — re-verifying R3/R4's claimed fixes in the tree, one at a time:**
+- **R3's config-type gap fix: CONFIRMED, independently reproduced end-to-end.** Wrote a standalone
+  Go program (outside the test suite) that calls the actual `asInt`/`rawJSONIsQuoted` functions and
+  confirms a quoted numeric string is rejected, then independently confirmed the CONSEQUENCE the fix
+  prevents: unmarshaling a stored `{"v":"0.5"}` into `readFloatKey`'s exact struct shape genuinely
+  errors (`cannot unmarshal string into Go struct field .v of type float64`) — the bug this closes is
+  real and reproducible, not hypothetical.
+- **R3's QP whitespace fix: CONFIRMED, independently re-verified with a FRESH 15-case adversarial
+  suite** (not reusing the in-tree test) covering soft-line-break interaction with the escape logic,
+  an all-whitespace line, the final-line-no-CRLF case, and a no-false-positive check (no spurious
+  `=20`/`=09` when there is no trailing whitespace). All 15 passed.
+- **R4's `pg_stat_activity` scoping fix: CONFIRMED but only PARTIALLY applied.** The commit added
+  `datname = current_database()` but not the query-text filter its own message claimed matched
+  `eligibility_test.go`'s pattern. Wrote diagnostic instrumentation to dump exactly what
+  `pg_stat_activity` captures during the forced interleave; on adding the missing query filter,
+  `TestAttemptToken_MarkSendingVsAccountLockNoDeadlock`'s direction (b) FAILED immediately because
+  the guessed blocking statement was wrong (the requeue `UPDATE`, not the account-lock read) — proof
+  the stronger check catches real mistakes a `datname`-only filter cannot. Fixed all three checks in
+  `attempttoken_lockorder_test.go` with query-text filters matched to their ACTUAL blocking
+  statements (confirmed via the same diagnostic technique), not guessed ones.
+- **R4's `markSending` test-direction fix: CONFIRMED.** Direction (c) genuinely calls `markSending`
+  under a forced job-row-held interleave. Independently re-ran the documented hand-run negative
+  control (tautologizing `applyAccepted`'s predicate) and confirmed it reproduces the exact quoted
+  failure message (`job state=sent, want sending`), unaffected by the query-filter changes.
+- **Standing rule recorded:** review gates run SEQUENTIALLY, never in parallel — CLAUDE.md **Rule
+  11** and `Docs/definition-of-done.md` DoD-2. The last gate in any future multi-gate sequence must
+  re-verify every earlier gate's claimed fix in the tree and report CONFIRMED-IN-TREE or MISSING.
+
+**Chunk 2 — the two headline properties, checked against the exact mandate wording, not just "does a
+test with a similar name exist":**
+- **(a) Byte-identical guarantee: CONFIRMED, exactly as strong as claimed.** `variation.test.mjs`'s
+  T1 tests pin `Message-ID`/`Date` for BOTH assemblers (`pinnedSend()`'s literal header strings feed
+  both `buildDataBytes` and `assembleDataBytes` via the same `send.headers`) and assert byte-for-byte
+  equality for BOTH the absent-block case and the all-default-block case, as two separate tests, plus
+  a non-vacuity check on the reference itself. No MIME boundary field exists to pin because Phase 3 is
+  genuinely single-part — there is nothing to pin.
+- **(b) Stale-replay rejection: the forced interleave itself is genuine (re-confirmed in Chunk 1's
+  negative-control re-run), but TWO gaps were found relative to the mandate's exact wording, and
+  BOTH are now addressed:**
+  1. **No account-scoring assertion under the forced interleave** — `TestAttemptToken_
+     StaleReplayRacingLiveDispatch` checked state/pmid/send_log/event/token deltas but never
+     `consecutive_failures`/`account_status_score`; that half of the "no scoring" claim was only
+     proven by a SEPARATE, non-racing test. **FIXED**: the forced-interleave test now snapshots and
+     asserts account-score non-mutation directly.
+  2. **No "exactly ONE message reaches Mailpit" assertion anywhere** for this specific scenario — the
+     forced-interleave test operates entirely at the Go/Postgres layer via `recordingPusher`, never
+     touching a real box or real SMTP; no live-harness suite drives this exact stale-replay-vs-
+     live-attempt race through a real send. **FLAGGED, not built**: a live-Mailpit version of this
+     exact scenario has no clean deterministic realization with the harness's current primitives —
+     building one would require either protocol-frame injection that conflicts with the box's
+     single-registration invariant, or timing-based container-kill orchestration that would itself be
+     a hoped-for race (exactly what Rule 10 exists to forbid). The property IS proven at the layer
+     that actually decides whether a duplicate send occurs (the Postgres row state), which is a
+     stronger and more direct proof than counting Mailpit messages would be.
+
+**Ledger.** `Docs/open-decisions.md` gained a "Phase 8 ... is built, reviewed, and closed" paragraph
+in the `## Status` summary (every prior phase 0–7 had one; Phase 8's was missing) recording the
+review-gate findings, P8-OD-1's disposition, and both Chunk-2 findings above.
+`Docs/phase-9-polish-and-documentation.md` §6.7 gained a dated amendment note: any future cross-phase
+audit of that document MUST re-derive its key counts from the LIVE `sender.config`/manifest/reference,
+not from §4/§5.6's prose, which predates the P8-OD-1 amendment and still says 39/50 in places — the
+true counts are **42** (module total) and **53** (post-9.5 total). Every other Open Decision's
+disposition was reviewed; none is silently unresolved — every "Needs-user" line in the document reads
+"none"/"empty" except P8-OD-1's, which is immediately followed by its own ruling and closure.
+
+**Full suite re-verified after both chunks.** Dispatch green (84.5s, incl. the strengthened
+attempttoken tests), adminapi green (8.5s), box suite green (75/75), gofmt/vet clean, all 4 CI gates
+green at 42 keys, full harness re-run clean-slate.

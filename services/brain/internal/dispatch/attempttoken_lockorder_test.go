@@ -141,6 +141,17 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	// Snapshot what the stale replay must not touch (read as admin — the uncommitted row is invisible).
 	logsBefore := e.sendLogCount(t, job)
 	eventsBefore := e.eventCount(t, job)
+	// Closeout Chunk 2 addition: the account must not be scored either. The prior version of this
+	// test asserted state/pmid/send_log/event deltas only; account-scoring non-mutation was proven
+	// ONLY by the separate, non-racing TestAttemptToken_StaleReplaySameBoxRejected — never under a
+	// genuinely forced interleave. Snapshot here so the FORCED-interleave path proves it too.
+	var cfBefore int
+	var scoreBefore float64
+	if err := e.admin.QueryRow(ctx,
+		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		Scan(&cfBefore, &scoreBefore); err != nil {
+		t.Fatalf("read account before: %v", err)
+	}
 
 	// (2) Connection B: the stale replay. Its pre-check read sees the pre-commit row (token still T1 →
 	// a MATCH), so it proceeds into its apply UPDATE and must BLOCK on A's held row lock.
@@ -199,6 +210,17 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	}
 	if tok := e.jobAttemptToken(t, job); tok != token2 {
 		t.Errorf("attempt_token=%d after the race, want %d (the live attempt's)", tok, token2)
+	}
+	var cfAfter int
+	var scoreAfter float64
+	if err := e.admin.QueryRow(ctx,
+		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		Scan(&cfAfter, &scoreAfter); err != nil {
+		t.Fatalf("read account after: %v", err)
+	}
+	if cfAfter != cfBefore || scoreAfter != scoreBefore {
+		t.Errorf("the stale replay SCORED the account under the forced interleave: consecutive_failures %d→%d, score %.3f→%.3f",
+			cfBefore, cfAfter, scoreBefore, scoreAfter)
 	}
 
 	// POSITIVE CONTROL: the LIVE token, same box, same job — must apply in full. Proves the block above

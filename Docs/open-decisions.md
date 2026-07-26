@@ -437,6 +437,35 @@ trigger; an unchanged FK key takes no `KEY SHARE`) — see the ADR-0010 amendmen
 `daily_reset_timezone`) — surfaced by a test failure, low severity under the shipped UTC default, no
 ruling required to proceed.
 
+**Phase 8 (content variation & header engineering, 2026-07-26) is built, reviewed, and closed.** All
+six chunks landed (per-attempt identity, the variation-layer skeleton + identity-function guarantee,
+body/content toggles, encoding/header toggles + deterministic seeding, config seeds + Brain wiring,
+and the full closeout suite). Four review gates (R1–R4) surfaced **one HIGH finding** (the admin
+config surface's numeric value_type gates accepted a quoted-numeric-string write, which would
+silently wedge every subsequent Brain polling tick) and **three MEDIUM findings** (a QP
+trailing-whitespace RFC 2045 gap; an unscoped `pg_stat_activity` contention check; a concurrency test
+whose direction (b) never actually called the function its doc comment claimed to test) — all four
+fixed. Phase 8 also surfaced **P8-OD-1**, filed and **RULED-WIDEN**: three toggle parameters were
+promoted from fixed-in-code values to independent `sender.config` dials, growing `sender_0020` from
+14 to 17 keys and additively amending TWO locked specs (this document's own §4.5 in
+`phase-9-polish-and-documentation.md`, and `phase-8-content-variation.md`'s own "Post-Chunk-5
+amendment" section) — see P8-OD-1 below for the full disposition. A dedicated CLOSEOUT pass
+(2026-07-26) then found that the four review-gate fixes had been committed in parallel with NO
+independent re-verification (the gates themselves ran concurrently, so no gate could check another's
+fix) — one of the four ("fixed") findings turned out to be only half-applied. All four are now
+independently re-verified in the tree; the standing lesson (review gates run sequentially, each pass
+re-verifying every earlier pass's claimed fix) is recorded as CLAUDE.md **Rule 11** and DoD-2. The
+closeout also found two claims from the original Phase 8 mandate that were weaker than stated: the
+forced-interleave stale-replay test never asserted account-non-scoring (only a separate, non-racing
+test did) — FIXED, now asserted under the forced interleave too; and no test anywhere proves "exactly
+one message reaches Mailpit" for the stale-replay-vs-live-attempt scenario specifically — FLAGGED,
+not built (the property IS proven at the Postgres/state layer, which is the layer that actually
+decides whether a duplicate send occurs; a live-Mailpit version of this exact scenario has no clean
+deterministic realization with the harness's current primitives without either violating the
+single-registration invariant or introducing a hoped-for race Rule 10 would then require re-litigating).
+**Needs-user: empty** — every Phase 8 item is RULED, APPLIED, or a recorded, non-blocking FLAG. No
+locked spec was edited; both amendments were additive per CLAUDE.md §8.
+
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 
 **Raised by:** review gate R1 (architect), Phase 7 closeout.

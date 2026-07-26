@@ -744,6 +744,23 @@ Phase 8 claimed it.
 > warn-vs-reject wording conflict** — both **resolved** (A additively at the wire
 > level; the conflict in favor of Phase 7's reject). **No open contradiction
 > remains.**
+>
+> **Post-closeout amendment note (2026-07-26, P8-OD-1 RULED-WIDEN — read before trusting any
+> key-count in this section or in §4).** Phase 8 was subsequently amended: three toggle
+> parameters (`variation_css_magnitude_px`, `variation_zero_width_rate`,
+> `variation_user_agent_rate`) were promoted from fixed-in-code values to independent config
+> dials, appended to the SAME `sender_0020` migration referenced above (the migration-chain
+> claim in this section — "0020 is the latest," "contiguous, no gaps" — is UNCHANGED and still
+> true; only the ROW COUNT `sender_0020` seeds changed, 14→17). **Two specs were touched by
+> this single ruling, additively, not rewritten:** this document's own §4.5 (14→17 keys,
+> heading/table amended with an explicit note) and `phase-8-content-variation.md` (a new
+> "Post-Chunk-5 amendment" section). **Any future cross-phase audit of this document (a repeat
+> of §6.8's method, or a new one) MUST re-derive its key counts from the LIVE `sender.config`
+> table / `Docs/config-manifest.txt` / `Docs/config-reference.md` — not from this section's
+> prose, which was accurate at Phase 9's original closeout but predates the amendment.** The
+> module-wide total is **42** keys (not the 39 this document's §4/§5.6 originally stated before
+> the amendment note was added there), and the Phase 9.5 forward-pointer total is **53** (not
+> 50). See `Docs/open-decisions.md` P8-OD-1 for the full disposition.
 
 ### 6.8 Targeted re-verification of four cross-phase seams (A–D, with evidence)
 
