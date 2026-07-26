@@ -13,7 +13,15 @@ import "github.com/sender-module/brain/internal/boxproto"
 // wire shape — every toggle's semantics live box-side. GLOBAL scope (§3): the same snapshot is
 // stamped on every push_job in a given LoadConfig lifetime; there is no per-pool/per-campaign
 // resolution (flagged future refinement, §9 P8-3 — not built).
+//
+// Phase 9.5 B2 §2.3: variation_enabled is the master kill-switch. false bypasses the ENTIRE layer
+// regardless of individual toggles by returning nil here — the same "absent variation block" shape
+// the box's own resolveVariation/STAGES already treat as the Phase-3 baseline identity (§4.2), so
+// this is not a NEW code path box-side, just never sending the block at all.
 func variationSnapshot(cfg Config) *boxproto.Variation {
+	if !cfg.VariationEnabled {
+		return nil
+	}
 	return &boxproto.Variation{
 		HTMLMinify:           cfg.VariationHTMLMinify,
 		CommentInjection:     cfg.VariationCommentInjection,

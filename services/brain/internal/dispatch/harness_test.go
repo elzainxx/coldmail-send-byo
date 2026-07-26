@@ -168,6 +168,15 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	// paths (§1.4), so zeroing the delay changes nothing about what they assert.
 	env.setConfigInt(t, "send_delay_min_sec", 0)
 	env.setConfigInt(t, "send_delay_max_sec", 0)
+
+	// Phase 9.5: the pre-existing Phase 5 quarantine/pause behavioral suites (hang_quarantine,
+	// policy, statemachine, concurrency_effect, etc.) assert the real ENFORCE mechanics predating
+	// the B2 shadow ladder. autoquarantine_mode's new seeded default is "shadow" (the deliberate
+	// launch-safety default, §2.1) — under shadow those suites would observe a logged decision
+	// instead of the flag actually being set, which is not what they test. Set "enforce" here so
+	// every existing Phase-5-era test keeps exercising the real mechanism unchanged; the DEDICATED
+	// Phase 9.5 shadow-mode tests (shadowmode_test.go) explicitly set "shadow"/"off" themselves.
+	env.setConfigStr(t, "autoquarantine_mode", "enforce")
 	return env
 }
 

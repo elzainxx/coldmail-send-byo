@@ -14,9 +14,20 @@ import (
 // OutcomeHandler applies a box `report` to the DB (§5.3–§5.5). It is installed as the stream
 // server's ReportHandler. It NEVER invents an outcome (Rule 5) — it only acts on what the box
 // reported — and it NEVER lets the credential reach send_logs/job_events/jobs (§5.5).
+//
+// CONFIG FRESHNESS (Phase 9.5 fix, discovered while wiring the B2 shadow-mode/kill-switch keys):
+// Handle loads Config FRESH on every call (LoadConfig(ctx, h.db)), exactly like Tick/ReclaimTick,
+// and threads it explicitly through every apply/effect function below — none of them read a cached
+// field anymore. Before this fix the handler captured ONE Config snapshot at construction and
+// reused it for the Brain's entire lifetime, so an operator write to quarantine_threshold,
+// throttle_pause_seconds, the backoff ladder, or (newly) autoquarantine_mode/autopause_enabled
+// would silently NOT take effect on this path until a restart — contradicting §0's "a config
+// change takes effect on the very next attempt, no redeploy" contract, and specifically §2.1's "no
+// restart" promotion requirement for the shadow ladder. The constructor still ACCEPTS a cfg
+// parameter (kept for the many existing call sites and as the harmless pre-first-report value);
+// nothing after this point reads it.
 type OutcomeHandler struct {
-	db  *pgxpool.Pool
-	cfg Config
+	db *pgxpool.Pool
 
 	// health is the OPTIONAL Phase 7 §2 outage gate (P7-3), shared with the loops when wired by
 	// main.go. The handler never gates ITS OWN work on it — a report must always be attempted, since
@@ -26,8 +37,12 @@ type OutcomeHandler struct {
 	health *DBHealth
 }
 
+// NewOutcomeHandler wires the handler. The cfg parameter is accepted for call-site compatibility
+// but is NOT stored or read — Handle loads a fresh Config on every call (see the freshness note
+// above), so there is no stale in-memory copy to keep in sync.
 func NewOutcomeHandler(db *pgxpool.Pool, cfg Config) *OutcomeHandler {
-	return &OutcomeHandler{db: db, cfg: cfg}
+	_ = cfg
+	return &OutcomeHandler{db: db}
 }
 
 // WithHealth wires the shared outage gate (§2). Returns the handler for chaining at the call site.
@@ -60,6 +75,18 @@ func (h *OutcomeHandler) noteHealth(err error) {
 func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Load config FRESH for this report (see the freshness note on the OutcomeHandler struct above)
+	// — mirrors Tick's own LoadConfig-at-entry pattern, so quarantine_threshold, autoquarantine_mode,
+	// autopause_enabled, throttle_pause_seconds, the backoff ladder, and the score weights are always
+	// this call's live values, never a boot-time snapshot. A load failure here is a DB-read failure
+	// exactly like jobStatus's below — do not ack, let the box retain and replay.
+	cfg, err := LoadConfig(ctx, h.db)
+	if err != nil {
+		h.noteHealth(err)
+		log.Printf("outcome: cannot load config for job %s report: %v — NOT acked; the box retains and will replay", rep.JobID, err)
+		return false
+	}
 
 	// Idempotency gate (§5.3): if the job already has a provider_message_id, it is already sent —
 	// never send/persist again. This makes a replayed/duplicate accepted a no-op.
@@ -155,14 +182,14 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// path returns nil on a durable commit (or a clean errNoop race) and a non-nil error only on a
 	// genuine failure — mapped to resolved=false so the box retains + replays.
 	if rep.Outcome == boxproto.OutcomeAccepted {
-		return h.persisted(h.applyAccepted(ctx, boxID, rep))
+		return h.persisted(h.applyAccepted(ctx, boxID, rep, cfg))
 	}
 	class := classifyReport(rep)
 	switch class {
 	case classBouncePermanent:
-		return h.persisted(h.applyBounced(ctx, boxID, rep)) // terminal bounced, NO account penalty (§2.1, §3.3 carve-out)
+		return h.persisted(h.applyBounced(ctx, boxID, rep, cfg)) // terminal bounced, NO account penalty (§2.1, §3.3 carve-out)
 	default: // auth_failure | throttle | transport_4xx | timeout | unknown → requeue + per-class account effect
-		return h.persisted(h.applyClassifiedFailure(ctx, boxID, rep, class))
+		return h.persisted(h.applyClassifiedFailure(ctx, boxID, rep, class, cfg))
 	}
 }
 
@@ -195,14 +222,14 @@ func (h *OutcomeHandler) persisted(err error) bool {
 // eligibility check for an account's last unit of headroom. Incrementing again on accept would
 // double-count. The accepted tradeoff (§7.3): a consumed-but-never-delivered slot (send fails/
 // crashes after consume) still costs headroom; refunding it is deferred to Phase 6 (P4-15).
-func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report) error {
+func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep boxproto.Report, cfg Config) error {
 	if rep.ProviderMessageID == "" {
 		// Defensive: never mark sent without an idempotency key (§4.3 anomaly). Treat as a
 		// classified failure — accepted_without_id classifies as 'unknown' (§1.1 row 8), a
 		// conservative requeue with NO account penalty, which is exactly right for this anomaly.
 		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly)", rep.JobID)
 		anomaly := boxproto.Report{JobID: rep.JobID, AttemptToken: rep.AttemptToken, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
-		return h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly))
+		return h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly), cfg)
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
@@ -233,11 +260,11 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			return err
 		}
 		if acctID != nil {
-			if _, err := h.recomputeScoreOnSuccess(ctx, tx, *acctID); err != nil {
+			if _, err := h.recomputeScoreOnSuccess(ctx, tx, *acctID, cfg); err != nil {
 				return err
 			}
 		}
-		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse)
+		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply accepted for job %s failed: %v", rep.JobID, err)
@@ -250,7 +277,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 // does NOT set last_failure_at, does NOT touch consecutive_failures, and does NOT recompute the
 // score (the LOCKED "bounce never penalizes" carve-out, §3.3 — asserted byte-for-byte by T4).
 // Also writes a send_logs row for the attempt.
-func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report) error {
+func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report, cfg Config) error {
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`UPDATE sender.jobs
@@ -269,7 +296,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 		if tag.RowsAffected() == 0 {
 			return errNoop
 		}
-		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse)
+		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply bounced for job %s failed: %v", rep.JobID, err)
@@ -289,7 +316,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 //
 // All three commit together, so a failed account effect rolls back the job requeue too (the
 // account state and the job state never disagree).
-func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string) error {
+func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID string, rep boxproto.Report, class string, cfg Config) error {
 	detail := rep.ErrorReason
 	if rep.SMTPResponse != "" {
 		detail = rep.ErrorReason + ": " + rep.SMTPResponse
@@ -329,7 +356,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// attempt_count at max_attempts (§6.2): once at the cap it STAYS there, so the locked
 		// jobs_attempt_count_check (attempt_count <= max_attempts) can never abort — no 23514 ever,
 		// for any job lifetime. next_attempt_at uses the post-increment attempt as the backoff index.
-		nextSecs := h.backoffSecondsForClass(class, saturatingAttempt(ctx, tx, rep.JobID))
+		nextSecs := h.backoffSecondsForClass(class, saturatingAttempt(ctx, tx, rep.JobID), cfg)
 		tag, err := tx.Exec(ctx,
 			`UPDATE sender.jobs
 			   SET state='queued',
@@ -351,13 +378,13 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 
 		// (2) Account effect + score recompute on the one account this attempt used.
 		if acctID != nil {
-			if err := h.applyAccountEffect(ctx, tx, *acctID, class, rep); err != nil {
+			if err := h.applyAccountEffect(ctx, tx, *acctID, class, rep, cfg); err != nil {
 				return err
 			}
 		}
 
 		// (3) Log the attempt.
-		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse)
+		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
 		log.Printf("outcome: apply %s for job %s failed: %v", class, rep.JobID, err)
@@ -370,14 +397,14 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 //   - throttle                          → throttle_pause_seconds (align with the account's window);
 //   - auth_failure                      → 0 (immediately eligible; the account is quarantined so
 //     routing simply won't pick it — the JOB should try a different account on the very next tick).
-func (h *OutcomeHandler) backoffSecondsForClass(class string, attemptCount int) int {
+func (h *OutcomeHandler) backoffSecondsForClass(class string, attemptCount int, cfg Config) int {
 	switch class {
 	case classAuthFailure:
 		return 0
 	case classThrottle:
-		return h.cfg.ThrottlePauseSeconds
+		return cfg.ThrottlePauseSeconds
 	default: // transport_4xx | timeout | unknown
-		return h.cfg.Backoff.backoffForAttempt(attemptCount)
+		return cfg.Backoff.backoffForAttempt(attemptCount)
 	}
 }
 
@@ -401,7 +428,7 @@ func saturatingAttempt(ctx context.Context, tx pgx.Tx, jobID string) int {
 // smtp_response (§7). headers are the §8 set the Brain built (re-derived here from the job +
 // the account it used, so send_logs.headers matches the bytes sent). ttl_expires_at is
 // created_at + debug_log_retention_days. The credential is NEVER written here (§5.5).
-func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smtpResponse string) error {
+func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smtpResponse string, cfg Config) error {
 	// Re-derive the sent headers from the job + its assigned account so send_logs.headers ==
 	// the guaranteed §8 set. Message-ID is deterministic from job_id (§8.1 / P8-5), so it matches
 	// what the box was handed. Date is send-time; send_logs records the attempt time — acceptable
@@ -435,7 +462,7 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 		 SELECT j.id, j.user_id, j.recipient_email, j.rendered_subject, j.rendered_body,
 		        $2::jsonb, $3, NOW() + make_interval(days => $4)
 		 FROM sender.jobs j WHERE j.id = $1`,
-		jobID, mustJSON(headers), scrubSmtpResponse(smtpResponse), h.cfg.DebugLogRetentionDays)
+		jobID, mustJSON(headers), scrubSmtpResponse(smtpResponse), cfg.DebugLogRetentionDays)
 	return err
 }
 

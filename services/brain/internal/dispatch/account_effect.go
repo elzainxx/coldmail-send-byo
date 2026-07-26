@@ -5,16 +5,18 @@
 //
 // THE DECISION SEAMS (Chunk 4 structural requirement): auto-quarantine and auto-pause each go
 // through ONE explicit predicate — quarantineDecision() and pauseDecision(). Every automatic
-// quarantine/pause flows through exactly that one place, so Phase 9.5's shadow-mode /
-// autoquarantine_mode / autopause_enabled kill-switches can wrap the decision by editing ONLY
-// those two functions (and the single call site each has) — no surgical re-plumbing across the
-// outcome handler. 9.5's keys are NOT seeded or wired here (they live in 9.5's own migration);
-// this is the seam they will wrap. Recorded as deliberate in Docs/open-decisions.md (P5-OD-1).
+// quarantine/pause flows through exactly that one place, which is exactly what let Phase 9.5's
+// autoquarantine_mode (§2.1) / autopause_enabled (§2.2) kill-switches WRAP the decision below by
+// editing only these two functions (and applyAccountEffect's single call site each) — no surgical
+// re-plumbing across the outcome handler, honoring the seam Phase 5 deliberately left
+// (Docs/open-decisions.md P5-OD-1).
 package dispatch
 
 import (
 	"context"
 	"encoding/json"
+	"log"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sender-module/brain/internal/boxproto"
@@ -33,10 +35,13 @@ type accountFlagState struct {
 
 // applyAccountEffect applies the §2.1 account effect for a penalizing failure to one account,
 // inside the caller's transaction (actor GUC already 'box'). It reads the current flags, recomputes
-// the score (Chunk 3), decides the flag change via the two decision seams (Chunk 4), writes the
-// flag + score changes, and appends ONE account_events(system) row iff a flag changed. bounce_
-// permanent NEVER reaches here (its no-penalty carve-out is handled by applyBounced, §3.3).
-func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, accountID, class string, rep boxproto.Report) error {
+// the score (Chunk 3), decides the flag change via the two decision seams (Chunk 4) — each now
+// gated by its Phase 9.5 B2 control (autoquarantine_mode's shadow ladder / autopause_enabled's
+// kill-switch) — writes the flag + score changes, and appends ONE account_events(system) row iff a
+// flag changed (PLUS, in shadow mode, a separate would-quarantine observation row that changes no
+// flag). bounce_permanent NEVER reaches here (its no-penalty carve-out is handled by applyBounced,
+// §3.3).
+func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, accountID, class string, rep boxproto.Report, cfg Config) error {
 	_ = rep // rep is available for future signal extraction; the effect is driven by class + state
 	before, uid, err := h.readAccountEffectState(ctx, tx, accountID)
 	if err != nil {
@@ -46,20 +51,52 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 	// (Chunk 3 seam) Score recompute + consecutive_failures. Implemented in account_score.go; a
 	// penalizing failure increments consecutive_failures, sets last_failure_at, and recomputes the
 	// stored score. This returns the new score so the quarantine decision (Chunk 4) can use it.
-	newScore, err := h.recomputeScoreOnFailure(ctx, tx, accountID)
+	newScore, err := h.recomputeScoreOnFailure(ctx, tx, accountID, cfg)
 	if err != nil {
 		return err
 	}
 
 	after := before
 
-	// (Chunk 4 seam #1) auto-quarantine — the SINGLE place that answers "should I quarantine?".
-	if quarantineDecision(class, newScore, h.cfg.QuarantineThreshold, before) {
-		after.Quarantined = true
+	// (Chunk 4 seam #1, wrapped by Phase 9.5 B2 §2.1) auto-quarantine — the SINGLE place that
+	// answers "should I quarantine?", now gated by autoquarantine_mode's three-way ladder:
+	//   enforce — current Phase 5 behavior: the decision sets the flag (event written below).
+	//   shadow  — decide, but do NOT set the flag; log a SEPARATE would-quarantine observation row
+	//             using only locked account_events columns (§2.1's schema-neutral encoding).
+	//   off     — no decision at all (quarantineDecision is never even evaluated), no row.
+	// An unrecognized mode value (should not occur — the admin write path validates it) defensively
+	// falls back to "shadow", the documented launch-safety default, never to "enforce" — a bad
+	// value must never silently gain the ability to act.
+	mode := cfg.AutoquarantineMode
+	switch mode {
+	case "off", "shadow", "enforce":
+		// recognized — proceed below.
+	default:
+		log.Printf("dispatch: autoquarantine_mode=%q unrecognized — defaulting to shadow (safe default, never enforce)", mode)
+		mode = "shadow"
+	}
+	switch mode {
+	case "off":
+		// No decision, no row (§2.1 "off" branch).
+	case "shadow":
+		if quarantineDecision(class, newScore, cfg.QuarantineThreshold, before) {
+			if err := h.writeShadowQuarantineEvent(ctx, tx, accountID, uid, newScore, cfg.QuarantineThreshold, quarantineTrigger(class), before); err != nil {
+				return err
+			}
+			// Deliberately do NOT set after.Quarantined — shadow decides but does not act; sending
+			// continues on this account exactly as before this outcome.
+		}
+	default: // "enforce"
+		if quarantineDecision(class, newScore, cfg.QuarantineThreshold, before) {
+			after.Quarantined = true
+		}
 	}
 
-	// (Chunk 4 seam #2) auto-pause — the SINGLE place that answers "should I pause (throttle)?".
-	if pauseDecision(class, before) {
+	// (Chunk 4 seam #2, wrapped by Phase 9.5 B2 §2.2) auto-pause — the SINGLE place that answers
+	// "should I pause (throttle)?", now gated by the autopause_enabled kill-switch. false = the
+	// decision is never evaluated at all (no ladder, no shadow row — auto-pause is self-reversing,
+	// §2.2, so it gets a simple on/off, not the quarantine ladder's observation path).
+	if cfg.AutopauseEnabled && pauseDecision(class, before) {
 		after.Paused = true
 		reason := "throttle"
 		after.PauseReason = &reason
@@ -86,6 +123,15 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 		}
 	}
 	return nil
+}
+
+// quarantineTrigger maps a penalizing failure's class to the §2.1 shadow-marker trigger label
+// (score|auth_failure) — the same two triggers quarantineDecision itself distinguishes.
+func quarantineTrigger(class string) string {
+	if class == classAuthFailure {
+		return "auth_failure"
+	}
+	return "score"
 }
 
 // quarantineDecision is the SINGLE auto-quarantine predicate (Chunk 4, §4.2). It answers
@@ -166,6 +212,41 @@ func (h *OutcomeHandler) writeSystemAccountEvent(ctx context.Context, tx pgx.Tx,
 		 VALUES ($1, $2, 'system', $3, $4, $5, $6, NULL)`,
 		accountID, userID, action, fromJSON, toJSON, reason)
 	return err
+}
+
+// writeShadowQuarantineEvent appends the Phase 9.5 §2.1 shadow observation row: the Brain would
+// have quarantined this account, but autoquarantine_mode=shadow means it decided WITHOUT acting.
+// Schema-neutral encoding (§2.1's own justification, restated): NO new column, NO new account_events
+// `action` value — the row uses only the locked sender_0014 columns.
+//   action = 'updated'        (an existing CHECK-allowed value; a system OBSERVATION, not a real
+//                              state change)
+//   actor  = 'system'
+//   from_flags == to_flags    (both the account's CURRENT, unchanged flags — the equality is
+//                              itself the signal that nothing was actually mutated)
+//   reason = "shadow_would_quarantine: score=<X> threshold=<T> trigger=<score|auth_failure>"
+//            (the exact structured marker string §2.1 specifies, used verbatim by §3's
+//            GET /v1/admin/health shadow.recent surface and by direct-query review)
+// Never called when the account is ALREADY quarantined — quarantineDecision's own idempotence
+// (`before.Quarantined` short-circuits to false) means this function is only reached on a genuine
+// fresh would-quarantine decision, so shadow mode does not spam a duplicate row on every subsequent
+// penalizing outcome against an account already flagged (conceptually) for quarantine.
+func (h *OutcomeHandler) writeShadowQuarantineEvent(ctx context.Context, tx pgx.Tx, accountID, userID string, score, threshold int, trigger string, current accountFlagState) error {
+	flagsJSON, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	reason := shadowWouldQuarantineReason(score, threshold, trigger)
+	_, err = tx.Exec(ctx,
+		`INSERT INTO sender.account_events
+		   (account_id, user_id, actor, action, from_flags, to_flags, reason, request_id)
+		 VALUES ($1, $2, 'system', 'updated', $3, $3, $4, NULL)`,
+		accountID, userID, flagsJSON, reason)
+	return err
+}
+
+// shadowWouldQuarantineReason renders the §2.1 structured marker string verbatim.
+func shadowWouldQuarantineReason(score, threshold int, trigger string) string {
+	return "shadow_would_quarantine: score=" + strconv.Itoa(score) + " threshold=" + strconv.Itoa(threshold) + " trigger=" + trigger
 }
 
 // deriveAccountAction maps a flag delta to the audit action + internal reason (§4.2). Quarantine

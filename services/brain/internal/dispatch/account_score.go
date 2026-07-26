@@ -85,23 +85,24 @@ func clamp01(x float64) float64 {
 // UPDATED row + the config weights, and RETURN the new value (so the quarantine decision can
 // compare it to the threshold in the same tx, §3.4/§4.2b). One statement does the bookkeeping and
 // returns the signals; a second stores the computed score — both inside the caller's tx.
-func (h *OutcomeHandler) recomputeScoreOnFailure(ctx context.Context, tx pgx.Tx, accountID string) (int, error) {
-	return h.bumpAndRecompute(ctx, tx, accountID, false /*success*/)
+func (h *OutcomeHandler) recomputeScoreOnFailure(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (int, error) {
+	return h.bumpAndRecompute(ctx, tx, accountID, false /*success*/, cfg)
 }
 
 // recomputeScoreOnSuccess applies a successful send's account bookkeeping (§3.3): reset
 // consecutive_failures to 0, set last_success_at=NOW(), then recompute + store the score. Returns
 // the new value (unused by the success path today, but symmetric with the failure entry point).
-func (h *OutcomeHandler) recomputeScoreOnSuccess(ctx context.Context, tx pgx.Tx, accountID string) (int, error) {
-	return h.bumpAndRecompute(ctx, tx, accountID, true /*success*/)
+func (h *OutcomeHandler) recomputeScoreOnSuccess(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (int, error) {
+	return h.bumpAndRecompute(ctx, tx, accountID, true /*success*/, cfg)
 }
 
 // bumpAndRecompute is the shared recompute core. success=true resets consecutive_failures to 0 and
 // stamps last_success_at; success=false increments consecutive_failures and stamps last_failure_at.
 // It then reads the updated signals, computes the §3.2 score, and stores it — all in the caller's
-// transaction, on the ONE account (no sweep, §3.3). The daily-reset tz is read from config so the
-// stale-cycle proximity rule matches the eligibility predicate's notion of "today".
-func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accountID string, success bool) (int, error) {
+// transaction, on the ONE account (no sweep, §3.3). cfg is the caller's already-freshly-loaded
+// Config (Phase 9.5 freshness fix — see outcome.go's OutcomeHandler doc comment); the daily-reset tz
+// and score weights it carries match the eligibility predicate's notion of "today" for this report.
+func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accountID string, success bool, cfg Config) (int, error) {
 	var setClause string
 	if success {
 		setClause = `consecutive_failures = 0, last_success_at = NOW(), updated_at = NOW()`
@@ -118,13 +119,13 @@ func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accoun
 		  WHERE id = $1
 		  RETURNING consecutive_failures, daily_sent_count, daily_limit, daily_reset_day,
 		            last_success_at, (NOW() AT TIME ZONE $2)::date, NOW()`,
-		accountID, h.cfg.DailyResetTimezone)
+		accountID, cfg.DailyResetTimezone)
 	if err := row.Scan(&in.consecutiveFailures, &in.dailySentCount, &in.dailyLimit,
 		&in.dailyResetDay, &in.lastSuccessAt, &in.nowInTZ, &in.now); err != nil {
 		return 0, err
 	}
 
-	score := computeScore(in, h.cfg.ScoreWeights)
+	score := computeScore(in, cfg.ScoreWeights)
 	if _, err := tx.Exec(ctx,
 		`UPDATE sender.accounts SET account_status_score = $2, updated_at = NOW() WHERE id = $1`,
 		accountID, score); err != nil {
