@@ -342,6 +342,42 @@ by all three and is asserted under restart, outage, and shutdown.
 
 **Needs-user: empty.** P9.5-OD-4 is RULED and implemented; all four R3 findings (2 HIGH, 1 MEDIUM covering 6 keys, plus the boundary-value test gap) are fixed and re-verified in the tree — not merely reported as fixed, per CLAUDE.md Rule 11's own standing requirement that this closeout not repeat.
 
+### R4 (final gate) — independent re-verification of R1-R3's claimed fixes + B3/B4 concurrency review
+
+Per CLAUDE.md Rule 11, R4 re-ran (not merely re-read) every earlier gate's claimed fix directly
+against the tree: **P9.5-OD-1 CONFIRMED-IN-TREE** (`reclaim.go`/`runner.go` carry zero
+`dispatch_enabled` references); **P9.5-OD-2 CONFIRMED-IN-TREE** (`outcome.go`'s `Handle` loads
+`Config` fresh and threads it through the whole call chain, no cached field); **P9.5-OD-3
+CONFIRMED-IN-TREE** (`readUnitPriceCredits` is genuinely called from `handleQuote`/`handleDescribe`;
+`variationSnapshot` genuinely populates `CommentIntensityRates`/`CSSSkipBelowPx` from `Config`);
+**P9.5-OD-4 CONFIRMED-IN-TREE** (`CSSSkipBelowPx`'s `omitempty` is genuinely gone;
+`readSingletonAcquireTimeout` is genuinely called before `singleton.Acquire`, not dead code; all six
+range/shape validators are present and their tests genuinely pass — R4 ran
+`TestPhase95_*` (6/6), `TestVariation_ZeroValueNumericFieldsSurviveJSONRoundTrip`, and the full
+`internal/adminapi` suite live against real Postgres, not just read the diffs).
+
+R4's own scope (B3/B4 health/alert paths + concurrency): confirmed structurally read-only
+(`health_alerts.go`/`health_store.go` contain zero `INSERT`/`UPDATE`/`DELETE`); confirmed the
+account-before-job lock order (Rule 9/ADR-0010) is genuinely unchanged by B1/B2 — `applyAccountEffect`
+still runs inside the transaction that already holds the account `FOR UPDATE` from
+`readAccountEffectState`, and B2's shadow/enforce/off switch adds no new SQL statement or lock, only
+Go-level conditional wrapping — so no new forced-interleave test is required, confirming rather than
+merely trusting R1's original claim. Confirmed `readSingletonAcquireTimeout`'s pre-lock config read is
+harmless under a two-Brain race (independent read-only SELECTs, no contention with the advisory lock).
+One **LOW, non-blocking** finding: `health_alerts.go`'s `alertDedup.clearStale`+`rising` do not provide
+a strict "fires exactly once until it clears" guarantee under CONCURRENT `/v1/admin/health` pollers
+specifically (each request's own goroutine computes its own snapshot and can race another request's
+`clearStale`/`rising` pair) — bounded impact (at most an extra two-vocabulary-clean webhook POST, no
+state mutation), not fixed in this pass; noted for a future B4 hardening pass if webhook volume ever
+makes it operationally relevant.
+
+**Phase 9.5 review gates R1-R4 are CLOSED. APPROVE.** All four gates ran sequentially (never in
+parallel, per CLAUDE.md §11), each later gate independently re-verified in the tree that every prior
+gate's claimed fix actually landed, and the one class of defect this discipline exists to catch (a
+"fixed" claim that turns out to be partial or absent) was found TWICE in this same sequence — R2 on
+the original build's own claims (P9.5-OD-3), then R3 on R2's own fix (P9.5-OD-4's `CSSSkipBelowPx`
+half) — and both times caught and closed before the NEXT gate ran, exactly as the discipline intends.
+
 ### Phase 9.5 closeout (Chunk 5 — B5 re-verification + B6/E11 load test)
 
 B5 (Brain singleton) was confirmed ALREADY BUILT in Phase 0, not rebuilt this phase — re-verified
