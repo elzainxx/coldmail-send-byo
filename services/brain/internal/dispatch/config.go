@@ -65,6 +65,26 @@ type Config struct {
 	ThrottlePauseSeconds int             // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
 	Backoff              BackoffSchedule // retry_backoff_schedule — the transient/timeout/unknown requeue ladder (§6.4)
 	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
+
+	// Phase 8 content-variation dials (all fourteen seeded sender_0020, appended to Chunk 1's
+	// version file — Docs/open-decisions.md P8-OD-1). GLOBAL scope (§3): one operator-owned set
+	// resolved once per LoadConfig and stamped verbatim onto every push_job.variation (variation.go).
+	// The Brain performs NO decision logic on these beyond reading + stamping; the box's
+	// resolveVariation/STAGES own all toggle semantics (§1.2).
+	VariationHTMLMinify           bool     // variation_html_minify — toggle 1
+	VariationCommentInjection     bool     // variation_comment_injection — toggle 2
+	VariationCommentIntensity     string   // variation_comment_intensity — param of toggle 2 (low/medium/high)
+	VariationCSSMicro             bool     // variation_css_micro — toggle 3
+	VariationUniqueURLParams      bool     // variation_unique_url_params — toggle 4 (NOT tracking, P8-10)
+	VariationZeroWidth            bool     // variation_zero_width — toggle 5, DEFAULT OFF
+	VariationEncodingRotation     bool     // variation_encoding_rotation — toggle 6
+	VariationMIMEBoundaryRotation bool     // variation_mime_boundary_rotation — toggle 7
+	VariationDynamicPreheader     bool     // variation_dynamic_preheader — toggle 8
+	VariationPreheaderTemplates   []string // variation_preheader_templates — param of toggle 8 (P8-7)
+	VariationHeaderStyle          string   // variation_header_style — toggle 9
+	VariationUserAgentInjection   bool     // variation_user_agent_injection — toggle 10, decoupled (P8-6)
+	VariationPrecedence           string   // variation_precedence — toggle 11
+	VariationThreadIndex          bool     // variation_thread_index — toggle 12, inert (P8-8)
 }
 
 // BackoffSchedule is the §6.4 exponential ladder for transient/timeout/unknown requeues. The
@@ -194,6 +214,52 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	c.Backoff = readBackoffSchedule(ctx, db)
 	c.ScoreWeights = readScoreWeights(ctx, db)
 
+	// Phase 8's fourteen content-variation keys (sender_0020, Chunk 5). Missing keys are a hard
+	// error like every other dial above — the migration seeds them, so an absent row means a
+	// pre-Chunk-5 schema, not a legitimate operator override.
+	if c.VariationHTMLMinify, err = readBoolKey(ctx, db, "variation_html_minify"); err != nil {
+		return c, err
+	}
+	if c.VariationCommentInjection, err = readBoolKey(ctx, db, "variation_comment_injection"); err != nil {
+		return c, err
+	}
+	if c.VariationCommentIntensity, err = readStringKey(ctx, db, "variation_comment_intensity"); err != nil {
+		return c, err
+	}
+	if c.VariationCSSMicro, err = readBoolKey(ctx, db, "variation_css_micro"); err != nil {
+		return c, err
+	}
+	if c.VariationUniqueURLParams, err = readBoolKey(ctx, db, "variation_unique_url_params"); err != nil {
+		return c, err
+	}
+	if c.VariationZeroWidth, err = readBoolKey(ctx, db, "variation_zero_width"); err != nil {
+		return c, err
+	}
+	if c.VariationEncodingRotation, err = readBoolKey(ctx, db, "variation_encoding_rotation"); err != nil {
+		return c, err
+	}
+	if c.VariationMIMEBoundaryRotation, err = readBoolKey(ctx, db, "variation_mime_boundary_rotation"); err != nil {
+		return c, err
+	}
+	if c.VariationDynamicPreheader, err = readBoolKey(ctx, db, "variation_dynamic_preheader"); err != nil {
+		return c, err
+	}
+	if c.VariationPreheaderTemplates, err = readStringArrayKey(ctx, db, "variation_preheader_templates"); err != nil {
+		return c, err
+	}
+	if c.VariationHeaderStyle, err = readStringKey(ctx, db, "variation_header_style"); err != nil {
+		return c, err
+	}
+	if c.VariationUserAgentInjection, err = readBoolKey(ctx, db, "variation_user_agent_injection"); err != nil {
+		return c, err
+	}
+	if c.VariationPrecedence, err = readStringKey(ctx, db, "variation_precedence"); err != nil {
+		return c, err
+	}
+	if c.VariationThreadIndex, err = readBoolKey(ctx, db, "variation_thread_index"); err != nil {
+		return c, err
+	}
+
 	// Config-ordering INVARIANT (CLAUDE.md Rule 1, Phase 6 P6-11): the box's per-operation SMTP
 	// timeout MUST be strictly shorter than the job lease, so a genuinely account-caused hang
 	// surfaces as a box-REPORTED timeout (scored → quarantined, Phase 5) rather than an unscored
@@ -312,6 +378,43 @@ func readIntKey(ctx context.Context, db *pgxpool.Pool, key string) (int, error) 
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
 		return 0, fmt.Errorf("config %q is not an integer {\"v\":N}", key)
+	}
+	return *wrap.V, nil
+}
+
+// readBoolKey reads one boolean config key ({"v": true|false}) — Phase 8's toggle keys (§6.1).
+func readBoolKey(ctx context.Context, db *pgxpool.Pool, key string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return false, fmt.Errorf("read config %q: %w", key, err)
+	}
+	var wrap struct {
+		V *bool `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return false, fmt.Errorf("config %q is not a boolean {\"v\":true|false}", key)
+	}
+	return *wrap.V, nil
+}
+
+// readStringArrayKey reads one array<string> config key ({"v": ["...", ...]}) — Phase 8's
+// variation_preheader_templates (§6.1). An empty array is a valid value (the toggle degrades to
+// "no candidates, inject nothing" — variation.js's pickSeeded already handles that), so only a
+// malformed/missing "v" is an error, not a zero-length list.
+func readStringArrayKey(ctx context.Context, db *pgxpool.Pool, key string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return nil, fmt.Errorf("read config %q: %w", key, err)
+	}
+	var wrap struct {
+		V *[]string `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return nil, fmt.Errorf("config %q is not a string array {\"v\":[\"...\"]}", key)
 	}
 	return *wrap.V, nil
 }

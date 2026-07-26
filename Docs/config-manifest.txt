@@ -37,3 +37,24 @@ retention_sweep_interval_ms
 retention_delete_batch_size
 rollup_granularity
 box_outcome_buffer_ttl_sec
+
+# Phase 8 — sender_0020 (+14 keys: content-variation toggles + their 2 toggle-parameters). Config
+# rows appended to the SAME sender_0020 version file that Chunk 1 created for sender.jobs.attempt_token
+# (flagged migration-filename deviation from the locked spec's own sender_0020_content_variation_config
+# name — see Docs/open-decisions.md P8-OD-1 and the .up.sql's own comment). All 14 default off/neutral
+# so the whole set at default is byte-identical to Phase 3 (§4/T1). Exactly 14, not more — see P8-OD-1
+# for the flagged mandate/locked-spec collision over ZWJ-rate/CSS-magnitude/UA-rate dials.
+variation_html_minify
+variation_comment_injection
+variation_comment_intensity
+variation_css_micro
+variation_unique_url_params
+variation_zero_width
+variation_encoding_rotation
+variation_mime_boundary_rotation
+variation_dynamic_preheader
+variation_preheader_templates
+variation_header_style
+variation_user_agent_injection
+variation_precedence
+variation_thread_index

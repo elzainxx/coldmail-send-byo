@@ -927,7 +927,7 @@ production caller** today — it must be pinned before any phase wires a reporti
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
 
-## Phase 8 state — content variation (IN PROGRESS: chunk 4 of 6 landed)
+## Phase 8 state — content variation (IN PROGRESS: chunk 5 of 6 landed)
 
 Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
 from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
@@ -1202,9 +1202,79 @@ conversion — no migration, no config key this chunk).
 **Security surface: unchanged.** `mime-codec.js` is a pure string codec touching only the body; no
 new module reads `smtp.js`/`creds.js` or the credential path.
 
-**Deferred to Chunk 5:** the `sender_0020` config seeds for all fourteen keys + the intensity/rate
-dials (comment rate is already a per-toggle parameter; ZWJ rate/CSS magnitude are currently
-fixed-in-code per the spec's own toggle-6.1 table, which names no separate dial for them — Chunk 5
-is where that gets checked against the mandate's "seed the toggle keys AND their intensities" and
-flagged if a further dial is warranted), and updating `defaultVariationSnapshot()` to read them for
-real. Chunk 6 owns the full T1–T9/S1–S2 close-out suite + CI/docs/DoD.
+**Deferred to Chunk 5 (as of Chunk 4):** the `sender_0020` config seeds for all fourteen keys +
+updating `defaultVariationSnapshot()` to read them for real. Chunk 6 owns the full T1–T9/S1–S2
+close-out suite + CI/docs/DoD.
+
+### Chunk 5 — config seeds + wiring the Brain to read them (§6, config-not-code closure)
+
+**What landed.** The fourteen `sender_0020` seeds themselves, plus the Brain-side wiring that
+actually reads them — closing the config-not-code gap Chunks 2–4 deliberately left open
+(`defaultVariationSnapshot()` was a literal struct, not a `sender.config` read).
+
+- **Migration, FLAGGED DEVIATION (recorded, acted on — `Docs/open-decisions.md` P8-OD-1):** the
+  locked spec names this seed migration `sender_0020_content_variation_config`, but that version
+  was already spent by Chunk 1's `sender_0020_jobs_attempt_token` (the P7-OD-6 scope addition).
+  Rather than open an impossible second `sender_0020` or renumber a committed migration, the
+  fourteen `INSERT`s were appended to the SAME `sender_0020_jobs_attempt_token.up.sql`/`.down.sql`
+  pair Chunk 1 created — the chain stays `...0019 → 0020 → 0021` (Phase 9.5) and every doc that
+  already says "Phase 8 = `sender_0020`" (Phase 9 §6.7/§6.8, `config-reference.md`) remains true.
+  The down migration deletes all fourteen keys (reversible, idempotent).
+- **A second, genuine locked-spec contradiction was found and filed, not resolved unilaterally
+  (`Docs/open-decisions.md` P8-OD-1):** the Chunk 5 mandate separately asked to seed "the
+  intensities/rates too" (a ZWJ-rate dial, a CSS-magnitude dial, a UA-injection-rate dial). But the
+  locked `phase-8-content-variation.md` §6.1/§6.2 AND the locked `phase-9-polish-and-
+  documentation.md` §4.5 both independently enumerate **exactly fourteen keys** for `sender_0020`,
+  and toggles 3/5/10's rates are stated as FIXED values in the spec's own toggle prose (no key named
+  for any of them). Widening to 17 keys would contradict both locked documents. Filed as P8-OD-1
+  (CLAUDE.md Rule 2) with a needs-user ruling; **shipped the locked-spec-compliant fourteen** in the
+  meantime — the three already-hardcoded constants (`ZWJ_RATE`, the CSS ±1px spread,
+  `UA_INJECT_RATE`) stay literal, each already documented in place as "fixed per the spec's own
+  text, not a further config key."
+- **`config.go`:** `Config` gained all fourteen fields (`VariationHTMLMinify` … `VariationThreadIndex`),
+  `LoadConfig` reads each via two new readers (`readBoolKey`, `readStringArrayKey` — Phase 8 is the
+  first phase to need either) alongside the existing `readIntKey`/`readStringKey`. A missing key is
+  a hard LoadConfig error like every other dial (the migration seeds it; absence means a pre-Chunk-5
+  schema, never a legitimate override).
+- **`variation.go` rewritten:** `defaultVariationSnapshot()` (a literal struct) is replaced by
+  `variationSnapshot(cfg Config)`, which copies `cfg`'s already-loaded values into the wire shape —
+  zero decision logic, exactly matching every other config-consuming call site in this package. The
+  `resolveAndPush` call site is UNCHANGED (`Variation: variationSnapshot(cfg)`), exactly as Chunk 2's
+  doc comment predicted it would be.
+- **Admin API gap closed (`config_validate.go`):** the value_type gate had no `"array<string>"` case
+  (only `"array<integer>"` existed) — `variation_preheader_templates` would have 400'd on every
+  write via `PUT /v1/admin/config/{key}` without this. Added, mirroring the existing array<integer>
+  shape. Also added `validateEnumString` + three call sites (`variation_comment_intensity`,
+  `variation_header_style`, `variation_precedence`) so a typo'd enum value is rejected loudly at
+  write time (`issueForbiddenValue`) rather than silently degrading only box-side — the same
+  operator-feedback posture `daily_reset_hour`'s range check already has for a different key shape.
+
+**Tests** (real Postgres, real Dispatcher, real admin API — no mocks). `internal/dispatch/
+variation_test.go` (3 tests): all-default config yields the exact Phase-3-neutral snapshot on the
+wire (the §4 identity at the LIVE-config layer, not just the wire-shape layer Chunk 2 covered); a
+LIVE `sender.config` write (the same shape `PUT /v1/admin/config/{key}` produces) reached by a
+SECOND dispatch with no Brain restart flips the pushed snapshot — the config-not-code proof itself
+— while an EARLIER push's already-recorded snapshot is proven untouched (independent per-dispatch
+stamps, not a shared mutable struct); an operator override of `variation_preheader_templates`
+replaces (not merges with) the seeded default list. `internal/adminapi/variation_config_test.go`
+(3 tests): a boolean toggle round-trips via the real PUT/GET endpoints and rejects a wrong type; all
+three enum-string keys accept their valid values and reject a typo with `forbidden_value`, value
+left unchanged; the array<string> key round-trips a real array, rejects a non-string element, and
+accepts an empty array as a legitimate value (not an error). `tools/sender-migrate`'s
+`TestRunnerLifecycle` extended: config-key count assertion 25→39, all fourteen Phase 8 keys present
+after Up and individually asserted absent after Down.
+
+**Full suite re-verified.** Rebuilt `sender_template_p3` from the updated chain and confirmed all 39
+keys + all 14 variation keys present; `internal/dispatch` green (69s, includes the 3 new tests +
+every existing Chunk 1–4 test unaffected by the live-config switch, since the seeded defaults ARE
+the same neutral values the literal snapshot used to return); `internal/adminapi` green (7.7s,
+includes the 3 new tests); `TestRunnerLifecycle` green (39-key apply, all-14-present, all-14-absent-
+after-down); gofmt/vet clean; box suite 68/68 unaffected (box-side untouched this chunk); all 4 CI
+gates green including `config_drift` now at 39 keys.
+
+**Security surface: unchanged.** No new credential path; the admin config surface's existing
+two-vocabulary error handling (clean codes only) covers the three new/changed validation branches
+with no new leak surface.
+
+**Deferred to Chunk 6:** the full T1–T9/S1–S2 close-out suite run as one pass, remaining CI/doc
+polish, and the 9-item DoD sign-off.

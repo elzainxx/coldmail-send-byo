@@ -84,6 +84,38 @@ The rescan/window keys (`startup_reconnect_window_sec`, `box_outcome_buffer_ttl_
 governed by the P7-11 ordering invariant below. The retention keys drive the single-Brain
 `send_logs` sweep (§3); job outcomes in `job_events` + final `jobs` states are **never** swept.
 
+## Phase 8 state (+14 keys, `sender_0020`)
+
+Phase 8 seeds fourteen new keys — appended to the SAME `sender_0020` version file Chunk 1 created
+for `sender.jobs.attempt_token` (flagged migration-filename deviation from the locked spec's own
+`sender_0020_content_variation_config` name; see `Docs/open-decisions.md` P8-OD-1). All fourteen
+default to off/neutral, so **the whole set at default is byte-identical to the Phase 3 send path**
+(Phase 8 §4/T1). Every key is consumed by the box via the additive `push_job.variation` snapshot
+the Brain stamps per job (§2.2) — the box itself never reads `sender.config`.
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `variation_html_minify` | `{"v":false}` | boolean | sender_0020 | Toggle 1 — minify HTML body at box-side MIME assembly. Off = Phase 3 body. |
+| `variation_comment_injection` | `{"v":false}` | boolean | sender_0020 | Toggle 2 — inject invisible HTML comments after a fraction of closing tags. Off = no comments. |
+| `variation_comment_intensity` | `{"v":"low"}` | string | sender_0020 | Parameter of toggle 2: `low`=5%/`medium`=15%/`high`=30% of closing tags. Inert while toggle 2 is off. |
+| `variation_css_micro` | `{"v":false}` | boolean | sender_0020 | Toggle 3 — vary inline padding/margin px by ±1 (skip <3px, never <0). Off = CSS untouched. |
+| `variation_unique_url_params` | `{"v":false}` | boolean | sender_0020 | Toggle 4 — inert cache-busting `_ref=`/`_v=` param seeded from `job_id`. **NOT tracking** — permanent forward boundary (P8-10). Off = URLs untouched. |
+| `variation_zero_width` | `{"v":false}` | boolean | sender_0020 | Toggle 5 — insert U+200D (ZWJ) at ~5% of word boundaries. **DEFAULT OFF (deliberate).** |
+| `variation_encoding_rotation` | `{"v":false}` | boolean | sender_0020 | Toggle 6 — rotate body `Content-Transfer-Encoding` between quoted-printable/base64 (seeded). Decodes identically. |
+| `variation_mime_boundary_rotation` | `{"v":false}` | boolean | sender_0020 | Toggle 7 — vary the MIME multipart boundary delimiter style (seeded). Off = single-part, the Phase 3 shape. |
+| `variation_dynamic_preheader` | `{"v":false}` | boolean | sender_0020 | Toggle 8 — inject a hidden preheader span (seeded template) after `<body>`. V1 = no per-contact merge data (P8-7); tokens cleaned to empty. |
+| `variation_preheader_templates` | `{"v":[7 token-free defaults]}` | array<string> | sender_0020 | Parameter of toggle 8: candidate templates (body-agnostic filler, P8-7 Closeout Ruling 2). Inert while toggle 8 is off. |
+| `variation_header_style` | `{"v":"none"}` | string | sender_0020 | Toggle 9 — reorder headers to a client style (`none`/`gmail`/`outlook`/`apple`/`thunderbird`/`random`). `none` = preserve Phase 3 order (the §4 identity). |
+| `variation_user_agent_injection` | `{"v":false}` | boolean | sender_0020 | Toggle 10 — inject a seeded `User-Agent` header. Decoupled from `variation_header_style` (P8-6). |
+| `variation_precedence` | `{"v":"auto"}` | string | sender_0020 | Toggle 11 — Precedence header control (`auto`/`marketing`/`personal`). `marketing` adds `Precedence: bulk`; `auto`/`personal` omit (= Phase 3). |
+| `variation_thread_index` | `{"v":false}` | boolean | sender_0020 | Toggle 12 — Thread-Index header. **Inert no-op in V1** (P8-8): emits nothing on or off (no sequences to index). |
+
+**Not seeded here (flagged, filed — `Docs/open-decisions.md` P8-OD-1):** a separate rate/magnitude
+dial for toggle 3 (CSS px spread), toggle 5 (ZWJ rate), or toggle 10 (UA injection rate). The locked
+Phase 8 spec (§6.1/§6.2) and Phase 9 §4.5 both enumerate exactly these fourteen keys; those three
+toggles' rates are stated as FIXED values in the spec's own toggle prose, not as named config keys.
+Widening to 17 keys would contradict both locked documents and needs a ruling before it ships.
+
 ## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 
 - `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6** (both keys

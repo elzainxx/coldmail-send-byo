@@ -744,3 +744,52 @@ self-heal path runs, which is also the path that stamps the value the assertion 
 
 **Needs-user:** NO ruling required to proceed — recorded so a future phase (or the first operator who
 sets a non-UTC zone) does not re-derive it. Worth pinning if account-create is next touched.
+
+### P8-OD-1 — the execution mandate's "seed the intensities/rates too" collides with the LOCKED 14-key count (FLAG, Rule 2 — proceeding on the locked-spec-compliant side, not silently widening)
+
+**Raised by:** Phase 8 Chunk 5 (config seeds), surfaced while reconciling the current build mandate
+against the closed spec set before writing `sender_0020`'s config-seed INSERTs.
+
+**The contradiction.** The Chunk 5 execution instruction reads: *"Seed the toggle keys AND their
+INTENSITIES/RATES (comment-injection rate, ZWJ rate, CSS-variation magnitude, etc.) as config with
+documented defaults — an on/off toggle whose strength is hardcoded is only half a dial."* Taken
+literally this adds new keys beyond the toggle set: a ZWJ-rate dial, a CSS-magnitude dial, a
+UA-injection-rate dial (currently `ZWJ_RATE = 0.05`, the CSS `{-1,0,+1}` spread, and
+`UA_INJECT_RATE = 0.3` in `services/box/src/variation-content.js` / `variation-headers.js`).
+
+But `Docs/phase-8-content-variation.md` §6.1/§6.2 (LOCKED, closed, must not be edited per this
+repo's operating rule) is explicit and enumerated: **"`sender_0020` seeds the FOURTEEN keys below
+(twelve toggles + two toggle-parameters)."** Only `variation_comment_intensity` (an enum,
+low/medium/high, whose 5/15/30% rates are fixed IN THE SPEC'S OWN TEXT for toggle 2) and
+`variation_preheader_templates` are toggle-parameters; toggles 3 (CSS), 5 (ZWJ), and 10 (UA) are
+listed as plain booleans with no accompanying rate/magnitude key, and their rates/magnitudes are
+stated as fixed values in the toggle's own prose (toggle 3: "±1px... skips values <3px"; toggle 5:
+"~5% of word-boundary spaces"; toggle 10 borrows the reference's "~70%-omission... reproducing the
+reference's ~70%-omission behavior deterministically per job" — no key named for it anywhere in §5
+or §6). `Docs/phase-9-polish-and-documentation.md` §4.5 (also locked) independently confirms the same
+fourteen-key enumeration for `sender_0020` and treats it as closed/complete ("all default OFF/neutral
+... See Phase 8 for per-toggle behavior; consolidated here for completeness") — it lists no
+intensity/rate keys beyond `variation_comment_intensity`. Adding three more keys would grow Phase 8
+from 14 to 17 and is a **locked-spec contradiction**, not a simple scope note: per CLAUDE.md Rule 2
+("Never resolve a locked contradiction on your own authority") this is filed rather than silently
+implemented either way.
+
+**Disposition — proceed on the locked-spec-compliant side, flag the mandate's broader ask.**
+`sender_0020`'s config seeds ship **exactly the fourteen keys** the locked spec enumerates (§6.2,
+verbatim) — no ZWJ-rate, CSS-magnitude, or UA-rate key is added. The three currently-hardcoded
+values (`ZWJ_RATE`, the CSS ±1 spread, `UA_INJECT_RATE`) remain literal constants in the box code,
+each already documented in place as "a fixed toggle behavior per the locked spec's own text, not a
+further config key" (see the comments already at their definition sites in
+`variation-content.js`/`variation-headers.js`, Chunks 3–4). This keeps the Phase 8/Phase 9 §4.5 key
+counts mutually consistent and the migration chain contiguous.
+
+**What would change this:** if the user rules that the intensities/rates SHOULD become independent
+dials, that is a genuine additive amendment to the closed Phase 8 spec (§6.1/§6.2) and to Phase 9
+§4.5's consolidated table — both would need a deliberate, reviewed edit (CLAUDE.md §8: "Newly locked
+invariants are APPENDED... never quietly rewritten"), and the box code would read them via the same
+`push_job.variation` snapshot mechanism rather than a literal constant. Not built speculatively here.
+
+**Needs-user:** yes — a ruling on whether toggles 3/5/10's rates should become independent
+`sender.config` dials (widening Phase 8 to 17 keys and amending the two locked specs above) or stay
+fixed-in-code as the current spec text already specifies. Proceeding on the locked-spec-compliant
+14-key path in the meantime; this does not block any other Chunk 5/6 work.

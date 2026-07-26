@@ -61,4 +61,65 @@ ALTER TABLE sender.jobs
 COMMENT ON COLUMN sender.jobs.attempt_token IS
     'Monotonic, NON-saturating per-attempt identity (P7-OD-6). Incremented by the Brain in the guarded assigned->sending UPDATE; echoed on push_job and returned in report; a mismatching report is a stale replay and is rejected without mutating state or scoring the account. Deliberately uncapped — unlike attempt_count, which saturates at max_attempts and therefore cannot identify an attempt.';
 
+-- ---------------------------------------------------------------------------------------------
+-- Phase 8 CHUNK 5 — content-variation config seeds (§6.1/§6.2, LOCKED — fourteen keys exactly).
+--
+-- FLAGGED DEVIATION (recorded, not silent): the locked spec names this seed migration
+-- `sender_0020_content_variation_config`, but that version number was already spent by Chunk 1's
+-- `sender_0020_jobs_attempt_token` above (the P7-OD-6 scope addition, ruled: "Phase 8 also
+-- implements the P7-OD-6 per-attempt identity fix... because Phase 8 is the only remaining
+-- pre-9.5 phase that already touches the push_job wire contract and owns migration 0020"). Rather
+-- than open a second `sender_0020` (impossible — versions are unique) or renumber a committed,
+-- self-tracking migration (forbidden — migrations are immutable once applied/committed, and
+-- Docs/phase-9-polish-and-documentation.md §6.7/§6.8 + config-reference.md already cite
+-- `sender_0020` as Phase 8's ONE migration), these fourteen INSERTs are appended to THIS SAME
+-- file. The chain stays contiguous (...0019 -> 0020 -> 0021 for Phase 9.5) and every doc that
+-- already says "Phase 8 = sender_0020" remains true.
+--
+-- ALL FOURTEEN KEYS, no more (see Docs/open-decisions.md P8-OD-1): the build mandate separately
+-- asked to seed "the intensities/rates too" (a ZWJ rate, a CSS magnitude, a UA-injection rate).
+-- That would grow Phase 8 to 17 keys, contradicting the LOCKED enumeration in this spec's own §6.1
+-- ("sender_0020 seeds the fourteen keys below") and Phase 9 §4.5's independently-locked 14-key
+-- table. Filed as P8-OD-1 rather than resolved unilaterally (CLAUDE.md Rule 2); this migration
+-- ships the locked-spec-compliant fourteen. The already-hardcoded ZWJ_RATE (0.05,
+-- variation-content.js), the CSS +/-1px spread (variation-content.js), and UA_INJECT_RATE (0.3,
+-- variation-headers.js) remain literal constants, each matching a FIXED value stated in this
+-- spec's own toggle prose (toggle 3, 5, 10 — none of which names a config key for its rate), not a
+-- config-not-code violation of a dial this spec actually defines.
+--
+-- Grants (ADR-0008 trap): all fourteen rows land in sender.config, which sender_module already
+-- holds SELECT on (sender_0010). No new table, no new grant; the schema-wide TestGrantsInvariant
+-- stays green (a config INSERT changes no table-class privilege).
+INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+('variation_html_minify', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 1: minify HTML body at box-side MIME assembly (strip comments/whitespace; preserve Outlook conditionals). Off = Phase 3 body. Box-consumed via push_job.variation.', 'boolean'),
+('variation_comment_injection', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 2: inject invisible HTML comments after a fraction of closing tags. Off = no comments. Box-consumed.', 'boolean'),
+('variation_comment_intensity', '{"v":"low"}', '{"v":"low"}',
+ 'Parameter of variation_comment_injection: low=5%/medium=15%/high=30% of closing tags. Ignored when the toggle is off.', 'string'),
+('variation_css_micro', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 3: vary inline padding/margin px by +/-1 (skip <3px, never <0). Off = CSS untouched. Box-consumed.', 'boolean'),
+('variation_unique_url_params', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 4: append inert cache-busting _ref=/_v= param (seeded from job_id) to author links/images. NOT tracking: no callback, no redirect, no tracking domain. Off = URLs untouched. Box-consumed.', 'boolean'),
+('variation_zero_width', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 5: insert U+200D (ZWJ) at ~5% of word boundaries in visible text. DEFAULT OFF (some filters flag zero-width abuse). Box-consumed.', 'boolean'),
+('variation_encoding_rotation', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 6: rotate body Content-Transfer-Encoding between quoted-printable and base64 (seeded). Decodes identically. Off = SMTP-library default (= Phase 3). Box-consumed.', 'boolean'),
+('variation_mime_boundary_rotation', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 7: vary the MIME multipart boundary delimiter style (seeded). Structure identical. Off = library default (= Phase 3). Box-consumed.', 'boolean'),
+('variation_dynamic_preheader', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 8: inject a hidden preheader span (seeded template) after <body>. V1 = no merge personalization (no contact data box-side; tokens cleaned to empty). Off = none. Box-consumed.', 'boolean'),
+('variation_preheader_templates',
+ '{"v":["A brief note for you","A quick read for you","Quick update for you","Worth a look","A quick note for you","Thought you might find this useful","Something relevant for you"]}',
+ '{"v":["A brief note for you","A quick read for you","Quick update for you","Worth a look","A quick note for you","Thought you might find this useful","Something relevant for you"]}',
+ 'Parameter of variation_dynamic_preheader: candidate templates (V1 token-free per P8-7). Ignored when the toggle is off.', 'array<string>'),
+('variation_header_style', '{"v":"none"}', '{"v":"none"}',
+ 'Phase 8 toggle 9: reorder headers to a client style (none/gmail/outlook/apple/thunderbird/random). Reorders only; changes no value. none = preserve Phase 3 order (the byte-identical identity). Box-consumed.', 'string'),
+('variation_user_agent_injection', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 10: inject a seeded User-Agent header. Decoupled from variation_header_style (P8-6). Off = no User-Agent. Box-consumed.', 'boolean'),
+('variation_precedence', '{"v":"auto"}', '{"v":"auto"}',
+ 'Phase 8 toggle 11: Precedence header control (auto/marketing/personal). marketing = add Precedence: bulk; auto/personal = omit. auto = Phase 3 (omit). Box-consumed.', 'string'),
+('variation_thread_index', '{"v":false}', '{"v":false}',
+ 'Phase 8 toggle 12: Thread-Index header. INERT in V1 (no sequences => no thread to index); emits nothing whether on or off. Kept for a future sequences phase. Box-consumed.', 'boolean');
+
 INSERT INTO sender.schema_migrations (version) VALUES ('0020');

@@ -125,10 +125,24 @@ func TestRunnerLifecycle(t *testing.T) {
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
 	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) + Phase 7's 6 (sender_0019:
 	// startup_reconnect_window_sec, shutdown_drain_timeout_sec, retention_sweep_interval_ms,
-	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) = 25.
+	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) + Phase 8's 14
+	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
+	// migration-filename deviation, Docs/open-decisions.md P8-OD-1) = 39.
 	// Phase 4 added NO config key (§0); Phase 7 is fully schema-neutral (config seeds only, no table).
-	if n := configKeyCount(t, admin); n != 25 {
-		t.Fatalf("after Up: sender.config has %d keys, want 25 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7)", n)
+	if n := configKeyCount(t, admin); n != 39 {
+		t.Fatalf("after Up: sender.config has %d keys, want 39 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 14 Phase 8)", n)
+	}
+	// Phase 8 Chunk 5's fourteen content-variation config seeds — anti-vacuity that they landed.
+	for _, key := range []string{
+		"variation_html_minify", "variation_comment_injection", "variation_comment_intensity",
+		"variation_css_micro", "variation_unique_url_params", "variation_zero_width",
+		"variation_encoding_rotation", "variation_mime_boundary_rotation", "variation_dynamic_preheader",
+		"variation_preheader_templates", "variation_header_style", "variation_user_agent_injection",
+		"variation_precedence", "variation_thread_index",
+	} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: sender.config missing %q (sender_0020 Phase 8 seed not applied)", key)
+		}
 	}
 	// Phase 4's ONE additive schema delta: the per-user claim index (sender_0015, CONCURRENTLY).
 	// Proves the runner APPLIED a CONCURRENTLY migration (not a no-op) — anti-vacuity for the
@@ -186,6 +200,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0020" && columnExists(t, admin, "jobs", "attempt_token") {
 			t.Fatal("after Down 0020: sender.jobs.attempt_token is still present (down did not drop it)")
+		}
+		if v == "0020" && configKeyExists(t, admin, "variation_html_minify") {
+			t.Fatal("after Down 0020: a Phase 8 content-variation config seed is still present (down did not delete it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with

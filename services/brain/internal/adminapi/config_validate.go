@@ -49,6 +49,20 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 				return typeErr(key, issueMalformed, "config_value_not_int_array")
 			}
 		}
+	case "array<string>":
+		// Phase 8 (variation_preheader_templates, §6.1): a JSON array of strings. Empty is valid
+		// (the toggle degrades to "no candidates" box-side, variation.js's pickSeeded) — only a
+		// non-array or a non-string element is rejected.
+		var arr []json.RawMessage
+		if json.Unmarshal(value, &arr) != nil {
+			return typeErr(key, issueMalformed, "config_value_not_string_array")
+		}
+		for _, elem := range arr {
+			var s string
+			if json.Unmarshal(elem, &s) != nil {
+				return typeErr(key, issueMalformed, "config_value_not_string_array")
+			}
+		}
 	case "json":
 		// Phase 5 §7: a json-typed value must be a well-formed JSON object (the {"v": ...} envelope
 		// is added by the store; here `value` is the UNWRAPPED inner value). Reject a non-object or
@@ -104,8 +118,43 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateBackoffSchedule(key, value); perr != nil {
 			return perr
 		}
+	case "variation_comment_intensity":
+		// Phase 8 §5 toggle 2 parameter: low/medium/high only (fixes the 5%/15%/30% rate). The box
+		// ALSO degrades an unrecognized value to "low" (variation.js's resolveVariation) — this
+		// write-time check is the operator-feedback layer, same posture as the other enum-string
+		// keys below, so a typo is rejected loudly rather than silently degrading.
+		if perr := validateEnumString(key, value, "low", "medium", "high"); perr != nil {
+			return perr
+		}
+	case "variation_header_style":
+		// Phase 8 §5 toggle 9: none/gmail/outlook/apple/thunderbird/random.
+		if perr := validateEnumString(key, value, "none", "gmail", "outlook", "apple", "thunderbird", "random"); perr != nil {
+			return perr
+		}
+	case "variation_precedence":
+		// Phase 8 §5 toggle 11: auto/marketing/personal.
+		if perr := validateEnumString(key, value, "auto", "marketing", "personal"); perr != nil {
+			return perr
+		}
 	}
 	return nil
+}
+
+// validateEnumString rejects a string value that is not one of `allowed` — the write-time operator
+// feedback layer for Phase 8's three enum-string toggle keys. The box-side resolver degrades an
+// unrecognized value safely regardless (variation.js), so this check exists to catch a typo loudly
+// rather than let it silently do nothing.
+func validateEnumString(key string, value json.RawMessage, allowed ...string) *apiError {
+	var s string
+	if json.Unmarshal(value, &s) != nil {
+		return typeErr(key, issueMalformed, "config_value_not_string")
+	}
+	for _, a := range allowed {
+		if s == a {
+			return nil
+		}
+	}
+	return typeErr(key, issueForbiddenValue, "config_"+key+"_invalid_enum_value")
 }
 
 // validateScoreWeights checks the §3.2 inner object shape of status_score_weights.
