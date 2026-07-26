@@ -122,3 +122,51 @@ move to account-first. This is item DoD-10 and CLAUDE.md Rule 9.
   harness, consistent with CLAUDE.md Rule 3 (no mocks for the claim/consume/state-machine paths).
 - Recorded in the Open Decisions ledger (`Docs/open-decisions.md`, Phase 5 review-gate section) so
   the requirement is discoverable from the ledger, not only from this ADR.
+
+## Amendment (Phase 7 closeout, 2026-07-26): a race test must PROVE it contended, and the two
+## Postgres semantics that decide whether Rule 9 applies at all
+
+Phase 7's review gate R4 found the requirement above being satisfied in letter and not in substance.
+`TestRescan_LeaseExtensionVsOutcomeNoDeadlock` was a genuine two-connection test on real Postgres,
+driving the rescan's lease `UPDATE` against a concurrent outcome, and it was green. Instrumented, it
+turned out that in **40 of 40 rounds neither connection ever blocked**: the two paths never met, so
+the test asserted only that two unrelated statements can both succeed. It would have passed unchanged
+if the rescan had taken an account lock in the wrong order — precisely the defect this ADR exists to
+catch. An uncontended race test is indistinguishable from a passing one in CI output, which is what
+makes this failure mode worth an amendment rather than a note.
+
+**Amended requirement (now CLAUDE.md Rule 10, DoD-2).** A two-connection race test must prove
+contention, not hope for it. Either:
+
+1. **Force a deterministic interleave** — hold one transaction open at the exact point of interest and
+   drive the counterparty against it. Preferred: it removes timing luck entirely and is repeatable.
+2. **Assert the contention it claims** — observe a genuinely blocked backend
+   (`pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`), or assert the blocked side
+   cannot complete while the lock is held — and FAIL if no contention is observed.
+
+"No `40P01` occurred" is not evidence on its own. Closed for Phase 7 by
+`internal/dispatch/rescan_lockorder_test.go`, which drives both orders as forced interleaves and fails
+on `40P01`, on a block, and on vacuity.
+
+**The two Postgres semantics.** Establishing that test's teeth took three attempts, and the two
+failures are recorded here because they determine whether Rule 9 applies to a path at all:
+
+- **(a) An `UPDATE` that leaves `state` unchanged produces NO `job_events` row.**
+  `trg_job_events_on_state_change` is `AFTER UPDATE OF state`, and `fn_job_events_on_state_change`
+  RETURNS EARLY when `OLD.state = NEW.state` (`sender_0008`). So `SET state = state` is not an event.
+- **(b) An `UPDATE` that leaves an FK key value unchanged takes NO `KEY SHARE` on the referenced row.**
+  Postgres skips the FK re-check when the key did not change. So
+  `SET assigned_account_id = assigned_account_id` does not lock the account.
+
+**Consequence for the invariant.** A job-row `UPDATE` that touches neither `state` nor an FK key is
+**event-free** and takes no account lock, so Rule 9's precondition never triggers for it. Phase 7's
+startup rescan (`SET lease_expires_at, updated_at WHERE state IN ('assigned','sending')`) is exactly
+this shape, which is why the whole phase satisfies Rule 9 vacuously rather than by ordering discipline.
+Because that premise is load-bearing, it is asserted behaviorally in BOTH directions rather than
+documented in a comment.
+
+**Consequence for test authors.** Neither no-op `SET` above is a valid negative control for a
+lock-ordering test — both leave the test green while changing nothing observable. To make such a test
+fail on purpose, inject an EXPLICIT `SELECT … FROM sender.accounts … FOR KEY SHARE` (or `FOR UPDATE`)
+into the transaction under test. That is what made `rescan_lockorder_test.go` fail with *"the rescan's
+lease UPDATE BLOCKED behind a held exclusive account lock — it is NOT event-free"*, proving the teeth.

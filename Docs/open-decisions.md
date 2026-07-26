@@ -424,9 +424,16 @@ The box-side mitigations shipped in Phase 7; the Brain-side fix is a contract+sc
 is schema-neutral. R4 (code review) produced **P7-OD-7** (the day-rollup's bucket boundary follows the
 implicit SESSION timezone while every other day-boundary path pins `daily_reset_timezone` explicitly —
 a contract question, and `SummarizeByPeriod` has no production caller yet, so it is filed rather than
-guessed at) — **P7-OD-7 was RULED on 2026-07-26: follow `daily_reset_timezone`**, implemented and tested
-in the closeout. **Needs-user is therefore back to exactly ONE open item: P7-OD-6's attempt-identity
-ruling.** No locked spec was edited by Phase 7, its gates, or its closeout.
+guessed at). **Both were RULED on 2026-07-26 in the closeout:** P7-OD-7 → follow `daily_reset_timezone`
+(implemented + tested here); P7-OD-6 → RULED-ADOPT, persist per-attempt identity, **owner Phase 8**
+(residual risk accepted for Phase 7, which stays schema-neutral). **Needs-user is therefore EMPTY
+again** — every Phase 7 item is RULED or APPLIED. No locked spec was edited by Phase 7, its gates, or
+its closeout. The closeout also appended CLAUDE.md **Rule 10** (a concurrency test must PROVE it
+contended) and a Rule 9 sub-point recording two Postgres semantics (an unchanged `state` fires no
+trigger; an unchanged FK key takes no `KEY SHARE`) — see the ADR-0010 amendment. It additionally FLAGGED
+**P7-OD-8** (`accounts.daily_reset_day DEFAULT CURRENT_DATE` uses the server date, not
+`daily_reset_timezone`) — surfaced by a test failure, low severity under the shipped UTC default, no
+ruling required to proceed.
 
 ### P7-OD-3 — the two bounds R1 required had no seeded key (RESOLVED without inventing one)
 
@@ -514,7 +521,7 @@ rather than at the `PUT`. No duplicate, no invented outcome.
 **Needs-user:** none — this is a scope boundary, not a contradiction. It closes when Phase 9 ships §4.6
 + E4.
 
-### P7-OD-6 — a config-ordering violation is NOT a DB outage (fixed), and Brain-side ATTEMPT identity (open)
+### P7-OD-6 — a config-ordering violation is NOT a DB outage (fixed), and Brain-side ATTEMPT identity — **RULED-ADOPT 2026-07-26, owner: PHASE 8**
 
 **Raised by:** review gate R2 (architect), Phase 7 closeout.
 
@@ -531,7 +538,8 @@ back a ZEROED Config, so nothing runs on bad values). Covered by
 outage line, no halt, nothing claimed, then an anti-vacuity resume once the pair is fixed and a real
 severed-connection positive control proving the log assertions can fail.
 
-**OPEN (design, needs a ruling): the Brain has no ATTEMPT identity on the report path.** The §1.3
+**THE DESIGN GAP (was OPEN; ruled below, now owned by Phase 8): the Brain has no ATTEMPT identity on
+the report path.** The §1.3
 attribution guard added by R1 rejects a stale replay only when the reporting box differs from
 `assigned_box_id`. When a reclaimed job is re-dispatched to the **SAME** box, a late replay from the
 superseded attempt is indistinguishable from the live attempt's report and WILL be applied. The wire
@@ -558,8 +566,26 @@ a lease expiry, AND the re-dispatch landing on the same box. Its blast radius is
 being attributed to the wrong attempt of the SAME job on the SAME box; it can never produce a second
 SMTP send (that is bounded by `provider_message_id UNIQUE` + the pre-persist idempotency check).
 
-**Needs-user:** YES — a ruling on whether to persist per-attempt identity (which phase, which column)
-or to accept the residual risk with the documented box-side mitigations.
+**RULING (2026-07-26, user): RULED-ADOPT — persist per-attempt identity; OWNER is PHASE 8.** The
+residual risk is accepted for the duration of Phase 7 (unchanged from the assessment above: it needs a
+lost ack AND a lease expiry AND the re-dispatch landing on the same box, and it can never cause a second
+SMTP send), with the box-side mitigations already shipped. Phase 7 remains schema-neutral; the additive
+column/contract change and the same-box replay guard are Phase 8's to build, per the Phase 8 kickoff.
+
+**Carried into Phase 8 as an inherited obligation** (so it is not re-litigated there):
+- The wire already carries the identity — `push_job.request_id` is minted per attempt and echoed in
+  `report.request_id`. Phase 8 reads and persists it (additive-only, Rule 5); it does not redesign it.
+- The guard belongs in `OutcomeHandler.Handle`, alongside the existing different-box attribution check.
+- Its test must cover the SAME-box case, which `staleattr_test.go` explicitly documents as the uncovered
+  half (that scope comment is the pointer to this item and should be updated when Phase 8 closes it).
+
+**Needs-user:** none (ruled). Tracking moves to Phase 8.
+
+**FLAG (for the user, not a blocker):** no Phase 8 kickoff artifact exists in the tree yet — `Docs/`
+holds `phase-8-content-variation.md` (the locked spec, untouched) but no kickoff/scope document, so this
+ruling is recorded here on the user's instruction and this ledger is currently its only home. When the
+Phase 8 kickoff lands, that document must carry this inherited obligation explicitly, or the ruling
+lives only in a Phase 7 section and is easy to miss.
 
 ### P7-OD-7 — the day-rollup's bucket boundary depends on the SESSION timezone, not on config — **RULED 2026-07-26: FOLLOW `daily_reset_timezone`**
 
@@ -630,3 +656,35 @@ to **FAIL** against the previous unpinned query (`no summary bucket for 2026-07-
 map[2026-07-25:4]`, and `bucketed as map[2026-07-24:1], want {2026-07-23:1}`).
 
 **Needs-user:** none (ruled). One open item remains: P7-OD-6.
+
+### P7-OD-8 — `accounts.daily_reset_day DEFAULT CURRENT_DATE` uses the SERVER date, not `daily_reset_timezone` (FLAG, low severity)
+
+**Raised by:** Phase 7 closeout Chunk 1, surfaced by a test failure rather than by inspection — which is
+why it is worth recording.
+
+While proving the P7-OD-7 ruling, `TestRollup_BucketsFollowDailyResetTimezone` failed its own
+precondition (`state=queued, want sending`) under a zone WEST of the server. Cause: `sender_0005`
+declares `daily_reset_day DATE NOT NULL DEFAULT CURRENT_DATE` — the **server's** date — while the
+eligibility predicate compares that column against `(NOW() AT TIME ZONE daily_reset_timezone)::date`.
+For a west-of-server zone a freshly-inserted account is born with `daily_reset_day` a day AHEAD of
+today-in-tz, so neither eligibility branch matches (`<` fails, `=` fails) and the account is invisible
+to dispatch until the server date catches up — up to ~a day of a brand-new account being silently
+unusable.
+
+**Why this is LOW and not a Phase 7 defect:** the seeded `daily_reset_timezone` is `UTC` and the
+containers run UTC, so `CURRENT_DATE` and today-in-tz agree in every environment this module ships in
+today. It only bites if an operator sets a west-of-UTC zone. The runtime is also self-healing in the
+other direction: a STALE `daily_reset_day` is handled by the §2.1 lazy reset, which re-stamps it from
+the config tz — so once an account transacts, the column is correct. Only the INITIAL default is wrong,
+and only for a west-of-server zone.
+
+**Not fixed here (Rule 2 + scope).** A fix is a migration changing a column default (Phase 7 is
+deliberately schema-neutral, and the DEFAULT would have to read a config row, which a column default
+cannot do — the honest fix is for the account-create path to compute the value, which is Phase 2's
+surface, not Phase 7's). Flagging rather than reaching into another phase's write path during a closeout.
+
+The test works around it explicitly and says so in a comment: it ages `daily_reset_day` so the §2.1
+self-heal path runs, which is also the path that stamps the value the assertion then checks.
+
+**Needs-user:** NO ruling required to proceed — recorded so a future phase (or the first operator who
+sets a non-UTC zone) does not re-derive it. Worth pinning if account-create is next touched.

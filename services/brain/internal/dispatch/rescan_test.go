@@ -159,6 +159,15 @@ func TestRescan_LeaseExtensionIsEventFree(t *testing.T) {
 // holds NO account lock and cannot cycle (40P01) with the outcome handler's account→job order. Assert:
 // no round errors (a deadlock aborts one side), and the job ends coherent — either requeued by the
 // classified failure, or still in-flight with an extended lease.
+//
+// SCOPE — read this before trusting it as the lock-order proof (CLAUDE.md Rule 10, added 2026-07-26).
+// Instrumented, this test resolves 40/40 rounds with the classified failure winning: the rescan's
+// UPDATE usually runs when the job has already left 'sending', so it matches zero rows and the two
+// statements NEVER ACTUALLY CONTEND for the same job row. It is therefore a real test of OUTCOME
+// COHERENCE under concurrency, and NOT evidence about the two lock ORDERS — it would pass unchanged
+// even with the ordering wrong. The lock-order proof is rescan_lockorder_test.go, which forces each
+// interleave with held transactions and fails if it observes no contention. Do not delete this test
+// (coherence is worth asserting) and do not cite it for lock ordering.
 func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 	e := newDispatchEnv(t, "rescandeadlock")
 	ctx := context.Background()

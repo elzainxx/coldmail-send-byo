@@ -23,6 +23,27 @@ import (
 // contention is guaranteed, not hoped for.
 //
 // Both directions are asserted, per CLAUDE.md Rule 9 / ADR-0010.
+//
+// TWO POSTGRES SEMANTICS, recorded here because they are what make the rescan event-free and what make
+// the obvious negative controls for these tests USELESS (CLAUDE.md Rule 9 sub-point 2026-07-26,
+// ADR-0010 amendment):
+//
+//	(a) An UPDATE that leaves `state` UNCHANGED produces NO job_events row. trg_job_events_on_state_change
+//	    is AFTER UPDATE OF state, and fn_job_events_on_state_change RETURNS EARLY when
+//	    OLD.state = NEW.state (sender_0008). So `SET state = state` is not an event.
+//	(b) An UPDATE that leaves an FK key value UNCHANGED takes NO KEY SHARE on the referenced row —
+//	    Postgres skips the FK re-check when the key did not change. So
+//	    `SET assigned_account_id = assigned_account_id` does not lock the account.
+//
+// CONSEQUENCE: the rescan's `SET lease_expires_at, updated_at WHERE state IN ('assigned','sending')`
+// touches neither `state` nor an FK key, so it is event-free and takes no account lock — which is why
+// Rule 9's precondition never triggers for it. That premise is load-bearing, hence asserted here rather
+// than asserted in a comment.
+//
+// CONSEQUENCE FOR WHOEVER EDITS THESE TESTS: neither no-op SET above will make them fail. Both were
+// tried and both left the suite green. To verify the teeth, inject an EXPLICIT
+// `SELECT … FROM sender.accounts … FOR KEY SHARE` into the rescan transaction — that produces the
+// "BLOCKED behind a held exclusive account lock" failure below, which is how these tests were validated.
 
 // TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome forces: the rescan's bulk lease UPDATE
 // takes the JOB row lock FIRST and holds it (open tx), then the outcome handler runs its

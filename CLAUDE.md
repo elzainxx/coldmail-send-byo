@@ -140,7 +140,42 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   `FOR UPDATE` first — it only ever serializes more, never less.
 - Every phase that adds or moves an account/job lock ships a genuine two-connection race
   test that drives the two lock orders concurrently and proves no `40P01` (ADR-0010).
+  That test must satisfy Rule 10 — it must PROVE it contended.
 - The current both-locking paths and their confirmed orders are enumerated in ADR-0010.
+- (2026-07-26, Phase 7 R4) TWO POSTGRES SEMANTICS that decide whether this rule even
+  applies to a path. Both were learned the hard way — by writing negative controls that
+  silently did NOT trip a lock-order test — so they are recorded rather than re-derived:
+    (a) An `UPDATE` that leaves `state` UNCHANGED does NOT produce a `job_events` row.
+        `trg_job_events_on_state_change` is `AFTER UPDATE OF state`, and its function
+        RETURNS EARLY when `OLD.state = NEW.state`. So `SET state = state` is not an event.
+    (b) An `UPDATE` that leaves an FK key value UNCHANGED does NOT take `KEY SHARE` on the
+        referenced row — Postgres skips the FK re-check when the key did not change. So
+        `SET assigned_account_id = assigned_account_id` does not lock the account.
+  CONSEQUENCE, and the reason this matters: a job-row `UPDATE` that touches NEITHER `state`
+  NOR an FK key (the Phase 7 startup rescan's lease extension is exactly this) is
+  EVENT-FREE and takes NO account lock, so Rule 9 does not apply to it. That premise is
+  load-bearing, so it is asserted behaviorally in BOTH directions
+  (`internal/dispatch/rescan_lockorder_test.go`), not left as a comment. Corollary for test
+  authors: to make such a test fail on purpose you must inject an EXPLICIT account
+  `FOR KEY SHARE`/`FOR UPDATE` — the two no-op `SET`s above are NOT valid negative controls.
+
+## 10. Anti-vacuity for concurrency tests (Rule 3 reinforcement)
+- (2026-07-26, Phase 7 R4) A concurrency test that never actually contends is a test that
+  CANNOT FAIL. Phase 7's rescan-vs-outcome race test ran 40/40 rounds in which neither
+  connection ever blocked: it passed, proved nothing, and would have passed just as
+  happily if the rescan had taken an account lock in the wrong order.
+- Therefore: every two-connection race test MUST PROVE CONTENTION, not hope for it. One of:
+    (a) FORCE a deterministic interleave — hold one transaction open at the exact point of
+        interest and drive the counterparty against it (preferred: no timing luck), or
+    (b) ASSERT the contention it claims — e.g. observe a genuinely blocked backend via
+        `pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`, or assert the
+        blocked side does not complete while the lock is held.
+  A test whose only assertion is "no `40P01` occurred" is not evidence unless it also shows
+  the two orders genuinely met.
+- The failure mode this closes is silent: an uncontended race test is indistinguishable
+  from a passing one in CI output. Prefer (a); when a test must rely on real concurrency,
+  it fails if it observes no contention.
+- This applies to EVERY remaining phase and is part of the Definition of Done (DoD-2).
 
 ## Definition of Done (every phase is held to this)
 See `Docs/definition-of-done.md`. A phase is not done until all nine DoD items are

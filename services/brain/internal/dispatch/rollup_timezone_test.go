@@ -94,6 +94,19 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 		t.Fatalf("config did not take: daily_reset_timezone=%q, want %q", cfg.DailyResetTimezone, zone)
 	}
 
+	// FIXTURE NOTE (not the property under test). sender.accounts.daily_reset_day defaults to
+	// CURRENT_DATE — the SERVER's date — while the eligibility predicate compares it against
+	// `(NOW() AT TIME ZONE daily_reset_timezone)::date`. For a zone WEST of the server the seeded value
+	// is a day AHEAD of today-in-tz, and neither eligibility branch matches (`<` fails, `=` fails), so
+	// nothing would dispatch and this test would fail on its own fixture rather than on the rollup.
+	// Aging the row makes the intended path run: a STALE daily_reset_day is exactly what the §2.1
+	// self-heal handles, and the consume re-stamps it to today-in-tz — which is the value asserted below.
+	// (The default-vs-config-tz mismatch itself is flagged for the user, not fixed here.)
+	if _, err := e.admin.Exec(ctx,
+		`UPDATE sender.accounts SET daily_reset_day = DATE '2000-01-01' WHERE id=$1`, acct); err != nil {
+		t.Fatalf("age daily_reset_day: %v", err)
+	}
+
 	// Drive the REAL paths: claim+consume (which stamps daily_reset_day from the config tz) and a real
 	// terminal outcome (which writes the sending→sent transition this rollup will summarize).
 	oh := NewOutcomeHandler(e.pool, cfg)
