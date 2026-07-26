@@ -68,6 +68,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/config", s.requireAuth(s.handleConfigList))
 	s.mux.HandleFunc("GET /v1/admin/config/{key}", s.requireAuth(s.handleConfigGet))
 	s.mux.HandleFunc("PUT /v1/admin/config/{key}", s.requireAuth(s.handleConfigPut))
+
+	// Observability (Phase 9.5 B3/B4, §3)
+	s.mux.HandleFunc("GET /v1/admin/health", s.requireAuth(s.handleHealth))
 }
 
 // fail writes the clean external envelope for e and logs the internal reason against rid. It is

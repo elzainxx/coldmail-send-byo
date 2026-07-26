@@ -56,6 +56,7 @@ if [[ "$adm_probe" == "401" ]]; then
     ["DELETE /v1/admin/pools/00000000-0000-0000-0000-000000000000"]=1
     ["GET /v1/admin/config"]=1 ["GET /v1/admin/config/daily_limit_default"]=1
     ["PUT /v1/admin/config/daily_limit_default"]=1
+    ["GET /v1/admin/health"]=1
   )
   for spec in "${!ADMIN_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -65,7 +66,7 @@ if [[ "$adm_probe" == "401" ]]; then
   # An UNDOCUMENTED admin path must NOT be gated as a real route — it should 404 (no handler).
   und_adm="$(adm GET /v1/admin/secret-undocumented)"
   [[ "$und_adm" == "404" ]] || { echo "contract_drift FAIL: undocumented admin path returned $und_adm, want 404 — surface wider than the contract"; fail=1; }
-  echo "contract_drift: Phase 2 admin surface mounted — 21 routes gated (401), undocumented 404."
+  echo "contract_drift: Phase 2+9.5 admin surface mounted — 22 routes gated (401), undocumented 404."
 else
   echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
 fi
@@ -98,7 +99,7 @@ und="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/undocumen
 for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/admin/accounts" "/v1/admin/pools" "/v1/admin/config" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
-         "/v1/admin/accounts/{id}/events" \
+         "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
          "/v1/quote" "/v1/run" "/v1/report" "/v1/describe"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done

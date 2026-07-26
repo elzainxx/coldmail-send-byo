@@ -81,6 +81,14 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
 | PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation) |
 
+## Phase 9.5 served routes — observability (Domain B)
+
+Same operator admin auth as the routes above (`Authorization: Bearer <admin key>`).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/admin/health` | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, per-pool eligibility headroom, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
+
 ## Phase 3 served routes — platform-facing API (Domain A)
 
 The end-user surface for the minimal send path. Every route requires the platform service token
