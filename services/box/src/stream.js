@@ -25,6 +25,7 @@ import tls from "node:tls";
 import fs from "node:fs";
 import { MemoryCredential } from "./creds.js";
 import { runSmtpSession, SMTPError } from "./smtp.js";
+import { assembleDataBytes } from "./assemble.js";
 
 // defaultDial is the PRODUCTION transport: a mutual-TLS connection to the Brain (§3.3). It is the
 // only transport the box ever uses in production. A test may inject an alternative dial (o.dial) to
@@ -305,7 +306,10 @@ export class BoxStream {
       if (leaseExpired(pj.lease_expires_at)) {
         report = errorReport(pj.request_id, jobId, "lease_expired", pj.attempt_token);
       } else {
-        const dataBytes = buildDataBytes(pj.send);
+        // Phase 8 (§1.1): assemble via the variation pipeline. An absent/all-default pj.variation
+        // resolves to the Phase 3 identity (§4) — assembleDataBytes then reproduces buildDataBytes'
+        // bytes exactly (T1 asserts this equality directly against buildDataBytes, exported below).
+        const dataBytes = assembleDataBytes(pj.send, pj.variation, jobId);
         // Per-operation SMTP timeout (Phase 6 §5, P6-11): prefer the seeded smtp_operation_timeout_sec
         // delivered on this push_job (the Brain enforces it < the job lease at config-load), falling
         // back to the box's bootstrap env default only when the frame omits it (older Brain / test).
@@ -421,7 +425,13 @@ function errorReport(requestId, jobId, reason, attemptToken) {
 // buildDataBytes assembles the RFC 5322 message from the Brain-supplied headers (§8) + body. The
 // box sends EXACTLY the headers it was given (it does not invent or reorder in Phase 3, §8.1),
 // plus the transport-mandatory MIME framing.
-function buildDataBytes(send) {
+//
+// Exported (Phase 8, §4/§8 T1) as the frozen PHASE 3 REFERENCE: the headline byte-identity test
+// pins Message-ID/Date/boundary and asserts assembleDataBytes (assemble.js, the variation-pipeline
+// path #runJob actually calls) reproduces this function's output exactly when variation is
+// off/absent. This function itself is otherwise untouched by Phase 8 — it is the fixed target, not
+// participant, of the identity guarantee.
+export function buildDataBytes(send) {
   const h = send.headers || {};
   const order = ["From", "To", "Subject", "Reply-To", "Message-ID", "Date"];
   const lines = [];

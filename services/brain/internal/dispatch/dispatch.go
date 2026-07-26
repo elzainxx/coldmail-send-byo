@@ -291,6 +291,11 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 			// silent Brain lease reclaim (P6-10 carve-out's correctness dependency).
 			OperationTimeoutSec: cfg.SMTPOperationTimeoutSec,
 		},
+		// The resolved content-variation snapshot (Phase 8 Chunk 2, §2.2, P8-3 GLOBAL scope). A
+		// Phase-3-neutral snapshot here is byte-identical in effect to omitting the field entirely
+		// (§4.2) — Chunk 5 replaces defaultVariationSnapshot's body with real sender.config reads
+		// once sender_0020 seeds the fourteen keys; this call site does not change.
+		Variation: defaultVariationSnapshot(),
 	}
 
 	// 5) Move assigned → sending and set assigned_account_id + assigned_box_id, THEN push. Ordering:

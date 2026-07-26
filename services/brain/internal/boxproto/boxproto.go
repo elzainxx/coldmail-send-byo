@@ -114,6 +114,38 @@ type PushJob struct {
 	Send           Send   `json:"send"`
 	SMTP           SMTP   `json:"smtp"`
 	LeaseExpiresAt string `json:"lease_expires_at"` // RFC3339; the box's own deadline (§2.3)
+	// Variation is the Brain's resolved content-variation toggle snapshot (Phase 8 Chunk 2, P8-2
+	// chosen option (a)): an additive, per-job-fresh wire field, never a schema change. Nil (omitted
+	// from the frame) or a Variation whose fields are all at their Phase-3-neutral values (§4.2)
+	// means "apply nothing" — the box's assembler then produces byte-for-byte Phase 3 output. The
+	// box never reads sender.config; it applies exactly the resolved booleans/strings/arrays here.
+	Variation *Variation `json:"variation,omitempty"`
+}
+
+// Variation is the box-consumed, per-job-fresh snapshot of the Phase 8 content-variation config
+// (§2.2 of the locked spec). Every field is a plain value — no logic, no config-table shape — so
+// unmarshaling never requires the box to understand sender.config at all. HeaderStyle=="none" and
+// Precedence=="auto" are the Phase-3-neutral values (NOT Go zero values, so the Brain always sets
+// them explicitly); the boolean toggles rely on Go's zero value (false) coinciding with "off".
+//
+// Chunk 2 stamps this with a literal Phase-3-neutral snapshot (services/brain/internal/dispatch/
+// variation.go); Chunk 5 replaces that source with live sender.config reads once sender_0020 seeds
+// the fourteen keys (config-not-code — deferred to the chunk that actually seeds them).
+type Variation struct {
+	HTMLMinify           bool     `json:"html_minify,omitempty"`
+	CommentInjection     bool     `json:"comment_injection,omitempty"`
+	CommentIntensity     string   `json:"comment_intensity,omitempty"`
+	CSSMicro             bool     `json:"css_micro,omitempty"`
+	UniqueURLParams      bool     `json:"unique_url_params,omitempty"`
+	ZeroWidth            bool     `json:"zero_width,omitempty"`
+	EncodingRotation     bool     `json:"encoding_rotation,omitempty"`
+	MIMEBoundaryRotation bool     `json:"mime_boundary_rotation,omitempty"`
+	DynamicPreheader     bool     `json:"dynamic_preheader,omitempty"`
+	PreheaderTemplates   []string `json:"preheader_templates,omitempty"`
+	HeaderStyle          string   `json:"header_style,omitempty"`
+	UserAgentInjection   bool     `json:"user_agent_injection,omitempty"`
+	Precedence           string   `json:"precedence,omitempty"`
+	ThreadIndex          bool     `json:"thread_index,omitempty"`
 }
 
 // Report is the box's outcome for one job (§2.4). provider_message_id present iff accepted.

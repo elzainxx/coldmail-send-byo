@@ -927,7 +927,7 @@ production caller** today — it must be pinned before any phase wires a reporti
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
 
-## Phase 8 state — content variation (IN PROGRESS: chunk 1 of 6 landed)
+## Phase 8 state — content variation (IN PROGRESS: chunk 2 of 6 landed)
 
 Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
 from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
@@ -995,3 +995,71 @@ idempotent, and that `0020`'s DOWN drops the column.
 **Security surface: unchanged.** The token is an opaque integer on the internal mTLS box channel. It
 touches no credential path, no TLS/STARTTLS ordering, and no client boundary — `/v1/report` still returns
 only clean external state, and the two-vocabulary rule is untouched.
+
+### Chunk 2 — the variation layer skeleton + the identity/no-op guarantee (P8-1..P8-4)
+
+**What landed.** The wire contract and the box-side pipeline scaffolding that every later chunk's
+toggle registers into — with the headline §4 safety property (all-off ⇒ byte-identical to Phase 3)
+proven now, before a single toggle exists, so every later chunk is additive against a property that
+already holds rather than something asserted only at the end.
+
+- **Wire contract (additive, `omitempty`):** `boxproto.PushJob` gains `Variation *Variation` — a
+  plain struct mirroring the locked spec's fourteen fields (twelve toggles + two toggle-parameters,
+  §5/§6). No schema change; this is the one additive Phase 3 protocol extension the spec calls for
+  (§2.2), recorded as a coordinated Phase 3 note in `Docs/api-contract.md`, not a migration.
+- **Brain side (`services/brain/internal/dispatch/variation.go`):** `defaultVariationSnapshot()`
+  stamps a literal Phase-3-neutral snapshot onto every `push_job` in `resolveAndPush`
+  (`dispatch.go`). It is deliberately NOT a `sender.config` read yet — Chunk 1 already spent
+  migration `sender_0020` on `attempt_token`, so the fourteen toggle/intensity keys have no seeded
+  row to read until Chunk 5 appends them to that same migration file (flagged: the locked spec names
+  the seed migration `sender_0020_content_variation_config`, which collides with Chunk 1's already-
+  committed `sender_0020_jobs_attempt_token` — Phase 8 owns 0020 per the scope-addition ruling, so
+  Chunk 5 appends the INSERTs to the existing file rather than opening a new version). The call site
+  in `resolveAndPush` will not change when Chunk 5 lands — only `defaultVariationSnapshot`'s body
+  becomes a real config read.
+- **Box side (`services/box/src/variation.js`, new module):** `resolveVariation` normalizes whatever
+  arrived (or nothing) into a complete toggle set, defaulting anything absent/malformed to the
+  Phase-3-neutral value — never throwing, never accepting an unrecognized enum. `STAGES` is an
+  ordered list of `{active(v), apply(msg, v, jobId)}` transforms; `applyVariation` runs only the
+  ones whose `active` predicate is true. **`STAGES` ships EMPTY in Chunk 2** — no toggle exists yet
+  — so the pipeline is unconditionally the identity function regardless of what any resolved toggle
+  set says; `isNeutral` (which later chunks' tests use to assert the property directly) is therefore
+  vacuously true for every input until Chunk 3 registers the first stage, which the Chunk 2 test
+  suite documents honestly rather than pretending is already toggle-aware.
+- **Determinism primitives (`prngFor`, `hashFor`, `pickSeeded`), shipped now, used later:** a
+  job_id+stream-namespaced xorshift PRNG (§7, P8-5) — each toggle will draw from its own named
+  stream so enabling one can never shift another's draws (the no-hidden-coupling requirement, §8
+  T2/P8-6). Not security-relevant (whitespace/px selection only); asserted stable-per-(job,stream)
+  and divergent-across-streams now so later chunks inherit a proven primitive rather than a new
+  correctness surface each time.
+- **Assembly bridge (`services/box/src/assemble.js`, new module):** `toMessage`/`serializeMessage`
+  convert between `push_job.send` and the pipeline's ordered-header intermediate representation
+  (headers, body, transferEncoding, boundary) and back; `assembleDataBytes` is what `#runJob`
+  (`stream.js`) now calls instead of calling the old private `buildDataBytes` directly.
+  `buildDataBytes` itself is UNCHANGED and now EXPORTED as the frozen Phase 3 reference the T1 test
+  pins against — it is the fixed target of the identity guarantee, not a participant in it.
+
+**The safety property, proven now (§4/§8 T1).** `services/box/test/variation.test.mjs`: with the
+three legitimately-random inputs (`Message-ID`, `Date` — no MIME boundary exists yet, Phase 3 is
+single-part) pinned identically, `assembleDataBytes` with an ABSENT `variation` block and, separately,
+with an ALL-DEFAULT block, both equal `buildDataBytes`'s output byte-for-byte — plus a non-vacuity
+check that the reference itself is genuinely non-trivial (contains the pinned headers/body/MIME
+framing, not an accidentally-empty string). Additional coverage: `resolveVariation` degrades any
+malformed/unrecognized field to its neutral default without throwing; a legitimate non-default value
+passes through unchanged; `isNeutral` is true for every input while `STAGES` is empty, including when
+only a toggle's PARAMETER (not the toggle itself) is set — proving parameters are genuinely inert
+while their parent is off; the PRNG/pick primitives are stable per `(jobId, stream)` and diverge
+across both jobs and stream names.
+
+**Full suite re-verified.** `go build`/`gofmt -l`/`go vet` clean; `internal/dispatch` (including
+the Chunk 1 concurrency tests) and `internal/boxlink` green against the real Postgres template;
+`node --test services/box/test/*.test.mjs` 23/23 green (9 existing outcome-buffer/token tests
+untouched + 5 SMTP security tests untouched + the 9 new Chunk 2 tests above).
+
+**Security surface: unchanged.** The `variation` block carries no credential and touches nothing in
+`smtp.js`/`creds.js`; `assemble.js`/`variation.js` operate purely on headers/body/MIME framing. No
+client boundary carries this field — it is internal to the mTLS box channel.
+
+**Deferred to later chunks, deliberately not built here:** every actual toggle (Chunk 3 body/content,
+Chunk 4 encoding/headers/deterministic seeding), the `sender_0020` config seeds + intensities
+(Chunk 5), and the full T1–T9/S1–S2 suite + CI/docs/DoD closeout (Chunk 6).

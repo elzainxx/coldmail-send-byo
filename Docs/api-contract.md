@@ -136,3 +136,19 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > to exactly Phase 7 behavior rather than having legitimate outcomes discarded. Two-vocabulary is
 > unchanged: the token is an internal machine-to-machine identifier on the box channel and is never
 > surfaced on any client boundary (`/v1/report` still returns only clean external state).
+>
+> **Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
+> gains one optional field, `variation`: the Brain's RESOLVED content-variation toggle snapshot
+> (plain booleans/strings/arrays — no `sender.config` shape, no logic) for the box's MIME-assembly
+> pipeline to apply. It is per-job-fresh (the Brain builds it fresh for every `push_job`, never
+> cached) and GLOBAL in V1 (one operator-owned toggle set applied to every send, §3). The block is
+> ABSENT, or present with every field at its documented neutral default, exactly when Phase 3
+> behavior is intended: the box's variation layer is then the IDENTITY FUNCTION and the bytes it
+> puts on the wire are byte-for-byte the Phase 3 output (the headline safety property, §4). The box
+> never reads `sender.config` and holds no variation state across jobs — it applies exactly the
+> values this block carries. Two-vocabulary is unchanged: the block carries no credential, no
+> internal reason string, and never appears on any client-facing boundary. Chunk 2 ships the wire
+> shape and the box-side identity-function pipeline with the Brain stamping a literal Phase-3-neutral
+> snapshot (no `sender.config` row exists yet for these keys — Chunk 5 seeds the fourteen toggle/
+> intensity keys into `sender_0020` and switches the Brain to read them for real; this wire contract
+> does not change when it does).
