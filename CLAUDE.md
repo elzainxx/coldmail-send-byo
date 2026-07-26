@@ -176,6 +176,40 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   from a passing one in CI output. Prefer (a); when a test must rely on real concurrency,
   it fails if it observes no contention.
 - This applies to EVERY remaining phase and is part of the Definition of Done (DoD-2).
+- (2026-07-26, Phase 8 closeout) A `pg_stat_activity` contention check MUST be scoped to the
+  SPECIFIC blocking backend, not merely "some backend somewhere" or "some backend in this
+  database." Filter by `datname = current_database()` AND a `query ILIKE '%...%'` fragment
+  unique to the statement under test. `datname` alone is necessary but not sufficient — every
+  dispatch-package test clones its own isolated database, so a `datname`-only filter usually
+  works in practice, but it does not by itself prove the match is the RIGHT backend rather than
+  an unrelated one that happens to share the database (e.g. an admin setup statement still
+  in-flight). Precedent: `eligibility_test.go`'s sampler already used both filters; Phase 8's
+  `attempttoken_lockorder_test.go` initially added only `datname` and a Phase 8 closeout
+  verification pass found the gap, then discovered on the FIRST attempt to add the query filter
+  that the guessed statement was wrong (the actual blocking statement was a different UPDATE
+  than assumed) — proving the stronger check was not merely cosmetic, it caught a real mistake
+  a `datname`-only check could not have caught.
+
+## 11. Review gates run SEQUENTIALLY, never in parallel
+- (2026-07-26, Phase 8 closeout) Multiple review gates over the SAME body of work (e.g. R1–R4
+  covering different scopes of one phase) MUST run one at a time, in sequence — never launched
+  concurrently. Each later pass's job is to INDEPENDENTLY RE-VERIFY, against the actual working
+  tree, that every prior pass's claimed fix genuinely landed — not just that the prior pass
+  reported a fix. Running gates in parallel makes that cross-verification structurally
+  impossible: a later gate cannot re-check a fix that does not exist yet at the moment it runs.
+- Phase 8's four review gates (R1–R4) were run in parallel. R3 and R4 found four real issues (one
+  HIGH: a config-validation gap that could wedge the Brain from a routine admin write). All four
+  fixes were committed in a single pass with NO independent re-verification, because no
+  subsequent gate ran afterward to check them. A dedicated CLOSEOUT pass (this one) later found
+  that one of the four "fixes" was only partially applied (the `pg_stat_activity` scoping added
+  `datname` but not the query-text filter the fix's own commit message claimed to add) — exactly
+  the class of gap sequential re-verification exists to catch, and exactly the failure mode this
+  repo has already been burned by once before (Phase 4: a claimed `readLease` fix that never
+  landed). Do not assume a claimed fix is real. Verify it in the tree, every time, including your
+  own claimed fixes from an earlier turn in the same session.
+- This is now a standing requirement for every future multi-gate review, not a one-time
+  correction: the LAST gate in any review sequence is not done until it has re-run (not merely
+  re-read) every earlier gate's claimed fix and can report CONFIRMED-IN-TREE or MISSING for each.
 
 ## Definition of Done (every phase is held to this)
 See `Docs/definition-of-done.md`. A phase is not done until all nine DoD items are

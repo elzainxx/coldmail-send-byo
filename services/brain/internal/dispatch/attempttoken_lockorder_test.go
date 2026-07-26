@@ -161,7 +161,8 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	var blocked int
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
-		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
+		    AND query ILIKE '%sender.jobs%SET state=''sent''%'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -300,7 +301,8 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	var blocked int
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
-		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
+		    AND query ILIKE '%sender.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
 		holdTx.Rollback(ctx)
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
@@ -362,7 +364,8 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	}
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
-		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
+		    AND query ILIKE '%sender.jobs%SET state=''queued''%'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -422,7 +425,8 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	}
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
-		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
+		    AND query ILIKE '%sender.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
 		jobTxC.Rollback(ctx)
 		t.Fatalf("read pg_stat_activity (c): %v", err)
 	}
