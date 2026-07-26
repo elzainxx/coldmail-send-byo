@@ -49,6 +49,19 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 				return typeErr(key, issueMalformed, "config_value_not_int_array")
 			}
 		}
+	case "number":
+		// Phase 8 (variation_zero_width_rate / variation_user_agent_rate, amended P8-OD-1
+		// RULED-WIDEN): a JSON number, integer or float. Phase 8 is the first phase to need a
+		// non-integer numeric dial — semantic range checks run in the block below.
+		var f json.Number
+		dec := json.NewDecoder(bytes.NewReader(value))
+		dec.UseNumber()
+		if err := dec.Decode(&f); err != nil {
+			return typeErr(key, issueMalformed, "config_value_not_number")
+		}
+		if _, err := f.Float64(); err != nil {
+			return typeErr(key, issueMalformed, "config_value_not_number")
+		}
 	case "array<string>":
 		// Phase 8 (variation_preheader_templates, §6.1): a JSON array of strings. Empty is valid
 		// (the toggle degrades to "no candidates" box-side, variation.js's pickSeeded) — only a
@@ -136,6 +149,35 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateEnumString(key, value, "auto", "marketing", "personal"); perr != nil {
 			return perr
 		}
+	case "variation_css_magnitude_px":
+		// Amended P8-OD-1 RULED-WIDEN: max +/-px spread for toggle 3. Must be >= 1 (a magnitude of 0
+		// would make the toggle a documented no-op while still reporting itself active — confusing,
+		// not merely permissive).
+		if n, ok := asInt(value); !ok || n < 1 {
+			return typeErr(key, issueOutOfRange, "config_variation_css_magnitude_px_out_of_range")
+		}
+	case "variation_zero_width_rate", "variation_user_agent_rate":
+		// Amended P8-OD-1 RULED-WIDEN: both are fractions — 0 (fully off) through 1 (fully on) are
+		// both legitimate, inclusive.
+		if perr := validateRateFraction(key, value); perr != nil {
+			return perr
+		}
+	}
+	return nil
+}
+
+// validateRateFraction rejects a number outside [0, 1] — the shared bound for Phase 8's two
+// amended rate parameters (P8-OD-1 RULED-WIDEN).
+func validateRateFraction(key string, value json.RawMessage) *apiError {
+	var f json.Number
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.UseNumber()
+	if err := dec.Decode(&f); err != nil {
+		return typeErr(key, issueMalformed, "config_value_not_number")
+	}
+	v, err := f.Float64()
+	if err != nil || v < 0 || v > 1 {
+		return typeErr(key, issueOutOfRange, "config_"+key+"_out_of_range")
 	}
 	return nil
 }

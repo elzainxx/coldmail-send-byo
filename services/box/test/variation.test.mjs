@@ -83,6 +83,24 @@ test("resolveVariation: a legitimate non-default value passes through unchanged"
   assert.equal(resolved.precedence, "auto");
 });
 
+test("resolveVariation: the three amended rate/magnitude parameters (P8-OD-1) pass through when valid and degrade when out-of-range", () => {
+  const valid = resolveVariation({ css_magnitude_px: 5, zero_width_rate: 0.2, user_agent_rate: 0.9 });
+  assert.equal(valid.css_magnitude_px, 5);
+  assert.equal(valid.zero_width_rate, 0.2);
+  assert.equal(valid.user_agent_rate, 0.9);
+
+  // Out-of-range / wrong-type values degrade to the documented default rather than being accepted.
+  const invalid = resolveVariation({ css_magnitude_px: 0, zero_width_rate: 1.5, user_agent_rate: "half" });
+  assert.equal(invalid.css_magnitude_px, VARIATION_DEFAULTS.css_magnitude_px, "css_magnitude_px < 1 must degrade to the default");
+  assert.equal(invalid.zero_width_rate, VARIATION_DEFAULTS.zero_width_rate, "zero_width_rate > 1 must degrade to the default");
+  assert.equal(invalid.user_agent_rate, VARIATION_DEFAULTS.user_agent_rate, "a non-numeric user_agent_rate must degrade to the default");
+
+  // The boundary values 0 and 1 ARE legitimate for the two rate keys (fully off / fully on).
+  const boundary = resolveVariation({ zero_width_rate: 0, user_agent_rate: 1 });
+  assert.equal(boundary.zero_width_rate, 0);
+  assert.equal(boundary.user_agent_rate, 1);
+});
+
 test("isNeutral: true for defaults/absent, and toggle PARAMETERS alone never flip it", () => {
   assert.equal(isNeutral(resolveVariation(undefined)), true);
   assert.equal(isNeutral(resolveVariation({})), true);
@@ -90,6 +108,11 @@ test("isNeutral: true for defaults/absent, and toggle PARAMETERS alone never fli
   // preheader_templates with their parent toggle OFF must not make the set non-neutral.
   assert.equal(isNeutral(resolveVariation({ comment_intensity: "high" })), true);
   assert.equal(isNeutral(resolveVariation({ preheader_templates: ["custom"] })), true);
+  // Same claim for the three amended P8-OD-1 parameters: changing a rate/magnitude alone, with
+  // its parent toggle still off, must not flip isNeutral.
+  assert.equal(isNeutral(resolveVariation({ css_magnitude_px: 10 })), true);
+  assert.equal(isNeutral(resolveVariation({ zero_width_rate: 0.9 })), true);
+  assert.equal(isNeutral(resolveVariation({ user_agent_rate: 0.9 })), true);
 });
 
 test("isNeutral: false once a real body/content toggle is switched on (Chunk 3 stages registered)", () => {

@@ -228,7 +228,8 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   row in `sender.config` with a documented `default_value` and a `value_type` hint.
   Values are JSONB-wrapped `{"v": ...}`. There are NO hardcoded tuning constants in
   Go, Node, or SQL. A literal that governs runtime behavior is a bug.
-- `default_value` is never mutated. Phase 9 §4 is the authoritative 50-key reference.
+- `default_value` is never mutated. Phase 9 §4 is the authoritative reference (53 keys
+  after `sender_0021`, amended from 50 — P8-OD-1 grew Phase 8 from 14 to 17 keys).
 - New tunable => new seeded config key in a migration + an entry in the Phase 9 §4
   reference in the same change. No key, no constant.
 - TWO config-ordering INVARIANTS are enforced at config-load, not assumed:
@@ -347,7 +348,7 @@ docs/
     phase-9-polish-and-documentation.md          # §4 = authoritative config ref; §5 = authoritative API contract
     phase-9_5-operability-and-control-plane-safety.md
     phase-9-contract-and-doc-completions.md
-  config-reference.md             # LIVING. Mirror of Phase 9 §4 (50 keys). CI-verified vs sender.config seeds.
+  config-reference.md             # LIVING. Mirror of Phase 9 §4 (53 keys, amended from 50, P8-OD-1). CI-verified vs sender.config seeds.
   api-contract.md                 # LIVING. Mirror of Phase 9 §5. Domains A/B. CI-verified vs Brain routes.
   architecture-overview.md        # LIVING. Prose + embeds the two SVGs; links each box/edge to its phase spec.
   diagrams/
@@ -364,7 +365,7 @@ Authority map (also stated in `docs/README.md` so no one guesses):
 
 | Topic | Authoritative source | Living mirror (CI-checked) |
 |---|---|---|
-| Config keys / defaults / descriptions | Phase 9 §4 (50 keys, incl. §4.7 = `sender_0021`) | `docs/config-reference.md` |
+| Config keys / defaults / descriptions | Phase 9 §4 (53 keys, amended from 50 P8-OD-1, incl. §4.7 = `sender_0021`) | `docs/config-reference.md` |
 | Public + operator API (Domains A/B) | Phase 9 §5 (+ `phase-9-contract-and-doc-completions`) | `docs/api-contract.md` |
 | System shape / data flow / job lifecycle | the two SVGs in `docs/diagrams/` | `docs/architecture-overview.md` |
 | Operating rules | this Phase 0 plan §2 | `docs/rules.md` |
@@ -627,7 +628,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Config-reference drift          # seeded sender.config keys == Phase 9 §4 reference (50 keys)
+      - name: Config-reference drift          # seeded sender.config keys == Phase 9 §4 reference (53 keys, amended from 50, P8-OD-1)
         run: tests/harness/checks/config_drift.sh      # fail on added/removed/renamed key or default mismatch
       - name: API-contract drift              # served contract == committed spec; additive-only, renames never
         run: tests/harness/checks/contract_drift.sh
@@ -636,7 +637,7 @@ jobs:
 ```
 
 - **Service-container alternative.** Where the compose stack is heavier than a job needs, the single-connection Mode-B suites may use GH Actions `services:` (a bare Postgres container) — but any suite touching concurrency, boxes, or the Brain uses the full compose stack. The two never share a job.
-- **The §3 drift checks are blocking CI gates, not advisory.** `config_drift` fails the build if the seeded `sender.config` keys diverge from the Phase 9 §4 authoritative reference (50 keys after `sender_0021`) — added, removed, renamed, or default-value-mutated. `contract_drift` fails on any non-additive contract change (renames never). `migration_lint` enforces the `sender_NNNN_description.{up,down}.sql` convention, up/down pairing, ascending `NNNN`, and that each migration self-records into `sender.schema_migrations`. Documentation-with-every-change is enforced here too: a contract or config change that doesn't update its reference doc fails the gate — docs never go stale because CI won't let them.
+- **The §3 drift checks are blocking CI gates, not advisory.** `config_drift` fails the build if the seeded `sender.config` keys diverge from the Phase 9 §4 authoritative reference (53 keys after `sender_0021`, amended from 50 — P8-OD-1) — added, removed, renamed, or default-value-mutated. `contract_drift` fails on any non-additive contract change (renames never). `migration_lint` enforces the `sender_NNNN_description.{up,down}.sql` convention, up/down pairing, ascending `NNNN`, and that each migration self-records into `sender.schema_migrations`. Documentation-with-every-change is enforced here too: a contract or config change that doesn't update its reference doc fails the gate — docs never go stale because CI won't let them.
 - **Determinism in CI.** Barrier-synchronized races (no sleeps), RAM-backed Postgres, and the controllable clock keep the suite deterministic; a flaky-by-timing test is a harness bug, not a retry candidate.
 
 ### 4.9 Open Decisions

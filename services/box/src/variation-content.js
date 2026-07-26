@@ -85,16 +85,20 @@ export function injectComments(body, intensity, jobId) {
 
 // --- Toggle 3: CSS micro-variation (variation_css_micro, ref B3) --------------------------------
 
-// applyCssVariation: vary integer `padding`/`margin` px values by a seeded {-1, 0, +1}. Skips
-// values <3px and decimal values (preserve precision, matching the reference); never lets the
-// result go below 0. One draw per matched declaration from the job+"css" stream.
-export function applyCssVariation(body, jobId) {
+// applyCssVariation: vary integer `padding`/`margin` px values by a seeded
+// {-magnitudePx, ..., +magnitudePx} (magnitudePx amended post-Chunk-5 from a fixed ±1 to the
+// variation_css_magnitude_px config parameter, P8-OD-1 RULED-WIDEN). Skips values <3px and decimal
+// values (preserve precision, matching the reference); never lets the result go below 0. One draw
+// per matched declaration from the job+"css" stream.
+export function applyCssVariation(body, jobId, magnitudePx) {
+  const magnitude = magnitudePx ?? 1;
+  const span = magnitude * 2 + 1; // number of integers in [-magnitude, +magnitude]
   const rng = prngFor(jobId, "css");
   return body.replace(/(padding|margin):\s*(\d+(?:\.\d+)?)px/g, (match, prop, px) => {
     const original = parseFloat(px);
     if (original < 3) return match;
     if (px.includes(".")) return match;
-    const delta = Math.floor(rng() * 3) - 1;
+    const delta = Math.floor(rng() * span) - magnitude;
     const varied = Math.round(original) + delta;
     return `${prop}: ${Math.max(0, varied)}px`;
   });
@@ -143,22 +147,21 @@ function appendParam(url, name, value) {
 // --- Toggle 5: zero-width insertion (variation_zero_width, ref B6) — DEFAULT OFF -----------------
 
 const ZWJ = "‍";
-const ZWJ_RATE = 0.05; // §5 toggle 5: "~5% of word-boundary spaces" — a fixed toggle behavior, not
-                       // a further sender.config dial (the spec names no intensity parameter for
-                       // this toggle, unlike toggle 2's comment_intensity).
 
 // insertZeroWidth: within visible text nodes only (`>text<`, never inside a tag/attribute/URL),
-// insert a ZWJ before a seeded ~5% of spaces. Skips text nodes under 5 chars and skips a space
-// immediately after an HTML entity (`&...`) so an entity is never split. One draw per space from
-// the job+"zwj" stream, in document order — reproducible per job_id.
-export function insertZeroWidth(body, jobId) {
+// insert a ZWJ before a seeded `rate` fraction of spaces (rate amended post-Chunk-5 from a fixed
+// 0.05 to the variation_zero_width_rate config parameter, P8-OD-1 RULED-WIDEN). Skips text nodes
+// under 5 chars and skips a space immediately after an HTML entity (`&...`) so an entity is never
+// split. One draw per space from the job+"zwj" stream, in document order — reproducible per job_id.
+export function insertZeroWidth(body, jobId, rate) {
+  const zwjRate = rate ?? 0.05;
   const rng = prngFor(jobId, "zwj");
   return body.replace(/>([^<]+)</g, (match, textContent) => {
     if (textContent.trim().length < 5) return match;
     const varied = textContent.replace(/ /g, (space, offset) => {
       const before = textContent.substring(Math.max(0, offset - 6), offset);
       if (/&\w*$/.test(before)) return space;
-      return rng() < ZWJ_RATE ? `${ZWJ}${space}` : space;
+      return rng() < zwjRate ? `${ZWJ}${space}` : space;
     });
     return `>${varied}<`;
   });
@@ -185,7 +188,7 @@ export const contentStages = [
   {
     name: "css_micro",
     active: (v) => v.css_micro,
-    apply: (msg, v, jobId) => withBody(msg, applyCssVariation(msg.body, jobId)),
+    apply: (msg, v, jobId) => withBody(msg, applyCssVariation(msg.body, jobId, v.css_magnitude_px)),
   },
   {
     name: "unique_url_params",
@@ -195,6 +198,6 @@ export const contentStages = [
   {
     name: "zero_width",
     active: (v) => v.zero_width,
-    apply: (msg, v, jobId) => withBody(msg, insertZeroWidth(msg.body, jobId)),
+    apply: (msg, v, jobId) => withBody(msg, insertZeroWidth(msg.body, jobId, v.zero_width_rate)),
   },
 ];

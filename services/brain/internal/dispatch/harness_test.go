@@ -381,6 +381,17 @@ func (e *dispatchEnv) setConfigBool(t *testing.T, key string, v bool) {
 	}
 }
 
+// setConfigFloat is setConfigInt for a number-valued key (Phase 8's two amended rate parameters,
+// P8-OD-1 RULED-WIDEN).
+func (e *dispatchEnv) setConfigFloat(t *testing.T, key string, v float64) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE sender.config SET value = jsonb_build_object('v', $2::float8), updated_at = NOW() WHERE key = $1`,
+		key, v); err != nil {
+		t.Fatalf("set config %s: %v", key, err)
+	}
+}
+
 // seedQueuedJob seeds a job_item + a queued sender.jobs row (genesis event) and returns the job id.
 func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
 	return e.seedQueuedJobSubject(t, recipient, "Subj")

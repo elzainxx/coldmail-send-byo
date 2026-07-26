@@ -1276,5 +1276,67 @@ gates green including `config_drift` now at 39 keys.
 two-vocabulary error handling (clean codes only) covers the three new/changed validation branches
 with no new leak surface.
 
+### Chunk 5 amendment (2026-07-26) — P8-OD-1 RULED-WIDEN: 14 → 17 keys
+
+The user ruled on the P8-OD-1 flag above: **widen**. An on/off toggle whose strength is hardcoded
+is only half a dial (config-not-code, CLAUDE.md Rule 1). Both locked specs were amended additively
+(`phase-8-content-variation.md`'s "Post-Chunk-5 amendment" section; `phase-9-polish-and-
+documentation.md` §4.5's heading/table updated in place with an explicit amendment note) to add:
+
+| New key | Default | `value_type` | Parameter of |
+|---|---|---|---|
+| `variation_css_magnitude_px` | `1` | integer | toggle 3 (CSS micro-variation) |
+| `variation_zero_width_rate` | `0.05` | number | toggle 5 (zero-width insertion) |
+| `variation_user_agent_rate` | `0.3` | number | toggle 10 (User-Agent injection) |
+
+- **Migration:** the three rows appended to the SAME `sender_0020` file (still one migration,
+  seventeen keys now). `sender.jobs` gains no new column — config-only.
+- **Wire contract:** `boxproto.Variation` gains `CSSMagnitudePx`, `ZeroWidthRate`, `UserAgentRate` —
+  deliberately WITHOUT `omitempty` (unlike every boolean field), because a legitimate value of `0`
+  must stay distinguishable from "field absent"; with `omitempty` an operator-set rate of exactly 0
+  would silently collapse to the box's own internal default instead of genuinely disabling the
+  effect.
+- **Brain (`config.go`/`variation.go`):** three new `Config` fields, a new `readFloatKey` reader
+  (Phase 8's first non-integer numeric dial), `variationSnapshot` extended to copy them through —
+  the `resolveAndPush` call site is still unchanged.
+- **Box:** the former module-level constants `ZWJ_RATE` (`variation-content.js`), the CSS `{-1,0,+1}`
+  spread (`variation-content.js`), and `UA_INJECT_RATE` (`variation-headers.js`) are REMOVED, not
+  merely overridden — `applyCssVariation`/`insertZeroWidth`/`maybeInjectUserAgent` now take the
+  magnitude/rate as a parameter threaded from `resolveVariation`'s toggle set, so there is exactly
+  one source of truth. `resolveVariation` gained a `num(x, dflt, min, max)` validator (out-of-range/
+  wrong-type degrades to the default, same safe-direction posture as every other field); the two
+  rate keys accept `[0, 1]` inclusive (0 = fully off, 1 = fully on), the magnitude key requires `≥ 1`.
+- **Admin API (`config_validate.go`):** a new `"number"` value_type case (JSON float, integer, or
+  string-of-digits per `encoding/json`'s `json.Number`) plus semantic bounds — `variation_css_
+  magnitude_px ≥ 1`, the two rate keys `∈ [0, 1]` via a shared `validateRateFraction` helper.
+
+**Tests added.** Box: `resolveVariation` boundary/degradation coverage for all three new fields
+(valid pass-through, out-of-range/wrong-type degrade to default, 0/1 boundary values legitimate for
+the two rates); `isNeutral` proven unaffected by a parameter-only change (parent toggle still off);
+`applyCssVariation`/`insertZeroWidth` proven to actually USE the passed magnitude/rate (not just
+default to it) via multi-job_id sweeps that would be impossible at the old fixed values;
+`user_agent_rate=1`/`=0` proven to fully enable/disable injection through the real
+`assembleDataBytes` path. Go: `TestVariationConfig_RateParametersRoundTripAndBounds` (adminapi) —
+real `PUT`/`GET` round-trip + all four rejection edges (magnitude 0, rate 1.5, rate -0.1, wrong
+type); `TestVariation_RateParametersReachPushJob` (dispatch) — a live `sender.config` write for all
+three reaches the SAME dispatch's `push_job.variation` with no Brain restart;
+`TestVariation_DefaultConfigYieldsNeutralSnapshot` extended to assert the three defaults on the wire.
+`TestRunnerLifecycle` extended: config-key count 39→42, all seventeen keys (not fourteen) asserted
+present after Up.
+
+**Full suite re-verified after the amendment.** Rebuilt `sender_template_p3` from the updated chain
+— 42 keys, all 17 variation keys confirmed present; `internal/dispatch` green (79s); `internal/
+adminapi` green (8.3s); `TestRunnerLifecycle` green (42-key apply/reverse); gofmt/vet clean; box
+suite 72/72 (was 68 — 4 new tests, all previously-green tests unaffected since the new parameters'
+defaults numerically match the removed constants); all 4 CI gates green at 42 keys.
+
+**Docs amended (additive, dated — not silently rewritten):** `phase-8-content-variation.md` (new
+"Post-Chunk-5 amendment" section + toggle 3/5/10 prose updated to name the new parameter),
+`phase-9-polish-and-documentation.md` §4.5 (heading/table amendment note, module-wide count
+39→42/53), `phase-9_5-operability-and-control-plane-safety.md`/`sender-module-build-plan.md`/
+`phase-0-groundwork.md` (forward-pointer counts updated for consistency), `config-manifest.txt` +
+`config-reference.md` (three new keys, 39→42), `open-decisions.md` (P8-OD-1 marked RULED-WIDEN with
+the full disposition recorded).
+
 **Deferred to Chunk 6:** the full T1–T9/S1–S2 close-out suite run as one pass, remaining CI/doc
 polish, and the 9-item DoD sign-off.

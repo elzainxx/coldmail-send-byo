@@ -66,23 +66,27 @@ type Config struct {
 	Backoff              BackoffSchedule // retry_backoff_schedule — the transient/timeout/unknown requeue ladder (§6.4)
 	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
 
-	// Phase 8 content-variation dials (all fourteen seeded sender_0020, appended to Chunk 1's
-	// version file — Docs/open-decisions.md P8-OD-1). GLOBAL scope (§3): one operator-owned set
-	// resolved once per LoadConfig and stamped verbatim onto every push_job.variation (variation.go).
-	// The Brain performs NO decision logic on these beyond reading + stamping; the box's
+	// Phase 8 content-variation dials (all seventeen seeded sender_0020, appended to Chunk 1's
+	// version file — Docs/open-decisions.md P8-OD-1; amended 2026-07-26 from fourteen to
+	// seventeen, RULED-WIDEN). GLOBAL scope (§3): one operator-owned set resolved once per
+	// LoadConfig and stamped verbatim onto every push_job.variation (variation.go). The Brain
+	// performs NO decision logic on these beyond reading + stamping; the box's
 	// resolveVariation/STAGES own all toggle semantics (§1.2).
 	VariationHTMLMinify           bool     // variation_html_minify — toggle 1
 	VariationCommentInjection     bool     // variation_comment_injection — toggle 2
 	VariationCommentIntensity     string   // variation_comment_intensity — param of toggle 2 (low/medium/high)
 	VariationCSSMicro             bool     // variation_css_micro — toggle 3
+	VariationCSSMagnitudePx       int      // variation_css_magnitude_px — param of toggle 3 (max +/-px spread; amended, P8-OD-1)
 	VariationUniqueURLParams      bool     // variation_unique_url_params — toggle 4 (NOT tracking, P8-10)
 	VariationZeroWidth            bool     // variation_zero_width — toggle 5, DEFAULT OFF
+	VariationZeroWidthRate        float64  // variation_zero_width_rate — param of toggle 5 (fraction 0-1; amended, P8-OD-1)
 	VariationEncodingRotation     bool     // variation_encoding_rotation — toggle 6
 	VariationMIMEBoundaryRotation bool     // variation_mime_boundary_rotation — toggle 7
 	VariationDynamicPreheader     bool     // variation_dynamic_preheader — toggle 8
 	VariationPreheaderTemplates   []string // variation_preheader_templates — param of toggle 8 (P8-7)
 	VariationHeaderStyle          string   // variation_header_style — toggle 9
 	VariationUserAgentInjection   bool     // variation_user_agent_injection — toggle 10, decoupled (P8-6)
+	VariationUserAgentRate        float64  // variation_user_agent_rate — param of toggle 10 (fraction 0-1; amended, P8-OD-1)
 	VariationPrecedence           string   // variation_precedence — toggle 11
 	VariationThreadIndex          bool     // variation_thread_index — toggle 12, inert (P8-8)
 }
@@ -229,10 +233,16 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.VariationCSSMicro, err = readBoolKey(ctx, db, "variation_css_micro"); err != nil {
 		return c, err
 	}
+	if c.VariationCSSMagnitudePx, err = readIntKey(ctx, db, "variation_css_magnitude_px"); err != nil {
+		return c, err
+	}
 	if c.VariationUniqueURLParams, err = readBoolKey(ctx, db, "variation_unique_url_params"); err != nil {
 		return c, err
 	}
 	if c.VariationZeroWidth, err = readBoolKey(ctx, db, "variation_zero_width"); err != nil {
+		return c, err
+	}
+	if c.VariationZeroWidthRate, err = readFloatKey(ctx, db, "variation_zero_width_rate"); err != nil {
 		return c, err
 	}
 	if c.VariationEncodingRotation, err = readBoolKey(ctx, db, "variation_encoding_rotation"); err != nil {
@@ -251,6 +261,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.VariationUserAgentInjection, err = readBoolKey(ctx, db, "variation_user_agent_injection"); err != nil {
+		return c, err
+	}
+	if c.VariationUserAgentRate, err = readFloatKey(ctx, db, "variation_user_agent_rate"); err != nil {
 		return c, err
 	}
 	if c.VariationPrecedence, err = readStringKey(ctx, db, "variation_precedence"); err != nil {
@@ -395,6 +408,25 @@ func readBoolKey(ctx context.Context, db *pgxpool.Pool, key string) (bool, error
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
 		return false, fmt.Errorf("config %q is not a boolean {\"v\":true|false}", key)
+	}
+	return *wrap.V, nil
+}
+
+// readFloatKey reads one number config key ({"v": <float>}) — Phase 8's rate/fraction keys
+// (variation_zero_width_rate, variation_user_agent_rate), amended in post-Chunk-5 (P8-OD-1,
+// RULED-WIDEN). Phase 8 is the first phase to need a non-integer numeric dial.
+func readFloatKey(ctx context.Context, db *pgxpool.Pool, key string) (float64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return 0, fmt.Errorf("read config %q: %w", key, err)
+	}
+	var wrap struct {
+		V *float64 `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return 0, fmt.Errorf("config %q is not a number {\"v\":N}", key)
 	}
 	return *wrap.V, nil
 }

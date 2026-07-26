@@ -3,10 +3,11 @@ package adminapi
 import "testing"
 
 // variation_config_test.go — Phase 8 CHUNK 5: proves the admin config surface (§6.3 value_type +
-// §6.4 semantic validation) genuinely handles the fourteen Phase 8 keys — a boolean, a string
-// array, and the three enum-string keys — through the REAL PUT /v1/admin/config/{key} endpoint,
-// not just via a direct SQL write. This is the operator-facing half of Chunk 5; variation_test.go
-// (internal/dispatch) proves the Brain reads what lands here.
+// §6.4 semantic validation) genuinely handles the seventeen Phase 8 keys (amended from fourteen,
+// P8-OD-1 RULED-WIDEN) — a boolean, a string array, the three enum-string keys, and the three
+// amended number/integer rate-magnitude parameters — through the REAL PUT /v1/admin/config/{key}
+// endpoint, not just via a direct SQL write. This is the operator-facing half of Chunk 5;
+// variation_test.go (internal/dispatch) proves the Brain reads what lands here.
 
 // TestVariationConfig_BooleanToggleRoundTrips — a plain boolean toggle key writes/reads cleanly,
 // and a wrong-typed value is rejected with the same value_type gate every other boolean key uses.
@@ -89,5 +90,54 @@ func TestVariationConfig_PreheaderTemplatesArrayRoundTrips(t *testing.T) {
 	arr2, _ := g2.body["value"].([]any)
 	if len(arr2) != 0 {
 		t.Fatalf("variation_preheader_templates after empty-array PUT = %v, want []", g2.body["value"])
+	}
+}
+
+// TestVariationConfig_RateParametersRoundTripAndBounds — the three amended P8-OD-1 keys
+// (variation_css_magnitude_px: integer >= 1; variation_zero_width_rate / variation_user_agent_rate:
+// number in [0, 1]) accept valid values, reject out-of-range values with issueOutOfRange, and
+// reject a wrong-typed value with issueMalformed — through the real endpoint.
+func TestVariationConfig_RateParametersRoundTripAndBounds(t *testing.T) {
+	e := newTestEnv(t, "varcfgrate")
+
+	// variation_css_magnitude_px: integer, >= 1.
+	e.do(t, "PUT", "/v1/admin/config/variation_css_magnitude_px", map[string]any{"value": 5}).requireStatus(t, 200)
+	g := e.do(t, "GET", "/v1/admin/config/variation_css_magnitude_px", nil).requireStatus(t, 200)
+	if v, _ := g.body["value"].(float64); v != 5 {
+		t.Fatalf("variation_css_magnitude_px after PUT = %v, want 5", g.body["value"])
+	}
+	bad := e.do(t, "PUT", "/v1/admin/config/variation_css_magnitude_px", map[string]any{"value": 0}).requireStatus(t, 400)
+	if bad.errorDetailIssue("value") != issueOutOfRange {
+		t.Fatalf("variation_css_magnitude_px=0: issue=%s, want out_of_range", bad.errorDetailIssue("value"))
+	}
+	badType := e.do(t, "PUT", "/v1/admin/config/variation_css_magnitude_px", map[string]any{"value": "big"}).requireStatus(t, 400)
+	if badType.errorDetailIssue("value") != issueMalformed {
+		t.Fatalf("variation_css_magnitude_px wrong type: issue=%s, want malformed", badType.errorDetailIssue("value"))
+	}
+
+	// variation_zero_width_rate / variation_user_agent_rate: number in [0, 1], boundaries included.
+	for _, key := range []string{"variation_zero_width_rate", "variation_user_agent_rate"} {
+		e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": 0.42}).requireStatus(t, 200)
+		gr := e.do(t, "GET", "/v1/admin/config/"+key, nil).requireStatus(t, 200)
+		if v, _ := gr.body["value"].(float64); v != 0.42 {
+			t.Fatalf("%s after PUT = %v, want 0.42", key, gr.body["value"])
+		}
+		// boundaries 0 and 1 are both legitimate.
+		e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": 0}).requireStatus(t, 200)
+		e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": 1}).requireStatus(t, 200)
+		// out of range on both sides.
+		overBad := e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": 1.5}).requireStatus(t, 400)
+		if overBad.errorDetailIssue("value") != issueOutOfRange {
+			t.Fatalf("%s=1.5: issue=%s, want out_of_range", key, overBad.errorDetailIssue("value"))
+		}
+		underBad := e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": -0.1}).requireStatus(t, 400)
+		if underBad.errorDetailIssue("value") != issueOutOfRange {
+			t.Fatalf("%s=-0.1: issue=%s, want out_of_range", key, underBad.errorDetailIssue("value"))
+		}
+		// value left at the last successful write (1) after the rejected writes.
+		gFinal := e.do(t, "GET", "/v1/admin/config/"+key, nil).requireStatus(t, 200)
+		if v, _ := gFinal.body["value"].(float64); v != 1 {
+			t.Fatalf("%s after rejected writes = %v, want unchanged 1", key, gFinal.body["value"])
+		}
 	}
 }

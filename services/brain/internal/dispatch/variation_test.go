@@ -11,10 +11,10 @@ import (
 //
 // This is the config-not-code closing proof for Phase 8: Chunk 2 shipped a wire-only literal
 // snapshot (defaultVariationSnapshot, since no seeded row existed yet); this test asserts the
-// REPLACEMENT (variationSnapshot(cfg), config.go's fourteen readers) genuinely reads what an
-// operator writes, exactly the same freshness contract every other dispatch dial already has
-// (TryDispatch calls LoadConfig fresh — §0 OD-14, "a config change takes effect on the very next
-// attempt, no redeploy").
+// REPLACEMENT (variationSnapshot(cfg), config.go's seventeen readers — amended from fourteen,
+// P8-OD-1 RULED-WIDEN) genuinely reads what an operator writes, exactly the same freshness
+// contract every other dispatch dial already has (TryDispatch calls LoadConfig fresh — §0 OD-14,
+// "a config change takes effect on the very next attempt, no redeploy").
 
 // TestVariation_DefaultConfigYieldsNeutralSnapshot — the §4 identity baseline at the LIVE-config
 // layer (not just the wire-shape layer Chunk 2 already covers): with sender_0020's seeded
@@ -52,6 +52,16 @@ func TestVariation_DefaultConfigYieldsNeutralSnapshot(t *testing.T) {
 	}
 	if len(v.PreheaderTemplates) != 7 {
 		t.Errorf("preheader_templates has %d entries, want the seeded 7 token-free defaults", len(v.PreheaderTemplates))
+	}
+	// The three amended P8-OD-1 rate/magnitude parameters at their seeded defaults.
+	if v.CSSMagnitudePx != 1 {
+		t.Errorf("css_magnitude_px = %d, want the seeded default 1", v.CSSMagnitudePx)
+	}
+	if v.ZeroWidthRate != 0.05 {
+		t.Errorf("zero_width_rate = %v, want the seeded default 0.05", v.ZeroWidthRate)
+	}
+	if v.UserAgentRate != 0.3 {
+		t.Errorf("user_agent_rate = %v, want the seeded default 0.3", v.UserAgentRate)
 	}
 }
 
@@ -103,6 +113,43 @@ func TestVariation_LiveConfigChangeReachesNextPushJob(t *testing.T) {
 	// this is a per-dispatch-fresh stamp (§2.1), not a shared mutable struct both pushes alias.
 	if pjBefore.Variation.HTMLMinify {
 		t.Error("the EARLIER push's recorded variation snapshot mutated after a later config change — snapshots must be independent per push")
+	}
+}
+
+// TestVariation_RateParametersReachPushJob — the three amended P8-OD-1 parameters
+// (variation_css_magnitude_px, variation_zero_width_rate, variation_user_agent_rate) are read live
+// and reach the wire, closing the same config-not-code loop TestVariation_LiveConfigChangeReachesNextPushJob
+// proves for the boolean/string keys — for the numeric ones specifically, since they are Phase 8's
+// first non-integer/non-boolean dials and go through a different reader (readFloatKey).
+func TestVariation_RateParametersReachPushJob(t *testing.T) {
+	e := newDispatchEnv(t, "variationrates")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	e.setConfigInt(t, "variation_css_magnitude_px", 7)
+	e.setConfigFloat(t, "variation_zero_width_rate", 0.42)
+	e.setConfigFloat(t, "variation_user_agent_rate", 0.99)
+
+	job := e.seedQueuedJob(t, "rates@example.com")
+	if _, err := e.d.TryDispatch(ctx); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if st, _, _, _, _ := e.jobState(t, job); st != "sending" {
+		t.Fatalf("precondition: state=%s, want sending", st)
+	}
+	pj, ok := e.px.lastPush()
+	if !ok || pj.JobID != job {
+		t.Fatalf("push did not target the expected job (got %+v)", pj)
+	}
+	if pj.Variation.CSSMagnitudePx != 7 {
+		t.Errorf("css_magnitude_px = %d, want 7", pj.Variation.CSSMagnitudePx)
+	}
+	if pj.Variation.ZeroWidthRate != 0.42 {
+		t.Errorf("zero_width_rate = %v, want 0.42", pj.Variation.ZeroWidthRate)
+	}
+	if pj.Variation.UserAgentRate != 0.99 {
+		t.Errorf("user_agent_rate = %v, want 0.99", pj.Variation.UserAgentRate)
 	}
 }
 

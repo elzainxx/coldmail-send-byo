@@ -109,6 +109,20 @@ test("css_micro: deterministic per job_id", () => {
   assert.equal(a, b);
 });
 
+test("css_micro: variation_css_magnitude_px (amended, P8-OD-1) widens the spread, not the default ±1", () => {
+  const body = `<div style="padding: 100px;"></div>`;
+  // With a magnitude of 10 there must exist SOME job_id whose draw exceeds what a magnitude-of-1
+  // pipeline could ever produce (>1px away from 100) — proving the parameter, not just the default,
+  // actually reaches the transform.
+  let sawLargeDelta = false;
+  for (let i = 0; i < 30; i++) {
+    const out = applyCssVariation(body, `job-css-magnitude-${i}`, 10);
+    const varied = parseInt(out.match(/padding:\s*(\d+)px/)[1], 10);
+    if (Math.abs(varied - 100) > 1) sawLargeDelta = true;
+  }
+  assert.ok(sawLargeDelta, "magnitude=10 across 30 job_ids never produced a delta >1px — the parameter is not reaching the transform");
+});
+
 // --- Toggle 4: unique link/image URL params (NOT tracking) -------------------------------------
 
 test("unique_url_params: appends _ref to links and _v to images, stable per job_id, no tracking/callback introduced", () => {
@@ -193,6 +207,16 @@ test("zero_width: skips short text nodes and never splits an HTML entity", () =>
   const out = insertZeroWidth(body, "job-zwj-entity");
   assert.ok(!out.includes("&‍"), "a ZWJ must never be inserted immediately after an entity ampersand");
   assert.ok(out.includes("<p>Hi</p>"), "short text node ('Hi', <5 chars) must be left completely untouched");
+});
+
+test("zero_width: variation_zero_width_rate (amended, P8-OD-1) scales the insertion count, not the fixed default", () => {
+  const body = `<p>${"word ".repeat(200)}</p>`;
+  const low = (insertZeroWidth(body, "job-zwj-rate", 0.01).match(/‍/g) || []).length;
+  const high = (insertZeroWidth(body, "job-zwj-rate", 0.5).match(/‍/g) || []).length;
+  assert.ok(high > low, `rate=0.5 (${high} ZWJ) should insert more than rate=0.01 (${low}) on the same job_id/body — the parameter is not reaching the transform`);
+  // rate=0 must insert NONE — the parameter can genuinely disable the effect, not just tune it.
+  const zero = (insertZeroWidth(body, "job-zwj-rate", 0).match(/‍/g) || []).length;
+  assert.equal(zero, 0, "rate=0 must insert zero ZWJ characters");
 });
 
 // --- T2: each toggle independently switchable — flipping one changes ONLY its own effect --------

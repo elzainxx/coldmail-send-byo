@@ -132,18 +132,25 @@ type PushJob struct {
 // variation.go); Chunk 5 replaces that source with live sender.config reads once sender_0020 seeds
 // the fourteen keys (config-not-code — deferred to the chunk that actually seeds them).
 type Variation struct {
-	HTMLMinify           bool     `json:"html_minify,omitempty"`
-	CommentInjection     bool     `json:"comment_injection,omitempty"`
-	CommentIntensity     string   `json:"comment_intensity,omitempty"`
-	CSSMicro             bool     `json:"css_micro,omitempty"`
+	HTMLMinify       bool   `json:"html_minify,omitempty"`
+	CommentInjection bool   `json:"comment_injection,omitempty"`
+	CommentIntensity string `json:"comment_intensity,omitempty"`
+	CSSMicro         bool   `json:"css_micro,omitempty"`
+	// CSSMagnitudePx/ZeroWidthRate/UserAgentRate deliberately have NO omitempty (unlike every other
+	// field here): each is a numeric parameter whose valid range includes 0, so "0" and "field
+	// absent" must stay distinguishable — an operator-set rate of 0 must reach the box as a real 0,
+	// never silently collapse to the box's own default via the omitted-field fallback path (P8-OD-1).
+	CSSMagnitudePx       int      `json:"css_magnitude_px"` // param of CSSMicro (amended, P8-OD-1 RULED-WIDEN)
 	UniqueURLParams      bool     `json:"unique_url_params,omitempty"`
 	ZeroWidth            bool     `json:"zero_width,omitempty"`
+	ZeroWidthRate        float64  `json:"zero_width_rate"` // param of ZeroWidth (amended, P8-OD-1 RULED-WIDEN)
 	EncodingRotation     bool     `json:"encoding_rotation,omitempty"`
 	MIMEBoundaryRotation bool     `json:"mime_boundary_rotation,omitempty"`
 	DynamicPreheader     bool     `json:"dynamic_preheader,omitempty"`
 	PreheaderTemplates   []string `json:"preheader_templates,omitempty"`
 	HeaderStyle          string   `json:"header_style,omitempty"`
 	UserAgentInjection   bool     `json:"user_agent_injection,omitempty"`
+	UserAgentRate        float64  `json:"user_agent_rate"` // param of UserAgentInjection (amended, P8-OD-1 RULED-WIDEN)
 	Precedence           string   `json:"precedence,omitempty"`
 	ThreadIndex          bool     `json:"thread_index,omitempty"`
 }

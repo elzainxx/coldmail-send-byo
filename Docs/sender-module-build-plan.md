@@ -275,9 +275,9 @@ All config toggles, all reversible, ported from the reference product. Late by d
 > "config dials introduced" lists above are **historical roadmap intent**, not the
 > authoritative record of where each key is seeded. **Phase 9 §4
 > (`phase-9-polish-and-documentation.md`) is the authoritative consolidated config
-> reference** — all 39 keys are seeded in the Phase 1→8 migration chain
-> (`sender_0010…0020`; most originate in Phase 1 `sender_0010`). Where a per-phase
-> list above and §4 differ on a key's origin, **§4 is truth.**
+> reference** — all 42 keys (amended from 39, P8-OD-1) are seeded in the Phase 1→8
+> migration chain (`sender_0010…0020`; most originate in Phase 1 `sender_0010`). Where
+> a per-phase list above and §4 differ on a key's origin, **§4 is truth.**
 
 **Builds**
 - `quote` accuracy against real cost

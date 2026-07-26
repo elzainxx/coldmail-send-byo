@@ -67,11 +67,14 @@ function rotateBoundary(msg, jobId) {
 // --- Toggle 10: User-Agent injection (variation_user_agent_injection, ref C2) — decoupled (P8-6) --
 
 const USER_AGENTS = ["Microsoft-MacOutlook/16.80", "Mozilla Thunderbird 115.0"];
-const UA_INJECT_RATE = 0.3; // reference: 70% omission ⇒ 30% inject, reproduced deterministically
 
-function maybeInjectUserAgent(msg, jobId) {
+// injectRate amended post-Chunk-5 from a fixed 0.3 to the variation_user_agent_rate config
+// parameter (P8-OD-1 RULED-WIDEN) — the reference's own 70%-omission/30%-inject split is now the
+// dial's DEFAULT, not a hardcoded constant.
+function maybeInjectUserAgent(msg, jobId, injectRate) {
+  const rate = injectRate ?? 0.3;
   const rng = prngFor(jobId, "user_agent");
-  if (rng() >= UA_INJECT_RATE) return msg; // the omission case — no header added, still deterministic
+  if (rng() >= rate) return msg; // the omission case — no header added, still deterministic
   const ua = pickSeeded(USER_AGENTS, jobId, "user_agent_value");
   return { ...msg, headers: setHeader(msg.headers, "User-Agent", ua) };
 }
@@ -143,7 +146,7 @@ export const headerMimeStages = [
   {
     name: "user_agent_injection",
     active: (v) => v.user_agent_injection,
-    apply: (msg, v, jobId) => maybeInjectUserAgent(msg, jobId),
+    apply: (msg, v, jobId) => maybeInjectUserAgent(msg, jobId, v.user_agent_rate),
   },
   {
     name: "precedence",

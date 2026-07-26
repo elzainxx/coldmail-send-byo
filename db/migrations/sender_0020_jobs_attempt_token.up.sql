@@ -76,18 +76,18 @@ COMMENT ON COLUMN sender.jobs.attempt_token IS
 -- file. The chain stays contiguous (...0019 -> 0020 -> 0021 for Phase 9.5) and every doc that
 -- already says "Phase 8 = sender_0020" remains true.
 --
--- ALL FOURTEEN KEYS, no more (see Docs/open-decisions.md P8-OD-1): the build mandate separately
--- asked to seed "the intensities/rates too" (a ZWJ rate, a CSS magnitude, a UA-injection rate).
--- That would grow Phase 8 to 17 keys, contradicting the LOCKED enumeration in this spec's own §6.1
--- ("sender_0020 seeds the fourteen keys below") and Phase 9 §4.5's independently-locked 14-key
--- table. Filed as P8-OD-1 rather than resolved unilaterally (CLAUDE.md Rule 2); this migration
--- ships the locked-spec-compliant fourteen. The already-hardcoded ZWJ_RATE (0.05,
--- variation-content.js), the CSS +/-1px spread (variation-content.js), and UA_INJECT_RATE (0.3,
--- variation-headers.js) remain literal constants, each matching a FIXED value stated in this
--- spec's own toggle prose (toggle 3, 5, 10 — none of which names a config key for its rate), not a
--- config-not-code violation of a dial this spec actually defines.
+-- SEVENTEEN KEYS (amended 2026-07-26 from fourteen — Docs/open-decisions.md P8-OD-1, RULED-WIDEN).
+-- The build mandate asked to seed "the intensities/rates too" (a ZWJ rate, a CSS magnitude, a
+-- UA-injection rate). This originally contradicted the LOCKED 14-key enumeration in this spec's
+-- §6.1 and Phase 9 §4.5, so it was filed as P8-OD-1 (CLAUDE.md Rule 2) rather than resolved
+-- unilaterally. The user RULED to widen: an on/off toggle whose strength is hardcoded is only half
+-- a dial (config-not-code, Rule 1). Both locked specs were amended (additively — see
+-- phase-8-content-variation.md's "Post-Chunk-5 amendment" section and phase-9-polish-and-
+-- documentation.md §4.5) to add variation_css_magnitude_px / variation_zero_width_rate /
+-- variation_user_agent_rate. The box's former literal constants (ZWJ_RATE, the CSS +/-1px spread,
+-- UA_INJECT_RATE) are REMOVED, not merely overridden, so there is exactly one source of truth.
 --
--- Grants (ADR-0008 trap): all fourteen rows land in sender.config, which sender_module already
+-- Grants (ADR-0008 trap): all seventeen rows land in sender.config, which sender_module already
 -- holds SELECT on (sender_0010). No new table, no new grant; the schema-wide TestGrantsInvariant
 -- stays green (a config INSERT changes no table-class privilege).
 INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
@@ -98,11 +98,15 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('variation_comment_intensity', '{"v":"low"}', '{"v":"low"}',
  'Parameter of variation_comment_injection: low=5%/medium=15%/high=30% of closing tags. Ignored when the toggle is off.', 'string'),
 ('variation_css_micro', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 3: vary inline padding/margin px by +/-1 (skip <3px, never <0). Off = CSS untouched. Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 3: vary inline padding/margin px by +/- variation_css_magnitude_px (skip <3px, never <0). Off = CSS untouched. Box-consumed.', 'boolean'),
+('variation_css_magnitude_px', '{"v":1}', '{"v":1}',
+ 'Parameter of variation_css_micro (amended 2026-07-26, P8-OD-1 RULED-WIDEN): max +/-px spread for the seeded CSS variation. Was a fixed +/-1 in code; promoted to a dial. Ignored when the toggle is off.', 'integer'),
 ('variation_unique_url_params', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 4: append inert cache-busting _ref=/_v= param (seeded from job_id) to author links/images. NOT tracking: no callback, no redirect, no tracking domain. Off = URLs untouched. Box-consumed.', 'boolean'),
 ('variation_zero_width', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 5: insert U+200D (ZWJ) at ~5% of word boundaries in visible text. DEFAULT OFF (some filters flag zero-width abuse). Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 5: insert U+200D (ZWJ) at a variation_zero_width_rate fraction of word boundaries in visible text. DEFAULT OFF (some filters flag zero-width abuse). Box-consumed.', 'boolean'),
+('variation_zero_width_rate', '{"v":0.05}', '{"v":0.05}',
+ 'Parameter of variation_zero_width (amended 2026-07-26, P8-OD-1 RULED-WIDEN): fraction (0-1) of word-boundary spaces that get a ZWJ. Was a fixed 0.05 in code; promoted to a dial. Ignored when the toggle is off.', 'number'),
 ('variation_encoding_rotation', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 6: rotate body Content-Transfer-Encoding between quoted-printable and base64 (seeded). Decodes identically. Off = SMTP-library default (= Phase 3). Box-consumed.', 'boolean'),
 ('variation_mime_boundary_rotation', '{"v":false}', '{"v":false}',
@@ -116,7 +120,9 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('variation_header_style', '{"v":"none"}', '{"v":"none"}',
  'Phase 8 toggle 9: reorder headers to a client style (none/gmail/outlook/apple/thunderbird/random). Reorders only; changes no value. none = preserve Phase 3 order (the byte-identical identity). Box-consumed.', 'string'),
 ('variation_user_agent_injection', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 10: inject a seeded User-Agent header. Decoupled from variation_header_style (P8-6). Off = no User-Agent. Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 10: inject a seeded User-Agent header for a variation_user_agent_rate fraction of jobs. Decoupled from variation_header_style (P8-6). Off = no User-Agent. Box-consumed.', 'boolean'),
+('variation_user_agent_rate', '{"v":0.3}', '{"v":0.3}',
+ 'Parameter of variation_user_agent_injection (amended 2026-07-26, P8-OD-1 RULED-WIDEN): fraction (0-1) of jobs that get an injected User-Agent. Was a fixed 0.3 in code; promoted to a dial. Ignored when the toggle is off.', 'number'),
 ('variation_precedence', '{"v":"auto"}', '{"v":"auto"}',
  'Phase 8 toggle 11: Precedence header control (auto/marketing/personal). marketing = add Precedence: bulk; auto/personal = omit. auto = Phase 3 (omit). Box-consumed.', 'string'),
 ('variation_thread_index', '{"v":false}', '{"v":false}',

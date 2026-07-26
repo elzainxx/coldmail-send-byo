@@ -125,20 +125,23 @@ func TestRunnerLifecycle(t *testing.T) {
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
 	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) + Phase 7's 6 (sender_0019:
 	// startup_reconnect_window_sec, shutdown_drain_timeout_sec, retention_sweep_interval_ms,
-	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) + Phase 8's 14
+	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) + Phase 8's 17
 	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
-	// migration-filename deviation, Docs/open-decisions.md P8-OD-1) = 39.
+	// migration-filename deviation, Docs/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
+	// P8-OD-1 RULED-WIDEN) = 42.
 	// Phase 4 added NO config key (§0); Phase 7 is fully schema-neutral (config seeds only, no table).
-	if n := configKeyCount(t, admin); n != 39 {
-		t.Fatalf("after Up: sender.config has %d keys, want 39 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 14 Phase 8)", n)
+	if n := configKeyCount(t, admin); n != 42 {
+		t.Fatalf("after Up: sender.config has %d keys, want 42 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8)", n)
 	}
-	// Phase 8 Chunk 5's fourteen content-variation config seeds — anti-vacuity that they landed.
+	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
+	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
 	for _, key := range []string{
 		"variation_html_minify", "variation_comment_injection", "variation_comment_intensity",
-		"variation_css_micro", "variation_unique_url_params", "variation_zero_width",
+		"variation_css_micro", "variation_css_magnitude_px", "variation_unique_url_params",
+		"variation_zero_width", "variation_zero_width_rate",
 		"variation_encoding_rotation", "variation_mime_boundary_rotation", "variation_dynamic_preheader",
 		"variation_preheader_templates", "variation_header_style", "variation_user_agent_injection",
-		"variation_precedence", "variation_thread_index",
+		"variation_user_agent_rate", "variation_precedence", "variation_thread_index",
 	} {
 		if !configKeyExists(t, admin, key) {
 			t.Fatalf("after Up: sender.config missing %q (sender_0020 Phase 8 seed not applied)", key)

@@ -42,8 +42,8 @@ that layer and nothing more.
 
 **Inputs.** `final-revision-report.md` (§2 blockers, §5 mandatory-item dispositions);
 Phase 4 (dispatch loop), Phase 5 (auto-quarantine/auto-pause), Phase 7 (startup/shutdown),
-Phase 8 (variation toggles), Phase 9 §4 (the 39-key consolidated config reference, now
-extended to 50), Phase 9 §5 (API contract).
+Phase 8 (variation toggles), Phase 9 §4 (the 42-key consolidated config reference —
+amended from 39, P8-OD-1 — now extended to 53), Phase 9 §5 (API contract).
 
 ---
 
@@ -378,7 +378,8 @@ released only when that connection closes.
 eleven rows and records the version; DOWN deletes them and the version row (matching the
 chain convention, and fixing forward the S5 bookkeeping discipline flagged for Phase 2).
 
-Eleven new keys → the consolidated reference goes **from 39 to 50 keys**. All use the
+Eleven new keys → the consolidated reference goes **from 42 to 53 keys** (amended from
+39/50, P8-OD-1). All use the
 locked `{"v": …}` JSONB envelope + `default_value` + informal `value_type` hint. Every
 default preserves current behavior (the panic/mode/kill keys default to the current
 "on/normal" state; the completeness dials default to today's constants).

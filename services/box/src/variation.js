@@ -56,14 +56,17 @@ export const VARIATION_DEFAULTS = Object.freeze({
   comment_injection: false,
   comment_intensity: "low",
   css_micro: false,
+  css_magnitude_px: 1, // amended post-Chunk-5 (P8-OD-1, RULED-WIDEN): was a fixed +/-1 in code
   unique_url_params: false,
   zero_width: false,
+  zero_width_rate: 0.05, // amended post-Chunk-5 (P8-OD-1, RULED-WIDEN): was a fixed 0.05 in code
   encoding_rotation: false,
   mime_boundary_rotation: false,
   dynamic_preheader: false,
   preheader_templates: DEFAULT_PREHEADER_TEMPLATES,
   header_style: "none",
   user_agent_injection: false,
+  user_agent_rate: 0.3, // amended post-Chunk-5 (P8-OD-1, RULED-WIDEN): was a fixed 0.3 in code
   precedence: "auto",
   thread_index: false,
 });
@@ -76,6 +79,11 @@ const bool = (x, dflt) => (typeof x === "boolean" ? x : dflt);
 const oneOf = (x, allowed, dflt) => (typeof x === "string" && allowed.includes(x) ? x : dflt);
 const strArray = (x, dflt) =>
   Array.isArray(x) && x.every((s) => typeof s === "string") ? x.slice() : dflt;
+// num validates a finite number within [min, max] (inclusive); anything else (missing, NaN,
+// wrong type, out of range) degrades to the Phase-3-neutral default — the same safe-direction
+// posture every other resolver in this function already has.
+const num = (x, dflt, min, max) =>
+  typeof x === "number" && Number.isFinite(x) && x >= min && x <= max ? x : dflt;
 
 // resolveVariation normalizes whatever arrived on push_job into a complete, valid toggle set.
 //
@@ -91,14 +99,17 @@ export function resolveVariation(block) {
     comment_injection: bool(b.comment_injection, d.comment_injection),
     comment_intensity: oneOf(b.comment_intensity, COMMENT_INTENSITIES, d.comment_intensity),
     css_micro: bool(b.css_micro, d.css_micro),
+    css_magnitude_px: num(b.css_magnitude_px, d.css_magnitude_px, 1, 1000),
     unique_url_params: bool(b.unique_url_params, d.unique_url_params),
     zero_width: bool(b.zero_width, d.zero_width),
+    zero_width_rate: num(b.zero_width_rate, d.zero_width_rate, 0, 1),
     encoding_rotation: bool(b.encoding_rotation, d.encoding_rotation),
     mime_boundary_rotation: bool(b.mime_boundary_rotation, d.mime_boundary_rotation),
     dynamic_preheader: bool(b.dynamic_preheader, d.dynamic_preheader),
     preheader_templates: strArray(b.preheader_templates, d.preheader_templates),
     header_style: oneOf(b.header_style, HEADER_STYLES, d.header_style),
     user_agent_injection: bool(b.user_agent_injection, d.user_agent_injection),
+    user_agent_rate: num(b.user_agent_rate, d.user_agent_rate, 0, 1),
     precedence: oneOf(b.precedence, PRECEDENCE_MODES, d.precedence),
     thread_index: bool(b.thread_index, d.thread_index),
   };

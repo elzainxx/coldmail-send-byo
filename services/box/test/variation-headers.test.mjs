@@ -203,6 +203,19 @@ test("user_agent_injection: deterministic per job_id; omission is also a legitim
   assert.ok(withoutUA > 0, "at least one job in a 40-job sweep should omit it (else it always fires, contradicting the ~30% rate)");
 });
 
+test("user_agent_injection: variation_user_agent_rate (amended, P8-OD-1) scales injection frequency, not the fixed 0.3 default", () => {
+  const send = sendWithBody("<p>x</p>");
+  let withRate1 = 0;
+  let withRate0 = 0;
+  for (let i = 0; i < 40; i++) {
+    const jobId = `job-ua-rate-${i}`;
+    if (assembleDataBytes(send, { user_agent_injection: true, user_agent_rate: 1 }, jobId).includes("User-Agent:")) withRate1++;
+    if (assembleDataBytes(send, { user_agent_injection: true, user_agent_rate: 0 }, jobId).includes("User-Agent:")) withRate0++;
+  }
+  assert.equal(withRate1, 40, "rate=1 must inject a User-Agent on every job — the parameter is not reaching the transform");
+  assert.equal(withRate0, 0, "rate=0 must inject a User-Agent on NO job — the parameter cannot fully disable the effect");
+});
+
 // --- Toggle 11: precedence header control ----------------------------------------------------
 
 test("precedence: marketing adds Precedence: bulk; auto/personal omit it (both = Phase 3)", () => {

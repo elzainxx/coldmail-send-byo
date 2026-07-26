@@ -71,6 +71,47 @@ schema object. `sender_0020` remains the latest migration.
 
 ---
 
+## Phase 8 — Post-Chunk-5 amendment (2026-07-26, RULED — P8-OD-1)
+
+During Chunk 5 (config seeding), a real contradiction surfaced between the execution
+mandate ("seed the toggle keys AND their intensities/rates — comment rate, ZWJ rate,
+CSS-variation magnitude, etc.") and this document's own §6.1/§6.2, which enumerated
+**exactly fourteen** keys and stated toggles 3/5/10's rates as **fixed values in prose**,
+naming no config key for any of them. Filed as `Docs/open-decisions.md` **P8-OD-1** per
+Rule 2 rather than resolved unilaterally; Chunk 5 shipped the fourteen-key set unchanged
+pending a ruling.
+
+**Ruling (user, 2026-07-26): WIDEN.** Promote all three fixed rates to independent,
+documented `sender.config` dials — an on/off toggle whose strength is hardcoded is only
+half a dial (config-not-code, CLAUDE.md Rule 1). This is an **additive amendment**, not a
+rewrite: the twelve toggles, their behavior, and the byte-identical-when-off property (§4)
+are **all unchanged**. Three new keys are appended to §6.1/§6.2's table, growing
+`sender_0020` from fourteen keys to **seventeen**:
+
+| New key | Default | `value_type` | Parameter of | Notes |
+|---|---|---|---|---|
+| `variation_css_magnitude_px` | `1` | integer | toggle 3 (CSS micro-variation) | Max ±px spread (was a fixed ±1 in code). Must be `>= 1`; the "skip <3px, never <0" floor/ceiling behavior is unchanged. |
+| `variation_zero_width_rate` | `0.05` | number | toggle 5 (zero-width insertion) | Fraction (0–1) of word-boundary spaces that get a ZWJ (was a fixed 0.05 in code). Toggle 5 itself stays **default OFF**; this parameter is inert while it is off. |
+| `variation_user_agent_rate` | `0.3` | number | toggle 10 (User-Agent injection) | Fraction (0–1) of jobs that get an injected UA (was a fixed 0.3 in code, itself ported from the reference's ~30%-inject/~70%-omit split). Inert while toggle 10 is off. |
+
+Each new key is a **parameter of** its toggle (same relationship `variation_comment_intensity`
+already has to toggle 2): it is read and applied only while the parent toggle is on, and its
+own value is otherwise inert — so it participates in `isNeutral`'s parameter-exclusion rule
+exactly like `variation_comment_intensity`/`variation_preheader_templates` already do (§4.2).
+`value_type: "number"` is a new value_type (Phase 8's first non-integer numeric key); the
+admin API's write-time validator gates it as a JSON number in `[0, 1]` for the two rate keys
+and a positive integer for the px key.
+
+**Schema effect.** Still schema-neutral in the table/column/enum sense — three more additive
+`sender.config` rows, appended to the SAME `sender_0020` migration file (per the Chunk 5
+flagged deviation above; the version stays `sender_0020`, now carrying **seventeen** Phase 8
+keys total). `Docs/phase-9-polish-and-documentation.md` §4.5's consolidated table is amended
+to match (§4.5's own heading updates from "14 keys" to "17 keys"), and the module total moves
+from 39 to 42 pre-Phase-9.5, restoring the eventual 53-key total (was 50) after Phase 9.5's
+`sender_0021`.
+
+---
+
 ## Phase 8 — What is and is not locked here
 
 **Carried-forward locks this phase respects (not re-litigated):**
@@ -388,10 +429,13 @@ Intensity → rate: `low` 5%, `medium` 15%, `high` 30%. Comments are **never ren
 semantic-equivalent; every message becomes HTML-unique. `variation_comment_intensity` is
 a **parameter of** this toggle (ignored when the toggle is off). Off ⇒ no comments.
 
-### Toggle 3 — CSS micro-variation (`variation_css_micro`, ref B3)
-Varies inline `padding`/`margin` px values by a seeded ±1px; **skips values < 3px**,
-never below 0. Renders **visually equivalent** (no layout change at ±1px); breaks
-CSS-hash fingerprinting. Off ⇒ CSS untouched.
+### Toggle 3 — CSS micro-variation (`variation_css_micro` + `variation_css_magnitude_px`, ref B3)
+Varies inline `padding`/`margin` px values by a seeded ±`variation_css_magnitude_px`
+(default `1`, amended post-Chunk-5 — see the Post-Chunk-5 amendment above; was a fixed ±1);
+**skips values < 3px**, never below 0. Renders **visually equivalent** (no layout change
+at the default magnitude); breaks CSS-hash fingerprinting.
+`variation_css_magnitude_px` is a **parameter of** this toggle (ignored when off). Off ⇒
+CSS untouched.
 
 ### Toggle 4 — Unique link/image URL parameters (`variation_unique_url_params`, ref B4+B5) — **NOT tracking**
 Appends an **inert, non-callback** cache-busting query param to author-supplied URLs:
@@ -415,13 +459,16 @@ author's own `ref=` param.
   we unify to match the locked toggle set — the mechanism is identical). Off ⇒ URLs
   untouched.
 
-### Toggle 5 — Zero-width insertion (`variation_zero_width`, ref B6) — **DEFAULT OFF**
-Inserts **U+200D (ZWJ)** before a seeded ~5% of word-boundary spaces in visible text
-nodes. **Default OFF** because some filters flag zero-width abuse. ZWJ (not U+200B ZWSP)
-is used because ZWJ renders cleanly across clients. Zero-width ⇒ **invisible** →
-semantic-equivalent. Inserts **only** at the configured rate and **nowhere else** (§8 T5).
-This is the *mild* variant only; the homoglyph/hidden-text techniques the reference marks
-"never implement" are **not** built (§8/§9 P8-12). Off ⇒ text untouched.
+### Toggle 5 — Zero-width insertion (`variation_zero_width` + `variation_zero_width_rate`, ref B6) — **DEFAULT OFF**
+Inserts **U+200D (ZWJ)** before a seeded `variation_zero_width_rate` fraction (default
+`0.05` = ~5%, amended post-Chunk-5 — see the Post-Chunk-5 amendment above; was a fixed
+0.05) of word-boundary spaces in visible text nodes. **Default OFF** because some filters
+flag zero-width abuse. ZWJ (not U+200B ZWSP) is used because ZWJ renders cleanly across
+clients. Zero-width ⇒ **invisible** → semantic-equivalent. Inserts **only** at the
+configured rate and **nowhere else** (§8 T5). `variation_zero_width_rate` is a **parameter
+of** this toggle (ignored when off). This is the *mild* variant only; the
+homoglyph/hidden-text techniques the reference marks "never implement" are **not** built
+(§8/§9 P8-12). Off ⇒ text untouched.
 
 ### Toggle 6 — Encoding rotation (`variation_encoding_rotation`, ref B7)
 Rotates the body part's `Content-Transfer-Encoding` between **quoted-printable** and
@@ -469,15 +516,18 @@ headers first in the style's order, then any remainder. `random` picks a style s
 job. **Reorders only — adds/removes/changes no header value.** Default `"none"` =
 **preserve Phase 3 order** (the identity, §4).
 
-### Toggle 10 — User-Agent injection (`variation_user_agent_injection`, ref C2) — **decoupled (P8-6)**
+### Toggle 10 — User-Agent injection (`variation_user_agent_injection` + `variation_user_agent_rate`, ref C2) — **decoupled (P8-6)**
 When on, injects a `User-Agent` header chosen **seeded from `job_id`** (e.g.
 `Microsoft-MacOutlook/16.80`, `Mozilla Thunderbird 115.0`; some styles legitimately emit
-none), reproducing the reference's ~70%-omission behavior **deterministically** per job.
+none) for a seeded `variation_user_agent_rate` fraction of jobs (default `0.3` = ~30%,
+amended post-Chunk-5 — see the Post-Chunk-5 amendment above; was a fixed 0.3), reproducing
+the reference's ~70%-omission behavior **deterministically** per job.
 - **Deliberate deviation from the reference (P8-6):** the reference linked C2 to C1's
   selected style. To satisfy **no hidden coupling** (§8 T3), User-Agent injection is
   **fully independent** of `variation_header_style` — its presence and value are decided
   solely by this toggle + the seed, regardless of the header-style toggle. An operator may
-  align them by enabling both, but neither reads the other's state. Off ⇒ no `User-Agent`.
+  align them by enabling both, but neither reads the other's state. `variation_user_agent_rate`
+  is a **parameter of** this toggle (ignored when off). Off ⇒ no `User-Agent`.
 
 ### Toggle 11 — Precedence header control (`variation_precedence`, ref C6)
 `∈ {auto, marketing, personal}`. `marketing` → add `Precedence: bulk`; `auto` and
@@ -497,9 +547,13 @@ inert by §8 T8. Off and on both emit nothing in V1.
 
 ### 6.1 The seeded keys (all additive, all default to a no-op / neutral)
 
-`sender_0020` seeds the fourteen keys below (twelve toggles + two toggle-parameters).
-All booleans default `false`; the three string/array keys default to the Phase-3-neutral
-value. The whole set at default ⇒ the §4 identity ⇒ byte-identical to Phase 3.
+`sender_0020` seeds the **seventeen** keys below (twelve toggles + five toggle-parameters
+— **amended from fourteen to seventeen, post-Chunk-5, RULED — see the "Post-Chunk-5
+amendment" section above**: the three rate/magnitude parameters marked ⟪amended⟫ were
+originally fixed values in the toggle's own code; the user ruled to promote them to
+config dials). All booleans default `false`; the string/array/number keys default to the
+Phase-3-neutral value. The whole set at default ⇒ the §4 identity ⇒ byte-identical to
+Phase 3.
 
 | Key | Default | `value_type` | Notes |
 |---|---|---|---|
@@ -507,14 +561,17 @@ value. The whole set at default ⇒ the §4 identity ⇒ byte-identical to Phase
 | `variation_comment_injection` | `false` | boolean | Toggle 2 |
 | `variation_comment_intensity` | `"low"` | string | param of toggle 2 (`low`/`medium`/`high`) |
 | `variation_css_micro` | `false` | boolean | Toggle 3 |
+| `variation_css_magnitude_px` | `1` | integer | ⟪amended⟫ param of toggle 3 — max ±px spread |
 | `variation_unique_url_params` | `false` | boolean | Toggle 4 — inert cache-buster, **not tracking** |
 | `variation_zero_width` | `false` | boolean | Toggle 5 — **DEFAULT OFF (kept off deliberately)** |
+| `variation_zero_width_rate` | `0.05` | number | ⟪amended⟫ param of toggle 5 — ZWJ fraction (0–1) |
 | `variation_encoding_rotation` | `false` | boolean | Toggle 6 |
 | `variation_mime_boundary_rotation` | `false` | boolean | Toggle 7 |
 | `variation_dynamic_preheader` | `false` | boolean | Toggle 8 |
 | `variation_preheader_templates` | `[7 token-free defaults]` | array<string> | param of toggle 8 (P8-7) |
 | `variation_header_style` | `"none"` | string | Toggle 9 (`none`/`gmail`/`outlook`/`apple`/`thunderbird`/`random`); **`none` = preserve Phase 3 order** |
 | `variation_user_agent_injection` | `false` | boolean | Toggle 10 — decoupled (P8-6) |
+| `variation_user_agent_rate` | `0.3` | number | ⟪amended⟫ param of toggle 10 — injection fraction (0–1) |
 | `variation_precedence` | `"auto"` | string | Toggle 11 (`auto`/`marketing`/`personal`); **`auto` = omit** |
 | `variation_thread_index` | `false` | boolean | Toggle 12 — inert (P8-8) |
 
@@ -540,11 +597,15 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('variation_comment_intensity', '{"v":"low"}', '{"v":"low"}',
  'Parameter of variation_comment_injection: low=5%/medium=15%/high=30% of closing tags. Ignored when the toggle is off.', 'string'),
 ('variation_css_micro', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 3: vary inline padding/margin px by +/-1 (skip <3px, never <0). Off = CSS untouched. Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 3: vary inline padding/margin px by +/- variation_css_magnitude_px (skip <3px, never <0). Off = CSS untouched. Box-consumed.', 'boolean'),
+('variation_css_magnitude_px', '{"v":1}', '{"v":1}',
+ 'Parameter of variation_css_micro (amended post-Chunk-5, P8-OD-1, RULED): max +/-px spread for the seeded CSS variation. Was a fixed +/-1 in code; promoted to a dial. Ignored when the toggle is off.', 'integer'),
 ('variation_unique_url_params', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 4: append inert cache-busting _ref=/_v= param (seeded from job_id) to author links/images. NOT tracking: no callback, no redirect, no tracking domain. Off = URLs untouched. Box-consumed.', 'boolean'),
 ('variation_zero_width', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 5: insert U+200D (ZWJ) at ~5% of word boundaries in visible text. DEFAULT OFF (some filters flag zero-width abuse). Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 5: insert U+200D (ZWJ) at a variation_zero_width_rate fraction of word boundaries in visible text. DEFAULT OFF (some filters flag zero-width abuse). Box-consumed.', 'boolean'),
+('variation_zero_width_rate', '{"v":0.05}', '{"v":0.05}',
+ 'Parameter of variation_zero_width (amended post-Chunk-5, P8-OD-1, RULED): fraction (0-1) of word-boundary spaces that get a ZWJ. Was a fixed 0.05 in code; promoted to a dial. Ignored when the toggle is off.', 'number'),
 ('variation_encoding_rotation', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 6: rotate body Content-Transfer-Encoding between quoted-printable and base64 (seeded). Decodes identically. Off = SMTP-library default (= Phase 3). Box-consumed.', 'boolean'),
 ('variation_mime_boundary_rotation', '{"v":false}', '{"v":false}',
@@ -558,7 +619,9 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('variation_header_style', '{"v":"none"}', '{"v":"none"}',
  'Phase 8 toggle 9: reorder headers to a client style (none/gmail/outlook/apple/thunderbird/random). Reorders only; changes no value. none = preserve Phase 3 order (the byte-identical identity). Box-consumed.', 'string'),
 ('variation_user_agent_injection', '{"v":false}', '{"v":false}',
- 'Phase 8 toggle 10: inject a seeded User-Agent header. Decoupled from variation_header_style (P8-6). Off = no User-Agent. Box-consumed.', 'boolean'),
+ 'Phase 8 toggle 10: inject a seeded User-Agent header for a variation_user_agent_rate fraction of jobs. Decoupled from variation_header_style (P8-6). Off = no User-Agent. Box-consumed.', 'boolean'),
+('variation_user_agent_rate', '{"v":0.3}', '{"v":0.3}',
+ 'Parameter of variation_user_agent_injection (amended post-Chunk-5, P8-OD-1, RULED): fraction (0-1) of jobs that get an injected User-Agent. Was a fixed 0.3 in code; promoted to a dial. Ignored when the toggle is off.', 'number'),
 ('variation_precedence', '{"v":"auto"}', '{"v":"auto"}',
  'Phase 8 toggle 11: Precedence header control (auto/marketing/personal). marketing = add Precedence: bulk; auto/personal = omit. auto = Phase 3 (omit). Box-consumed.', 'string'),
 ('variation_thread_index', '{"v":false}', '{"v":false}',
@@ -571,10 +634,12 @@ INSERT INTO sender.schema_migrations (version) VALUES ('0020');
 -- sender_0020_content_variation_config.down.sql
 DELETE FROM sender.config WHERE key IN (
   'variation_html_minify','variation_comment_injection','variation_comment_intensity',
-  'variation_css_micro','variation_unique_url_params','variation_zero_width',
+  'variation_css_micro','variation_css_magnitude_px','variation_unique_url_params',
+  'variation_zero_width','variation_zero_width_rate',
   'variation_encoding_rotation','variation_mime_boundary_rotation',
   'variation_dynamic_preheader','variation_preheader_templates','variation_header_style',
-  'variation_user_agent_injection','variation_precedence','variation_thread_index'
+  'variation_user_agent_injection','variation_user_agent_rate','variation_precedence',
+  'variation_thread_index'
 );
 DELETE FROM sender.schema_migrations WHERE version = '0020';
 ```

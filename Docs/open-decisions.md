@@ -745,7 +745,7 @@ self-heal path runs, which is also the path that stamps the value the assertion 
 **Needs-user:** NO ruling required to proceed — recorded so a future phase (or the first operator who
 sets a non-UTC zone) does not re-derive it. Worth pinning if account-create is next touched.
 
-### P8-OD-1 — the execution mandate's "seed the intensities/rates too" collides with the LOCKED 14-key count (FLAG, Rule 2 — proceeding on the locked-spec-compliant side, not silently widening)
+### P8-OD-1 — the execution mandate's "seed the intensities/rates too" collides with the LOCKED 14-key count — **RULED-WIDEN 2026-07-26**
 
 **Raised by:** Phase 8 Chunk 5 (config seeds), surfaced while reconciling the current build mandate
 against the closed spec set before writing `sender_0020`'s config-seed INSERTs.
@@ -793,3 +793,37 @@ invariants are APPENDED... never quietly rewritten"), and the box code would rea
 `sender.config` dials (widening Phase 8 to 17 keys and amending the two locked specs above) or stay
 fixed-in-code as the current spec text already specifies. Proceeding on the locked-spec-compliant
 14-key path in the meantime; this does not block any other Chunk 5/6 work.
+
+**RULED (2026-07-26): WIDEN.** The user ruled to promote all three to independent config dials —
+an on/off toggle whose strength is hardcoded is only half a dial (config-not-code, CLAUDE.md Rule
+1). This is the additive amendment path this entry already anticipated, now executed:
+
+- **`Docs/phase-8-content-variation.md`** — a new "Post-Chunk-5 amendment (2026-07-26, RULED)"
+  section is APPENDED (not a rewrite) recording the ruling, adding
+  `variation_css_magnitude_px` (default `1`, integer), `variation_zero_width_rate` (default
+  `0.05`, number), and `variation_user_agent_rate` (default `0.3`, number) to §6.1's table and
+  §6.2's seed SQL, and updating toggles 3/5/10's own prose to name the new parameter each rate now
+  comes from. `sender_0020` grows from fourteen keys to **seventeen**.
+- **`Docs/phase-9-polish-and-documentation.md`** §4.5's heading and table are amended in place with
+  an explicit "amended post-Chunk-5, 14→17 keys" note (CLAUDE.md §8 — appended/dated, not silently
+  rewritten); the module-wide count references in §4/§5.6 move 39→42 (and 39.5's forward-pointer
+  moves 50→53 accordingly).
+- **Migration:** the three new rows are appended to the SAME `sender_0020_jobs_attempt_token.up.sql`
+  /`.down.sql` pair Chunk 5 already used (same rationale as the original fourteen — the version
+  number is spent). `sender.jobs` gets no new column; this is config-only.
+- **Brain (`config.go`/`variation.go`):** three new `Config` fields
+  (`VariationCSSMagnitudePx int`, `VariationZeroWidthRate float64`,
+  `VariationUserAgentRate float64`), two new readers (`readFloatKey` alongside the existing
+  `readIntKey`), and `variationSnapshot(cfg)` extended to copy them into the wire shape.
+- **Box (`variation-content.js`/`variation-headers.js`):** `applyCssVariation`, `insertZeroWidth`,
+  and `maybeInjectUserAgent` now take the rate/magnitude as a parameter (threaded through
+  `resolveVariation`'s toggle set) instead of reading the module-level `ZWJ_RATE`/`UA_INJECT_RATE`
+  constants / the literal `{-1,0,+1}` spread — those constants are removed from the box, not merely
+  overridden, so there is exactly one source of truth (config-not-code, no shadow default).
+- **Admin API (`config_validate.go`):** a `"number"` `value_type` case (JSON float, Phase 8's first
+  non-integer numeric key) plus semantic bounds (`variation_zero_width_rate`/
+  `variation_user_agent_rate` ∈ `[0, 1]`; `variation_css_magnitude_px` ≥ `1`).
+- **Config docs:** `config-manifest.txt` and `config-reference.md`'s Phase 8 section amended in
+  place with the three new keys and the 39→42 count update; `config_drift` moves from 39 to 42.
+
+**Needs-user:** none remaining — ruled. Tracking closes here.

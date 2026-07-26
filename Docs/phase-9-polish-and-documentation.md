@@ -314,7 +314,8 @@ deploy), and adding it later breaks nothing. Not built here.
 
 **The centerpiece (config-not-code payoff).** One table, every seeded `sender.config`
 key across all migrations, with key · type · default · allowed range/values ·
-consuming subsystem · effect. **39 keys.** All are managed through the same
+consuming subsystem · effect. **42 keys** (amended from 39 post-Chunk-5, P8-OD-1 —
+§4.5 grew from 14 to 17 Phase 8 keys). All are managed through the same
 `GET/PUT /v1/admin/config[/{key}]` endpoints (§5.6) and take effect without a
 redeploy (each consumer re-reads config; Phase 2 §6.5 / Phase 4 dispatch-tick re-read).
 
@@ -367,9 +368,17 @@ redeploy (each consumer re-reads config; Phase 2 §6.5 / Phase 4 dispatch-tick r
 | `rollup_granularity` | string | `"day"` | bucket granularity (`"day"` …) | Phase 7 rollup | Summary bucket granularity for debug-log rollup. |
 | `box_outcome_buffer_ttl_sec` | integer | `900` | `≥ startup_reconnect_window_sec` | Phase 7 box outcome buffer | How long a box buffers an unacked outcome for replay on reconnect. **Invariant §4.6 (b)** — must outlive the reconnect window or a late reconnect finds its outcome expired → silent duplicate. |
 
-### 4.5 Phase 8 — `sender_0020` (14 keys, content variation; all default OFF/neutral)
+### 4.5 Phase 8 — `sender_0020` (17 keys, content variation; all default OFF/neutral)
 
-All 14 are seeded off/neutral so that **with every toggle at its default the output
+**Amended post-Chunk-5 (2026-07-26, RULED — P8-OD-1): 14 → 17 keys.** Three toggle
+parameters (`variation_css_magnitude_px`, `variation_zero_width_rate`,
+`variation_user_agent_rate`) were promoted from fixed in-code values to independent
+config dials — an on/off toggle whose strength is hardcoded is only half a dial
+(config-not-code, CLAUDE.md Rule 1). Appended, not a rewrite: the twelve toggles and the
+byte-identical-when-off property below are unchanged. See Phase 8's "Post-Chunk-5
+amendment" section for the full ruling.
+
+All 17 are seeded off/neutral so that **with every toggle at its default the output
 is byte-identical to the Phase 3 send path** (Phase 8 §4 / T1). See Phase 8 for
 per-toggle behavior; consolidated here for completeness.
 
@@ -379,14 +388,17 @@ per-toggle behavior; consolidated here for completeness.
 | `variation_comment_injection` | boolean | `false` | Box | Invisible HTML comment injection. |
 | `variation_comment_intensity` | string | `"low"` | Box | Comment-injection density (`low`/…); inert while injection off. |
 | `variation_css_micro` | boolean | `false` | Box | CSS micro-variation. |
+| `variation_css_magnitude_px` | integer | `1` | Box | **(added post-Chunk-5)** Max ±px spread for toggle 3; inert while it is off. |
 | `variation_unique_url_params` | boolean | `false` | Box | Per-recipient cache-buster URL param. **Callback-free / no-tracking forward boundary (Phase 8 §5 toggle 4, P8-10).** |
 | `variation_zero_width` | boolean | `false` | Box | Zero-width character insertion. **Default OFF (deliberate).** |
+| `variation_zero_width_rate` | number | `0.05` | Box | **(added post-Chunk-5)** Fraction (0–1) of word-boundary spaces that get a ZWJ; inert while toggle 5 is off. |
 | `variation_encoding_rotation` | boolean | `false` | Box | Quoted-printable vs base64 rotation. |
 | `variation_mime_boundary_rotation` | boolean | `false` | Box | MIME boundary string rotation. |
 | `variation_dynamic_preheader` | boolean | `false` | Box | Hidden preheader span. **Token-free, body-agnostic generic filler (P8-7).** |
 | `variation_preheader_templates` | array<string> | 7 token-free defaults | Box | Preheader phrase pool (body-agnostic; no over-claiming). |
 | `variation_header_style` | string | `"none"` | Box | Header reordering by client style (`none`=preserve Phase 3 order). |
 | `variation_user_agent_injection` | boolean | `false` | Box | User-Agent header injection (decoupled from header-style, P8-6). |
+| `variation_user_agent_rate` | number | `0.3` | Box | **(added post-Chunk-5)** Fraction (0–1) of jobs that get an injected User-Agent; inert while toggle 10 is off. |
 | `variation_precedence` | string | `"auto"` | Box | Precedence header control (`auto`=omit). |
 | `variation_thread_index` | boolean | `false` | Box | Thread-Index. **Inert no-op in V1 (P8-8).** |
 
@@ -422,9 +434,9 @@ between two `sender.config` rows).
 | **(b)** | `box_outcome_buffer_ttl_sec ≥ startup_reconnect_window_sec` (with margin) | A late-but-in-window box reconnect must still find its buffered outcome — else the outcome expired → silent duplicate. | Phase 7, P7-11 |
 
 > **Exit-criterion tie-in (build plan Phase 9):** "Every config dial appears in the
-> reference with a default and a description." §4.1–§4.5 = **all 39 keys**, each with
-> type, default, range, consumer, and effect, plus §4.6's two invariants as
-> first-class entries. ✅
+> reference with a default and a description." §4.1–§4.5 = **all 42 keys** (amended
+> from 39, P8-OD-1), each with type, default, range, consumer, and effect, plus §4.6's
+> two invariants as first-class entries. ✅
 
 ---
 
@@ -514,7 +526,7 @@ a UI team could build against this **without asking a question**. Two surfaces,
 | `PATCH /v1/admin/pools/{id}` | Update (incl. `routing_strategy`, `fallback_pool_id`, `enabled`). |
 | `DELETE /v1/admin/pools/{id}` | Delete — `409 conflict` if accounts reference it. |
 
-**Config** (Phase 2 §6 — manages **all 39 keys of §4**):
+**Config** (Phase 2 §6 — manages **all 42 keys of §4**, amended from 39, P8-OD-1):
 
 | Method · Route | Purpose |
 |---|---|
