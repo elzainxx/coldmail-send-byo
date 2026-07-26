@@ -63,7 +63,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 
 	// Idempotency gate (§5.3): if the job already has a provider_message_id, it is already sent —
 	// never send/persist again. This makes a replayed/duplicate accepted a no-op.
-	already, curState, assignedBox, err := h.jobStatus(ctx, rep.JobID)
+	already, curState, assignedBox, curToken, err := h.jobStatus(ctx, rep.JobID)
 	if err != nil {
 		// A DB-read failure means we do NOT know the job's state — we can neither persist nor safely
 		// declare a no-op, so DO NOT ack: the box retains + replays (P7-4). This is the DB-outage path:
@@ -105,6 +105,48 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// permanently-inapplicable outcome until its TTL for no benefit.
 	if assignedBox != nil && boxID != "" && *assignedBox != boxID {
 		log.Printf("outcome: report for job %s from box %s does NOT match the current in-flight box %s — stale replay from a superseded attempt; dropped without applying (never attribute an outcome to an attempt that did not produce it)", rep.JobID, boxID, *assignedBox)
+		return true
+	}
+
+	// PER-ATTEMPT IDENTITY GUARD (Phase 8 Chunk 1 — P7-OD-6, RULED-ADOPT 2026-07-26). The box guard
+	// above can only decide the DIFFERENT-box case. When a reclaimed job is re-dispatched to the SAME
+	// box, the reporting box IS assigned_box_id, the job IS legitimately 'sending' again, and a replay
+	// of the SUPERSEDED attempt's outcome was — until this guard — indistinguishable from the live
+	// attempt's report. Its consequences were real in both directions: a stale ACCEPTED would mark the
+	// job sent (and write a send_log) while attempt 2 is still mid-flight, so attempt 2's genuine
+	// delivery becomes a silent DUPLICATE the Brain never records; a stale FAILURE would requeue the job
+	// out from under the live attempt and PENALIZE the account attempt 2 is using for a failure it never
+	// had — and the requeued job is then dispatched again, which is a second real send. This is DISTINCT
+	// from the accepted crash-after-250 window (a box that dies between the SMTP 250 and its report):
+	// that one is unavoidable, this one is fixable, which is why it is fixed rather than accepted.
+	//
+	// The identity is sender.jobs.attempt_token (sender_0020): minted by the Brain, incremented in the
+	// one guarded assigned→sending UPDATE (dispatch.go markSending), echoed on push_job, returned
+	// verbatim in the report. NOT attempt_count — Phase 5 made that saturate at max_attempts while
+	// requeue is unbounded until pool exhaustion, so a long-lived job reuses the value and it cannot
+	// identify an attempt.
+	//
+	// Conservative in exactly the same way as the box guard: it rejects ONLY a PROVABLE mismatch (both
+	// tokens non-zero and different). A zero/absent token on either side means "unknown" — a pre-0020
+	// box, or an attempt that was in flight across the migration — and falls through to the existing
+	// guards, so this can never reject a legitimate outcome.
+	//
+	// A rejected report mutates NOTHING: we return before every apply path, so no job row is written, no
+	// account is scored, no send_logs row is inserted, and no job_events row is produced. resolved=true
+	// (the box may DROP it) for the same reason as the different-box guard: the stale copy is
+	// permanently inapplicable — the job has moved to an attempt whose outcome the Brain will record —
+	// so refusing to ack would only make the box replay it until its TTL for no benefit.
+	// DEFENSE IN DEPTH — this pre-check is a read, so there is a window between it and the apply tx in
+	// which a reclaim + re-dispatch could bump the token (exactly the same TOCTOU shape as the
+	// already-sent and state gates above). Every apply path therefore ALSO carries
+	// `($n = 0 OR attempt_token = 0 OR attempt_token = $n)` inside its own guarded UPDATE, so the
+	// decision is re-made atomically against the row it is about to write; a token that moved in the
+	// window makes the UPDATE match 0 rows → errNoop → a clean acked no-op that mutates nothing. This
+	// check exists so the rejection is LOGGED and so nothing (not even a send_logs row) is attempted for
+	// an outcome we already know is stale.
+	if rep.AttemptToken != 0 && curToken != 0 && rep.AttemptToken != curToken {
+		log.Printf("outcome: report for job %s from box %s carries attempt token %d but the current in-flight attempt is %d — stale replay from a superseded attempt; dropped without applying (no state change, no account scoring)",
+			rep.JobID, boxID, rep.AttemptToken, curToken)
 		return true
 	}
 
@@ -159,7 +201,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 		// classified failure — accepted_without_id classifies as 'unknown' (§1.1 row 8), a
 		// conservative requeue with NO account penalty, which is exactly right for this anomaly.
 		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly)", rep.JobID)
-		anomaly := boxproto.Report{JobID: rep.JobID, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
+		anomaly := boxproto.Report{JobID: rep.JobID, AttemptToken: rep.AttemptToken, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
 		return h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly))
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
@@ -170,8 +212,9 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			       completed_at=NOW(),
 			       lease_expires_at=NULL,
 			       updated_at=NOW()
-			 WHERE id=$1 AND state='sending' AND provider_message_id IS NULL`,
-			rep.JobID, rep.ProviderMessageID)
+			 WHERE id=$1 AND state='sending' AND provider_message_id IS NULL
+			   AND ($3 = 0 OR attempt_token = 0 OR attempt_token = $3)`,
+			rep.JobID, rep.ProviderMessageID, rep.AttemptToken)
 		if err != nil {
 			return err
 		}
@@ -217,7 +260,9 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 			       last_error_class='bounce_permanent',
 			       last_error_message=$2,
 			       updated_at=NOW()
-			 WHERE id=$1 AND state='sending'`, rep.JobID, truncate(rep.SMTPResponse, 2000))
+			 WHERE id=$1 AND state='sending'
+			   AND ($3 = 0 OR attempt_token = 0 OR attempt_token = $3)`,
+			rep.JobID, truncate(rep.SMTPResponse, 2000), rep.AttemptToken)
 		if err != nil {
 			return err
 		}
@@ -255,7 +300,10 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// (only the box is), but reading first keeps the account effect independent of that ordering.
 		var acctID *string
 		if err := tx.QueryRow(ctx,
-			`SELECT assigned_account_id FROM sender.jobs WHERE id=$1 AND state='sending'`, rep.JobID).Scan(&acctID); err != nil {
+			`SELECT assigned_account_id FROM sender.jobs
+			  WHERE id=$1 AND state='sending'
+			    AND ($2 = 0 OR attempt_token = 0 OR attempt_token = $2)`,
+			rep.JobID, rep.AttemptToken).Scan(&acctID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errNoop // not sending (raced/duplicate) — nothing to apply
 			}
@@ -291,8 +339,9 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 			       attempt_count = LEAST(attempt_count + 1, max_attempts),
 			       next_attempt_at = NOW() + make_interval(secs => $4),
 			       updated_at=NOW()
-			 WHERE id=$1 AND state='sending'`,
-			rep.JobID, truncate(detail, 2000), class, nextSecs)
+			 WHERE id=$1 AND state='sending'
+			   AND ($5 = 0 OR attempt_token = 0 OR attempt_token = $5)`,
+			rep.JobID, truncate(detail, 2000), class, nextSecs, rep.AttemptToken)
 		if err != nil {
 			return err
 		}
@@ -390,21 +439,22 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 	return err
 }
 
-// jobStatus reports whether the job already has a provider_message_id (already sent), plus its
-// current state. A missing job → (false, "", err).
-// jobStatus reads the three facts Handle gates on: whether the job is already sent (idempotency),
-// its current state, and which box the current in-flight attempt belongs to (attribution — see the
-// stale-replay guard in Handle). assignedBox is nil when the column is NULL (claimed but never
-// pushed, or assignment cleared by a requeue).
-func (h *OutcomeHandler) jobStatus(ctx context.Context, jobID string) (alreadySent bool, state string, assignedBox *string, err error) {
+// jobStatus reads the FOUR facts Handle gates on: whether the job is already sent (idempotency), its
+// current state, which box the current in-flight attempt belongs to (attribution — see the
+// stale-replay guard in Handle), and the current attempt's token (per-attempt identity, Phase 8
+// Chunk 1 / P7-OD-6). assignedBox is nil when the column is NULL (claimed but never pushed, or
+// assignment cleared by a requeue). attemptToken is 0 for a job that has never been dispatched (or
+// one whose in-flight attempt predates sender_0020) — Handle treats 0 as "unknown", never a mismatch.
+// A missing job → (false, "", nil, 0, err).
+func (h *OutcomeHandler) jobStatus(ctx context.Context, jobID string) (alreadySent bool, state string, assignedBox *string, attemptToken int64, err error) {
 	var pmid *string
 	err = h.db.QueryRow(ctx,
-		`SELECT provider_message_id, state::text, assigned_box_id::text FROM sender.jobs WHERE id=$1`,
-		jobID).Scan(&pmid, &state, &assignedBox)
+		`SELECT provider_message_id, state::text, assigned_box_id::text, attempt_token FROM sender.jobs WHERE id=$1`,
+		jobID).Scan(&pmid, &state, &assignedBox, &attemptToken)
 	if err != nil {
-		return false, "", nil, err
+		return false, "", nil, 0, err
 	}
-	return pmid != nil, state, assignedBox, nil
+	return pmid != nil, state, assignedBox, attemptToken, nil
 }
 
 func (h *OutcomeHandler) inActorTx(ctx context.Context, actor string, fn func(tx pgx.Tx) error) error {

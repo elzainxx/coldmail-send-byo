@@ -303,7 +303,7 @@ export class BoxStream {
     try {
       // Lease check (§2.3): decline without SMTP if the lease already passed on receipt.
       if (leaseExpired(pj.lease_expires_at)) {
-        report = errorReport(pj.request_id, jobId, "lease_expired");
+        report = errorReport(pj.request_id, jobId, "lease_expired", pj.attempt_token);
       } else {
         const dataBytes = buildDataBytes(pj.send);
         // Per-operation SMTP timeout (Phase 6 §5, P6-11): prefer the seeded smtp_operation_timeout_sec
@@ -325,12 +325,13 @@ export class BoxStream {
         // Provider id: parse from the 250, else fall back to the Brain-generated Message-ID (§4.3).
         const provID = parseProviderID(result.smtpResponse) || pj.send.headers["Message-ID"] || "";
         if (!provID) {
-          report = errorReport(pj.request_id, jobId, "accepted_without_id"); // §4.3 defensive backstop
+          report = errorReport(pj.request_id, jobId, "accepted_without_id", pj.attempt_token); // §4.3 defensive backstop
         } else {
           report = {
             type: "report",
             request_id: pj.request_id,
             job_id: jobId,
+            attempt_token: pj.attempt_token,
             outcome: "accepted",
             provider_message_id: provID,
             smtp_response: result.smtpResponse,
@@ -341,13 +342,13 @@ export class BoxStream {
     } catch (e) {
       if (e instanceof SMTPError && e.reason === "bounced") {
         report = {
-          type: "report", request_id: pj.request_id, job_id: jobId,
+          type: "report", request_id: pj.request_id, job_id: jobId, attempt_token: pj.attempt_token,
           outcome: "bounced", smtp_response: e.smtpResponse || "", error_reason: null,
         };
       } else {
         const reason = e instanceof SMTPError ? e.reason : "timeout";
         const resp = e instanceof SMTPError ? (e.smtpResponse || "") : "";
-        report = { type: "report", request_id: pj.request_id, job_id: jobId, outcome: "error", smtp_response: resp, error_reason: reason };
+        report = { type: "report", request_id: pj.request_id, job_id: jobId, attempt_token: pj.attempt_token, outcome: "error", smtp_response: resp, error_reason: reason };
       }
     } finally {
       // LOCKED: zero the plaintext on EVERY exit path (§4.4, S3).
@@ -409,8 +410,12 @@ function leaseExpired(iso) {
   return Number.isFinite(t) && t <= Date.now();
 }
 
-function errorReport(requestId, jobId, reason) {
-  return { type: "report", request_id: requestId, job_id: jobId, outcome: "error", smtp_response: "", error_reason: reason };
+// errorReport builds a failure report. attemptToken is ECHOED VERBATIM from the push_job (Phase 8
+// Chunk 1, P7-OD-6): the box never mints, derives, or defaults it — an absent token stays absent on
+// the wire (omitted by the JSON encoder as undefined), which the Brain reads as "no token" and treats
+// as never-a-mismatch, so a pre-0020 Brain is unaffected.
+function errorReport(requestId, jobId, reason, attemptToken) {
+  return { type: "report", request_id: requestId, job_id: jobId, attempt_token: attemptToken, outcome: "error", smtp_response: "", error_reason: reason };
 }
 
 // buildDataBytes assembles the RFC 5322 message from the Brain-supplied headers (§8) + body. The

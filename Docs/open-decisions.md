@@ -426,7 +426,9 @@ implicit SESSION timezone while every other day-boundary path pins `daily_reset_
 a contract question, and `SummarizeByPeriod` has no production caller yet, so it is filed rather than
 guessed at). **Both were RULED on 2026-07-26 in the closeout:** P7-OD-7 → follow `daily_reset_timezone`
 (implemented + tested here); P7-OD-6 → RULED-ADOPT, persist per-attempt identity, **owner Phase 8**
-(residual risk accepted for Phase 7, which stays schema-neutral). **Needs-user is therefore EMPTY
+(residual risk accepted for Phase 7, which stays schema-neutral) — **now APPLIED in Phase 8 Chunk 1
+(2026-07-26): `sender_0020` adds `sender.jobs.attempt_token` and `OutcomeHandler.Handle` rejects a
+provable token mismatch without mutating state or scoring the account.** **Needs-user is therefore EMPTY
 again** — every Phase 7 item is RULED or APPLIED. No locked spec was edited by Phase 7, its gates, or
 its closeout. The closeout also appended CLAUDE.md **Rule 10** (a concurrency test must PROVE it
 contended) and a Rule 9 sub-point recording two Postgres semantics (an unchanged `state` fires no
@@ -521,7 +523,7 @@ rather than at the `PUT`. No duplicate, no invented outcome.
 **Needs-user:** none — this is a scope boundary, not a contradiction. It closes when Phase 9 ships §4.6
 + E4.
 
-### P7-OD-6 — a config-ordering violation is NOT a DB outage (fixed), and Brain-side ATTEMPT identity — **RULED-ADOPT 2026-07-26, owner: PHASE 8**
+### P7-OD-6 — a config-ordering violation is NOT a DB outage (fixed), and Brain-side ATTEMPT identity — **RULED-ADOPT 2026-07-26, owner: PHASE 8 → APPLIED 2026-07-26 (Phase 8 Chunk 1)**
 
 **Raised by:** review gate R2 (architect), Phase 7 closeout.
 
@@ -586,6 +588,59 @@ holds `phase-8-content-variation.md` (the locked spec, untouched) but no kickoff
 ruling is recorded here on the user's instruction and this ledger is currently its only home. When the
 Phase 8 kickoff lands, that document must carry this inherited obligation explicitly, or the ruling
 lives only in a Phase 7 section and is easy to miss.
+
+**APPLIED 2026-07-26 — Phase 8 CHUNK 1. The Brain-side half is BUILT; this item is DISCHARGED.** What
+shipped, and where the two inherited obligations landed:
+
+- **Migration `sender_0020`** adds `sender.jobs.attempt_token BIGINT NOT NULL DEFAULT 0` — additive-only
+  (Rule 5), metadata-only on PG 11+, no CHECK constraint (that would force a validating scan for no
+  benefit), and no new GRANT needed: it lands on `sender.jobs`, on which `sender_module` already holds
+  table-level DML from `sender_0012`, so the ADR-0008 grants-invariant test stays green. The `.down.sql`
+  drops it (re-opening the hole but never causing a false rejection). Existing rows read `0`.
+- **The identity is a TOKEN, not `request_id`.** The inherited obligation said the wire already carried a
+  per-attempt value (`push_job.request_id`) and Phase 8 should read and persist it. Phase 8 instead
+  persists a Brain-minted monotonic counter and carries it as an additive field alongside `request_id`.
+  Rationale (a deliberate strengthening, not a redesign): the token is minted **inside** the guarded
+  `assigned → sending` UPDATE with `RETURNING`, so it is minted exactly once per attempt, is
+  unforgeable by the box, and — being a stored column — can be re-asserted **inside** each apply
+  statement, which a value living only in memory on the stream cannot. `request_id` remains exactly what
+  it was (per-attempt request correlation, echoed in the report and in `report_ack`); nothing was
+  renamed, repurposed, or removed. `attempt_count` was NOT used: Phase 5 made it SATURATE at
+  `max_attempts` while requeue is unbounded until pool exhaustion, so long-lived jobs reuse the value —
+  asserted as a contrast, not assumed, in `TestAttemptToken_MonotonicAndNonSaturating`.
+- **The guard is in `OutcomeHandler.Handle`, alongside the different-box attribution check** — the
+  second obligation, honored literally. It rejects only a PROVABLE mismatch (both tokens non-zero and
+  different): log + `resolved=true` (so the box drops a permanently-inapplicable outcome instead of
+  replaying it until TTL) and apply NOTHING. Because that pre-check is a read, the same predicate is
+  ALSO carried inside every apply statement (`applyAccepted`, `applyBounced`, and both statements of
+  `applyClassifiedFailure`), so a token that moves between the check and the apply tx makes the UPDATE
+  match zero rows → a clean acked no-op. No state change, no `send_logs` row, no `job_events` row, no
+  account scoring.
+- **The SAME-box case is covered, and `staleattr_test.go`'s scope comment now points at that coverage**
+  (the third obligation). `internal/dispatch/attempttoken_test.go`: mint-per-dispatch + on-the-wire
+  agreement, monotonic-vs-saturating with anti-vacuity, the headline same-box stale-replay rejection
+  (both a stale ACCEPTED and a stale FAILURE, with the box-identity and new-token preconditions asserted
+  so it cannot pass vacuously, plus a positive control proving the live attempt still applies in full),
+  and absent-token compatibility in BOTH directions (old box, old job row) so the guard can never
+  discard a legitimate outcome. `internal/dispatch/attempttoken_lockorder_test.go` adds the
+  Rule 10-compliant concurrency half: a FORCED interleave that holds the token bump uncommitted so the
+  stale replay's pre-check reads a matching token, blocks on the job row (contention asserted via
+  `pg_stat_activity`), and is then defeated by the in-UPDATE predicate — verified non-vacuous by a
+  hand-run negative control (tautologising `applyAccepted`'s predicate makes it fail with
+  `job state=sent`) — plus both lock-order directions against a held exclusive account `FOR UPDATE`,
+  proving no `40P01` (Rule 9 / ADR-0010; `markSending` still takes no exclusive account lock, so it can
+  only ever be the waiter).
+- **The box's half is echo-only**, asserted on the real `BoxStream` over a real socket in
+  `services/box/test/buffer.test.mjs`: the token is echoed VERBATIM in all four report shapes, a later
+  attempt reports its OWN token (not a cached one), and an ABSENT token stays absent — the box never
+  mints, defaults, or increments an attempt identity.
+- Docs updated in the same change: the `attempt_token` frame contract in `Docs/api-contract.md`, and the
+  column in `Docs/data-model.md`.
+
+**Residual, unchanged and still accepted:** the crash-after-`250` window (the box dies after the SMTP
+server accepted but before it can report) remains unavoidable and is NOT what this fixed — that one is
+bounded by `provider_message_id UNIQUE` + the pre-persist idempotency check. What this closed is the
+*fixable* half: a superseded attempt's buffered outcome being applied to a live one.
 
 ### P7-OD-7 — the day-rollup's bucket boundary depends on the SESSION timezone, not on config — **RULED 2026-07-26: FOLLOW `daily_reset_timezone`**
 
@@ -655,7 +710,8 @@ control that the UTC day is *gone* from the second read and the row total is con
 to **FAIL** against the previous unpinned query (`no summary bucket for 2026-07-26 … buckets are
 map[2026-07-25:4]`, and `bucketed as map[2026-07-24:1], want {2026-07-23:1}`).
 
-**Needs-user:** none (ruled). One open item remains: P7-OD-6.
+**Needs-user:** none (ruled). P7-OD-6 was the one open item; it is **APPLIED as of 2026-07-26** (Phase 8
+Chunk 1 — `sender_0020` + the `attempt_token` guard). P7-OD-8 below remains filed, not fixed.
 
 ### P7-OD-8 — `accounts.daily_reset_day DEFAULT CURRENT_DATE` uses the SERVER date, not `daily_reset_timezone` (FLAG, low severity)
 

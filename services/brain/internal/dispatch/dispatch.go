@@ -299,7 +299,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 	// requeue to a claimable state so the job is never orphaned in 'assigned' with a live lease
 	// (the reclaim loop is Phase 6). The credential is zeroed and never leaves the Brain for a job
 	// we couldn't transition.
-	moved, err := d.markSending(ctx, job.id, acct.id, boxID)
+	moved, token, err := d.markSending(ctx, job.id, acct.id, boxID)
 	if err != nil || !moved {
 		zero(plaintext)
 		d.requeuePushFailed(ctx, job.id)
@@ -308,6 +308,10 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 		}
 		return false, err
 	}
+	// Carry THIS attempt's persisted identity on the wire (Phase 8 Chunk 1, P7-OD-6). The box echoes it
+	// in its report and the Brain rejects any report bearing a superseded token. Set AFTER the
+	// transition, from the value the UPDATE returned — never guessed, never derived box-side.
+	pj.AttemptToken = token
 	// Echo the lease so the box knows its deadline (re-read the just-set lease).
 	if lease, ok := d.readLease(ctx, job.id); ok {
 		pj.LeaseExpiresAt = lease.UTC().Format(time.RFC3339)
@@ -362,24 +366,45 @@ func (d *Dispatcher) claimOne(ctx context.Context, boxID string, jobMaxProcessin
 // markSending moves assigned → sending and records the account + the box, in a tx with the actor
 // GUC. The lease stays set (still in {assigned,sending} — CHECK satisfied). Box selection is
 // orthogonal to routing (§1.3), so the box is recorded here at the sending transition rather than
-// at claim. Returns (moved, err): moved is false when the guarded UPDATE affected 0 rows (the job
-// was not in 'assigned' — state drifted), so the caller must NOT push and should requeue rather
+// at claim. Returns (moved, token, err): moved is false when the guarded UPDATE affected 0 rows (the
+// job was not in 'assigned' — state drifted), so the caller must NOT push and should requeue rather
 // than send on a job it didn't transition.
-func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID, boxID string) (bool, error) {
+//
+// ATTEMPT IDENTITY (Phase 8 Chunk 1, P7-OD-6). The same guarded UPDATE increments
+// attempt_token and RETURNS it. This is the ONE place a token is minted, and it is minted exactly
+// where the attempt begins: the update is already guarded by `state='assigned'`, so a job that lost
+// its claim mints nothing, and two concurrent dispatchers cannot both mint (the row lock plus the
+// state guard admit exactly one). The value is unforgeable by the box — it never chooses it, it only
+// echoes what it was handed — and non-saturating by construction (`+ 1`, no cap), which is exactly
+// what attempt_count cannot be (§Phase 5 saturates it at max_attempts, so long-lived jobs reuse it).
+//
+// LOCK ORDER (Rule 9 / ADR-0010): unchanged by this addition. markSending takes NO exclusive account
+// lock — it takes the job row's write lock and then the account's implicit FK KEY SHARE via the
+// job_events trigger (state genuinely changes here) and assigned_account_id. Adding attempt_token to
+// the same SET list adds no lock and reorders none. Its only concurrent same-job counterparty is the
+// claim CTE / reclaim, which acquire the job with FOR UPDATE SKIP LOCKED (skipped, never blocked-on) —
+// the documented safe case in Rule 9's precise scope.
+func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID, boxID string) (bool, int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	moved := false
+	var token int64
 	err := d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, assigned_box_id=$3, updated_at=NOW()
-			 WHERE id=$1 AND state='assigned'`, jobID, accountID, boxID)
+		err := tx.QueryRow(ctx,
+			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, assigned_box_id=$3,
+			        attempt_token = attempt_token + 1, updated_at=NOW()
+			 WHERE id=$1 AND state='assigned'
+			 RETURNING attempt_token`, jobID, accountID, boxID).Scan(&token)
+		if err == pgx.ErrNoRows {
+			return nil // state drifted out of 'assigned'; moved stays false, caller requeues
+		}
 		if err != nil {
 			return err
 		}
-		moved = tag.RowsAffected() == 1
+		moved = true
 		return nil
 	})
-	return moved, err
+	return moved, token, err
 }
 
 // requeueNoAccount / requeuePushFailed return an assigned/sending job to queued in a LEGAL state

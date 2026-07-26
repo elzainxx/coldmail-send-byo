@@ -364,3 +364,84 @@ test("P7-4: an outcome older than the TTL is DROPPED (bounded buffer → falls b
     await brain.close();
   }
 });
+
+// --- Phase 8 CHUNK 1 (P7-OD-6): the box's half of the per-attempt identity contract ---
+//
+// The Brain mints sender.jobs.attempt_token inside the guarded assigned→sending UPDATE and puts it on
+// push_job. The box's ONLY obligation is to echo it back VERBATIM in the outcome report — it must never
+// mint, increment, default, or otherwise author a token, because the token is the Brain's proof of WHICH
+// attempt produced an outcome. A box that invented one could resurrect a stale buffered outcome onto a
+// live attempt (the exact duplicate P7-OD-6 filed). These tests assert both directions on the real
+// BoxStream over a real socket: the token is echoed unchanged, and its ABSENCE stays absent (never
+// becomes a fabricated value), so an older Brain that does not send the field is not handed a token the
+// box made up.
+
+function pushJobWithToken(jobId, attemptToken) {
+  const pj = expiredPushJob(jobId);
+  if (attemptToken !== undefined) pj.attempt_token = attemptToken;
+  return pj;
+}
+
+test("P7-OD-6: the box echoes push_job.attempt_token VERBATIM in its report and never mints one", async () => {
+  const reports = [];
+  const brain = await startFakeBrain({
+    onFrame: (msg, conn) => {
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+      if (msg.type === "report") {
+        reports.push(msg);
+        conn.reply({ type: "report_ack", request_id: msg.request_id, job_id: msg.job_id, accepted: true });
+      }
+    },
+  });
+  const box = makeBox(brain.port);
+  try {
+    await box.start();
+
+    // A large token: proves the value is carried through as-is (not truncated, not re-derived from
+    // attempt_count, not replaced by a counter the box keeps).
+    const TOKEN = 4242;
+    brain.server._lastConn.reply(pushJobWithToken("job-tok", TOKEN));
+    assert.ok(await waitFor(() => reports.some((r) => r.job_id === "job-tok")), "Brain never received the outcome report");
+    const rep = reports.find((r) => r.job_id === "job-tok");
+    assert.equal(rep.attempt_token, TOKEN,
+      `report.attempt_token=${rep.attempt_token}, want the pushed ${TOKEN} — the Brain cannot tell which attempt this outcome belongs to`);
+
+    // A SECOND attempt of the SAME job carrying a DIFFERENT token: the box must report the token of the
+    // attempt it actually ran, not the first one it saw. (Anti-vacuity for "echoed verbatim": a box that
+    // cached the first token would pass the assertion above and fail here.)
+    brain.server._lastConn.reply(pushJobWithToken("job-tok2", TOKEN + 1));
+    assert.ok(await waitFor(() => reports.some((r) => r.job_id === "job-tok2")), "second attempt never reported");
+    assert.equal(reports.find((r) => r.job_id === "job-tok2").attempt_token, TOKEN + 1,
+      "the box reported a stale/cached attempt_token for a later attempt");
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});
+
+test("P7-OD-6: a push_job with NO attempt_token yields a report with no fabricated token", async () => {
+  const reports = [];
+  const brain = await startFakeBrain({
+    onFrame: (msg, conn) => {
+      if (msg.type === "register") conn.reply({ type: "register_ack", request_id: msg.request_id, accepted: true, outcome_buffer_ttl_sec: 900 });
+      if (msg.type === "report") {
+        reports.push(msg);
+        conn.reply({ type: "report_ack", request_id: msg.request_id, job_id: msg.job_id, accepted: true });
+      }
+    },
+  });
+  const box = makeBox(brain.port);
+  try {
+    await box.start();
+    brain.server._lastConn.reply(pushJobWithToken("job-notok", undefined)); // field absent, as a pre-0020 Brain sends
+    assert.ok(await waitFor(() => reports.some((r) => r.job_id === "job-notok")), "Brain never received the outcome report");
+    const rep = reports.find((r) => r.job_id === "job-notok");
+    // Absent must stay absent/undefined. Anything else (0, 1, a counter) is the box AUTHORING identity,
+    // and a non-zero fabricated value would make the Brain's guard reject a legitimate outcome.
+    assert.equal(rep.attempt_token, undefined,
+      `report.attempt_token=${JSON.stringify(rep.attempt_token)} for a push with no token — the box fabricated an attempt identity`);
+  } finally {
+    box.stop();
+    await brain.close();
+  }
+});

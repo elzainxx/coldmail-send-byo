@@ -99,9 +99,18 @@ type SMTP struct {
 
 // PushJob delivers one job + its credential down the held stream (§2.3). One push = one send.
 type PushJob struct {
-	Type           string `json:"type"`
-	RequestID      string `json:"request_id"`
-	JobID          string `json:"job_id"`
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	JobID     string `json:"job_id"`
+	// AttemptToken is the PERSISTED per-attempt identity (Phase 8 Chunk 1, P7-OD-6). The Brain mints it
+	// by incrementing sender.jobs.attempt_token in the same guarded assigned→sending UPDATE that
+	// dispatches this attempt, so it is monotonic, non-saturating, and unforgeable by the box. The box
+	// echoes it VERBATIM in its report; the Brain rejects any report whose token is not the job's
+	// current one (a stale replay from a superseded attempt). Distinct from RequestID: request_id is a
+	// transient per-frame correlation id the Brain never stores, so it cannot survive a Brain restart
+	// or be compared against the DB. Additive-only, omitempty so pre-0020 frames/tests still parse; 0
+	// or absent means "no token" and is never treated as a mismatch.
+	AttemptToken   int64  `json:"attempt_token,omitempty"`
 	Send           Send   `json:"send"`
 	SMTP           SMTP   `json:"smtp"`
 	LeaseExpiresAt string `json:"lease_expires_at"` // RFC3339; the box's own deadline (§2.3)
@@ -111,9 +120,15 @@ type PushJob struct {
 // smtp_response is the raw final SMTP line (never the credential). error_reason is an internal
 // slug on failure. NONE of this flows verbatim to a platform caller.
 type Report struct {
-	Type              string `json:"type"`
-	RequestID         string `json:"request_id"`
-	JobID             string `json:"job_id"`
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	JobID     string `json:"job_id"`
+	// AttemptToken echoes push_job.attempt_token VERBATIM (Phase 8 Chunk 1, P7-OD-6) — the identity of
+	// the attempt that produced this outcome. The Brain compares it to sender.jobs.attempt_token and
+	// applies the report only when they match; a mismatch is a stale replay from a superseded attempt
+	// and mutates nothing. Additive-only, omitempty; 0/absent = a pre-0020 box, which degrades to
+	// Phase 7 behavior (the different-box attribution guard) rather than being rejected.
+	AttemptToken      int64  `json:"attempt_token,omitempty"`
 	Outcome           string `json:"outcome"` // accepted | error | bounced
 	ProviderMessageID string `json:"provider_message_id,omitempty"`
 	SMTPResponse      string `json:"smtp_response,omitempty"`

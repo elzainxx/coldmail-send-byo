@@ -97,7 +97,8 @@ func TestRunnerLifecycle(t *testing.T) {
 	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
-		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019"}
+		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
+		"0020"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -142,6 +143,11 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !columnExists(t, admin, "accounts", "throttle_paused_at") {
 		t.Fatal("after Up: sender.accounts.throttle_paused_at missing (sender_0016 not applied)")
 	}
+	// Phase 8 Chunk 1's additive column (sender_0020): the per-attempt identity that lets the Brain
+	// reject a stale replay from a superseded attempt (P7-OD-6).
+	if !columnExists(t, admin, "jobs", "attempt_token") {
+		t.Fatal("after Up: sender.jobs.attempt_token missing (sender_0020 not applied)")
+	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -177,6 +183,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		if v == "0019" && (configKeyExists(t, admin, "startup_reconnect_window_sec") ||
 			configKeyExists(t, admin, "box_outcome_buffer_ttl_sec")) {
 			t.Fatal("after Down 0019: a Phase 7 config seed is still present (down did not delete it)")
+		}
+		if v == "0020" && columnExists(t, admin, "jobs", "attempt_token") {
+			t.Fatal("after Down 0020: sender.jobs.attempt_token is still present (down did not drop it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with

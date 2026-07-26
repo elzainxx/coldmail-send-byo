@@ -77,14 +77,18 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	if b2 == b1 {
 		t.Fatalf("re-dispatch landed on the SAME box (%s) despite it being in-flight — no second attempt owner, so this test would be vacuous", b2)
 	}
-	// SCOPE, stated so the gap is not mistaken for coverage (review gate R2; Docs/open-decisions.md
-	// P7-OD-6): this test covers the DIFFERENT-box case, which is the only case the guard can decide.
-	// A re-dispatch to the SAME box is NOT covered and is NOT guarded — the Brain has no per-attempt
-	// identity on the report path (`report.request_id` is echoed but never read or persisted, and
-	// Phase 7 is schema-neutral), so a stale replay from a superseded attempt on the same box is
-	// indistinguishable from the live attempt's report. It is filed for a ruling rather than guarded
-	// by a guess. The box-side half of that hazard IS fixed and covered
-	// (services/box/test/buffer.test.mjs, the two P7-4/R2 tests).
+	// SCOPE (updated by Phase 8 Chunk 1 — the gap this comment used to flag is now CLOSED). This test
+	// covers the DIFFERENT-box case, which is all the box-attribution guard can decide. The SAME-box
+	// case — a re-dispatch landing on the box that already holds a superseded outcome — was P7-OD-6's
+	// open half: the Brain had no per-attempt identity, so such a replay was indistinguishable from the
+	// live attempt's report and WAS applied. It is now guarded by sender.jobs.attempt_token
+	// (sender_0020), minted in markSending, echoed on push_job, verified in Handle, and covered by
+	// attempttoken_test.go (TestAttemptToken_StaleReplaySameBoxRejected, plus the deterministic
+	// two-connection interleave in attempttoken_lockorder_test.go). The box-side half of the hazard was
+	// fixed in Phase 7 (services/box/test/buffer.test.mjs, the two P7-4/R2 tests).
+	//
+	// This test deliberately sends NO attempt_token, so it still exercises the box-attribution guard in
+	// isolation: it must reject the wrong box on box identity ALONE, independent of the token.
 	if st, _, _, _, _ := e.jobState(t, job); st != "sending" {
 		t.Fatalf("precondition: job state=%s, want sending (B2 is mid-attempt — this is what makes the stale replay dangerous)", st)
 	}

@@ -121,3 +121,18 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > the pre-persist check) makes a replay a no-op, never a duplicate. Two-vocabulary: the ack carries
 > only `{job_id, request_id, accepted}` — never an internal reason. The Brain NEVER acks an outcome
 > it did not persist (Rule 5).
+>
+> **Phase 8 Chunk 1 (P7-OD-6) — per-attempt identity (additive wire field `attempt_token`).** Both
+> `push_job` and `report` carry an additive integer `attempt_token`. The Brain mints it inside the
+> guarded `assigned → sending` transition (`sender.jobs.attempt_token`, migration `sender_0020`:
+> monotonic, NON-saturating, one increment per dispatched attempt) and the box echoes it back
+> VERBATIM — the box never mints, defaults, or increments one. The Brain REJECTS a report whose token
+> is a PROVABLE mismatch with the job's current attempt (both values non-zero and different): the report
+> is acked (so the box stops replaying a permanently-inapplicable outcome) but applies NOTHING — no
+> state change, no `send_logs` row, no `job_events` row, no account scoring. This closes the case the
+> Phase 7 box-attribution guard could not decide: a stale buffered outcome from attempt 1 replayed
+> after the job was reclaimed and re-dispatched to the SAME box. An absent or zero token on either
+> side is treated as UNKNOWN, never a mismatch, so a box or job row that predates the field degrades
+> to exactly Phase 7 behavior rather than having legitimate outcomes discarded. Two-vocabulary is
+> unchanged: the token is an internal machine-to-machine identifier on the box channel and is never
+> surfaced on any client boundary (`/v1/report` still returns only clean external state).

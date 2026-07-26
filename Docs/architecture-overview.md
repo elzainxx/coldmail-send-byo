@@ -805,7 +805,8 @@ four R1 fixes were independently re-verified present in the tree. Two findings s
   P6-11 pair. While it is unbuilt an operator *can* store a violating value, and the Brain simply refuses
   to run on it — no duplicate, no invented outcome, discovered at the next tick instead of at the `PUT`.
 
-**The attempt-identity gap (P7-OD-6, needs a ruling).** The R1 attribution guard can only decide a
+**The attempt-identity gap (P7-OD-6 — RULED-ADOPT, and CLOSED in Phase 8 Chunk 1; see the Phase 8
+section below).** The R1 attribution guard can only decide a
 *different-box* mismatch. When a reclaimed job is re-dispatched to the **same** box, a late replay from
 the superseded attempt is indistinguishable from the live attempt's report. The wire already carries what
 a fix would need — `push_job.request_id` is minted per attempt and echoed in `report.request_id` — but
@@ -925,3 +926,72 @@ production caller** today — it must be pinned before any phase wires a reporti
 **RULED 2026-07-26 and implemented in the closeout: follow `daily_reset_timezone`** (see the rollup
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
+
+## Phase 8 state — content variation (IN PROGRESS: chunk 1 of 6 landed)
+
+Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
+from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
+the `push_job` wire contract and owns migration `sender_0020`, and 9.5 is operability — the wrong home
+for a correctness fix. That makes Phase 8 **not** schema-neutral, which is expected and approved
+(additive only).
+
+### Chunk 1 — per-attempt identity (P7-OD-6), `sender.jobs.attempt_token`
+
+**The hole.** The box's outcome buffer deliberately outlives its own attempt
+(`box_outcome_buffer_ttl_sec` 900s ≫ `job_max_processing_time_sec` 120s), so a job can be reclaimed and
+re-dispatched — plausibly to the SAME box — while an older attempt's outcome is still buffered and being
+replayed. Phase 7's attribution guard can only decide the DIFFERENT-box case: on a same-box re-dispatch
+the reporting box IS `assigned_box_id` and the job IS legitimately `sending` again, so a stale replay was
+applied to the LIVE attempt. A stale ACCEPTED marked the job `sent` while attempt 2 was mid-flight
+(attempt 2's real delivery becoming an unrecorded DUPLICATE); a stale FAILURE requeued the job out from
+under attempt 2 and penalized the account it was using. This is DISTINCT from the accepted
+crash-after-`250` window — that one is unavoidable; this one is fixable.
+
+**The mechanism.**
+
+- `sender_0020` adds `sender.jobs.attempt_token BIGINT NOT NULL DEFAULT 0` (`0` = no attempt dispatched
+  yet). Additive-only (Rule 5), metadata-only on PG 11+, deliberately no CHECK constraint (it would force
+  a validating `ACCESS EXCLUSIVE` scan for no benefit), and no new GRANT: it lands on `sender.jobs`, on
+  which `sender_module` already holds table-level DML from `sender_0012`, so the ADR-0008 grants-invariant
+  test stays green.
+- The Brain mints it INSIDE the existing guarded `assigned → sending` UPDATE in `markSending`
+  (`attempt_token = attempt_token + 1 … RETURNING attempt_token`), so it is minted exactly once per
+  attempt and is unforgeable by the box. **This adds no lock and no lock-order change** (Rule 9 /
+  ADR-0010): that UPDATE already changes `state` and `assigned_account_id`, so it already fires the
+  `job_events` trigger and already takes the account's FK `KEY SHARE`. `markSending` still takes no
+  exclusive account lock of its own, so it can only ever be the WAITER, never half of a cycle — asserted
+  in both directions in `attempttoken_lockorder_test.go`.
+- It rides on `push_job.attempt_token` (additive, `omitempty`) and the box echoes it back VERBATIM in
+  `report.attempt_token` for all four report shapes. The box never mints, defaults, or increments one.
+- `OutcomeHandler.Handle` rejects a **provable mismatch** (both tokens non-zero and different): log +
+  `resolved=true` — the report is acked so the box drops a permanently-inapplicable outcome instead of
+  replaying it until TTL — and applies NOTHING: no state change, no `send_logs` row, no `job_events` row,
+  no account scoring. Because that pre-check is a read, the SAME predicate is repeated inside every apply
+  statement (`applyAccepted`, `applyBounced`, and both statements of `applyClassifiedFailure`), so a token
+  that moves between the check and the apply tx makes the UPDATE match zero rows → a clean acked no-op.
+- **`attempt_count` was not used as the identity.** Phase 5 made it SATURATE at `max_attempts`
+  (`LEAST(attempt_count + 1, max_attempts)`) while requeue is unbounded until pool exhaustion, so
+  long-lived jobs reuse the value. That premise is asserted as a contrast, not assumed.
+- **Compatibility in both directions:** an absent/zero token on either side is UNKNOWN, never a mismatch,
+  so a pre-`0020` box or a job row dispatched before the migration degrades to exactly Phase 7 behavior
+  rather than having legitimate outcomes silently discarded.
+
+**Tests** (real Postgres, real dispatcher, real `OutcomeHandler`, real `BoxStream` over a real socket —
+no mocks). `internal/dispatch/attempttoken_test.go`: mint-per-dispatch with the pushed value compared
+against the DB row; monotonic-vs-saturating over 6 attempts with anti-vacuity that `attempt_count`
+genuinely repeated; the headline same-box stale-replay rejection for BOTH a stale ACCEPTED and a stale
+FAILURE, with same-box and new-token preconditions so it cannot pass vacuously and a positive control
+proving attempt 2's own report still applies in full; absent-token compatibility both ways.
+`internal/dispatch/attempttoken_lockorder_test.go` (Rule 10): a FORCED interleave that holds the token
+bump uncommitted so the stale replay's pre-check reads a MATCHING token, blocks on the job row
+(contention asserted via `pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`), and is then
+defeated by the in-UPDATE predicate — verified non-vacuous by a hand-run negative control (tautologising
+`applyAccepted`'s predicate makes it fail with `job state=sent`) — plus both lock-order directions
+against a held exclusive account `FOR UPDATE`, proving no `40P01`.
+`services/box/test/buffer.test.mjs`: the token is echoed verbatim, a later attempt reports its OWN token,
+and an absent token stays absent. `TestRunnerLifecycle` proves the chain applies through `0020`, is
+idempotent, and that `0020`'s DOWN drops the column.
+
+**Security surface: unchanged.** The token is an opaque integer on the internal mTLS box channel. It
+touches no credential path, no TLS/STARTTLS ordering, and no client boundary — `/v1/report` still returns
+only clean external state, and the two-vocabulary rule is untouched.
