@@ -1,20 +1,48 @@
-// variation-content.js — Phase 8 CHUNK 3: the body/content STAGES (toggles 1-5 of §5). Ported
-// from the reference (`Docs/mailflow-worker (Sender Inspiration)/src/features/content-variation.ts`
-// B1-B6), with ONE deliberate adaptation: every random draw is replaced by the job_id+stream-seeded
-// PRNG from variation.js (P8-5) so the same job always produces the same variation — the reference
-// used bare Math.random(), which this module never calls.
+// variation-content.js — Phase 8 CHUNKS 3+4: the body/content STAGES (toggles 1-5 shipped in
+// Chunk 3; toggle 8 dynamic preheader added in Chunk 4). Ported from the reference
+// (`Docs/mailflow-worker (Sender Inspiration)/src/features/content-variation.ts` B1-B6, B8), with
+// ONE deliberate adaptation throughout: every random draw is replaced by the job_id+stream-seeded
+// PRNG from variation-seed.js (P8-5) so the same job always produces the same variation — the
+// reference used bare Math.random(), which this module never calls.
 //
 // Each stage operates on msg.body (an HTML string) and returns a new message with only `body`
 // changed — headers/transferEncoding/boundary pass through untouched. Registered into STAGES by
-// variation.js in the locked pipeline order (§1.1): minify → comments → css → url params →
-// zero-width. (Dynamic preheader, toggle 8, is body/content too but ships in Chunk 4 alongside the
-// other still-open toggles; its stage will be inserted BEFORE minify to match §1.1's order when it
-// lands — order is documented there, not re-derived here.)
+// variation.js in the locked §1.1 pipeline order: preheader → minify → comments → css → url params
+// → zero-width, then (variation-headers.js) the header/MIME stages.
 
-import { prngFor, hashFor } from "./variation-seed.js";
+import { prngFor, hashFor, pickSeeded } from "./variation-seed.js";
 
 function withBody(msg, body) {
   return { ...msg, body };
+}
+
+// --- Toggle 8: dynamic preheader (variation_dynamic_preheader + _preheader_templates, ref B8) ---
+// Ordered FIRST in the body/content pipeline (§1.1): "dynamic preheader → HTML optimization →
+// comments → CSS variation → link params → image params → character variation."
+
+// GMAIL_PREHEADER_PADDING pushes Gmail's auto-generated preview text away from the injected
+// preheader (reference: U+200C ZWNJ + NBSP, x50) — ported verbatim, not a seeded/random value.
+const GMAIL_PREHEADER_PADDING = "‌ ".repeat(50);
+
+// buildPreheaderSpan wraps the chosen template in the reference's hidden-span CSS
+// (display:none + 1px + overflow:hidden keeps it out of the rendered body — §5 toggle 8: "Hidden
+// span -> the visible body renders identically") plus the Gmail padding.
+function buildPreheaderSpan(text) {
+  return `<span style="display:none;font-size:1px;color:#ffffff;max-height:0;max-width:0;opacity:0;overflow:hidden;">${text}${GMAIL_PREHEADER_PADDING}</span>`;
+}
+
+// injectDynamicPreheader picks one template SEEDED from job_id (P8-7: V1 ships no per-contact merge
+// data box-side, so any `{token}` is cleaned to empty rather than substituted — matching the
+// reference's "clean up empty tokens" step) and prepends the hidden span right after `<body>`
+// (case-insensitive), or at the very start of the document if there is no `<body>` tag at all.
+export function injectDynamicPreheader(body, templates, jobId) {
+  const template = pickSeeded(templates, jobId, "preheader");
+  if (template === undefined) return body; // no candidates — nothing to inject
+  const cleaned = template.replace(/\{[^}]+\}/g, "").replace(/\s{2,}/g, " ").trim();
+  const span = buildPreheaderSpan(cleaned);
+  const bodyTagMatch = body.match(/<body[^>]*>/i);
+  if (!bodyTagMatch) return span + body;
+  return body.slice(0, bodyTagMatch.index + bodyTagMatch[0].length) + span + body.slice(bodyTagMatch.index + bodyTagMatch[0].length);
 }
 
 // --- Toggle 1: HTML minification (variation_html_minify, ref B1) --------------------------------
@@ -139,6 +167,11 @@ export function insertZeroWidth(body, jobId) {
 // --- stage registrations, in the §1.1 body/content pipeline order -------------------------------
 
 export const contentStages = [
+  {
+    name: "dynamic_preheader",
+    active: (v) => v.dynamic_preheader,
+    apply: (msg, v, jobId) => withBody(msg, injectDynamicPreheader(msg.body, v.preheader_templates, jobId)),
+  },
   {
     name: "html_minify",
     active: (v) => v.html_minify,

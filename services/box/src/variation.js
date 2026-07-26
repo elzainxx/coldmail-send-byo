@@ -38,8 +38,9 @@
 // register themselves into STAGES here, each from their own module so a chunk's transforms stay
 // reviewable independently of this file's scaffolding.
 
-import { prngFor, hashFor, pickSeeded } from "./variation-seed.js";
+import { prngFor, hashFor, pickSeeded, DEFAULT_PREHEADER_TEMPLATES } from "./variation-seed.js";
 import { contentStages } from "./variation-content.js";
+import { headerMimeStages } from "./variation-headers.js";
 
 export { prngFor, hashFor, pickSeeded };
 
@@ -47,7 +48,9 @@ export { prngFor, hashFor, pickSeeded };
 // at its seeded default (§6.1). This set IS the Phase 3 identity — see the header. It is not a tuning
 // constant: the operator-tunable source of truth is sender.config, which the Brain resolves and
 // stamps onto push_job; this object exists so that a missing/partial block degrades to Phase 3
-// rather than to something invented.
+// rather than to something invented. preheader_templates defaults to the spec's own token-free pool
+// (§6.1) — NOT an empty list — so that enabling dynamic_preheader without an explicit override still
+// has candidates to pick from; it stays INERT (per isNeutral) while dynamic_preheader is off.
 export const VARIATION_DEFAULTS = Object.freeze({
   html_minify: false,
   comment_injection: false,
@@ -58,7 +61,7 @@ export const VARIATION_DEFAULTS = Object.freeze({
   encoding_rotation: false,
   mime_boundary_rotation: false,
   dynamic_preheader: false,
-  preheader_templates: [],
+  preheader_templates: DEFAULT_PREHEADER_TEMPLATES,
   header_style: "none",
   user_agent_injection: false,
   precedence: "auto",
@@ -124,12 +127,15 @@ export function isNeutral(v) {
 // Order matters and follows the reference: body/content first (preheader → minify → comments → css →
 // url params → zero-width), then encoding/MIME/header engineering.
 //
-// Chunk 3 registers the five body/content stages (toggles 1, 2, 3, 4, 5 — dynamic preheader,
-// toggle 8, is body/content too but ships in Chunk 4 alongside the still-open toggles, inserted
-// before minify per §1.1's order when it lands). The header/MIME stages (toggles 6, 7, 9-12) are
-// registered by Chunk 4. A STAGES entry runs only when its own `active` predicate is true, so an
-// empty/undefined toggle set still yields the identity function (§4) regardless of what's registered.
-export const STAGES = [...contentStages];
+// Chunk 3 registered the five body/content stages (toggles 1-5). Chunk 4 completes the pipeline:
+// dynamic preheader (toggle 8, body/content but ordered FIRST per §1.1: preheader → minify →
+// comments → css → url params → zero-width — its own stage lives at the front of contentStages,
+// not here) and the header/MIME stages (toggles 6, 7, 9-12: encoding rotation, MIME boundary
+// rotation, header reordering, User-Agent, precedence, Thread-Index-inert), applied AFTER every
+// body/content stage per §1.1's two-layer ordering. A STAGES entry runs only when its own `active`
+// predicate is true, so an empty/undefined toggle set still yields the identity function (§4)
+// regardless of what's registered.
+export const STAGES = [...contentStages, ...headerMimeStages];
 
 // applyVariation runs the pipeline. With an all-default toggle set NO stage is active, so the
 // message object is returned UNCHANGED (identity, §4.2) — the assembler then serializes exactly the

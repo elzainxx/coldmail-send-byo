@@ -927,7 +927,7 @@ production caller** today — it must be pinned before any phase wires a reporti
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
 
-## Phase 8 state — content variation (IN PROGRESS: chunk 3 of 6 landed)
+## Phase 8 state — content variation (IN PROGRESS: chunk 4 of 6 landed)
 
 Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
 from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
@@ -1121,8 +1121,90 @@ Chunk 2 unaffected — the empty-toggle path still traverses zero active stages)
 `smtp.js`/`creds.js` or touches the credential/TLS/STARTTLS path. `addUniqueURLParams` is verified
 (by test, not just design intent) to introduce no callback/redirect/tracking surface.
 
-**Deferred to later chunks:** toggles 6-12 + deterministic Message-ID/seeding proof at the full-
-message level (Chunk 4), the `sender_0020` config seeds for all fourteen keys + intensities
-(Chunk 5, still pending — Chunk 3's toggles are driven by literal test fixtures, not yet by
-`sender.config`, since `defaultVariationSnapshot()` remains the Chunk 2 placeholder), and the full
-T1–T9/S1–S2 suite + CI/docs/DoD closeout (Chunk 6).
+**Deferred to later chunks (as of Chunk 3):** toggles 6-12 + deterministic Message-ID/seeding proof
+at the full-message level (Chunk 4), the `sender_0020` config seeds for all fourteen keys +
+intensities (Chunk 5, still pending), and the full T1–T9/S1–S2 suite + CI/docs/DoD closeout
+(Chunk 6).
+
+### Chunk 4 — encoding/header toggles + deterministic seeding proof (§5 toggles 6-12, §7 P8-5)
+
+**What landed.** The remaining seven toggles (8, 6, 7, 9, 10, 11, 12) and the full-message-level
+proof of deterministic seeding (§7/§8 T4), completing the toggle set — all fourteen config keys
+(Chunk 5 still owes the `sender.config` seeds; every toggle here is still driven by literal test
+fixtures via `resolveVariation`, exactly like Chunks 2-3).
+
+- **`assemble.js` restructured:** `MIME-Version`/`Content-Type`/`Content-Transfer-Encoding` moved
+  INTO `msg.headers` (previously appended separately at serialization) so the header-style-reorder
+  and encoding-rotation stages can act on them like any other header, mirroring the reference's own
+  model where those headers participate in its `HEADER_ORDERS` table. `serializeMessage` gained a
+  multipart branch (see toggle 7 below); the single-part branch still reproduces `buildDataBytes`
+  byte-for-byte when `variation`/`transferEncoding` is at its Phase 3 default — T1 (Chunk 2) still
+  passes unmodified, proving this restructuring didn't disturb the identity property it exists to
+  protect.
+- **Toggle 8 — dynamic preheader (`variation-content.js`, ordered FIRST per §1.1):** picks one
+  template seeded from `job_id` (falls back to the spec's own token-free 7-template pool, now
+  hoisted into `variation-seed.js`'s `DEFAULT_PREHEADER_TEMPLATES` so `VARIATION_DEFAULTS` and this
+  stage share one literal source rather than duplicating the list), cleans any `{token}` to empty
+  (P8-7 — no per-contact merge data box-side), wraps it in the reference's hidden-span CSS + Gmail
+  padding (U+200C+NBSP×50), and injects right after `<body>` (or prepends if absent).
+- **Toggle 6 — encoding rotation (`variation-headers.js` + new `mime-codec.js`):** a job_id-seeded
+  choice between quoted-printable/base64, applied at SERIALIZATION time (`encodeForTransfer` in
+  `mime-codec.js`, a small dependency-free codec — the box ships no MIME library) so the stage
+  itself stays a pure transform of the intermediate representation like every other stage. The
+  neutral default ("8bit"/unset) is a pass-through in both codec functions, which is what keeps
+  T1 intact.
+- **Toggle 7 — MIME boundary rotation, FLAGGED DEVIATION (resolved, not silent):** Phase 3 is
+  single-part — there is no existing multipart boundary to "rotate the delimiter of," which the
+  locked spec's toggle 7 text presupposes. Resolved conservatively: when ON, the stage wraps the
+  single body in a genuine `multipart/mixed` envelope containing EXACTLY ONE part (the same
+  text/html body, unchanged) — no attachment, no CID (P8-11 stays excluded). This keeps §8 T6's
+  requirement ("boundary differs, parsed MIME tree identical") checkable without expanding scope:
+  the tree is trivially one part, type text/html, for every seeded boundary style. Off ⇒ no
+  wrapper, the Phase 3 identity.
+- **Toggle 9 — header reordering (`variation-headers.js`):** ported `HEADER_ORDERS`/
+  `reorderHeaders` from the reference's C1 (case-insensitive known-headers-first, then remainder in
+  relative order; `random` picks one of the four named styles seeded per job); `none` is a no-op
+  registered as `active: (v) => v.header_style !== "none"`, so it correctly never reports itself
+  non-neutral.
+- **Toggle 10 — User-Agent injection, DECOUPLED (P8-6):** the reference links C2's UA choice to
+  C1's selected style; here `maybeInjectUserAgent` reads ONLY its own toggle + a dedicated
+  `"user_agent"`/`"user_agent_value"` seed stream, never `header_style` — proven by test that the
+  same `job_id` yields the identical UA presence/value under `header_style: "none"` and `"gmail"`
+  alike. ~30% inject / ~70% omit (the reference's ratio), reproduced deterministically rather than
+  via `Math.random()`.
+- **Toggle 11 — precedence (`variation-headers.js`):** only `marketing` is registered as active —
+  `auto`/`personal` both already equal Phase 3 (no header), so registering them as stages would
+  wrongly report non-neutral for a value that changes nothing.
+- **Toggle 12 — Thread-Index, INERT (P8-8):** registers **no stage at all** — the most literal
+  reading of "off and on both emit nothing in V1." `resolveVariation` still normalizes the field
+  (so a malformed value degrades safely), but nothing in `STAGES` ever consults it.
+
+**Tests** (`services/box/test/variation-headers.test.mjs`, 24 tests; `services/brain/internal/
+dispatch/headers_test.go`, 3 tests — all real code, no mocks). Per-toggle behavioral coverage for
+all seven; **§8 T6** (encoding/boundary decode-equivalence: rotated encodings round-trip to the
+exact original body; boundary rotation yields exactly one parsed part); **P8-6 decoupling** proven
+directly (same job_id, two header_styles, identical UA outcome); **§8 T8** (Thread-Index emits
+nothing on or off); **§8 S2** under a rich ALL-toggles-on combination (no fake-threading headers,
+every `display:none` span matches only the preheader's own shape — never an ad hoc hide of visible
+content); **§7/§8 T4 at the full-message level** — one `assembleDataBytes` call repeated with the
+same `job_id` and a rich multi-toggle profile is byte-identical end to end, extending Chunk 3's
+per-stage determinism proof to the whole pipeline. Go-side: `TestMessageIDFor_DeterministicFromJobID`
++ `_DistinctJobsGetDistinctIDs` + `_SendingDomainFromFromAddress` close the gap that `messageIDFor`
+(already in the tree pre-Phase-8) was asserted deterministic only in a doc comment, never proven —
+Chunk 4 is the chunk that owns that P8-5 obligation, so it adds the proof now.
+
+**Full suite re-verified.** `npm run check` clean on all seven new/changed box modules; `node --test
+services/box/test/*.test.mjs` 68/68 green (T1 unaffected by the `assemble.js` header-representation
+change); Go `internal/dispatch` green (64s) including the 3 new header tests; gofmt/vet clean;
+`config_drift`/`migration_lint` unaffected (still box-only + one pure Go doc-comment-to-test
+conversion — no migration, no config key this chunk).
+
+**Security surface: unchanged.** `mime-codec.js` is a pure string codec touching only the body; no
+new module reads `smtp.js`/`creds.js` or the credential path.
+
+**Deferred to Chunk 5:** the `sender_0020` config seeds for all fourteen keys + the intensity/rate
+dials (comment rate is already a per-toggle parameter; ZWJ rate/CSS magnitude are currently
+fixed-in-code per the spec's own toggle-6.1 table, which names no separate dial for them — Chunk 5
+is where that gets checked against the mandate's "seed the toggle keys AND their intensities" and
+flagged if a further dial is warranted), and updating `defaultVariationSnapshot()` to read them for
+real. Chunk 6 owns the full T1–T9/S1–S2 close-out suite + CI/docs/DoD.

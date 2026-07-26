@@ -38,3 +38,20 @@ export function pickSeeded(list, jobId, stream) {
   if (!Array.isArray(list) || list.length === 0) return undefined;
   return list[Math.floor(prngFor(jobId, stream)() * list.length) % list.length];
 }
+
+// DEFAULT_PREHEADER_TEMPLATES is the locked spec's own literal default pool (§6.1) — token-free,
+// body-agnostic filler (P8-7 Closeout Ruling 2: no template may presume a prior message/body it
+// can't guarantee). Lives here (a leaf module) rather than in variation.js so both variation.js
+// (VARIATION_DEFAULTS) and variation-content.js (the dynamic_preheader stage's fallback pool) can
+// import the SAME list without creating an import cycle between them. Chunk 5 moves the SOURCE of
+// this list into a seeded sender.config row (config-not-code); the value itself does not change —
+// it is copied verbatim from the spec, not invented here.
+export const DEFAULT_PREHEADER_TEMPLATES = [
+  "A brief note for you",
+  "A quick read for you",
+  "Quick update for you",
+  "Worth a look",
+  "A quick note for you",
+  "Thought you might find this useful",
+  "Something relevant for you",
+];
