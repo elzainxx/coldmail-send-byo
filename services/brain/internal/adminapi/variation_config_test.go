@@ -141,3 +141,35 @@ func TestVariationConfig_RateParametersRoundTripAndBounds(t *testing.T) {
 		}
 	}
 }
+
+// TestVariationConfig_QuotedNumericStringRejected — R3 review finding: encoding/json's json.Number
+// decodes successfully from EITHER a bare numeric token (0.5) OR a quoted numeric string ("0.5"),
+// so a "did json.Number decode" check alone is not a real type gate. Before the fix, a PUT with a
+// JSON-STRING value like {"value":"0.5"} passed this endpoint's value_type check, got stored
+// verbatim as {"v":"0.5"}, and then hard-failed dispatch's readFloatKey/readIntKey on every
+// subsequent LoadConfig call — a write that looked like a clean 200 silently wedged the Brain.
+// Covers all three affected value_types this bug could reach: "integer" (variation_css_
+// magnitude_px), "number" (the two rate keys), and "array<integer>" (any pre-existing array<integer>
+// key would have the identical per-element gap).
+func TestVariationConfig_QuotedNumericStringRejected(t *testing.T) {
+	e := newTestEnv(t, "varcfgquoted")
+
+	// "integer" value_type: a quoted numeric string must be rejected, not silently accepted.
+	bad := e.do(t, "PUT", "/v1/admin/config/variation_css_magnitude_px", map[string]any{"value": "5"}).requireStatus(t, 400)
+	if bad.errorDetailIssue("value") != issueMalformed {
+		t.Fatalf(`variation_css_magnitude_px value:"5" (quoted): issue=%s, want malformed`, bad.errorDetailIssue("value"))
+	}
+
+	// "number" value_type: same for both amended rate keys.
+	for _, key := range []string{"variation_zero_width_rate", "variation_user_agent_rate"} {
+		got := e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": "0.5"}).requireStatus(t, 400)
+		if got.errorDetailIssue("value") != issueMalformed {
+			t.Fatalf(`%s value:"0.5" (quoted): issue=%s, want malformed`, key, got.errorDetailIssue("value"))
+		}
+	}
+
+	// Anti-vacuity: the exact same numeric value UNQUOTED must still be accepted (proves the
+	// rejection above is about the JSON type, not the number itself).
+	e.do(t, "PUT", "/v1/admin/config/variation_css_magnitude_px", map[string]any{"value": 5}).requireStatus(t, 200)
+	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate", map[string]any{"value": 0.5}).requireStatus(t, 200)
+}

@@ -40,12 +40,12 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 			}
 		}
 	case "array<integer>":
-		var arr []json.Number
-		if json.Unmarshal(value, &arr) != nil {
+		var raw []json.RawMessage
+		if json.Unmarshal(value, &raw) != nil {
 			return typeErr(key, issueMalformed, "config_value_not_int_array")
 		}
-		for _, n := range arr {
-			if _, err := n.Int64(); err != nil {
+		for _, elem := range raw {
+			if _, ok := asInt(elem); !ok {
 				return typeErr(key, issueMalformed, "config_value_not_int_array")
 			}
 		}
@@ -53,6 +53,18 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		// Phase 8 (variation_zero_width_rate / variation_user_agent_rate, amended P8-OD-1
 		// RULED-WIDEN): a JSON number, integer or float. Phase 8 is the first phase to need a
 		// non-integer numeric dial — semantic range checks run in the block below.
+		//
+		// REJECT a quoted numeric string (e.g. "0.5") here, not just a genuine JSON number: R3
+		// review found that json.Number happily decodes FROM a JSON string token too, so without
+		// this guard {"value":"0.5"} would pass this gate, get stored verbatim as {"v":"0.5"}, and
+		// then hard-fail config.go's readFloatKey on every subsequent LoadConfig call (every
+		// dispatch/reclaim/rescan/retention tick) — a write that looks successful (200) silently
+		// wedges the Brain, and dbhealth.go's generic-error path misclassifies that failure as a DB
+		// outage. Reject at the type gate instead: the write-time value_type check exists precisely
+		// to make this class of mismatch impossible.
+		if rawJSONIsQuoted(value) {
+			return typeErr(key, issueMalformed, "config_value_not_number")
+		}
 		var f json.Number
 		dec := json.NewDecoder(bytes.NewReader(value))
 		dec.UseNumber()
@@ -167,8 +179,13 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 }
 
 // validateRateFraction rejects a number outside [0, 1] — the shared bound for Phase 8's two
-// amended rate parameters (P8-OD-1 RULED-WIDEN).
+// amended rate parameters (P8-OD-1 RULED-WIDEN). The "number" value_type case already rejects a
+// quoted numeric string before this runs, but this function is also reachable on its own, so it
+// re-guards defensively rather than relying solely on call-site ordering.
 func validateRateFraction(key string, value json.RawMessage) *apiError {
+	if rawJSONIsQuoted(value) {
+		return typeErr(key, issueMalformed, "config_value_not_number")
+	}
 	var f json.Number
 	dec := json.NewDecoder(bytes.NewReader(value))
 	dec.UseNumber()
@@ -180,6 +197,17 @@ func validateRateFraction(key string, value json.RawMessage) *apiError {
 		return typeErr(key, issueOutOfRange, "config_"+key+"_out_of_range")
 	}
 	return nil
+}
+
+// rawJSONIsQuoted reports whether raw's first non-whitespace byte is `"` — i.e. the JSON token is
+// a string, not a number. encoding/json's json.Number decodes successfully from EITHER a bare
+// numeric token (123, 0.5) OR a quoted numeric string ("123", "0.5"), so a numeric value_type gate
+// that only checks "did json.Number decode" is not actually a type gate — it silently accepts the
+// wrong JSON type. Guard against that explicitly wherever a numeric value_type is enforced (R3
+// review finding).
+func rawJSONIsQuoted(raw json.RawMessage) bool {
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	return len(trimmed) > 0 && trimmed[0] == '"'
 }
 
 // validateEnumString rejects a string value that is not one of `allowed` — the write-time operator
@@ -261,8 +289,14 @@ func validateBackoffSchedule(key string, value json.RawMessage) *apiError {
 	return nil
 }
 
-// asInt reports whether raw is a JSON integer (no fractional part) and returns it.
+// asInt reports whether raw is a JSON integer (no fractional part) and returns it. Rejects a
+// quoted numeric string (e.g. "5") up front — json.Number decodes from either a bare or a quoted
+// numeric token, so without this check a string would silently pass as an integer (R3 review
+// finding, shared with the "number" value_type gate above).
 func asInt(raw json.RawMessage) (int64, bool) {
+	if rawJSONIsQuoted(raw) {
+		return 0, false
+	}
 	var num json.Number
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()

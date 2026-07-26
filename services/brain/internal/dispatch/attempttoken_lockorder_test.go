@@ -160,7 +160,8 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	}
 	var blocked int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		`SELECT count(*) FROM pg_stat_activity
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -214,7 +215,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 
 // TestAttemptToken_MarkSendingVsAccountLockNoDeadlock — the ADR-0010 obligation for the path Chunk 1
 // TOUCHED. markSending gained one column in its SET list; this asserts that changed nothing about its
-// locking. Both directions are driven with a forced interleave:
+// locking. Three directions are driven with a forced interleave:
 //
 //	(a) an exclusive account FOR UPDATE is HELD (applyClassifiedFailure/reclaimJobLocked's first step)
 //	    and markSending runs against it. markSending's `state` change DOES fire the job_events trigger,
@@ -223,8 +224,23 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 //	    That is the account→job order working as designed, and the reason markSending needs no account
 //	    pre-lock of its own: it never takes an exclusive account lock, so it can only ever be the
 //	    WAITER, never half of a cycle.
-//	(b) the JOB row is held by markSending and the account→job outcome path is driven against it: it
-//	    must BLOCK on the job row and then commit, not cycle.
+//	(b) the JOB row is held by a generic `FOR UPDATE` and the account→job outcome path
+//	    (applyClassifiedFailure) is driven against it: it must BLOCK on the job row and then commit,
+//	    not cycle. NOTE (R4 review correction): this direction exercises applyClassifiedFailure's
+//	    lock order against a job-row holder, NOT markSending — a generic holder is used here because
+//	    markSending's own guard (`WHERE state='assigned'`) would match 0 rows against a job already
+//	    `sending` (see (c)'s comment for why that made an EARLIER attempt at this direction using
+//	    markSending itself impossible). This property is also covered by
+//	    TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome and
+//	    TestReclaimRace_DetectorAVsClassifiedFailure; it is kept here as a targeted regression guard
+//	    specifically alongside markSending's own token-minting test (c), not as (c)'s substitute.
+//	(c) markSending ITSELF, called for real, driven against a HELD job row — the direction (b) was
+//	    originally meant to cover but could not, because holding the row via markSending's own guarded
+//	    UPDATE would require the job to already be `assigned` with nothing else touching it. Holding
+//	    the row via a plain `SELECT ... FOR UPDATE` on a job still in `assigned` state sidesteps that:
+//	    markSending is then called for real against the SAME row, must BLOCK on the plain row lock
+//	    (no KEY SHARE/trigger involved — this is the ordinary row-level lock every UPDATE takes on its
+//	    own target), and must complete cleanly (mint a token, never 40P01) once released.
 func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	e := newDispatchEnv(t, "attoktlock")
 	ctx := context.Background()
@@ -283,7 +299,8 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	}
 	var blocked int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		`SELECT count(*) FROM pg_stat_activity
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
 		holdTx.Rollback(ctx)
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
@@ -344,7 +361,8 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	case <-time.After(750 * time.Millisecond):
 	}
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		`SELECT count(*) FROM pg_stat_activity
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -363,5 +381,73 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the outcome handler never completed after the job row released — wedged")
+	}
+
+	// --- direction (c): markSending ITSELF, called for real, driven against a HELD job row ---
+	// (R4 review addition: direction (b) above never actually calls markSending — a generic FOR
+	// UPDATE stood in for it, so markSending's own SQL had never been raced against a job-row holder.
+	// This closes that gap directly.)
+	jobC := e.seedQueuedJob(t, "lock-c@example.com")
+	e.px.freeAllBoxes()
+	e.dispatchToSending(t, jobC) // gives us a real box id + a queued job to reset to 'assigned'
+	boxC := e.jobBox(t, jobC)
+	e.adminExecAsActor(t, "dispatcher",
+		`UPDATE sender.jobs SET state='assigned', lease_expires_at=NOW() + INTERVAL '120 seconds' WHERE id=$1`, jobC)
+
+	jobTxC, err := pHold.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin job tx (c): %v", err)
+	}
+	defer jobTxC.Rollback(ctx)
+	// Hold the job row's ordinary write lock via a plain FOR UPDATE — the SAME kind of lock
+	// markSending's own guarded UPDATE would take on this row, so this genuinely stands in the way of
+	// the real call below (no KEY SHARE/trigger involved; this is the plain row-level lock every
+	// UPDATE takes on its own target row).
+	if _, err := jobTxC.Exec(ctx, `SELECT 1 FROM sender.jobs WHERE id=$1 FOR UPDATE`, jobC); err != nil {
+		t.Fatalf("hold job row (c): %v", err)
+	}
+
+	markDoneC := make(chan markRes, 1)
+	go func() {
+		moved, token, err := dMark.markSending(ctx, jobC, acct, boxC)
+		markDoneC <- markRes{moved: moved, token: token, err: err}
+	}()
+
+	// ANTI-VACUITY: markSending must genuinely be waiting on the held job row.
+	select {
+	case r := <-markDoneC:
+		jobTxC.Rollback(ctx)
+		t.Fatalf("markSending completed (moved=%v err=%v) while the job row was held — direction (c) is vacuous", r.moved, r.err)
+	case <-time.After(750 * time.Millisecond):
+	}
+	if err := e.admin.QueryRow(ctx,
+		`SELECT count(*) FROM pg_stat_activity
+		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'`).Scan(&blocked); err != nil {
+		jobTxC.Rollback(ctx)
+		t.Fatalf("read pg_stat_activity (c): %v", err)
+	}
+	if blocked == 0 {
+		jobTxC.Rollback(ctx)
+		t.Fatal("no backend is lock-waiting in direction (c) — markSending is not contending with the held job row (vacuous)")
+	}
+
+	// Release the job row; markSending must complete cleanly and mint its token — never 40P01.
+	if err := jobTxC.Commit(ctx); err != nil {
+		t.Fatalf("commit job tx (c): %v", err)
+	}
+	select {
+	case r := <-markDoneC:
+		if r.err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(r.err, &pgErr) && pgErr.Code == "40P01" {
+				t.Fatalf("markSending DEADLOCKED (40P01) against a held job row: %v", r.err)
+			}
+			t.Fatalf("markSending failed after the job row released: %v", r.err)
+		}
+		if !r.moved || r.token == 0 {
+			t.Fatalf("markSending (c) moved=%v token=%d, want true/non-zero", r.moved, r.token)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("markSending never completed after the job row released — wedged")
 	}
 }

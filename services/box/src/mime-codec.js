@@ -9,9 +9,22 @@
 
 const QP_LINE_LIMIT = 75; // RFC 2045 §6.7: encoded lines must not exceed 76 chars; soft-break at 75.
 
+// escapeTrailingWhitespace applies RFC 2045 §6.7 rule 3: trailing space/tab at the end of an
+// encoded LINE (i.e. right before a real, hard line break — not one of our own inserted soft
+// `=\r\n` breaks, which are invisible once decoded) must be represented as `=20`/`=09`, because
+// "many implementations discard trailing white space" on a line. Without this, a relay/MTA that
+// trims trailing line whitespace (common) silently drops it from the decoded body — a real
+// content-corruption risk for the encoding-rotation toggle (R3 review finding). Escapes the WHOLE
+// trailing run, not just its last character, since a typical stripping regex removes the entire
+// run.
+function escapeTrailingWhitespace(out) {
+  return out.replace(/[ \t]+$/, (ws) => ws.replace(/ /g, "=20").replace(/\t/g, "=09"));
+}
+
 // encodeQuotedPrintable encodes UTF-8 bytes per RFC 2045: printable ASCII (0x20-0x7e, excluding
 // `=`) passes through; everything else becomes `=XX` (uppercase hex); CRLF is preserved as a real
-// line break (not escaped); long lines get a soft `=\r\n` break so no line exceeds the limit.
+// line break (not escaped, but its trailing whitespace IS — rule 3 above); long lines get a soft
+// `=\r\n` break so no line exceeds the limit.
 export function encodeQuotedPrintable(str) {
   const bytes = Buffer.from(str, "utf8");
   let out = "";
@@ -27,6 +40,7 @@ export function encodeQuotedPrintable(str) {
   for (let i = 0; i < bytes.length; i++) {
     const b = bytes[i];
     if (b === 0x0d && bytes[i + 1] === 0x0a) {
+      out = escapeTrailingWhitespace(out);
       out += "\r\n";
       lineLen = 0;
       i++;
@@ -38,7 +52,9 @@ export function encodeQuotedPrintable(str) {
       emit(String.fromCharCode(b));
     }
   }
-  return out;
+  // The final line (no trailing CRLF) is still subject to the same rule — its trailing whitespace
+  // sits right before the SMTP DATA terminator, which is equally at risk of being trimmed.
+  return escapeTrailingWhitespace(out);
 }
 
 // decodeQuotedPrintable inverts encodeQuotedPrintable: drop soft line breaks, resolve `=XX` escapes

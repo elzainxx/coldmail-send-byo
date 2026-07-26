@@ -78,6 +78,28 @@ test("mime-codec: quoted-printable and base64 round-trip byte-for-byte", () => {
   assert.equal(decodeBase64(encodeBase64(text)), text);
 });
 
+// R3 review finding: RFC 2045 §6.7 rule 3 requires trailing space/tab at the end of an encoded
+// line to be escaped as =20/=09, because many real-world relays/MTAs strip trailing line
+// whitespace. Without this, a body ending a visible line in trailing whitespace (common in
+// indented HTML source) silently loses it after passing through such a relay.
+test("mime-codec: quoted-printable escapes trailing whitespace before a line break (RFC 2045 rule 3)", () => {
+  const text = "trailing space at end of line \r\nnext line with a trailing tab\t\r\nlast line no trailing ws";
+  const encoded = encodeQuotedPrintable(text);
+  // The trailing space/tab must be encoded as =20/=09, not left as a literal space/tab
+  // immediately before the CRLF.
+  assert.ok(encoded.includes("line =20\r\n") || encoded.includes("=20\r\n"), `trailing space before CRLF must be escaped: ${JSON.stringify(encoded)}`);
+  assert.ok(encoded.includes("=09\r\n"), `trailing tab before CRLF must be escaped: ${JSON.stringify(encoded)}`);
+  assert.ok(!/[ \t]\r\n/.test(encoded), `a literal trailing space/tab survives immediately before a CRLF (unescaped): ${JSON.stringify(encoded)}`);
+  // Still round-trips byte-for-byte through our own decoder.
+  assert.equal(decodeQuotedPrintable(encoded), text);
+  // Simulate a real-world relay that strips trailing line whitespace (a common, documented
+  // behavior) and confirm the trailing space/tab SURVIVES because it was escaped — this is the
+  // actual property rule 3 exists to protect, not just "our own encoder/decoder agree with
+  // themselves".
+  const strippedByRelay = encoded.split("\r\n").map((line) => line.replace(/[ \t]+$/, "")).join("\r\n");
+  assert.equal(decodeQuotedPrintable(strippedByRelay), text, "trailing whitespace must survive a relay that strips literal trailing line whitespace");
+});
+
 test("encoding_rotation: off ⇒ Content-Transfer-Encoding stays 8bit (Phase 3 default)", () => {
   const send = sendWithBody("<p>plain body</p>");
   const bytes = assembleDataBytes(send, { encoding_rotation: false }, "job-enc-off");
