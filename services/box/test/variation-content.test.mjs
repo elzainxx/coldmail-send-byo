@@ -16,6 +16,7 @@ import {
   addUniqueURLParams,
   insertZeroWidth,
 } from "../src/variation-content.js";
+import { decodeQuotedPrintable, decodeBase64 } from "../src/mime-codec.js";
 
 function sendWithBody(body) {
   return {
@@ -262,6 +263,37 @@ test("full pipeline: variation ON produces DIFFERENT bytes than variation OFF fo
   const off = assembleDataBytes(send, undefined, "job-diff");
   const on = assembleDataBytes(send, { html_minify: true, css_micro: true, unique_url_params: true }, "job-diff");
   assert.notEqual(off, on);
+});
+
+// --- §8 T3: two DIFFERENT jobs, SAME content, variation ON => different bytes, identical render ---
+
+test("T3: two different jobs with the same content produce DIFFERENT bytes but semantically-equivalent visible output", () => {
+  const send = sendWithBody(
+    '<div style="padding: 20px; margin: 12px;"><!-- author comment --><p>Identical visible content across two different recipients</p><a href="https://example.com/a">a</a><img src="https://cdn.example.com/x.png"></div>',
+  );
+  const profile = {
+    html_minify: true, comment_injection: true, comment_intensity: "high", css_micro: true,
+    unique_url_params: true, encoding_rotation: true,
+  };
+  const bytesA = assembleDataBytes(send, profile, "job-t3-recipient-a");
+  const bytesB = assembleDataBytes(send, profile, "job-t3-recipient-b");
+
+  assert.notEqual(bytesA, bytesB, "two different job_ids under the same profile must produce different bytes (§8 T3(a))");
+
+  // Semantic equivalence (§8 T3(b)): decode transfer-encoding, strip injected comments, normalize
+  // CSS px within +/-1, strip the inert _ref/_v query params before comparing bodies/links.
+  function normalize(bytes) {
+    const bodyPart = bytes.split("\r\n\r\n").slice(1).join("\r\n\r\n");
+    const cteMatch = bytes.match(/Content-Transfer-Encoding: (quoted-printable|base64|8bit)/);
+    const decoded = cteMatch[1] === "quoted-printable" ? decodeQuotedPrintable(bodyPart)
+      : cteMatch[1] === "base64" ? decodeBase64(bodyPart) : bodyPart;
+    return decoded
+      .replace(/<!--[0-9a-f]{8}-->/g, "")
+      .replace(/(padding|margin):\s*\d+px/g, "$1:Npx")
+      .replace(/\?_ref=[0-9a-f]+/g, "")
+      .replace(/\?_v=[0-9a-f]+/g, "");
+  }
+  assert.equal(normalize(bytesA), normalize(bytesB), "after normalizing encoding/comments/CSS-px/inert-params, the visible content must be identical");
 });
 
 // Anti-vacuity for the whole suite: prove buildDataBytes (the frozen reference) is unaffected by

@@ -390,3 +390,85 @@ are recorded honestly rather than stubbed; the Phase 6 note that 9.5's wiring mu
 loop now extends to this retention loop too. The Brain singleton guard is unchanged and still green,
 and SIGKILL still auto-releases it — which is precisely why the §4.3 SIGKILL path reduces to the same
 startup-rescan recovery) ✅.
+
+**Phase 8's DoD status (content variation & header engineering):** DoD-1 (spec
+`Docs/phase-8-content-variation.md`, closed, implemented exactly across six chunks; the ONE deviation
+from a locked spec sentence — the seed migration's file NAME — is flagged, not silently resolved
+(P8-OD-1's filename note); the ONE genuine locked-count contradiction the build mandate surfaced was
+filed as an Open Decision, ruled by the user (WIDEN, 14→17 keys), and both locked specs amended
+additively per CLAUDE.md §8, never rewritten) ✅ · DoD-2 (real behavioral tests on real infra: the
+full clean-slate harness (`tests/harness/run.sh`) is **53/53 green** across all ten suites, including
+the new **SUITE 10 — Phase 8 live end-to-end** against a genuinely rebuilt box+brain image pair (T1
+all-toggles-off delivered bytes match the exact Phase 3 shape via Mailpit's raw API; T3 variation-on
+delivered bytes differ from the baseline and still parse; T7 the delivered link carries a real `_ref`
+param with no tracking/redirect surface; S1 the credential canary is absent from logs/DB/the
+delivered message with variation genuinely active) — this caught a REAL staleness bug during
+authoring: the running `box`/`brain` containers were pre-Chunk-3 images, so the first live run of
+SUITE 10 correctly FAILED (comment injection / URL params never fired) until the images were rebuilt,
+which is exactly the anti-vacuity discipline Rule 10 asks for, just surfaced at the container layer
+instead of the lock-order layer. Node-side: 74/74 `services/box/test/*.test.mjs`, including
+`variation-security.test.mjs`'s S1 re-check through a REAL SMTP session with variation genuinely
+active (closing a real gap: every prior box unit test pushed an already-expired lease, so `#runJob`
+never reached `runSmtpSession`/`MemoryCredential` under variation before this test existed) and
+`variation-content.test.mjs`'s §8 T3 (two DIFFERENT job_ids, same content, variation on → different
+bytes, semantically-equivalent after normalizing encoding/comments/CSS-px/inert-params — the actual
+T3 scenario, not merely an on-vs-off diff under one job_id). Go-side: `internal/dispatch` green
+(103.8s, incl. the Chunk-1 attempt-token concurrency tests + the Chunk-5 live-config-reaches-
+push_job tests), `internal/adminapi` green (11.6s, incl. all four `TestVariationConfig_*`), the
+migrate runner's `TestRunnerLifecycle` green (42-key apply, all-17-present, all-17-absent-after-down).
+**Lock ordering:** Phase 8 adds no new account/job lock — Chunk 1's `attempt_token` column rides the
+SAME guarded `assigned→sending` UPDATE `markSending` already held, taking no new lock and changing no
+lock order (proven both directions in `attempttoken_lockorder_test.go`, a forced deterministic
+interleave with `pg_stat_activity`-proven contention, Rule 10-compliant); every other chunk is
+box-side or config-seed-only and touches no lock at all) ✅ · DoD-3 (docs updated in the same commits
+throughout: `architecture-overview.md` gained a full Phase 8 section covering all six chunks plus the
+P8-OD-1 amendment; `api-contract.md` records the additive `push_job.variation`/`attempt_token` wire
+fields as coordinated notes; `config-reference.md` + `config-manifest.txt` carry the 17-key Phase 8
+section; `open-decisions.md` records P8-OD-1 RULED-WIDEN with the full disposition; all four drift
+gates green at every commit) ✅ · DoD-4 (**seventeen new seeded config keys** via `sender_0020`
+(appended to Chunk 1's already-committed migration file, not a new version — the flagged filename
+deviation) — twelve toggles + five toggle-parameters (`variation_comment_intensity`,
+`variation_css_magnitude_px`, `variation_preheader_templates`, `variation_zero_width_rate`,
+`variation_user_agent_rate`) — each with `default_value` + `description` + `value_type`, appended to
+the manifest + reference in the same change; `default_value` never mutated; `config_drift` **25 →
+39 → 42** (the intermediate 39 was the initial fourteen-key ship, corrected to 42 by the P8-OD-1
+ruling in the SAME phase before closeout); both pre-existing config-ordering invariants re-verified
+unaffected — Phase 8 introduces no third invariant, deliberately: toggle interactions are documented
+independence guarantees (§8 T2/T9), not load-time-enforced orderings) ✅ · DoD-5 (**no hardcoded
+tuning constant** — every one of the seventeen dials resolves to a seeded row read at
+`LoadConfig`-freshness (re-read every dispatch, §0 OD-14); the three amended parameters
+(`variation_css_magnitude_px`/`variation_zero_width_rate`/`variation_user_agent_rate`) replace what
+were literal `ZWJ_RATE`/CSS-±1-spread/`UA_INJECT_RATE` constants in the box source — those constants
+are REMOVED from the box, not merely shadowed, so there is exactly one source of truth; the box
+itself reads NO config at all, by design (§1.2) — it receives a fully-resolved snapshot per job, which
+is the config-not-code discipline applied at the correct layer for a DB-less process) ✅ · DoD-6
+(Open Decisions: P8-OD-1 is **RULED-WIDEN**, full disposition recorded, both affected locked specs
+amended additively with dated sections — no contradiction silently resolved, no locked decision
+reinterpreted in code without a recorded ruling) ✅ · DoD-7 (**additive only** — `sender_0020` adds
+ONE column (`sender.jobs.attempt_token`, Chunk 1) and seeds seventeen config rows (Chunks 5 + the
+P8-OD-1 amendment); `push_job` gains two additive fields (`attempt_token`, `variation`) and `report`
+gains one (`attempt_token`) — all `omitempty` except the amended rate/magnitude fields, which
+deliberately omit `omitempty` so a legitimate `0` value stays distinguishable from "absent"; the 7
+locked enums untouched; chain contiguous `0000..0020`, `TestRunnerLifecycle` proves both the column
+and all seventeen config rows round-trip through Down/Up; **grants**: the new column lands on
+`sender.jobs` (table-level DML already held by `sender_module` since `sender_0012`) and the config
+rows land on `sender.config` (SELECT already held since `sender_0010`) — no new table, so no new
+grant, `TestGrantsInvariant` stays green) ✅ · DoD-8 (security re-verified: Brain remains the SOLE
+decryptor (Phase 8 touches no credential/KMS path at all — variation operates purely on
+headers/body/MIME, proven both by code review and by `variation-security.test.mjs`'s live real-SMTP-
+session S1 check); the box still holds credentials in memory only and zeroes them on every exit path,
+unaffected by variation being active (the new module boundary is deliberate: `assemble.js`/
+`variation*.js` import nothing from `smtp.js`/`creds.js`, and no test found a path that could);
+box↔Brain mTLS and STARTTLS-before-AUTH unchanged; two-vocabulary rule holds — the `variation` block
+carries no credential/internal-reason and never crosses a client boundary; §8 S2 re-verified under a
+rich ALL-toggles-on combination: no homoglyph substitution, no `display:none`/`font-size:0` on
+VISIBLE content (only the preheader's own hidden-span shape), no fake threading headers — the three
+reference techniques marked "never implement" stay excluded) ✅ · DoD-9 (control-plane safety: Phase
+8 introduces no autonomous subsystem and touches none of the existing kill-switches — variation is a
+per-dispatch wire stamp, not a loop; `dispatch_enabled`/`autoquarantine_mode`/`autopause_enabled`/
+`variation_enabled`/`alert_webhook_url` remain exactly where Phase 7 left them, correctly unwired
+pending 9.5; note the NAME COLLISION on the record: the pre-existing Phase 9.5-reserved
+`variation_enabled` kill-switch key is a DIFFERENT, as-yet-unseeded dial from any of Phase 8's
+`variation_*` toggles — Phase 8 seeds none of the twelve toggles as a single on/off master switch, so
+when 9.5 seeds `variation_enabled` it will need to gate the whole `push_job.variation` stamp, exactly
+the same pattern 9.5 already owns for `dispatch_enabled`/reclaim/retention) ✅.

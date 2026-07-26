@@ -251,6 +251,13 @@ hr; echo "SUITE 9: Phase 3 minimal send path — LIVE end-to-end (real box + rea
 # shellcheck disable=SC1091
 source tests/harness/phase3_send.sh
 
+hr; echo "SUITE 10: Phase 8 content variation — LIVE end-to-end (real box + real Mailpit)"; hr
+# T1 all-toggles-off delivered bytes match the Phase 3 shape; T3/T7 variation-on delivered bytes
+# differ, still parse, and the unique-URL-param toggle introduces no tracking surface; S1 re-checked
+# with variation ON. Reuses phase3_send.sh's pool/account/$SYSUSER fixtures + $CANARY + $DC/$PSQL.
+# shellcheck disable=SC1091
+source tests/harness/phase8_variation.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr

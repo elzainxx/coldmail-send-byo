@@ -927,7 +927,7 @@ production caller** today — it must be pinned before any phase wires a reporti
 bullet above and P7-OD-7 in `Docs/open-decisions.md`), with two real-Postgres tests, both verified to
 fail against the unpinned query.
 
-## Phase 8 state — content variation (IN PROGRESS: chunk 5 of 6 landed)
+## Phase 8 state — content variation (CLOSED: all six chunks landed, DoD green)
 
 Phase 8's headline is the box-side variation layer, but its FIRST chunk is a correctness fix inherited
 from Phase 7, placed here deliberately: Phase 8 is the only remaining pre-9.5 phase that already touches
@@ -1338,5 +1338,65 @@ defaults numerically match the removed constants); all 4 CI gates green at 42 ke
 `config-reference.md` (three new keys, 39→42), `open-decisions.md` (P8-OD-1 marked RULED-WIDEN with
 the full disposition recorded).
 
-**Deferred to Chunk 6:** the full T1–T9/S1–S2 close-out suite run as one pass, remaining CI/doc
-polish, and the 9-item DoD sign-off.
+### Chunk 6 — full test suite, CI, docs, DoD (closeout)
+
+**What landed.** The T1–T9/S1–S2 closeout pass, two real coverage gaps closed, a genuine staleness
+bug caught and fixed, and the phase's own Definition-of-Done block.
+
+- **Gap 1 closed — §8 T3 was never actually tested.** Every prior "T3-ish" test compared ON vs OFF
+  for the SAME `job_id`; the spec's T3 is two DIFFERENT job_ids with the SAME content, variation ON,
+  asserting the bytes differ but the render is semantically identical. Added to
+  `variation-content.test.mjs`: a normalize() helper that decodes transfer-encoding, strips injected
+  comments, collapses CSS px to a placeholder, and strips the inert `_ref`/`_v` params before
+  comparing two different job_ids' output.
+- **Gap 2 closed — §8 S1 had never been re-verified through a REAL SMTP session with variation
+  active.** `variation.js`'s own tests never touch the credential; `buffer.test.mjs`'s tests all push
+  an ALREADY-EXPIRED lease, so `#runJob` short-circuits with `lease_expired` before ever reaching
+  `runSmtpSession`/`MemoryCredential`. New file `variation-security.test.mjs`: a real `BoxStream` +
+  real fake-Brain socket + real local SMTP sink (`sink.mjs`, the same one `smtp.test.mjs` uses),
+  pushing a LIVE (non-expired) lease with a rich variation block (minify, comments, CSS, URL params,
+  encoding rotation, header reorder, UA injection, precedence). Non-vacuity: asserts the sink actually
+  saw `AUTH` (credential path exercised) and `DATA` (variation-assembled bytes transmitted), then
+  asserts the canary is absent from the box's report frame and every line the sink recorded.
+- **New live-stack suite — `tests/harness/phase8_variation.sh`, wired into `run.sh` as SUITE 10**
+  (sourced after Phase 3's SUITE 9, reusing its pool/account/`$SYSUSER`/`$CANARY` fixtures). Drives
+  the REAL compose stack: T1 confirms every boolean toggle reads `false` via the live admin API, sends
+  a job, and asserts Mailpit's `raw` API shows exactly the Phase 3 shape (no injected comment/UA/
+  Precedence, single-part 8bit); T3 flips a representative profile on via `PUT /v1/admin/config`,
+  sends a second job, and asserts the Mailpit-delivered bytes differ from the T1 baseline, still carry
+  a valid `Content-Type`, and the injected comment/original body text are both present; T7 asserts the
+  delivered link carries a real `_ref` param and introduces no tracking/redirect string; S1 re-checks
+  the canary is absent from brain/box logs, the delivered message, and `send_logs`/`jobs` with
+  variation genuinely ON. Restores every flipped toggle to its seeded default at the end so a later
+  suite run isn't left with variation silently on.
+- **A genuine bug was caught, not just anticipated.** The FIRST run of the new SUITE 10 against the
+  then-running compose stack FAILED — `comment_injection`/`unique_url_params` produced zero effect
+  even with the toggles confirmed `true` via the admin API. Cause: the running `box`/`brain` Docker
+  images predated Chunk 3 (`docker images` showed the box image as "2 days old"), so the containers
+  were executing pre-variation code while `sender.config` (correctly) said variation was on. Fixed by
+  rebuilding both images (`docker compose build box brain` + `up -d`); the suite then passed 13/13,
+  and Phase 3's full SUITE 9 was re-run afterward to confirm the rebuild caused no regression
+  (24/24 still green). This is exactly the anti-vacuity discipline CLAUDE.md Rule 10 asks for at the
+  container layer: a live-stack assertion that never actually re-deployed the code under test would
+  have passed "green" while proving nothing.
+
+**Full harness run (`tests/harness/run.sh`), clean, on the rebuilt stack: 53/53 passed, 0 failed**
+across all ten suites — migration lifecycle, DB isolation + Phase 1 data model, Phase 2 admin API,
+mTLS register/heartbeat, two-Brain singleton, box-cannot-read-KMS, no-secret-leak, box units (74/74),
+Phase 3 dispatch/credential/platformapi Go suites, Phase 3 live end-to-end (24/24), and the new
+Phase 8 live end-to-end (13/13). All 4 CI drift gates green (`config_drift` at 42 keys,
+`migration_lint`, `contract_drift`, `no_secret_leak`).
+
+**Docs.** `Docs/definition-of-done.md` gained Phase 8's own DoD status block (all nine items, matching
+the established per-phase format from Phases 5–7). `Docs/api-contract.md`'s Chunk 2 coordinated note
+updated to reflect the P8-OD-1 amendment (fourteen → seventeen keys) rather than reading stale.
+
+**Security surface: unchanged, and now proven live.** `variation-security.test.mjs` + SUITE 10's S1
+checks are the first tests in the whole phase to exercise the credential path AND variation
+SIMULTANEOUSLY, through the real production code (real SMTP session, real box process). Both confirm
+what code review already implied: variation touches nothing in `smtp.js`/`creds.js`, and the box↔Brain
+`variation` block carries no credential.
+
+**Phase 8 is CLOSED.** All six chunks landed; the DoD block above is green on all nine items; no
+locked spec was edited (only additively amended, with the one ruled exception recorded); no
+out-of-phase logic was built (no 9.5 keys, no Phase 9 quote/describe polish, no doc consolidation).
