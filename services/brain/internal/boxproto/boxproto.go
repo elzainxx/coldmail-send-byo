@@ -59,6 +59,17 @@ type RegisterAck struct {
 	// box falls back to its bootstrap env default when it is 0/absent. Config-not-code: the box holds
 	// no seeded value of its own — it consumes what the Brain reads from sender.config (the same
 	// pattern as smtp_operation_timeout_sec on push_job).
+	//
+	// CHECKED, NOT CHANGED (Config Consumption Sweep closeout, 2026-07-27): an operator CAN reach
+	// box_outcome_buffer_ttl_sec=0 without violating P7-11's ordering invariant (which only requires
+	// >= startup_reconnect_window_sec, itself uncapped below), and the box's own
+	// `if (msg.outcome_buffer_ttl_sec > 0)` check (services/box/src/stream.js) then falls back to its
+	// bootstrap default rather than a genuine "buffer nothing" — the SAME shape of gap CSSSkipBelowPx
+	// had. Deliberately left as-is here rather than fixed: unlike CSSSkipBelowPx (whose §6 range
+	// 0-20 explicitly names 0 as a legitimate value), the locked Phase 7 spec (§5.3/P7-11) never
+	// states that 0 means anything ("disable buffering entirely" is not a documented feature) — so
+	// treating 0 as meaningful here would be INVENTING semantics for a locked spec, not fixing a
+	// documented one, which CLAUDE.md Rule 2 reserves for an Open Decision. Flagged, not fixed.
 	OutcomeBufferTTLSec int `json:"outcome_buffer_ttl_sec,omitempty"`
 }
 

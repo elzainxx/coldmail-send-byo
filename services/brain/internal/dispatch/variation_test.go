@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -194,6 +195,55 @@ func TestVariation_S11RatesReachPushJob(t *testing.T) {
 	}
 	if pj.Variation.CSSSkipBelowPx != 9 {
 		t.Errorf("css_skip_below_px = %d, want 9", pj.Variation.CSSSkipBelowPx)
+	}
+}
+
+// TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip — the boundary value skip_below_px=0 (a
+// legitimate operator choice per §6's documented 0-20 range: "vary every declaration, no matter
+// how small") must survive all the way to the ACTUAL JSON BYTES a box would receive over the wire
+// — not just the in-memory Go struct the recordingPusher test double captures before marshaling
+// (TestVariation_S11RatesReachPushJob above never serializes anything, so it could never have
+// caught the omitempty regression R3's review gate found: CSSSkipBelowPx's json tag silently
+// discarding an operator-set 0). This test closes that gap with a real json.Marshal/Unmarshal.
+func TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip(t *testing.T) {
+	e := newDispatchEnv(t, "variations11zero")
+	ctx := context.Background()
+	pool := e.seedPool(t)
+	e.seedAccount(t, pool, "sec")
+
+	if _, err := e.admin.Exec(ctx,
+		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',0)) WHERE key='variation_css_micro_params'`); err != nil {
+		t.Fatalf("set variation_css_micro_params: %v", err)
+	}
+
+	job := e.seedQueuedJob(t, "s11zero@example.com")
+	if _, err := e.d.TryDispatch(ctx); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	pj, ok := e.px.lastPush()
+	if !ok || pj.JobID != job {
+		t.Fatalf("push did not target the expected job (got %+v)", pj)
+	}
+	if pj.Variation.CSSSkipBelowPx != 0 {
+		t.Fatalf("in-memory css_skip_below_px = %d, want 0 (precondition)", pj.Variation.CSSSkipBelowPx)
+	}
+
+	// The actual regression check: marshal the pushed Variation to JSON (what would really cross
+	// the wire to a box) and confirm css_skip_below_px is PRESENT and reads back as 0 — not absent.
+	raw, err := json.Marshal(pj.Variation)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	val, present := asMap["css_skip_below_px"]
+	if !present {
+		t.Fatalf("css_skip_below_px is ABSENT from the wire JSON at value 0 — an omitempty tag is silently discarding a legitimate operator-set 0: %s", raw)
+	}
+	if f, ok := val.(float64); !ok || f != 0 {
+		t.Fatalf("css_skip_below_px = %v on the wire, want the literal 0: %s", val, raw)
 	}
 }
 
