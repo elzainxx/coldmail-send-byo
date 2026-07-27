@@ -161,3 +161,29 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 
 A config set violating either is rejected with external code `config_ordering_violation` — never
 clamped or auto-corrected (Rule 1).
+
+## Deliberate hardcoded safety BOUNDS (not dials — Phase 9 Chunk 3 consolidation)
+
+CLAUDE.md Rule 1 forbids a literal that governs runtime *behavior*. It does not forbid a literal
+that governs a defensive *ceiling* an operator would never want to tune per-deployment — a
+fat-finger/DoS/reputation guard, not a tunable dial. Every such bound in this codebase is
+documented at its definition site AND here, so "no hardcoded tuning constant" stays auditable
+against a complete, not merely a plausible, list. None of these are seeded `sender.config` rows;
+promoting one to a real dial is a future additive migration, not a silent default change.
+
+| Site | Value | Why it's a bound, not a dial |
+|---|---|---|
+| `internal/adminapi/account_validate.go` `DailyLimitCeiling` | `100_000` | OD-24 (RULED, option c): the locked spec's §3/§6.4 wording references a "configurable ceiling" for `daily_limit`/`daily_limit_default`, but no such key was ever seeded in the Phase 1→9.5 chain. A fat-finger/reputation guard on per-account daily send volume, not an operator-facing tuning dial — 100k comfortably admits every real per-mailbox provider limit while catching an extra digit or two; a too-high limit degrades gracefully at send time (provider throttle → throttle class → pause) rather than causing a correctness failure. |
+| `internal/dispatch/pool.go` `maxFallbackHops` | `8` | P4-19: bounds an ALREADY-acyclic fallback-pool walk (Phase 2's cycle check prevents a real cycle) — defense-in-depth against a walk that should never be long, not a behavior an operator tunes. |
+| `internal/dispatch/dispatch.go` `sharedPoolNotConfiguredLogInterval` | 1 min | Governs an internal LOG line's noise floor, not send/dispatch behavior. |
+| `internal/singleton/singleton.go` keeper ticker / lock-poll backoff | 5s / 200ms | Infra liveness-check cadence and advisory-lock poll rate — not a product/operator dial. |
+| `internal/boxlink/stream.go` register-handshake read deadline / push_job write deadline | 15s / 10s | DoS/hang guards on the box↔Brain handshake and a wedged-peer write — the register protocol has no variable-length legitimate case, so this bounds abuse, not a real workload. |
+| `internal/boxlink/boxlink.go`, `internal/httpapi/health.go` `ReadHeaderTimeout` | 5s | Standard Go `http.Server` slow-header-DoS hardening — a platform-wide idiom, not a product dial. |
+| `cmd/brain/main.go` shutdown grace period | 10s | A drain-on-SIGTERM bound, not a runtime behavior a campaign/operator would tune per-deployment. |
+| `services/box/src/smtp.js` QUIT-after-DATA timeout | 2000ms | QUIT is best-effort (the send already succeeded); this bound only affects how long the box waits before moving on, never the delivery outcome. |
+| `services/box/src/index.js` register-retry cap/interval | 30 attempts / 1000ms | Startup-only bounded retry while the Brain may still be coming up — a deployment-ordering concern, not a per-campaign dial. |
+| `services/box/src/variation-headers.js` `HEADER_ORDERS` (the gmail/outlook/apple/thunderbird client-style header-position tables) | 4 fixed orderings | Phase 8 toggle 9 (`variation_header_style`) selects WHICH table to apply via the seeded config *enum* (`none`/`gmail`/`outlook`/`apple`/`thunderbird`/`random`) — the table CONTENTS (which header goes in which position for a given real mail client) are an external, empirically-observed fact about how those clients format mail, not a tunable rate/threshold/timeout. Making the header orders themselves config-driven would let an operator invent a fifth "client style" with no matching real client — the dial that exists (`variation_header_style`) is the correct one; the tables it selects between are reference data, the same class as the IANA timezone database `daily_reset_timezone` validates against. |
+
+See `Docs/open-decisions.md`'s Phase 4 closeout ("hardcoded-timeout triage") for the full
+historical enumeration and reasoning; this table is the Phase 9 §4 consolidation of the same
+audit, re-verified against the current tree.
