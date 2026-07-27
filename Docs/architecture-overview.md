@@ -1771,6 +1771,58 @@ independently re-reading the cited files rather than trusting the first pass, wh
 surfaced the one true structural fact worth recording (`box_status='disabled'`'s emitter being an
 out-of-band operator action) rather than letting the audit silently assume a clean sweep.
 
-*(Chunk 6 — end-to-end verification + the launch-readiness verdict — and the two sequential review
-gates are appended to this section as each lands, per the same discipline every prior phase
-followed.)*
+### Chunk 6 — end-to-end verification + the launch-readiness verdict (§8)
+
+A real end-to-end pass against the LIVE stack (rebuilt Brain/box images so the running containers
+actually reflect Chunks 1-5's code, not a stale pre-Phase-9 build) — real Postgres, real box over
+real mTLS, real Mailpit:
+
+- **E1/E2 — full campaign lifecycle + describe/quote agreement.** A real 3-job-item campaign
+  flowed `quote(3)=3 credits → run ×3 (202 each) → dispatch → send → report`; the campaign report
+  (B8) showed `totals.sent:3, progress.is_complete:true` within seconds; Mailpit received the
+  messages. `quote`'s reported `unit_price_credits`/`tier` and `describe`'s `pricing.tiers` read
+  the identical live value (confirmed via the rebuilt image's actual JSON responses, not a cached
+  assumption).
+- **E3 + the panic switch — a live config dial change observed without redeploy, and lossless
+  halt/resume.** `PUT dispatch_enabled=false` via the real admin API; a freshly-`run` job sat
+  `queued` for 4s (never claimed); `PUT dispatch_enabled=true` resumed the SAME job_id to `sent`
+  within 5s with a coherent 4-event history — zero loss, zero duplication, no redeploy.
+- **E4 — the ordering invariants at the LOAD path (confirmed), and a genuine gap found at the
+  WRITE path (flagged, not fixed).** `PUT smtp_operation_timeout_sec=999999` (violating invariant
+  a) and `PUT box_outcome_buffer_ttl_sec=1` (violating invariant b) both returned **HTTP 200** —
+  the write path does not reject either. The config-LOAD path DOES correctly refuse to run on the
+  bad set (`dispatch`/`reclaim` tick errors logged `config_ordering_violation` once per tick for
+  the ~12s the bad value was live; `/readyz` stayed healthy throughout; the Brain self-healed the
+  instant the value was restored via the same `PUT`) — so the unsafe pair never took runtime
+  effect, but Phase 9 §4.6/§5.4's own prose asserting the `PUT` itself is rejected is FALSE in the
+  current tree. This is exactly the gap P7-OD-5/P6-OD-1 explicitly deferred to "Phase 9 §4.6 + E4"
+  — recorded as **P9-OD-2** (flagged, needs a ruling on whether to close it now or continue
+  deferring; not a build blocker either way since the load-path backstop already prevents any
+  actual unsafe runtime state).
+- **E6 — waiting-for-capacity vs. true exhaustion, live.** Pausing the one live account MANUALLY
+  (true exhaustion, not self-recovering) made a fresh job read `state:"failed"` via the public
+  `report` within 3s — confirmed correct per Phase 5 §5.4; the campaign report's `totals.failed:1`
+  reflected it correctly alongside 4 already-`sent` jobs in the same campaign.
+- **E7 (byte-identical + security regression guard) — carried from Chunk 5's audit + SUITE 10.**
+  Re-confirmed: SUITE 10's T1 (all-toggles-off) delivered bytes match the exact Phase 3 shape; the
+  box's 78/78 unit suite (including the variation identity tests) is green.
+- **Full harness: 52/53 green.** The one failure (`P8 T3: comment_injection did not inject any
+  comment at 'high' intensity`) is the pre-existing, previously-diagnosed Phase 8 test-fixture
+  probabilistic flake (`tests/harness/phase8_variation.sh`'s `RICH_BODY` has exactly 2 closing
+  tags at a 30%-per-tag injection rate, ~48% empirical miss rate per run — confirmed unchanged
+  since commit `46964a8`, not touched by any Phase 9 code). All 5 CI gates green
+  (`config_drift`/`contract_drift`/`migration_lint`/`config_consumption`/`no_secret_leak`);
+  `gofmt`/`go vet` clean across every Go module.
+
+**Launch-readiness verdict: GO**, with one known, bounded, non-blocking gap (P9-OD-2, the
+write-path ordering reject) and the known operational limits already on record: the single-Brain
+throughput ceiling (**370 sends/min** measured, `Docs/load-test-results.md`, likely box-count-
+co-bottlenecked at only 6 boxes — re-run before treating it as the Brain's true isolated ceiling),
+the accepted-duplicate window (crash-after-`250`-before-persist, bounded by
+`provider_message_id UNIQUE`, Phase 6 §2.6), deferred bounce/complaint ingestion and open/click
+tracking (post-V1 per `describe`'s own honest capabilities), one effective shared pool in V1 (the
+dedicated-tier price differentiator is a future additive value change, not built), and
+auto-quarantine starting in `shadow` mode by design (promotes to `enforce` with one config write).
+
+The two sequential review gates (R1 architect, R2 code) are appended to this section as each
+lands, per the same discipline every prior phase followed.
