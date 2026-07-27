@@ -20,6 +20,27 @@ import (
 // change to take effect.
 const defaultQuoteUnitCredits = 1
 
+// defaultQuoteTier is the tier `quote` reports (Phase 9 §1.1's additive `tier` field). `quote`'s
+// request carries only recipient_count — no job_item_id/user_id/pool context — so it cannot
+// resolve which of the two V1 pool-kind tiers (§2.1: shared/dedicated) a campaign will actually
+// route to. This is honest rather than a gap: both tiers charge the IDENTICAL unit_price_credits
+// in V1 (dedicated is isolation, not a price differentiator), so the reported tier never affects
+// the quoted cost either way. "shared" is reported because it is the base-campaign default
+// (Phase 4's default_shared_pool_id routing) that every campaign is eligible for regardless of
+// whether it also has a dedicated pool.
+const defaultQuoteTier = "shared"
+
+// describeTiers is the SAME per-tier pricing shape quote's defaultQuoteTier draws from (Phase 9
+// §2.1/§2.2) — the single source of truth describe and quote share so they can never diverge.
+// unit is populated live per-request from readUnitPriceCredits; both tiers price IDENTICALLY in
+// V1 (dedicated is isolation, not a premium — stated honestly rather than inventing one).
+func describeTiers(unit int) []map[string]any {
+	return []map[string]any{
+		{"id": "shared", "unit_price_credits": unit, "description": "Global shared SMTP pool."},
+		{"id": "dedicated", "unit_price_credits": unit, "description": "User-dedicated pool with shared fallback."},
+	}
+}
+
 // uuidRe validates a canonical hyphenated UUID (job_item_id / job_id inputs).
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -47,6 +68,14 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		"recipient_count": *req.RecipientCount,
 		"cost":            *req.RecipientCount * unit,
 		"currency":        "credits",
+		// Additive (Phase 9 §1.1): unit_price_credits/tier let the platform's preview/confirm-cost
+		// step show the caller WHY the number is what it is. quote has no tenant/pool context in
+		// its request (recipient_count only), and both V1 tiers price identically (§2.1) — tier is
+		// therefore reported as the default base-campaign tier ("shared", Phase 4's
+		// default_shared_pool_id routing), which never affects cost since the two tiers charge the
+		// same unit_price_credits. A dedicated-pool campaign is quoted identically either way.
+		"unit_price_credits": unit,
+		"tier":               defaultQuoteTier,
 	})
 }
 
@@ -163,21 +192,34 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// --- GET /v1/describe — minimal tiers/pricing stub (§6.4) ---
+// --- GET /v1/describe — module self-description: capabilities + tiers/pricing (Phase 9 §2, finalized) ---
 
+// handleDescribe reports the module's honest self-description (Phase 9 §2.2): the ONE real V1
+// product axis (pool_kind: shared vs dedicated, Phase 1), flat per-recipient pricing, and the
+// capabilities the module actually implements — no sequences, no open/click tracking, content
+// variation present as operator-tunable behavior (no per-toggle detail, Phase 8 §3). Reads the
+// SAME live unit_price_credits quote (§1) multiplies by, via describeTiers — single source of
+// truth, so describe and quote can never disagree (Phase 9 §2.2, E2).
 func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 	unit := s.readUnitPriceCredits(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"module":       "sender",
-		"phase":        3,
-		"capabilities": []string{"single_send"},
+		"module":      "sender",
+		"api_version": "v1",
+		"capabilities": map[string]any{
+			"single_send":           true,
+			"sequences":             false,
+			"reply_to_per_campaign": true,
+			"open_tracking":         false,
+			"click_tracking":        false,
+			"content_variation":     true,
+		},
 		"pricing": map[string]any{
-			"tier":     "flat",
-			"unit":     unit,
-			"currency": "credits",
-			"note":     "Phase 3 flat pricing stub; real tiers land in Phase 9.",
+			"currency":           "credits",
+			"model":              "flat_per_recipient",
+			"unit_price_credits": unit,
+			"tiers":              describeTiers(unit),
 		},
 	})
 }

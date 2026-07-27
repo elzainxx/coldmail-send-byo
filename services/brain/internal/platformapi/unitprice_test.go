@@ -34,8 +34,8 @@ func TestUnitPrice_QuoteAndDescribeReflectLiveConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe missing pricing object: %s", descResp.raw)
 	}
-	if unit, ok := pricing["unit"].(float64); !ok || unit != 1 {
-		t.Fatalf("describe pricing.unit=%v, want 1 (default): %s", pricing["unit"], descResp.raw)
+	if unit, ok := pricing["unit_price_credits"].(float64); !ok || unit != 1 {
+		t.Fatalf("describe pricing.unit_price_credits=%v, want 1 (default): %s", pricing["unit_price_credits"], descResp.raw)
 	}
 
 	// Live write: PUT unit_price_credits=3 (direct SQL, same effect as the real admin endpoint) —
@@ -50,7 +50,21 @@ func TestUnitPrice_QuoteAndDescribeReflectLiveConfig(t *testing.T) {
 	if !ok {
 		t.Fatalf("describe missing pricing object (2nd): %s", descResp2.raw)
 	}
-	if unit, ok := pricing2["unit"].(float64); !ok || unit != 3 {
-		t.Fatalf("describe pricing.unit=%v after PUT unit_price_credits=3, want 3: %s", pricing2["unit"], descResp2.raw)
+	if unit, ok := pricing2["unit_price_credits"].(float64); !ok || unit != 3 {
+		t.Fatalf("describe pricing.unit_price_credits=%v after PUT unit_price_credits=3, want 3: %s", pricing2["unit_price_credits"], descResp2.raw)
+	}
+	// Both tiers move together with the single source of truth (Phase 9 §2.2, E2).
+	tiers, ok := pricing2["tiers"].([]any)
+	if !ok || len(tiers) != 2 {
+		t.Fatalf("describe pricing.tiers=%v, want 2 tiers: %s", pricing2["tiers"], descResp2.raw)
+	}
+	for _, tr := range tiers {
+		tm, ok := tr.(map[string]any)
+		if !ok {
+			t.Fatalf("tier entry not an object: %v", tr)
+		}
+		if u, ok := tm["unit_price_credits"].(float64); !ok || u != 3 {
+			t.Fatalf("tier %v unit_price_credits=%v after PUT=3, want 3", tm["id"], tm["unit_price_credits"])
+		}
 	}
 }
