@@ -137,9 +137,10 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	jobID := r.URL.Query().Get("job_id")
 	jobItemID := r.URL.Query().Get("job_item_id")
+	campaignID := r.URL.Query().Get("campaign_id")
 	userID := r.URL.Query().Get("user_id")
-	if jobID == "" && jobItemID == "" {
-		s.fail(w, r, newErr(codeValidationFailed, "job_id_or_job_item_id_required").
+	if jobID == "" && jobItemID == "" && campaignID == "" {
+		s.fail(w, r, newErr(codeValidationFailed, "job_id_or_job_item_id_or_campaign_id_required").
 			withDetails(fieldDetail{Field: "job_id", Issue: issueRequired}))
 		return
 	}
@@ -147,6 +148,14 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	if !uuidRe.MatchString(userID) {
 		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
 			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
+		return
+	}
+	// campaign_id (B8, §2.1): the aggregate campaign-scoped response, a distinct mode from the
+	// single-job lookup below. Mutually exclusive in practice (a caller polling a campaign has no
+	// single job_id/job_item_id yet); if somehow both are present, campaign_id wins since it is the
+	// more specific ask a UI makes when it already knows it wants the campaign aggregate.
+	if campaignID != "" {
+		s.handleCampaignReport(w, r, campaignID, userID)
 		return
 	}
 	if jobID != "" && !uuidRe.MatchString(jobID) {

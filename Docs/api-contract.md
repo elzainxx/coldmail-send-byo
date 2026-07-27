@@ -6,14 +6,23 @@ against the Brain's registered routes.
 
 ## Auth domains (never share a credential)
 
-- **Domain A** — platform-facing (`quote`/`run`/`report`/`describe`): platform service token
-  over the private network, `Authorization: Bearer <token>`, stored hashed (bcrypt),
-  constant-time compared. A DISTINCT credential from the operator key — the two never share
-  (CLAUDE.md Rule 6). *(Built in Phase 3 — the minimal send path; see the Phase 3 routes below.
-  The surface only mounts when `PLATFORM_TOKEN_HASHES` is configured, fail-closed.)*
-- **Domain B** — operator (`/v1/admin/*`): `platform_admin` bearer key, stored hashed,
-  constant-time compared. *(Built in Phase 2 — accounts/pools/config + lifecycle; see the Phase 2
-  routes below. The Phase 0 health stub (`/healthz`,`/readyz`) remains unauthenticated.)*
+- **Domain A** — platform-facing (`quote`/`run`/`report`/`describe`): B7 (Phase 9 contract
+  completion) — this surface is called **only by the platform**, service-to-service, over the
+  **private network**. Authentication is the **platform service token**,
+  `Authorization: Bearer <token>`, stored hashed (bcrypt), constant-time compared, issued/rotated
+  by the platform's own service-identity mechanism (out of band to this module). It is **not
+  exposed to end users or the public internet** — a control-plane channel between the platform and
+  the module, distinct from the operator admin key (CLAUDE.md Rule 6). *(Built in Phase 3 — the
+  minimal send path; see the Phase 3 routes below. The surface only mounts when
+  `PLATFORM_TOKEN_HASHES` is configured, fail-closed.)*
+- **Domain B** — operator (`/v1/admin/*`, incl. `GET /v1/admin/health`): the operator
+  `platform_admin` bearer key (Phase 2 §4), env-configured, stored hashed, constant-time compared.
+  *(Built in Phase 2 — accounts/pools/config + lifecycle; see the Phase 2 routes below. The Phase 0
+  health stub (`/healthz`,`/readyz`) remains unauthenticated.)*
+- **Separation invariant (already true, now stated per B7):** the two domains never share a
+  credential and never cross-serve — a platform service token cannot reach `/v1/admin/*` and an
+  operator key cannot drive `quote`/`run`/`report`/`describe`. Both use the identical
+  two-vocabulary error envelope; a missing/invalid credential on either → `401 unauthenticated`.
 
 ## Phase 0 served routes (SKELETON only)
 
@@ -111,7 +120,56 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 |---|---|---|
 | POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `sender.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job |
 | POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
-| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5) |
+| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
+
+**B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
+derived ENTIRELY from `sender.jobs` state counts + existing per-job fields — no new state, no
+schema change:
+
+```jsonc
+{
+  "campaign_id": "…",
+  "dispatch_paused": false,           // the live dispatch_enabled config, negated (B1)
+
+  "totals": {
+    "total": 5000,
+    "sent": 4100,
+    "bounced": 210,                   // terminal, recipient-fault, billable
+    "failed": 3,                      // terminal, infra/pool-exhaustion, refundable
+    "in_flight": 20,                  // assigned + sending
+    "pending": 667,                   // queued and currently dispatchable
+    "waiting_for_capacity": 0         // queued but zero eligible account right now
+  },
+
+  "progress": {
+    "terminal": 4313,                 // sent + bounced + failed
+    "fraction_complete": 0.8626,      // terminal / total
+    "is_complete": false              // true iff terminal == total
+  },
+
+  "items": {                          // paginated per-job detail, cursor-paginated
+    "results": [
+      { "job_item_id": "…", "state": "sent",
+        "provider_message_id": "…", "completed_at": "…", "attempt_count": 1 }
+    ],
+    "next_cursor": "opaque-cursor-or-null",
+    "page_size": 100
+  }
+}
+```
+
+The three-way billing-relevant distinction a UI can render WITHOUT reading internal state-machine
+docs: `waiting_for_capacity` (still pending, no eligible account right now — a job here is
+`state:"queued"` at the per-item level, **never** shown as failed), `failed` (terminal, true pool
+exhaustion — refundable, the platform's own policy), `bounced` (terminal, recipient-permanent 550
+— billable). `waiting_for_capacity` is an AGGREGATE count distinction on top of the same
+`state:"queued"` per-job value (§6.4's rule that a waiting job renders as clean pending) — never a
+new per-job state. A `campaign_id` that belongs to another tenant, or does not exist, returns a
+clean EMPTY report (`total:0`) rather than `404` — a `campaign_id` is not a single-resource
+identity the module allocates (the platform mints it), so "zero jobs under this id for this
+tenant" is the honest answer regardless of whether the id is foreign or simply not yet run; no
+cross-tenant existence signal either way (OD-25's principle, extended). Implemented in
+`internal/platformapi/campaign_report.go`.
 | GET | `/v1/describe` | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`unit_price_credits` — the SAME live value `quote` multiplies by — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) |
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated
@@ -177,3 +235,25 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > ruled to wire only the two genuinely-new sub-values (the rate table, the skip-below threshold) onto
 > the existing keys' already-established delivery mechanism, and leave the two duplicate parameters
 > unconsumed rather than introduce a second, competing source of truth for the same box behavior.
+
+## What is NOT part of the public REST contract
+
+The box↔Brain protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/`report`/
+`report_ack`, including the additive `variation`/`attempt_token`/`smtp.operation_timeout_sec`
+fields documented above) is internal machine-to-machine wire format. It is **not** part of either
+public surface (Domain A or Domain B) and evolves independently of the additive-only REST
+versioning rule — a wire field can be added the moment the Brain and box images that use it are
+both deployed, with no coordination against `quote`/`run`/`report`/`describe` or `/v1/admin/*`.
+None of `quote`/`run`/`report`/`describe`/`/v1/admin/*` ever return a box-protocol field verbatim.
+
+## S9 — `send_logs` at-rest governance (Phase 9 contract completion, documentation only)
+
+`send_logs` retains full email bodies + recipients in **plaintext** for the retention window
+(default 7d, `debug_log_retention_days`) — **accepted for V1**, with rationale: it is the user's
+own campaign material (the body/recipient list they themselves supplied), not a secret the module
+holds on their behalf (unlike an SMTP credential, which is the module's custody and stays
+encrypted). It is retention-bounded (TTL-swept, Phase 7 §3) and reachable only via
+**access-controlled direct DB** — **no operator or platform API returns `send_logs` content**;
+this document's every endpoint above confirms that (no route selects from `send_logs`). At-rest
+encryption of `send_logs.body`/`recipient` is a named **post-V1 hardening item**, not built now.
+This is a documentation ruling only — no behavior, schema, or endpoint change.
