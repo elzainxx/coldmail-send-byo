@@ -1715,5 +1715,62 @@ network) and S9 (`send_logs` plaintext-at-rest accepted for V1) are DOCUMENTED �
 already true in the code (grepped: zero routes in either surface select from `send_logs`). The
 box↔Brain wire protocol stays explicitly out of the public contract.
 
-*(Remaining chunks 5-6 and the two sequential review gates are appended to this section as each
-lands, per the same discipline every prior phase followed.)*
+### Chunk 5 — the cross-phase consistency audit (§6, the most valuable chunk)
+
+Eight properties verified against the ACTUAL CODE (not docs), each independently adversarially
+re-checked by a second pass that read the same files itself rather than trusting the first pass's
+citations:
+
+- **Every enum value has a real emitter** — confirmed for 26 of the 7 enums' 27 total values, with
+  file:function:line citations for each (job_state's six, error_class's six, pool_kind's two,
+  routing_strategy's three, box_status's `active`/`stale`, event_actor's five, pause_reason's
+  three). **One exception found and re-verified: `box_status='disabled'` has no live
+  application-code writer** — the only two places that string appears are (a)
+  `tools/provision-box/main.go`'s `revoke` subcommand, which only PRINTS the SQL text for an
+  operator to run out-of-band (confirmed: no DB driver import in that file at all), and (b) test
+  fixtures. **This is not a new gap** — it is exactly the documented P9-A disposition (box
+  decommission is an out-of-band operator procedure, §5.4a step 4), independently re-confirmed by
+  this audit rather than assumed.
+- **Every state transition has exactly one owner** — confirmed for all seven `sender.jobs.state`
+  transitions; the two-trigger requeue case (`sending→queued` via outcome-handler transient
+  failure vs. reclaim-loop dead-box/lease-expiry) is mutually exclusive by a shared state guard
+  (`WHERE state IN ('assigned','sending')`), so whichever transaction commits first makes the
+  other's guard match zero rows — a clean no-op, never a double-move.
+- **Account-before-job lock ordering holds** — both exclusive-account-lock paths
+  (`applyClassifiedFailure`, `reclaimJobLocked`) lock account-first; both job-first paths
+  (`markSending`, `applyAccepted`) that touch the account only via the implicit FK KEY SHARE have
+  same-job counterparties using `FOR UPDATE SKIP LOCKED` (never blocks) — Rule 9/ADR-0010 intact.
+- **Reclaim-does-not-score (P6-10) and bounce-never-penalizes both HOLD** — read `reclaim.go`
+  top to bottom: every SQL statement touching `sender.accounts` is a read-only `FOR UPDATE` lock
+  (lock ordering only), never a mutation; `applyBounced` never calls `applyAccountEffect`.
+- **Wait-vs-fail ordering and rescan-is-event-free both PASS** — `exhaustion.go`'s `evaluateChain`
+  returns WAIT for both the empty-chain and self-recovering-only cases before the code can reach
+  the terminal-fail branch; `rescan.go`'s UPDATE sets only `lease_expires_at`/`updated_at`, never
+  `state` or `assigned_account_id`, so the `AFTER UPDATE OF state` trigger never fires and no FK
+  KEY SHARE is taken.
+- **All-toggles-off byte-identical and the single-authoritative-duplicate-window both PASS** — the
+  box's variation pipeline is a genuine identity function at defaults (verified in
+  `variation.js`/`variation-content.js`/`variation-headers.js`, and the full box suite 78/78 green
+  including the identity tests); the accepted-duplicate window has exactly one mechanism-level
+  definition (Phase 6 §2.6), with every other of ~30 doc locations referencing it, never
+  redefining it.
+- **Migration chain contiguity + the 53-key reconciliation** — `sender_0000`→`sender_0021`, 44
+  files, no gaps/duplicates; per-migration config counts (14+3+2+6+17+11) independently re-grepped
+  and summed to exactly 53.
+- **Coordinated cross-phase doc edits** — all four checked pairs (P5-13's throttle predicate,
+  `smtp_operation_timeout_sec`'s box-behavior note, Phase 8's `push_job.variation` extension,
+  P8-OD-1's amendments) are present on both the introducing and the consuming side.
+- **Docs-match-behavior spot check (3 representative claims)** — `daily_reset_hour`'s four claimed
+  consumption sites, `quote`'s `unit_price_credits`/`tier` fields, and the box's credential
+  zero-on-every-exit-path claim all CONFIRMED against the actual code.
+
+**Net result: zero contradictions found across eleven phases' worth of code.** Per this chunk's
+own instruction, a zero-finding result is treated as a reason for scrutiny, not celebration — hence
+the adversarial second pass on every one of the eight properties (16 total agent passes), each
+independently re-reading the cited files rather than trusting the first pass, which is what
+surfaced the one true structural fact worth recording (`box_status='disabled'`'s emitter being an
+out-of-band operator action) rather than letting the audit silently assume a clean sweep.
+
+*(Chunk 6 — end-to-end verification + the launch-readiness verdict — and the two sequential review
+gates are appended to this section as each lands, per the same discipline every prior phase
+followed.)*

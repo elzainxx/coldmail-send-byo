@@ -425,6 +425,30 @@ CI gate (new, this CLOSEOUT) makes the defect class P9.5-OD-5 found structurally
 silently: a future seeded-but-unconsumed key now fails CI rather than waiting for a review gate to
 find it by accident.
 
+## Phase 9 build (polish and documentation — the terminal phase)
+
+### Chunk 5 — the cross-phase consistency audit (§6): one structural fact re-confirmed, zero new contradictions
+
+Eight properties (enum emitters, state-transition ownership, account-before-job lock ordering, the
+reclaim-does-not-score carve-out + bounce-never-penalizes, wait-vs-fail ordering + rescan
+event-freedom, all-toggles-off byte-identical + the single-authoritative-duplicate-window,
+migration-chain contiguity + the 53-key reconciliation, coordinated cross-phase doc edits, and a
+docs-vs-behavior spot check) were verified against the ACTUAL CODE — not the docs — with every
+finding independently adversarially re-checked by a second pass reading the same files itself.
+
+| # | Decision | Status | Detail |
+|---|---|---|---|
+| P9-OD-1 | The enum-emitter audit found `box_status='disabled'` has NO live application-code writer anywhere in `services/brain` or `services/box` — the only two places that literal appears are `tools/provision-box/main.go`'s `revoke` subcommand (which only PRINTS decommission SQL text for an operator to run out-of-band; confirmed no DB driver import in that file) and test fixtures. Surfaced by the audit rather than assumed clean. | **CONFIRMED-CONSISTENT with the existing P9-A ruling — no new decision needed** | This is not a new gap: Phase 9 §5.4a step 4 already documents box decommission as an out-of-band operator procedure (rotate/clear `token_hash`, which the SAME `provision-box revoke` command emits), and P9-A already ruled `/v1/admin/boxes` CRUD is a deliberate post-V1 item. The audit's independent re-verification (reading `provision-box/main.go` directly, confirming zero DB access in that binary, confirming no `/v1/admin/boxes/*` route exists) CONFIRMS the documented disposition holds in the tree, rather than merely restating it — exactly this chunk's mandate ("if the audit reveals a genuinely missing capability, flag it — do not build it"). No code change; recorded here for traceability since this is the one non-trivial fact the audit's 16 total agent-passes surfaced. |
+
+**Net audit result: zero contradictions found across eleven phases.** Per this chunk's own
+instruction, a zero-finding result is a reason for extra scrutiny, not celebration — the mandatory
+adversarial second pass on every property (not just a sample) is what makes this a defensible
+"clean" result rather than an assumed one. All eight properties independently re-verified true; the
+one fact worth recording (P9-OD-1) was already covered by an existing ruling, re-confirmed rather
+than re-litigated.
+
+**Needs-user: empty.**
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
