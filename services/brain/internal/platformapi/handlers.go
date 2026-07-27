@@ -98,9 +98,18 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Tenant selector is REQUIRED and must be a UUID (OD-25 option b — module-enforced tenancy).
-	if !uuidRe.MatchString(req.UserID) {
+	// Empty vs malformed are reported distinctly (issueRequired vs issueMalformed), matching the
+	// job_item_id/job_id/campaign_id checks elsewhere in this file — a UI building generic
+	// per-field messaging off details[].issue must see one consistent vocabulary across every
+	// UUID field on this surface (R2 finding).
+	if req.UserID == "" {
 		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
 			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
+		return
+	}
+	if !uuidRe.MatchString(req.UserID) {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_malformed").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueMalformed}))
 		return
 	}
 
@@ -145,9 +154,15 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Tenant selector is REQUIRED and must be a UUID (OD-25 option b — module-enforced tenancy).
-	if !uuidRe.MatchString(userID) {
+	// Empty vs malformed reported distinctly, matching job_id/job_item_id below (R2 finding).
+	if userID == "" {
 		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
 			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
+		return
+	}
+	if !uuidRe.MatchString(userID) {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_malformed").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueMalformed}))
 		return
 	}
 	// campaign_id (B8, §2.1): the aggregate campaign-scoped response, a distinct mode from the

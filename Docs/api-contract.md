@@ -24,6 +24,32 @@ against the Brain's registered routes.
   operator key cannot drive `quote`/`run`/`report`/`describe`. Both use the identical
   two-vocabulary error envelope; a missing/invalid credential on either → `401 unauthenticated`.
 
+## The error envelope + the full `error.code` enum (both domains)
+
+Every non-2xx response, on EITHER domain, is exactly this shape — never SQL/SQLSTATE, an internal
+reason, a credential, ciphertext, a key id, a stack trace, or an internal hostname:
+
+```json
+{ "error": { "code": "validation_failed", "message": "One or more fields are invalid.",
+             "details": [ { "field": "smtp_port", "issue": "out_of_range" } ],
+             "request_id": "req_01J..." } }
+```
+
+`details[]` is present only on `validation_failed`; `details[].issue` ∈ `{required, out_of_range,
+malformed, not_found, conflict, forbidden_value}`. The full, additive-only `error.code` enum:
+
+| HTTP | `error.code` | When |
+|---|---|---|
+| 400 | `validation_failed` | Body/query failed field validation (see `details[]`). |
+| 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (§4.6-equivalent in `Docs/config-reference.md`) — **see the note on the config `PUT` row below: this code is currently emitted only at config-LOAD time, not yet at the `PUT` itself; `Docs/open-decisions.md` P9-OD-2.** |
+| 401 | `unauthenticated` | Missing/invalid API key/token, either domain. |
+| 403 | `forbidden` | Reserved for future scoped roles; unused in V1's single-scope model. |
+| 404 | `not_found` | Resource id / config key does not exist, OR belongs to another tenant (no existence disclosure — never `403`). |
+| 409 | `conflict` | State/RI conflict (delete pool with accounts; duplicate within pool; limit-below-counter; system user unprovisioned; duplicate active campaign for a user). |
+| 422 | `unprocessable` | Well-formed but semantically illegal (illegal state transition, fallback cycle, owner-rule violation). |
+| 429 | `rate_limited` | Admin rate limit — off by default in V1. |
+| 500 | `internal_error` | Unexpected. Generic message only; reason in logs. |
+
 ## Phase 0 served routes (SKELETON only)
 
 | Method | Path | Auth | Purpose |
@@ -88,7 +114,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 |---|---|---|
 | GET | `/v1/admin/config` | read all keys |
 | GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
-| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation) |
+| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Note (`Docs/open-decisions.md` P9-OD-2):** the two config-ordering invariants (`Docs/config-reference.md`) are enforced at config-LOAD (the next dispatch/reclaim tick refuses to run on a bad set), but this `PUT` itself does NOT yet reject a value that would violate either invariant — it currently returns `200` even for an invariant-violating write. `config_ordering_violation` is real and reachable in logs at load time, not yet at this endpoint. Flagged, not fixed. |
 
 ## Phase 9.5 served routes — observability (Domain B)
 
@@ -120,7 +146,7 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 |---|---|---|
 | POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `sender.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job |
 | POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
-| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
+| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
 derived ENTIRELY from `sender.jobs` state counts + existing per-job fields — no new state, no
@@ -170,6 +196,19 @@ identity the module allocates (the platform mints it), so "zero jobs under this 
 tenant" is the honest answer regardless of whether the id is foreign or simply not yet run; no
 cross-tenant existence signal either way (OD-25's principle, extended). Implemented in
 `internal/platformapi/campaign_report.go`.
+
+**Items presence semantics (differs from the single-job shape above):** in `items.results`,
+`provider_message_id`/`completed_at` are **ALWAYS present as JSON keys**, valued `null` until set
+— unlike the single-job `report` shape, where the same two keys are omitted entirely until set. A
+UI integrating against both modes must check for `null` here but for key-absence there.
+
+**Pagination request parameters** (`items`, cursor-paginated on `(created_at, id)`, same keyset
+pattern as the admin list endpoints, §5.1): `?campaign_id=<uuid>&user_id=<uuid>&cursor=<opaque,
+from a previous response's next_cursor>&page_size=<int>`. `page_size` defaults to **100** and
+clamps to a max of **200**; a missing, zero, negative, or non-numeric `page_size` silently falls
+back to the default (never a `400`). `cursor` is opaque (base64) — pass back exactly what
+`next_cursor` returned; a malformed `cursor` returns `400 validation_failed`. `next_cursor:null`
+means the last page.
 | GET | `/v1/describe` | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`unit_price_credits` — the SAME live value `quote` multiplies by — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) |
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated

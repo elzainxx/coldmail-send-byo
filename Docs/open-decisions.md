@@ -462,6 +462,39 @@ from taking runtime effect; only the `PUT`'s own response is misleadingly permis
 blocker either way — recorded so the launch-readiness verdict (§8) states this honestly rather than
 inheriting Phase 9 §4.6/§5.4's optimistic prose uncritically.
 
+### Review gates R1/R2 (sequential, per CLAUDE.md §11) — findings and dispositions
+
+R1 (architect-review, Chunk 5's audit rigor) independently spot-checked four of the eight audited
+properties against the actual source (not the audit's own citations) and confirmed all four hold.
+One LOW wording-precision finding: `architecture-overview.md`'s Chunk 5 summary said `applyAccepted`
+touches `sender.accounts` "only via the implicit FK KEY SHARE," same as `markSending` — but
+`applyAccepted` also calls `recomputeScoreOnSuccess`, which issues real (non-exclusive) `UPDATE
+sender.accounts` statements; the underlying safety property (no exclusive lock, proven deadlock-free)
+still holds, so this was a prose-precision fix, not a code or property change. **FIXED** (commit
+`16b65a8`).
+
+R2 (code-review, contract completeness — read as a UI-consumer) first independently re-verified R1's
+fix in the tree (confirmed the corrected wording is present and re-derived the underlying
+`recomputeScoreOnSuccess`/`bumpAndRecompute` claim from source itself, not from the commit message),
+then found five real documentation gaps a UI dev would actually hit:
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| R2-1 | `api-contract.md` never stated B8's pagination REQUEST params (`?cursor=`/`?page_size=` names, default 100/max 200, silent clamp-not-error on out-of-range) — a UI dev would have to read a second file or experiment. | MEDIUM | **FIXED** — added the explicit param line under the B8 JSON block. |
+| R2-2 | `provider_message_id`/`completed_at` are OMITTED (key absent) on the single-job `report` shape but ALWAYS PRESENT as `null` on the campaign-items shape — same field names, different presence semantics, undocumented either way. | MEDIUM | **FIXED** — documented both semantics explicitly at their respective shapes. |
+| R2-3 | No inlined `error.code` enum/table in `api-contract.md` itself — it lived only in a companion doc (`phase-9-polish-and-documentation.md` §5.2) with no forward pointer from the per-endpoint rows. | MEDIUM | **FIXED** — inlined the full envelope shape + code enum into `api-contract.md` directly (a new section right after the auth-domains section), including the `config_ordering_violation` row's honest note pointing at P9-OD-2. |
+| R2-4 | `handleRun`/`handleReport`'s `user_id` check conflated empty and malformed into a single `issueRequired`, inconsistent with the `job_id`/`job_item_id`/`campaign_id` checks in the SAME handlers, which correctly split empty (`issueRequired`) from malformed (`issueMalformed`). | LOW | **FIXED** — split both `user_id` checks the same way (`internal/platformapi/handlers.go`); covered by the existing `TestTenancy_MissingOrMalformedSelectorRejected` (asserts status code only, unaffected by the internal-reason split). |
+| R2-5 | `phase-9-polish-and-documentation.md` §5.3's quick-reference table lists `run`'s request body as `{job_item_id}` only, omitting the REQUIRED `user_id` (OD-25) — stale since before OD-25's ruling. `api-contract.md` (the authoritative living mirror) already states the body correctly. | LOW | **FLAGGED, not fixed** — `phase-9-polish-and-documentation.md` is one of the nine LOCKED phase specs; CLAUDE.md forbids editing a locked spec during build work. The living mirror (`api-contract.md`) is correct and is what `contract_drift` verifies against; this is a stale example in a frozen document, not a contract gap. Recorded here rather than silently edited. |
+
+**Needs-user:** R2-5 alone, if the user wants the locked spec's stale example corrected via a
+deliberate, reviewed edit (CLAUDE.md §8) — not a build blocker; the authoritative living contract
+is already correct.
+
+**Phase 9's two sequential review gates are CLOSED. APPROVE.** Both ran one at a time (never in
+parallel, per CLAUDE.md §11); R2 independently re-verified R1's claimed fix in the tree before
+starting its own review. Every MEDIUM/LOW finding from both gates is now FIXED except R2-5, which is
+correctly FLAGGED (a locked-spec edit, not a build action) rather than silently patched.
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared
