@@ -1648,3 +1648,50 @@ to and unaffected by any Phase 9.5 change; Phase 8's test file is locked and out
 four CI gates (`config_drift`/`contract_drift`/`migration_lint`/`no_secret_leak`) green at 53 keys.
 No locked spec edited; both Open Decisions this build surfaced (P9.5-OD-1, P9.5-OD-2) are RULED with
 full dispositions recorded, needs-user empty.
+
+## Phase 9 state — polish and documentation (the terminal phase; builds no feature)
+
+Phase 9 (`Docs/phase-9-polish-and-documentation.md`) finalizes, consolidates, documents, and
+audits — it adds no new capability, behavior, or schema. It is built and verified in six chunks.
+
+### Chunk 1 — quote accuracy + describe tiers/pricing (§1-§2)
+
+`POST /v1/quote`'s response gained the additive `unit_price_credits`/`tier` fields (§1.1) alongside
+the already-live `cost = recipient_count × unit_price_credits` (verified: Phase 9.5's R2/S10 fix
+already reads the unit live from `sender.config`, not a hardcoded constant — confirmed still true
+in the tree, not re-derived). New behavioral tests (`quote_test.go`) prove the §1.2 reconciliation
+claim against real Postgres: `quote` is pure/side-effect-free/idempotent (repeated calls agree,
+zero job rows created), and retry/reclaim churn plus a duplicate `run` on the SAME job_item never
+inflates the billable job-row count — the accepted crash-after-`250` duplicate is a rare extra
+*delivery*, never an extra billed *job* (Phase 6 §2.6).
+
+`GET /v1/describe` replaced the Phase 3 minimal stub (`{"tier":"flat","unit":N}`) with the full §2.2
+shape: honest `capabilities` (`sequences:false`, no open/click tracking, `content_variation:true`
+with no per-toggle detail per Phase 8 §3) and `pricing.tiers` — `shared`/`dedicated`, the one real V1
+product axis (Phase 1 `pool_kind`), **identical unit price in V1** (dedicated is isolation, not a
+premium — stated honestly). `describeTiers(unit)` is the single function both `quote`'s reported
+tier and `describe`'s tier table draw from, so the two can never diverge (§2.2, E2) — proven by
+`TestUnitPrice_QuoteAndDescribeReflectLiveConfig`'s extended assertion that a live
+`unit_price_credits` write moves BOTH tiers' price together.
+
+### Chunk 2 — admin-surface completeness audit (§3)
+
+Re-verified the Phase 9 §3.1 operator-task table against the actual served routes
+(`internal/adminapi/server.go`) rather than trusting the spec's own table: every row is confirmed
+✅ in the tree — `PUT /v1/admin/config/default_shared_pool_id` (the required Phase 4 setup step,
+routed through the generic config endpoint, confirmed by `dispatch/config.go`'s
+`DefaultSharedPoolID` reader and its `nil`-until-set §4.3 behavior); accounts/pools CRUD;
+quarantine/unquarantine/pause/unpause/disable/enable (`account_lifecycle.go`, one audited
+`account_events` row each); `GET/PUT /v1/admin/config[/{key}]` covering all 53 keys (§4);
+`GET /v1/admin/accounts[/{id}]` (status object) and `GET /v1/admin/accounts/{id}/events` (audit
+trail, `account_delete_events.go`); the Phase 9.5 `GET /v1/admin/health` surface. The one genuine
+gap — box provisioning has no REST endpoint — is confirmed still true and is, per the spec's own
+P9-A ruling, an ACCEPTED out-of-band V1 disposition, not a build target: `Docs/phase-9-polish-and-
+documentation.md` §5.4a is the complete documented procedure (mint id+token, seed the
+`sender.boxes` row with `token_hash`, first-connect authorization, decommission-by-token-rotation)
+and needs no code change to be complete. No new endpoint was added; the audit is a confirmation
+pass, not a build chunk — this repo already carries §3/§5.4a verbatim in the locked spec, and this
+chunk's job was to re-verify it holds against the current tree, which it does.
+
+*(Remaining chunks 3-6 and the two sequential review gates are appended to this section as each
+lands, per the same discipline every prior phase followed.)*
