@@ -1737,9 +1737,11 @@ citations:
   (`WHERE state IN ('assigned','sending')`), so whichever transaction commits first makes the
   other's guard match zero rows — a clean no-op, never a double-move.
 - **Account-before-job lock ordering holds** — both exclusive-account-lock paths
-  (`applyClassifiedFailure`, `reclaimJobLocked`) lock account-first; both job-first paths
-  (`markSending`, `applyAccepted`) that touch the account only via the implicit FK KEY SHARE have
-  same-job counterparties using `FOR UPDATE SKIP LOCKED` (never blocks) — Rule 9/ADR-0010 intact.
+  (`applyClassifiedFailure`, `reclaimJobLocked`) lock account-first; the two job-first paths take
+  NO exclusive account lock — `markSending` touches the account only via the implicit FK KEY
+  SHARE, while `applyAccepted` goes further and issues real (non-exclusive) account UPDATEs via
+  `recomputeScoreOnSuccess` — and both have same-job counterparties using `FOR UPDATE SKIP LOCKED`
+  (never blocks), proven deadlock-free by real two-connection tests — Rule 9/ADR-0010 intact.
 - **Reclaim-does-not-score (P6-10) and bounce-never-penalizes both HOLD** — read `reclaim.go`
   top to bottom: every SQL statement touching `sender.accounts` is a read-only `FOR UPDATE` lock
   (lock ordering only), never a mutation; `applyBounced` never calls `applyAccountEffect`.
