@@ -83,6 +83,18 @@ func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Config-ordering invariants (P9-OD-2, RULED-AND-CLOSED): validate the RESULTING pair against
+	// the counterpart key's LIVE current value — not the submitted value in isolation — BEFORE the
+	// write lands. No-op for the 51 of 53 keys with no ordering counterpart.
+	if row.ValueType == "integer" {
+		if n, ok := asInt(req.Value); ok {
+			if operr := checkConfigOrderingOnWrite(ctx, s.db, key, int(n)); operr != nil {
+				s.fail(w, r, operr)
+				return
+			}
+		}
+	}
+
 	if err := updateConfigValue(ctx, s.db, key, req.Value); err != nil {
 		if err == errConfigKeyNotFound { // lost a race with a delete (keys aren't deletable in V1, but be safe)
 			s.fail(w, r, newErr(codeNotFound, "config_key_not_found:"+key))

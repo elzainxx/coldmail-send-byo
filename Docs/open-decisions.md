@@ -455,12 +455,72 @@ than re-litigated.
 |---|---|---|---|
 | P9-OD-2 | E4 (§8) requires: "PUT smtp_operation_timeout_sec >= job_max_processing_time_sec → 400 config_ordering_violation, no write" — and Phase 9 §4.6/§5.4 states as fact that "on a live change the PUT is rejected with the clean external code config_ordering_violation." Live-tested against the actual running Brain (rebuilt image, real Postgres): `PUT /v1/admin/config/smtp_operation_timeout_sec` to `999999` (≥ `job_max_processing_time_sec`=120) returned **HTTP 200 and the write succeeded** — no rejection, no `config_ordering_violation`, no `400`. Same result for `PUT box_outcome_buffer_ttl_sec` to `1` (< `startup_reconnect_window_sec`=120, violating invariant b) — HTTP 200, write succeeded. Grepped `internal/adminapi` for `config_ordering_violation`/`validateConfigOrdering`: **zero matches** — the string and the check exist ONLY in `internal/dispatch/config.go` (the config-LOAD path, read by `Tick`/`ReclaimTick`/rescan/retention on their own cadence), never in `internal/adminapi/config_validate.go` (the write path). This is EXACTLY the gap P7-OD-5 (Phase 7 closeout) and P6-OD-1 flagged and explicitly deferred: "Building it in Phase 7 would be out-of-phase work... it closes when Phase 9 ships §4.6 + E4." Phase 9 §4.6/§5.4's own prose already asserts the write-path reject as an accomplished fact ("the PUT is rejected") — that assertion is FALSE in the current tree; only the load-path half exists. | **FLAGGED — genuinely missing capability per this phase's own mandate ("if the audit reveals a genuinely missing capability, flag it — do not build it"); NOT built here** | **Live-observed consequence (matches P7-OD-5's own prediction exactly, re-confirmed by direct observation rather than by re-reading the prior analysis):** during the ~12 seconds the bad `smtp_operation_timeout_sec=999999` value was live, both `dispatch: tick error` and `reclaim: tick error` logged `config_ordering_violation` once per tick (the config-LOAD path correctly refusing to run on the bad set — confirmed via `docker compose logs brain`); `GET /readyz` stayed `db:true, singleton_lock:true` throughout (no crash, no corruption); restoring the value via the SAME `PUT` immediately cleared the errors on the very next tick — the Brain self-heals the instant a valid config is written, exactly as designed. **No job was lost or corrupted** during the window (dispatch/reclaim simply skip-and-retry on the normal cadence while the set is invalid, per the existing load-path design) — the cost is purely that the operator discovers the mistake at the next tick's log line rather than at the moment of the `PUT`, which is precisely the "safe but not instant" characterization P7-OD-5 already gave this gap. **Disposition:** this is Phase 9's OWN deliverable (§4.6/§5.4/E4) reporting itself unbuilt when checked against the actual code — an honest audit finding, not a contradiction between two docs. Per this phase's explicit governing rule, it is flagged rather than fixed in this pass. The fix, when undertaken, is additive-only and narrowly scoped: `adminapi/config_validate.go`'s `validateConfigValue` would need to read the OTHER key of each pair (a query the current single-key validation signature does not have access to) and return `codeConfigOrderingViolation`/`400` for either pair, mirroring `dispatch/config.go`'s existing `validateConfigOrdering` logic exactly — no schema change, no new config key, additive to the existing write path only. |
 
-**Needs-user: yes** — a ruling is needed on whether to build the write-path reject now (as an
-immediate follow-up, closing the gap Phase 9's own text claims is closed) or to continue deferring
-it as a known, bounded, self-healing gap (the load-path reject already prevents any unsafe value
-from taking runtime effect; only the `PUT`'s own response is misleadingly permissive). Not a build
-blocker either way — recorded so the launch-readiness verdict (§8) states this honestly rather than
-inheriting Phase 9 §4.6/§5.4's optimistic prose uncritically.
+**RULED (2026-07-27, closeout): close it now.** Rationale on the record: an operator who `PUT`s an
+invalid pair got a clean `200 OK` while the system silently ignored the write — the same
+"false-promise-of-control" defect class the 9.5 consumption sweep already closed twice (P9.5-OD-5).
+Worse, the inverted pair PERSISTED in `sender.config`, so the load-path rejection then surfaced as a
+LATENT STARTUP/TICK FAILURE at the next deploy or crash-recovery — far from the change that caused
+it. Fail at the point of the mistake, not later.
+
+**P9-OD-2 is RULED-AND-CLOSED.** Implemented:
+
+- **New package `internal/configordering`** — the two invariant checks
+  (`CheckSMTPTimeoutVsLease`, `CheckBufferTTLVsReconnectWindow`) extracted as pure,
+  dependency-free functions with no DB/HTTP import. `internal/dispatch/config.go`'s
+  `validateConfigOrdering` (the load path) now CALLS these same functions instead of
+  reimplementing the comparisons inline — the two enforcement points can never silently define
+  "valid" two different ways. The load path's error type/string (`configOrderingError`,
+  `"config_ordering_violation: <detail>"`) is byte-identical to before (verified: the three
+  existing dispatch tests that assert on the exact string —
+  `TestConfigOrdering_RejectsInvertedPair`, `TestConfigOrdering_IsNotADBOutage`,
+  `TestConfigOrdering_RejectsShortOutcomeBufferTTL` — all still pass unchanged).
+- **New file `internal/adminapi/config_ordering_write.go`** — `checkConfigOrderingOnWrite`, called
+  from `handleConfigPut` (`config_handlers.go`) after the existing value_type/semantic validation
+  and BEFORE the DB write, for exactly the four keys that have an ordering counterpart
+  (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`,
+  `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`). It reads the counterpart key's
+  LIVE current value fresh (never cached) inside the same request, calls the SAME
+  `internal/configordering` functions the load path uses, and on violation returns a clean
+  `400 config_ordering_violation` (new external code, added to the additive-only enum) whose
+  `message` NAMES the conflicting counterpart key, its current value, and the required relation in
+  plain English (e.g. *"This value conflicts with job_max_processing_time_sec (currently 120):
+  smtp_operation_timeout_sec must stay strictly below job_max_processing_time_sec."*) — an operator
+  is never left guessing. All 49 other config keys are unaffected (no counterpart, `nil` fast-path).
+- **Ordered widening is a documented consequence, not a bug.** Raising BOTH keys of a pair upward
+  (e.g. widening the SMTP timeout AND the lease) requires ordering the two `PUT`s, because each
+  individual step is validated against the OTHER key's value at that moment — raise the boundary
+  key first (the lease, or the reconnect window), then the dependent key (the timeout, or the
+  buffer TTL). Documented inline in `config_ordering_write.go` and in the new test
+  `TestConfigOrdering_OrderedTwoStepWideningSucceeds` (below), which proves the wrong order fails
+  and the right order succeeds.
+- **Tests** (`internal/adminapi/config_ordering_write_test.go`, real Postgres, real HTTP against
+  the actual production Server): `TestConfigOrdering_InvertedPUTRejectedAndNotPersisted` (both
+  directions of both invariants rejected with `config_ordering_violation`, the error names the
+  counterpart key+value, and — anti-vacuity — the stored value is read back and confirmed
+  UNCHANGED after the rejected write); `TestConfigOrdering_ValidPUTSucceeds` (positive control — a
+  legal pair on either key of either pair succeeds normally, proving the boundary check does not
+  over-reject); `TestConfigOrdering_OrderedTwoStepWideningSucceeds` (the wrong order fails, the
+  right order succeeds, for both invariants); `TestConfigOrdering_LoadPathBackstopStillRejectsDirectSQL`
+  (defense in depth intact — a value that reaches `sender.config` by a path OTHER than the admin
+  `PUT`, e.g. a direct SQL write, is still genuinely present in the table for the Brain's own
+  `LoadConfig` to catch on its next tick; the load path's own test suite in `internal/dispatch`
+  — unmodified by this change — is what actually exercises that catch). A REAL bug was caught and
+  fixed while writing these tests: the first draft of `checkConfigOrderingOnWrite` named the WRONG
+  key in the error message for the `job_max_processing_time_sec`/`startup_reconnect_window_sec`
+  write direction (it read `configordering.Violation`'s own `CounterpartKey` field, which is fixed
+  to the invariant's semantic dependent/boundary structure, not to "the other key from this
+  particular write's perspective") — caught by
+  `TestConfigOrdering_InvertedPUTRejectedAndNotPersisted`'s own counterpart-naming assertion before
+  it ever reached a live test, fixed by building the message from the write-specific local
+  variables instead of the shared `Violation` struct's own key labels.
+- **Live-verified against the actual running Brain** (rebuilt image): the exact `PUT` that
+  previously returned `200` for `smtp_operation_timeout_sec=999999` now returns a clean
+  `400 config_ordering_violation` naming `job_max_processing_time_sec (currently 120)`; the stored
+  value is confirmed unchanged (`30`, the seeded default) via a follow-up `GET`; the symmetric
+  `box_outcome_buffer_ttl_sec=1` `PUT` is likewise rejected; a valid `PUT` (`45`, still `< 120`)
+  still succeeds normally. Full harness re-run 53/53 green; all 5 CI gates green.
+
+**Needs-user: none — RULED.**
 
 ### Review gates R1/R2 (sequential, per CLAUDE.md §11) — findings and dispositions
 

@@ -18,14 +18,15 @@ import (
 
 // External status codes (§1.3) — a stable, additive-only enum. NEVER rename/repurpose.
 const (
-	codeValidationFailed = "validation_failed" // 400
-	codeUnauthenticated  = "unauthenticated"   // 401
-	codeForbidden        = "forbidden"         // 403 (reserved; unused in V1's single scope)
-	codeNotFound         = "not_found"         // 404
-	codeConflict         = "conflict"          // 409
-	codeUnprocessable    = "unprocessable"     // 422
-	codeRateLimited      = "rate_limited"      // 429 (off by default in V1)
-	codeInternalError    = "internal_error"    // 500
+	codeValidationFailed        = "validation_failed"         // 400
+	codeConfigOrderingViolation = "config_ordering_violation" // 400 (Phase 9 §4.6/E4; P9-OD-2 RULED-AND-CLOSED)
+	codeUnauthenticated         = "unauthenticated"           // 401
+	codeForbidden               = "forbidden"                 // 403 (reserved; unused in V1's single scope)
+	codeNotFound                = "not_found"                 // 404
+	codeConflict                = "conflict"                  // 409
+	codeUnprocessable           = "unprocessable"             // 422
+	codeRateLimited             = "rate_limited"              // 429 (off by default in V1)
+	codeInternalError           = "internal_error"            // 500
 )
 
 // issue slugs (§1.2) — the fixed field-level vocabulary. Never free-text echoing input.
@@ -41,25 +42,27 @@ const (
 // fixedMessages maps an external code to its FIXED, caller-safe sentence. A handler may override
 // the message ONLY with another curated constant (never an interpolation of untrusted input).
 var fixedMessages = map[string]string{
-	codeValidationFailed: "One or more fields are invalid.",
-	codeUnauthenticated:  "Missing or invalid admin API key.",
-	codeForbidden:        "This action is not permitted.",
-	codeNotFound:         "The requested resource was not found.",
-	codeConflict:         "The request conflicts with the current state.",
-	codeUnprocessable:    "The request is well-formed but cannot be processed.",
-	codeRateLimited:      "Too many requests.",
-	codeInternalError:    "An unexpected error occurred.",
+	codeValidationFailed:        "One or more fields are invalid.",
+	codeConfigOrderingViolation: "This value would break a required ordering relationship with another config key.",
+	codeUnauthenticated:         "Missing or invalid admin API key.",
+	codeForbidden:               "This action is not permitted.",
+	codeNotFound:                "The requested resource was not found.",
+	codeConflict:                "The request conflicts with the current state.",
+	codeUnprocessable:           "The request is well-formed but cannot be processed.",
+	codeRateLimited:             "Too many requests.",
+	codeInternalError:           "An unexpected error occurred.",
 }
 
 var codeStatus = map[string]int{
-	codeValidationFailed: http.StatusBadRequest,
-	codeUnauthenticated:  http.StatusUnauthorized,
-	codeForbidden:        http.StatusForbidden,
-	codeNotFound:         http.StatusNotFound,
-	codeConflict:         http.StatusConflict,
-	codeUnprocessable:    http.StatusUnprocessableEntity,
-	codeRateLimited:      http.StatusTooManyRequests,
-	codeInternalError:    http.StatusInternalServerError,
+	codeValidationFailed:        http.StatusBadRequest,
+	codeConfigOrderingViolation: http.StatusBadRequest,
+	codeUnauthenticated:         http.StatusUnauthorized,
+	codeForbidden:               http.StatusForbidden,
+	codeNotFound:                http.StatusNotFound,
+	codeConflict:                http.StatusConflict,
+	codeUnprocessable:           http.StatusUnprocessableEntity,
+	codeRateLimited:             http.StatusTooManyRequests,
+	codeInternalError:           http.StatusInternalServerError,
 }
 
 // fieldDetail is one structured field-level error (§1.2 details[]). Never free-text.

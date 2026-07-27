@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sender-module/brain/internal/configordering"
 )
 
 // Config holds the seeded sender.config values the dispatcher CONSUMES (config-not-code, §0).
@@ -370,7 +371,10 @@ type configOrderingError struct{ detail string }
 func (e *configOrderingError) Error() string { return "config_ordering_violation: " + e.detail }
 
 // validateConfigOrdering enforces BOTH documented config-ordering invariants at load (CLAUDE.md
-// Rule 1 lists them as (a) and (b); Phase 7 §5.3 is the authoritative table).
+// Rule 1 lists them as (a) and (b); Phase 7 §5.3 is the authoritative table), delegating to
+// internal/configordering — the SAME pure functions the admin PUT boundary calls
+// (internal/adminapi/config_validate.go), so load-time and write-time can never define the
+// invariant two different ways (P9-OD-2, RULED-AND-CLOSED).
 //
 //	(a) P6-11: smtp_operation_timeout_sec  <  job_max_processing_time_sec  — STRICT. Equality is also
 //	    a violation (a hang that ties the lease could be reclaimed before the box reports, turning a
@@ -386,16 +390,15 @@ func (e *configOrderingError) Error() string { return "config_ordering_violation
 // Both are REJECTED at load, never clamped or auto-corrected (Rule 1: "Do not clamp or auto-correct
 // — reject"), with the external code config_ordering_violation. A refused boot is loud and instantly
 // fixable; the duplicate the unsafe pair would cause is silent and unrecoverable after the fact.
+// This is now the BACKSTOP, not the only line of defense — the admin PUT boundary rejects the same
+// invariant before a bad value ever lands in sender.config (defense in depth: a value that somehow
+// reaches the DB by another path, e.g. a direct SQL write, is still caught here).
 func validateConfigOrdering(c Config) error {
-	if c.SMTPOperationTimeoutSec >= c.JobMaxProcessingTimeSec {
-		return &configOrderingError{detail: fmt.Sprintf(
-			"smtp_operation_timeout_sec (%d) must be < job_max_processing_time_sec (%d)",
-			c.SMTPOperationTimeoutSec, c.JobMaxProcessingTimeSec)}
+	if v := configordering.CheckSMTPTimeoutVsLease(c.SMTPOperationTimeoutSec, c.JobMaxProcessingTimeSec); v != nil {
+		return &configOrderingError{detail: v.Detail()}
 	}
-	if c.BoxOutcomeBufferTTLSec < c.StartupReconnectWindowSec {
-		return &configOrderingError{detail: fmt.Sprintf(
-			"box_outcome_buffer_ttl_sec (%d) must be >= startup_reconnect_window_sec (%d)",
-			c.BoxOutcomeBufferTTLSec, c.StartupReconnectWindowSec)}
+	if v := configordering.CheckBufferTTLVsReconnectWindow(c.BoxOutcomeBufferTTLSec, c.StartupReconnectWindowSec); v != nil {
+		return &configOrderingError{detail: v.Detail()}
 	}
 	return nil
 }
