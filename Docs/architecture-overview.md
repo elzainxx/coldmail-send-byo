@@ -1693,5 +1693,27 @@ and needs no code change to be complete. No new endpoint was added; the audit is
 pass, not a build chunk — this repo already carries §3/§5.4a verbatim in the locked spec, and this
 chunk's job was to re-verify it holds against the current tree, which it does.
 
-*(Remaining chunks 3-6 and the two sequential review gates are appended to this section as each
+### Chunk 3 — the full config reference, 53 keys (§4)
+
+Reconciled `Docs/config-reference.md` (the CI-`config_drift`-enforced mirror, already at 53 keys
+across `sender_0010/0017/0018/0019/0020/0021`) against `Docs/config-consumers.txt` key-by-key —
+diff clean both directions. Added the "Deliberate hardcoded safety BOUNDS" section: every literal
+that governs a defensive ceiling rather than a tunable dial (`DailyLimitCeiling`,
+`maxFallbackHops`, the boxlink handshake/write deadlines, the box's client-style header-position
+tables, etc.), each re-verified against its current file path and literal value in the tree.
+Doc-only; both config CI gates green.
+
+### Chunk 4 — the full API contract (§5, B7/B8/S9)
+
+B8 (the campaign-poll `report` response shape) is now IMPLEMENTED, not just specified:
+`GET /v1/report?campaign_id=` (`internal/platformapi/campaign_report.go`) returns the §2.2
+aggregate — `totals` (incl. `waiting_for_capacity` distinct from `failed`/`bounced`), `progress`,
+paginated `items` — derived entirely from `sender.jobs` state counts, no schema change, tenant-
+scoped exactly like the single-job report (a foreign/nonexistent `campaign_id` returns a clean
+empty report, never a leak). B7 (platform-facing auth = the service token over the private
+network) and S9 (`send_logs` plaintext-at-rest accepted for V1) are DOCUMENTED — both re-verified
+already true in the code (grepped: zero routes in either surface select from `send_logs`). The
+box↔Brain wire protocol stays explicitly out of the public contract.
+
+*(Remaining chunks 5-6 and the two sequential review gates are appended to this section as each
 lands, per the same discipline every prior phase followed.)*
