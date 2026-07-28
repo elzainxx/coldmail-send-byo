@@ -101,6 +101,16 @@ func (s *Server) handlePoolCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		userID = *req.OwnerUserID
 		ownerUserID = req.OwnerUserID
+	case "":
+		// OMITTED is a different operator mistake from a BAD VALUE, and the two want different
+		// fixes ("add the field" vs "pick a legal value"). This handler already draws that line for
+		// owner_user_id (issueRequired vs issueMalformed above), and platformapi draws it for
+		// job_item_id/user_id; `kind` collapsed both into forbidden_value, which reads as "the value
+		// you sent is not allowed" when nothing was sent at all. Found walking the Stage 4 admin
+		// surface in Docs/sender-module-local-test-guide.md.
+		s.fail(w, r, newErr(codeValidationFailed, "pool_kind_required").
+			withDetails(fieldDetail{Field: "kind", Issue: issueRequired}))
+		return
 	default:
 		s.fail(w, r, newErr(codeValidationFailed, "pool_kind_invalid").
 			withDetails(fieldDetail{Field: "kind", Issue: issueForbiddenValue}))

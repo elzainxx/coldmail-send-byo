@@ -35,8 +35,11 @@ reason, a credential, ciphertext, a key id, a stack trace, or an internal hostna
              "request_id": "req_01J..." } }
 ```
 
-`details[]` is present only on `validation_failed`; `details[].issue` ∈ `{required, out_of_range,
-malformed, not_found, conflict, forbidden_value}`. The full, additive-only `error.code` enum:
+`details[]` accompanies field-level rejections — every `validation_failed`, and those
+`unprocessable` refusals that can name the field or flag responsible (an immutable field on a
+`PATCH`, an illegal account lifecycle transition). It is always optional and always additive:
+a client must not require it, and its absence never changes the meaning of `code`.
+`details[].issue` ∈ `{required, out_of_range, malformed, not_found, conflict, forbidden_value}`. The full, additive-only `error.code` enum:
 
 | HTTP | `error.code` | When |
 |---|---|---|

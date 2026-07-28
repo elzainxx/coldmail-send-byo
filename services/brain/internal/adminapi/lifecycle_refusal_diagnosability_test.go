@@ -94,3 +94,30 @@ func TestLifecycleRefusalsAreDiagnosable(t *testing.T) {
 		t.Fatalf("expected 7 distinct refusal messages, got %d: %v", len(seen), seen)
 	}
 }
+
+// TestPoolKindRequiredVsInvalid — an OMITTED `kind` reports issue="required"; a BAD `kind` reports
+// issue="forbidden_value". Both are 400 validation_failed, so the status code alone cannot tell an
+// operator whether to add the field or change its value — details[].issue is the only signal, and
+// it must not collapse the two. Mirrors the required-vs-malformed split this same handler already
+// applies to owner_user_id. Found walking the test guide's Stage 4.
+func TestPoolKindRequiredVsInvalid(t *testing.T) {
+	e := newTestEnv(t, "pool_kind_slug")
+
+	omitted := e.do(t, "POST", "/v1/admin/pools", map[string]any{"name": "no-kind"}).requireStatus(t, 400)
+	if got := omitted.errorDetailIssue("kind"); got != issueRequired {
+		t.Fatalf("omitted kind: details[kind].issue = %q, want %q", got, issueRequired)
+	}
+
+	bad := e.do(t, "POST", "/v1/admin/pools", map[string]any{"name": "bad-kind", "kind": "wat"}).requireStatus(t, 400)
+	if got := bad.errorDetailIssue("kind"); got != issueForbiddenValue {
+		t.Fatalf("invalid kind: details[kind].issue = %q, want %q", got, issueForbiddenValue)
+	}
+
+	// Anti-vacuity: the two must actually DIFFER (a handler that returned one slug for both would
+	// satisfy neither check above only by luck of ordering).
+	if omitted.errorDetailIssue("kind") == bad.errorDetailIssue("kind") {
+		t.Fatal("omitted and invalid kind report the SAME issue slug — operator cannot tell them apart")
+	}
+	assertNoRawDBLeak(t, omitted.raw)
+	assertNoRawDBLeak(t, bad.raw)
+}
