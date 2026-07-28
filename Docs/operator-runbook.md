@@ -204,6 +204,23 @@ Read the right-hand column. It splits into two fundamentally different situation
   **before** unquarantining. For `paused: manual` / `disabled`, someone turned it off deliberately;
   check `sender.account_events` for who and why before turning it back on.
 
+> **The two at-limit rows above are NOT the same row, and raising `daily_limit` only fixes one of
+> them.** Both read "at daily limit" to the eye, and both self-clear at the reset, but they recover
+> differently *today*:
+>
+> | The row | `paused` | Raise `daily_limit` → | `POST /accounts/{id}/unpause` → |
+> |---|---|---|---|
+> | `at daily limit` (count reached the cap, not yet paused) | `false` | **eligible immediately** — the current-day check is `daily_sent_count < daily_limit`, so more headroom is all it needs | `422` (not paused) |
+> | `paused: daily_limit` (the send that hit the cap paused it) | `true` | **no effect today** — the current-day eligibility branch requires `paused = false`, and it is not | `422 unprocessable` / `pause_reason:conflict` — deliberately refused, because a self-clearing pause is not an operator's to lift |
+>
+> So on a `paused: daily_limit` row there is no same-day admin action that re-opens it: the daily
+> reset is the only thing that clears it (`daily_reset_day < today` → `paused=false,
+> pause_reason=NULL`, lazily on the next claim). This is deliberate, not a gap — locked in Phase 1
+> (`Docs/history/phase-1-data-model.md`, decisions #17 and #19: "lowering can make an account
+> immediately ineligible until reset — expected admin behavior"), and the `/unpause` refusal is the
+> Phase 2 §837 `not_manual_pause` rule. **If you need that capacity back before the reset, add an
+> account — do not go hand-editing `paused` in the database.**
+
 If a pool has literally zero accounts, that is the case in
 [Pool exhausted / waiting for capacity](#pool-exhausted--waiting-for-capacity).
 
@@ -508,7 +525,7 @@ you are looking at a temporary dip or a real shortage.
 
 | What you found | What to do |
 |---|---|
-| Every account **at daily limit** | Genuine capacity shortage. Add accounts, or raise `daily_limit` on existing ones — but only to a level the provider actually tolerates. Raising a limit past what a mailbox can sustain converts a clean wait into `throttle` failures and score damage. [`capacity-planning.md`](./capacity-planning.md) has the sizing table. |
+| Every account **at daily limit** | Genuine capacity shortage. Add accounts, or raise `daily_limit` on existing ones — but only to a level the provider actually tolerates. Raising a limit past what a mailbox can sustain converts a clean wait into `throttle` failures and score damage. [`capacity-planning.md`](./capacity-planning.md) has the sizing table. **Raising the limit only re-opens the account if it is not yet PAUSED** — see the note below; on a `paused: daily_limit` row it changes nothing until the reset. |
 | Accounts **throttle-paused** | You are sending faster than the provider allows. Widen `send_delay_min_sec` / `send_delay_max_sec`, or lower `concurrency_per_user_default`. Adding accounts also helps, because pacing is per-lane. |
 | Accounts **quarantined / disabled / manually paused** | This is the case that can genuinely fail jobs. Resolve each per [An account got quarantined](#an-account-got-quarantined) — and note that this is the *only* configuration in which exhaustion is terminal. |
 | Pool has **zero accounts** | Add one (`POST /v1/admin/accounts`). A brand-new empty pool reads `exhausted` immediately, which is honest but harmless: the alert condition only fires once at least one job is actually waiting on it. |
