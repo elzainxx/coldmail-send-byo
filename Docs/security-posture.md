@@ -34,13 +34,13 @@ structurally where it can, rather than by convention.
 | Credentials are never stored in plaintext | AES-256-GCM, key held outside the DB | Schema + `internal/adminapi/crypto.go` |
 | A ciphertext cannot be moved between rows | AAD = `account.id ‖ credential_key_id`; a transplanted or re-labelled ciphertext fails authentication and releases nothing | `internal/credential`; harness test |
 | **Brain is the sole decryptor** | Decrypt exists in exactly one package (`internal/credential`), wired only into the dispatch path — never into `adminapi.Server` | Package split, not a flag. No `/v1/admin/*` route can reach plaintext. |
-| The operator surface can write credentials but never read them | `adminapi.Encryptor` has **no Decrypt method** | Type surface; behavioral test asserts no admin route yields a credential |
+| No `/v1/admin/*` **response** ever contains a plaintext credential | `adminapi.Encryptor` has **no Decrypt method** | Type surface; behavioral test asserts no admin route yields a credential. This bounds the API response surface, **not** a rogue operator key — see §3.11 |
 | The box has no DB and no KMS access | It ships **no database driver and no KMS SDK** (`services/box/package.json` `dependencies: {}`), and mounts neither DB credentials nor key material | Dependency manifest + container mounts; a harness test asserts the box cannot read the key file |
-| The box holds credentials in memory only | Zeroed on every exit path — success, error, panic, shutdown, timeout | `services/box/src/creds.js`; behavioral tests |
-| Credentials never appear in logs | The `no_secret_leak` CI gate greps real service logs for credentials and tokens | Blocking CI gate on every push |
+| The box holds credentials in memory only | Zeroed on **every send-path exit** — accept, SMTP error, thrown exception — by a `finally` the send cannot skip. Not on the SIGTERM or uncaught-exception paths: see §3.12 | `services/box/src/creds.js` + `stream.js`'s `finally`; behavioral tests cover all three send-path exits |
+| Credentials never appear in logs | Two scans. The `no_secret_leak` CI gate covers the **box registration token and its hash**; the SMTP-credential canary scan lives in the send-path harness (`phase3_send.sh`, `phase8_variation.sh`), which also checks `send_logs`, `jobs.last_error_message`, the delivered message, and the ciphertext column | Blocking CI gate + harness on every push. Neither runs against a production log stream — see §5 |
 | Box↔Brain is mutually authenticated and confidential | mTLS on both the register/heartbeat and the send-stream listeners | `internal/tlsutil`; no non-TLS path exists |
-| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`sender.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on next connect. No CRL/OCSP needed to evict a box. |
-| AUTH never precedes TLS | STARTTLS-before-AUTH on 587/25; implicit TLS on 465 | `services/box/src/smtp.js` |
+| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`sender.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on **next connect**. No CRL/OCSP needed to evict a box. The check runs at register only — it does not tear down a stream already open (§3.12). The legacy `:8443` register/heartbeat listener authorizes against `DEV_BOX_ID`/`DEV_BOX_TOKEN_HASH` from the **environment**, not `sender.boxes`, so clearing the hash does not affect it; it carries no job stream and no credential (`internal/boxlink/boxlink.go`) |
+| AUTH never precedes TLS | STARTTLS-before-AUTH on 587/25; implicit TLS on 465. TLS is always established first — but the **certificate is verified only for public hosts**; a loopback/RFC-1918/link-local `smtp_host` is trusted without validation (a test affordance, §3.13) | `services/box/src/smtp.js` |
 | The two auth domains never share a credential | Domain A platform service token vs Domain B operator admin key, separate env vars, separate hash lists | `internal/config`; distinct middleware |
 | Both API surfaces fail **closed** | No configured hash ⇒ the surface is **not mounted** at all (logged as `admin API NOT mounted`) | `internal/config` + `cmd/brain` |
 | Bearer keys are not brute-forceable from the DB | Stored bcrypt-hashed, compared in constant time | `internal/adminapi/auth.go` |
@@ -48,8 +48,8 @@ structurally where it can, rather than by convention.
 | The app role cannot alter the schema | `sender_module` is login-only with enumerated grants, never ownership | `sender_0000`/`sender_0002` |
 | Audit trails cannot be rewritten | `job_events`/`account_events` are append-only; `send_logs` is write-once (reject-trigger + `REVOKE UPDATE`) | Triggers + grants |
 | No internal detail crosses a client boundary | Two-vocabulary rule: client envelopes carry only `{code, message, request_id}`; internal reasons go to logs keyed by that request id | `internal/adminapi/errors.go`; contract tests |
-| The alert webhook leaks nothing | Treated as untrusted outbound egress: payload is condition code, severity, subject `{type,id}`, detail, timestamp, module — no content, credentials, reasons, SQL, or hostnames. Delivery failure is logged internally and dropped | `internal/adminapi/health_alerts.go` |
-| Outcomes are never invented | If the box did not confirm a send/failure/bounce, the system does not record one. A Brain-declared timeout requeues; it never fabricates | Dispatch/reclaim design; behavioral tests |
+| The alert webhook's **payload** leaks nothing | Treated as untrusted outbound egress: payload is condition code, severity, subject `{type,id}`, detail, timestamp, module — no content, credentials, reasons, SQL, or hostnames. Delivery failure is logged internally and dropped | `internal/adminapi/health_alerts.go`. The **destination** is unrestricted — §3.14 |
+| The Brain never invents an outcome | If the box did not confirm a send/failure/bounce, the Brain does not record one. A Brain-declared timeout requeues; it never fabricates | Dispatch/reclaim design; behavioral tests. This constrains the **Brain**, not a compromised box reporting on its own job — §3.15 |
 | Exactly one Brain is ever dispatching | Session-level Postgres advisory lock, bounded acquire then exit. SIGKILL releases it — no stale lock | `cmd/brain` + harness test |
 | Every autonomous subsystem has an off switch | `dispatch_enabled`, `autoquarantine_mode` (defaults to **shadow**, not enforce), `autopause_enabled`, `variation_enabled`, `alert_webhook_url` | Config-driven, runtime-changeable |
 
@@ -69,19 +69,30 @@ sends flowing through it while they hold that access.
 What bounds the exposure:
 
 - **Only accounts actually dispatched to that box, only while it is running.** A box holds one job in
-  flight; credentials are scoped to a single send and zeroed on every exit path. There is no
+  flight; credentials are scoped to a single send and zeroed when that send ends. There is no
   credential cache, no store, and no on-disk copy.
 - **Not the whole pool.** A box cannot enumerate accounts, query the database, or ask the Brain for a
   credential it was not sent — it has no DB access and no such request exists in the protocol.
 - **Not the master key.** The box holds no key material and cannot decrypt anything.
-- **Eviction is immediate and does not require certificate revocation:** clear
-  `sender.boxes.token_hash` and it is refused on next connect.
+- **Eviction needs no certificate revocation:** clear `sender.boxes.token_hash` (or set
+  `status='disabled'`) and the box is refused on its **next connect**. No CRL, no OCSP.
 
-What does **not** bound it: an attacker with persistent root on a box can keep harvesting for as long
-as the compromise goes unnoticed, and a long-lived box that dispatch favors will see many accounts
-over time. There is no per-send attestation and no way to detect credential exfiltration from a box
-from the Brain side. Treat box hosts as holding live credentials, and keep them off the public
-internet (§4).
+What does **not** bound it:
+
+- **Eviction is not immediate, and this is the most important correction to make before an
+  incident.** The token/status check runs **only in the register handshake**
+  (`internal/boxlink/stream.go`). Once a stream is registered, job pushes are served from an
+  in-memory box map with no re-read of `sender.boxes`, and the heartbeat path will even return a
+  `stale` box to `active` without re-checking the token. So an attacker who keeps the (box-initiated,
+  outbound) stream open **continues to receive one fresh plaintext credential per job** after the
+  operator has run the revocation SQL and believes the box is evicted. **Kill the host or cut its
+  network path first; the SQL is what stops it coming back, not what stops it now.** See
+  [`disaster-recovery.md`](./disaster-recovery.md) §4.
+- **Persistence.** An attacker with root on a box can keep harvesting for as long as the compromise
+  goes unnoticed, and a long-lived box that dispatch favors will see many accounts over time. There is
+  no per-send attestation and no way to detect credential exfiltration from a box from the Brain side.
+
+Treat box hosts as holding live credentials, and keep them off the public internet (§4).
 
 ### 3.2 `send_logs` holds plaintext message bodies and recipient addresses at rest
 
@@ -146,6 +157,19 @@ sharing a key are indistinguishable in `account_events`. Multiple hashes can be 
 makes per-operator keys and clean rotation possible, and is the recommended practice; it is not
 enforced. RBAC is not built.
 
+Two gaps in what that audit trail actually captures, both worth knowing before an incident review:
+
+- **Config writes leave no DB audit row.** There is no `config_events` table. A `PUT
+  /v1/admin/config/{key}` is recorded **only** as a Brain process-log line keyed by `request_id`,
+  with no before value and no after value. So "when was `debug_log_retention_days` widened?" — the
+  question §3.2 makes matter — is answerable only from shipped logs, for as long as their retention
+  holds. Log shipping is therefore a security control here, not just an ops convenience
+  ([`monitoring.md`](./monitoring.md)).
+- **`account_events` records that an account was updated, not what changed.** An `updated` row
+  carries identical before/after flag snapshots (`paused`, `pause_reason`, `quarantined`, `disabled`)
+  and no changed-field list, so a `PATCH` that rewrote `smtp_host` is indistinguishable from a no-op
+  one. This is what makes §3.11 hard to detect after the fact.
+
 ### 3.7 There is no rate limiting or lockout on the API surfaces
 
 Neither domain limits authentication attempts or request volume. bcrypt comparison makes online
@@ -174,6 +198,108 @@ section and [`future-work.md`](./future-work.md).
 and derives tenancy from them. A compromised or buggy platform can therefore direct sends and bind
 jobs to users. The trust boundary is at the module's edge, and it is intentional — but a reviewer
 should know that `user_id` is an input this module validates for existence, not for authority.
+
+### 3.11 A Domain B operator can have any stored credential delivered in plaintext to a host they choose
+
+The §2 row "no `/v1/admin/*` response ever contains a plaintext credential" is structurally true and
+still worth having — but it bounds the **API response surface**, not the holder of the admin key.
+
+`PATCH /v1/admin/accounts/{id}` can set `smtp_host` on its own, and the credential columns are
+touched only when `smtp_secret` is present (the deliberate omit-means-unchanged design). So an
+operator — or anyone holding a leaked admin key — can repoint an existing account at a host they
+control while leaving the stored ciphertext untouched. On the next dispatch the Brain decrypts as
+normal and hands the plaintext to a box, which AUTHs to whatever host the account now names. No DB
+access is needed, no key-file access, and no Domain A token: ordinary campaign traffic through that
+account is the trigger. TLS is no obstacle — the attacker's host presents a valid certificate for its
+own name.
+
+Combined with §3.6's second bullet (`account_events` records no field-level diff), the redirect is
+also not visible in the audit trail. Mitigations available today are entirely operational: treat the
+admin key as equivalent to the credentials themselves, issue one hash per operator so a leak is
+attributable and revocable, and keep the key list short. A host allowlist and a rule requiring
+`smtp_secret` re-entry on an `smtp_host` change are registered in
+[`future-work.md`](./future-work.md), not built.
+
+### 3.12 Box credential zeroing covers the send path, not shutdown or an uncaught exception
+
+The box zeroes its in-memory credential in a `finally` around the SMTP session, so all three
+send-path exits — accept, SMTP error, thrown exception — are covered, and there are behavioral tests
+for each. Two exits are **not** covered:
+
+- **SIGTERM/SIGINT.** The shutdown handler stops the stream and exits; it holds no reference to the
+  in-flight credential and does not zero it.
+- **An uncaught exception or unhandled rejection outside the send path.** No handler is registered
+  for either, so there is no zeroing step on that exit.
+
+Practical meaning: a memory image captured at that instant — core dump, container checkpoint,
+hypervisor snapshot, `/proc/<pid>/mem` read by local root — may still contain the plaintext of one
+in-flight send. So `systemctl stop sender-box` on a host you suspect is compromised is **not** a
+credential scrub; rotate that provider password rather than assuming it was cleared. Closing this is
+a behavior change and is registered in [`future-work.md`](./future-work.md).
+
+### 3.13 Certificate verification is skipped for private-IP SMTP hosts
+
+`AUTH never precedes TLS` (§2) holds unconditionally: TLS is always established before AUTH, on 465
+by implicit TLS and on 587/25 by STARTTLS, and the box aborts rather than AUTHing if STARTTLS is not
+offered. But certificate *verification* is host-conditional. The box disables it for `localhost`, the
+compose sink, `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, and `169.254/16` — a test
+affordance so the harness can run against a local sink. The Brain-side validator accepts any bare IP
+literal as `smtp_host`, so nothing stops a private address being stored on a real account.
+
+Consequence: an account pointed at a private-IP SMTP host AUTHs over an **unverified** TLS
+connection, so an attacker positioned on that network path (or one who arrived via §3.11's redirect)
+can MITM with a self-signed certificate and capture the plaintext credential. A public hostname is
+unaffected — verification is enforced there. Deploy-time check in §5; rejecting private-range
+`smtp_host` at write time is registered in [`future-work.md`](./future-work.md).
+
+### 3.14 The alert webhook's destination is unrestricted — blind SSRF from inside the trust boundary
+
+§2's webhook row is about the payload, and the payload is clean. The **destination** is validated for
+scheme prefix only: `alert_webhook_url` must be empty or start with `http://` or `https://`. There is
+no host, port, IP, or private-range restriction, so loopback, RFC-1918, and cloud link-local metadata
+addresses (`169.254.169.254`) are all accepted, and the Brain will POST to them from inside the trust
+boundary on every rising alert edge.
+
+Bounded: only a Domain B holder (or someone with DB write access) can set it, and both are already
+fully privileged by §3.6/§3.8. It is also **blind** — the response body is never returned to a caller
+and never logged as content — so exploitation is limited to reachability probing and side-effecting
+`POST`s. Still: treat the value as privileged config, and constrain the Brain's egress at the network
+layer rather than relying on the value being sensible. A destination allowlist is registered in
+[`future-work.md`](./future-work.md).
+
+### 3.15 A compromised box can fabricate the outcome of the job it legitimately holds
+
+§2's "the Brain never invents an outcome" constrains the Brain, and it holds. The converse is not
+constrained. The outcome guards check that the reporting box matches `assigned_box_id` and that the
+`attempt_token` is current — which prevents replay across attempts and across boxes, **not** a lie
+about the current job. A report from the box that genuinely holds the job, with the correct token, is
+applied as-is:
+
+- `accepted` marks the job `sent` with an attacker-chosen `provider_message_id`, so mail that was
+  never sent is recorded as delivered.
+- `error`/`bounced` feed account scoring, so fabricated `auth_failure`s can drive real accounts —
+  potentially a whole pool — into quarantine.
+
+Neither is detectable from this system, because §3.9 means there is no independent delivery feedback
+that could contradict the box. A per-send attestation is what would close it; see §3.1's note that
+there is none, and [`future-work.md`](./future-work.md).
+
+### 3.16 Two known Go module vulnerabilities are unpatched, with live call paths
+
+Not a design residual risk — a current, dated one, recorded here because a reviewer reading only §3
+would otherwise not see it:
+
+- **`GO-2026-5004`** — SQL injection via placeholder confusion in `pgx/v5`. The pinned version is
+  below the fix. This is the only database driver in the system, in the process that holds every
+  credential.
+- **`GO-2026-5970`** — infinite loop in `golang.org/x/text`.
+
+Both are real, both have live call paths, and neither is toolchain-only. Remediation was attempted in
+Phase 10 and reverted because the version bumps break the pinned builder image — so this is build
+infrastructure, not polish. The full history, versions, and remediation plan are in
+[`future-work.md`](./future-work.md) §5; it is a blocking pre-live item in
+[`go-live-checklist.md`](./go-live-checklist.md) (item 9). **Clear both before a pilot carries real
+data.**
 
 ---
 
@@ -206,7 +332,10 @@ The codebase cannot check these; they are the deployment's half of the posture.
 - [ ] `debug_log_retention_days` reflects a deliberate privacy decision (§3.2), not a default nobody looked at.
 - [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on nothing).
 - [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content besides retention).
-- [ ] `bash tests/harness/checks/no_secret_leak.sh` passes on this deployment's logs, not just in CI.
+- [ ] No account has a **private-range or link-local `smtp_host`** (§3.13) — certificate verification is skipped for those, so the credential would cross an unverified connection. `SELECT id, smtp_host FROM sender.accounts;` and eyeball it.
+- [ ] `alert_webhook_url` points where you think it does (§3.14) — the value is validated for scheme prefix only, and the Brain will POST to a private or link-local address just as readily as to your alerting service.
+- [ ] Both Go module advisories are cleared (§3.16) — `go-live-checklist.md` item 9. Do this before a pilot carries real data.
+- [ ] Your **own** log stream has been grepped for a known account's password. The shipped `no_secret_leak.sh` gate reads `.env` and compares only the **dev box token/hash** against the *dev compose* logs — against a production deployment it either aborts on the missing `.env` or prints `OK` having compared nothing. There is no production-ready credential-leak scan; write the grep yourself, or treat this box as unchecked.
 
 ---
 

@@ -148,7 +148,11 @@ A minimal, complete hookup for a single-Brain deployment:
    dispatch lock".
 2. **Health poll**: the cron entry above, every 5 minutes. This is what makes the webhook work.
 3. **Webhook destination**: set `alert_webhook_url` to your incident channel's inbound URL. You now
-   get a message the first time a pool exhausts, an account is quarantined, or a box dies.
+   get a message the first time a pool exhausts, an account is quarantined, or a box dies. Treat this
+   value as **privileged config**: it is validated for scheme prefix only, so the Brain will POST from
+   inside your trust boundary to any address it resolves — including loopback, RFC-1918, and cloud
+   link-local metadata. Constrain the Brain's egress at the network layer rather than relying on the
+   value being sensible ([`security-posture.md`](./security-posture.md) §3.14).
 4. **On receiving an alert**: open the runbook at "Alert conditions → triage", and run
    `curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY" | jq` to see current state —
    the alert tells you *what*, the endpoint tells you *now*.

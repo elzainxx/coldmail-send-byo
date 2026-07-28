@@ -60,7 +60,7 @@ Record the starting state so you can tell what the test changed:
 
 ```bash
 export ADMIN=http://127.0.0.1:8080
-export KEY='<operator admin key>'
+read -rs -p 'operator admin key: ' KEY; echo; export KEY   # not an assignment: keeps it out of ~/.bash_history
 ahealth() { curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY"; }
 
 # Two captures on purpose: a wide one to read now, and a narrow SORTED one to diff against in §5.

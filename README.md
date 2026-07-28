@@ -93,6 +93,6 @@ Five blocking CI gates run on every push, each catching a specific class of drif
 | `contract_drift` | a served route is undocumented in `api-contract.md`, or vice versa |
 | `migration_lint` | the migration chain has a gap, a missing `.down.sql`, or a non-self-tracking file |
 | `config_consumption` | a seeded key has no real consumer and is not marked RESERVED |
-| `no_secret_leak` | a credential or token appears in service logs |
+| `no_secret_leak` | the box registration token or its hash appears in service logs (the SMTP-credential canary scan lives in the send-path harness) |
 
 Run any of them directly: `bash tests/harness/checks/<name>.sh`.

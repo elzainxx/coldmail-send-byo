@@ -308,13 +308,17 @@ auth/confidentiality. That splits the work:
   Plan a maintenance window; there is no dual-trust-root mode.
 - **Decommissioning a box:** clear or rotate `sender.boxes.token_hash`. It is refused on its next
   connect *regardless of a still-valid cert* — that is the intended kill path, and it is why cert
-  revocation infrastructure is not required to remove a box.
+  revocation infrastructure is not required to remove a box. **Then stop the box process**, because
+  the SQL alone does not disconnect a box that is currently connected — see §4a. For a routine
+  decommission you are stopping it anyway, so the order barely matters; for a *compromise* it is the
+  whole procedure.
 
 ---
 
 ## 4. What to do in the first five minutes of a suspected key compromise
 
-Not a drill — the case where you believe the master key or a backup copy leaked.
+Not a drill — the case where you believe the master key or a backup copy leaked. For a compromised
+**box** the first move is different and the order matters — see §4a.
 
 1. **Assume every SMTP credential is exposed.** The key decrypts all of them. This is a provider-side
    incident before it is a this-system incident.
@@ -327,6 +331,42 @@ Not a drill — the case where you believe the master key or a backup copy leake
    since re-entry is required either way.
 5. Review who could reach the backups (§1's table), and treat the audit trail as evidence:
    `sender.account_events` records every credential write with a request id, and it is never swept.
+
+---
+
+## 4a. What to do in the first five minutes of a suspected BOX compromise
+
+A different incident from §4, with a different first move — and the one place where doing the obvious
+thing first does **not** stop the bleeding.
+
+**The trap:** clearing `sender.boxes.token_hash` is checked only during the register handshake. A box
+that is *already* connected keeps its stream, and the Brain keeps pushing jobs to it from its
+in-memory registration — each push carrying one freshly decrypted SMTP credential. The revocation SQL
+stops the box coming *back*; it does not stop it *now*. Run it and walk away and the attacker keeps
+harvesting a new credential per job while your ticket says "box evicted".
+
+1. **Cut the box off the network, or kill the host.** Firewall its route to the Brain's `:8444`, or
+   stop the instance. This is the step that actually ends credential flow. The stream is the box's own
+   outbound connection, so nothing the Brain does terminates it.
+   - If you cannot reach the host, `dispatch_enabled=false` is the blunt Brain-side stop — it halts
+     dispatch to *every* box, which is the right trade for a few minutes.
+2. **Then revoke:** clear/rotate `sender.boxes.token_hash` and set `status='disabled'`, so it is
+   refused if it ever reconnects.
+3. **Rotate the SMTP passwords of every account that dispatched to that box** while it may have been
+   compromised. `SELECT DISTINCT assigned_account_id FROM sender.jobs WHERE assigned_box_id = '<box>'
+   AND updated_at > '<suspected start>';` gives you the list. Do not skip this because the box was
+   stopped: shutdown does **not** zero the in-flight credential (`security-posture.md` §3.12), and a
+   box that ran for a while saw many accounts.
+4. **Distrust what that box reported.** A compromised box can report any outcome for a job it
+   legitimately held — including `accepted` for mail never sent, and fabricated `auth_failure`s that
+   may already have quarantined healthy accounts (`security-posture.md` §3.15). Review
+   `sender.account_events` for quarantines in the window and un-quarantine what the box lied about;
+   treat `sent` rows from that box as unverified.
+5. **The master key is not exposed.** A box holds no key material and cannot decrypt anything, so this
+   is not a §4 incident unless you have separate evidence. Do not rotate the master key reflexively —
+   it costs re-entry of every password for no gain here.
+6. Re-issue that box's leaf cert before reusing the host, and mint a **new** registration token; never
+   redeploy the old token.
 
 ---
 

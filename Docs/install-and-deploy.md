@@ -410,9 +410,16 @@ See the runbook.
 Nothing sends until a pool exists, has an eligible account, and is designated the default.
 Request/response shapes are in [`api-contract.md`](./api-contract.md).
 
+**Two secrets get typed in this step — keep them out of your shell history and out of `ps`.** Both
+the admin key and the mailbox password below would otherwise land in `~/.bash_history`, and an inline
+`curl -d '{"smtp_secret":…}'` is visible in the process list to every local user for the duration of
+the request. The pattern used here: `read -rs` instead of an assignment, `--data @file` instead of an
+inline body, and a `shred` at the end. (This is the same discipline as `provision-box`'s `--pass-env`,
+which exists so a password never becomes a command-line argument.)
+
 ```bash
 ADMIN=http://localhost:8080
-KEY='<the plaintext ADMIN_API_KEY>'
+read -rs -p 'ADMIN_API_KEY: ' KEY; echo    # not an assignment: keeps it out of history
 
 # 1. A shared pool:
 curl -fsS -X POST $ADMIN/v1/admin/pools -H "Authorization: Bearer $KEY" \
@@ -421,21 +428,35 @@ curl -fsS -X POST $ADMIN/v1/admin/pools -H "Authorization: Bearer $KEY" \
 # 2. An SMTP account in it (the credential is encrypted on arrival; the Brain never returns it).
 #    The admin surface decodes STRICTLY — a misspelled field name is a 400, not an ignored key.
 #    Full field table incl. the optional ones: api-contract.md.
+#    Written to a file first so the password never appears in `ps` or in shell history.
+umask 077
+cat > /tmp/acct.json <<'JSON'
+{
+  "pool_id":       "<pool-uuid from step 1>",
+  "smtp_host":     "smtp.example.com",
+  "smtp_port":     587,
+  "smtp_username": "<mailbox username>",
+  "smtp_secret":   "<mailbox password>",
+  "from_address":  "you@example.com",
+  "from_name":     "Your Name"
+}
+JSON
+$EDITOR /tmp/acct.json    # fill in the real values
 curl -fsS -X POST $ADMIN/v1/admin/accounts -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{
-        "pool_id":       "<pool-uuid from step 1>",
-        "smtp_host":     "smtp.example.com",
-        "smtp_port":     587,
-        "smtp_username": "<mailbox username>",
-        "smtp_secret":   "<mailbox password>",
-        "from_address":  "you@example.com",
-        "from_name":     "Your Name"
-      }'
+  -H 'Content-Type: application/json' --data @/tmp/acct.json
+shred -u /tmp/acct.json
 
 # 3. Designate the default shared pool — base sending does NOT work until this is set:
 curl -fsS -X PUT $ADMIN/v1/admin/config/default_shared_pool_id -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' -d '{"value":"<pool-uuid>"}'
+
+unset KEY   # when you are done with this shell session
 ```
+
+**Keep `smtp_host` a public hostname.** A private-range or link-local address (`10.*`, `192.168.*`,
+`172.16–31.*`, `127.*`, `169.254.*`, `localhost`) is accepted by the API, but the box **skips
+certificate verification** for those — a test affordance for the local sink — so the credential would
+cross an unverified TLS connection. See [`security-posture.md`](./security-posture.md) §3.13.
 
 `default_shared_pool_id` seeds `NULL` and stays `NULL` until you set it. Until then, base-campaign
 jobs stay cleanly `queued` — they are not lost and not failed, but nothing sends. This is the single
@@ -681,6 +702,12 @@ A box coming online kicks the dispatcher, so queued work starts flowing to it im
 ```
 
 Run that SQL, then stop the box (`sudo systemctl disable --now sender-box`).
+
+**Both steps are required, and the second is the one that takes effect now.** The token/status check
+runs only in the register handshake, so the SQL refuses the box's *next* connect but does not tear
+down a stream it already holds — while it stays connected the Brain keeps pushing it jobs, each
+carrying a decrypted credential. If you are removing a box because you suspect it is **compromised**,
+reverse the order and isolate the host first: [`disaster-recovery.md`](./disaster-recovery.md) §4a.
 
 On its next connect attempt the box is refused **regardless of its still-valid mTLS certificate** —
 the token is the authority. Any job it held in flight is picked up by the reclaim loop and

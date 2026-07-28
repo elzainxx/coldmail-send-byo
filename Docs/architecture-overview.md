@@ -78,7 +78,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Exactly one active Brain | session-level advisory lock, fixed key | `internal/singleton` (`Docs/advisory-locks.md`) |
 | Brain is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Brain role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
 | Box holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every exit path | `services/box` (structural) |
-| Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate | `internal/adminapi`, CI |
+| Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (box token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
 | Tenant isolation | `user_id` on every table; RLS on all `sender.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `sender_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
 | Every tunable is config, not code | 53 seeded `sender.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |

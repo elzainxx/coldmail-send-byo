@@ -119,12 +119,17 @@ surface (P9-A, RULED — Phase 9 §5.4a). Box lifecycle is an out-of-band operat
 **Action — decommissioning/rotating a box:**
 1. `provision-box revoke --id <id>` — emits SQL clearing/rotating `token_hash` and setting
    `status='disabled'`. Run it against the live DB.
-2. On its next connect attempt the box is refused regardless of its still-valid mTLS client
+2. **Stop the box process.** The token check runs only in the register handshake, so the SQL above
+   refuses the *next* connect but does not disconnect a box that is already streaming — and until it
+   disconnects the Brain keeps pushing it credentialed jobs. For a planned decommission you are
+   stopping it anyway; for a *suspected compromise* isolate the host **first** and revoke second
+   ([`disaster-recovery.md`](./disaster-recovery.md) §4a).
+3. On its next connect attempt the box is refused regardless of its still-valid mTLS client
    cert (**token is the authority; cert is transport only** — a decommissioned box cannot talk
    its way back in with cert alone).
-3. Any job that box held in flight falls to the Phase 6 reclaim loop and re-dispatches to a live
+4. Any job that box held in flight falls to the Phase 6 reclaim loop and re-dispatches to a live
    box automatically — no manual job requeue needed.
-4. **Rotation** is the same procedure as decommission + re-provisioning: revoke the old token,
+5. **Rotation** is the same procedure as decommission + re-provisioning: revoke the old token,
    mint + seed a new one, roll the box's deploy secret.
 
 ---
@@ -166,6 +171,11 @@ account — `daily_limit` applies at its full configured value from the account'
 A brand-new account added to a shared pool inherits `daily_limit_default` and will be routed up to
 that full figure on day one if the pool needs the volume, with no automatic gradual ramp. (What the
 default actually is: [`config-reference.md`](./config-reference.md).)
+
+**Also check while you are looking at the accounts:** no account's `smtp_host` is a private-range or
+link-local address. The API accepts one, but the box **skips TLS certificate verification** for those
+(a harness affordance for the local sink), so the credential would cross an unverified connection —
+[`security-posture.md`](./security-posture.md) §3.13. `SELECT id, smtp_host FROM sender.accounts;`
 
 **Action:** if the SMTP accounts being provisioned are genuinely new (freshly created mailboxes,
 new sending domains, accounts that haven't built sending reputation with receiving providers),
@@ -232,7 +242,13 @@ This is the single most missable operational fact in the system.
       the only source.
 - [ ] Logs are shipped somewhere with retention. The internal `reason=` behind a client error
       envelope exists **only** in the Brain's log; without retention, a reported error is a code and
-      a request id with nothing behind them.
+      a request id with nothing behind them. **This is also your only record of config changes** —
+      there is no `config_events` table, so a `PUT /v1/admin/config` leaves a process-log line and
+      nothing else. Retention here is an audit control, not just an ops convenience
+      ([`security-posture.md`](./security-posture.md) §3.6).
+- [ ] `alert_webhook_url` points where you intend. It is validated for scheme prefix only — a private
+      or link-local address is accepted and will be POSTed to from inside the trust boundary
+      ([`security-posture.md`](./security-posture.md) §3.14).
 
 ---
 

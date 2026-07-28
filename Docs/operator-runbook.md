@@ -528,9 +528,14 @@ Reclaim handles the *jobs*. It does not bring the box back. Step in when:
 - **`boxes.active` reaches 0.** Nothing can send at all. This is the one box condition that is a
   full outage rather than degraded capacity.
 - **It is being decommissioned.** Removing a box is a *token* operation, not a certificate one:
-  clearing or rotating `token_hash` in `sender.boxes` refuses it on its next connect regardless of
+  clearing or rotating `token_hash` in `sender.boxes` refuses it on its **next connect** regardless of
   how valid its mTLS certificate still is. Procedure in
-  [`install-and-deploy.md`](./install-and-deploy.md).
+  [`install-and-deploy.md`](./install-and-deploy.md). **Stop the box process too** — the check runs
+  only in the register handshake, so the SQL does not disconnect a box that is currently streaming,
+  and until it disconnects the Brain will keep pushing it credentialed jobs. For a routine
+  decommission you are stopping it anyway. If you are revoking because you think the box is
+  **compromised**, the order is reversed and it matters:
+  [`disaster-recovery.md`](./disaster-recovery.md) §4a.
 - **Reclaim is not draining.** If `assigned`/`sending` counts for a dead box are not falling and
   there are no `actor = 'reclaim_loop'` events, the reclaim loop itself is not running — check the
   Brain's log for a DB outage halt or a panic, and see
