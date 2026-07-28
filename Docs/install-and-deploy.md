@@ -684,6 +684,12 @@ sudo systemctl enable --now sender-box      # on each box host
 
 Boxes are additive and need no Brain restart.
 
+> **Every box needs its OWN id and token.** Identity is the authorization subject, so running a
+> second box with an existing box's `BOX_ID` adds no capacity: the Brain closes the previous
+> connection whenever an id re-registers (correct for a reconnect), so two same-id boxes evict each
+> other in a permanent register/disconnect loop while `sender.boxes` still shows one row. Adding a
+> *replica* is not adding a box. Certs may be shared — the cert is transport, the token is authority.
+
 1. On the Brain host: `provision-box new --id <id>` → record the token.
 2. Insert the `sender.boxes` row as the migration admin. **A new box needs the `INSERT` from
    [Step 7](#step-7--provision-the-first-box), not `provision-box seed`'s `UPDATE`** — the `UPDATE`

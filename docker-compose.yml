@@ -112,7 +112,47 @@ services:
       - ./secrets/dev/certs/box.crt:/secrets/mtls/box.crt:ro
       - ./secrets/dev/certs/box.key:/secrets/mtls/box.key:ro
       - ./secrets/dev/certs/ca.crt:/secrets/mtls/ca.crt:ro
-    # no host port -> scale freely: docker compose up --scale box=N
+    # no host port. NOTE: do NOT use `--scale box=N` to get more boxes — see box2 below.
+
+  # A SECOND box, with its OWN identity and its OWN token. Behind the `multibox` profile, so it is
+  # off by default: `scripts/dev.sh up2` starts it, and the single-box harness is unaffected.
+  #
+  # WHY A SEPARATE SERVICE AND NOT `--scale box=2`: box identity is the authorization subject.
+  # Scaled replicas all inherit ONE BOX_ID/BOX_TOKEN, and boxlink's register path closes the
+  # previous connection when an id re-registers (stream.go — the correct reconnect rule). Two
+  # same-id replicas therefore evict each other in a permanent register/disconnect loop and
+  # sender.boxes still shows a single row. Verified by observation, not assumed.
+  #
+  # The mTLS cert is deliberately SHARED with box 1: the cert is TRANSPORT (confidentiality +
+  # "is a box"), while authorizeBox() checks (id, token) against sender.boxes and never pins the
+  # cert CN to a box id. Sharing it is consistent with the security model, not a shortcut.
+  box2:
+    profiles: ["multibox"]
+    build: { context: ., dockerfile: services/box/Dockerfile }
+    depends_on:
+      brain: { condition: service_healthy }
+    environment:
+      BRAIN_HOST: brain
+      BRAIN_BOXLINK_PORT: "8443"
+      BRAIN_STREAM_PORT: "8444"
+      BRAIN_SERVER_NAME: brain
+      BOX_ID: ${DEV_BOX2_UUID:-22222222-2222-2222-2222-222222222222}
+      # A DEFAULT, not `:?` (which box 1 rightly uses). Compose interpolates EVERY service even
+      # when a profile excludes it, so `:?` here would break plain `docker compose ps` for anyone
+      # whose .env predates box 2 — observed, not theorised. An unprovisioned box 2 instead starts
+      # and is cleanly REFUSED by authorizeBox (no sender.boxes row matches this token), which is
+      # the correct failure: visible, contained, and it never weakens the token gate.
+      BOX_TOKEN: ${DEV_BOX2_TOKEN:-unprovisioned-run-scripts-dev-sh-certs}
+      BOX_HEARTBEAT_INTERVAL_SEC: "10"
+      BOX_SMTP_TIMEOUT_MS: "30000"
+      MTLS_CLIENT_CERT: /secrets/mtls/box.crt
+      MTLS_CLIENT_KEY:  /secrets/mtls/box.key
+      MTLS_CA_CERT:     /secrets/mtls/ca.crt
+      # NOTE: no DATABASE_URL, no KMS key — same construction as box 1.
+    volumes:
+      - ./secrets/dev/certs/box.crt:/secrets/mtls/box.crt:ro
+      - ./secrets/dev/certs/box.key:/secrets/mtls/box.key:ro
+      - ./secrets/dev/certs/ca.crt:/secrets/mtls/ca.crt:ro
 
   smtp-sink:
     image: axllent/mailpit:latest
