@@ -56,9 +56,22 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, e)
 		return
 	}
-	if req.RecipientCount == nil || *req.RecipientCount < 0 {
+	// ABSENT and PRESENT-BUT-NEGATIVE are reported DISTINCTLY (issueRequired vs issueOutOfRange),
+	// matching the run/report user_id checks below and the whole details[] vocabulary contract: a UI
+	// building generic per-field messaging off details[].issue must be able to tell "you forgot this"
+	// from "the number you sent is not allowed". These collapsed into one issueRequired until
+	// 2026-07-28, so `{"recipient_count": -5}` told the caller a field it had plainly supplied was
+	// missing (found walking Stage 7 of the local test guide). out_of_range, not malformed: a negative
+	// integer decodes fine and is the right TYPE — it is the VALUE that is outside the allowed domain
+	// (recipient_count >= 0), which is exactly adminapi's daily_limit/smtp_port precedent.
+	if req.RecipientCount == nil {
 		s.fail(w, r, newErr(codeValidationFailed, "recipient_count_required").
 			withDetails(fieldDetail{Field: "recipient_count", Issue: issueRequired}))
+		return
+	}
+	if *req.RecipientCount < 0 {
+		s.fail(w, r, newErr(codeValidationFailed, "recipient_count_negative").
+			withDetails(fieldDetail{Field: "recipient_count", Issue: issueOutOfRange}))
 		return
 	}
 	ctx, cancel := dbCtx(r.Context())
@@ -291,7 +304,24 @@ func decodeStrict(body io.Reader, dst any) *apiError {
 		if errors.Is(err, io.EOF) {
 			return nil // empty body; required-field checks run next
 		}
-		return newErr(codeValidationFailed, "malformed_json: "+sanitizeDecodeErr(err))
+		e := newErr(codeValidationFailed, "malformed_json: "+sanitizeDecodeErr(err))
+		// NAME THE FIELD when the decoder knows it. A wrong-TYPE value (`{"recipient_count": "7"}`)
+		// returned an EMPTY details[] until 2026-07-28, so a caller got validation_failed with nothing
+		// to attach it to — the one class of rejection where the body IS well-formed JSON and exactly
+		// one named field is at fault (found walking Stage 7 of the local test guide). details[] is
+		// documented as optional/additive, so this is a diagnosability fix, not a contract change:
+		// the code and status are unchanged.
+		//
+		// TWO-VOCABULARY SAFETY (Rule 5): only *json.UnmarshalTypeError is unwrapped, and only its
+		// .Field is used. That name is the key that MATCHED one of OUR struct tags (encoding/json
+		// matches case-insensitively), so it is bounded to this endpoint's own schema — never arbitrary
+		// caller content, and never the offending VALUE. A DisallowUnknownFields rejection is
+		// deliberately NOT given a detail: its field name is attacker-chosen text from the body.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && typeErr.Field != "" {
+			e = e.withDetails(fieldDetail{Field: typeErr.Field, Issue: issueMalformed})
+		}
+		return e
 	}
 	return nil
 }

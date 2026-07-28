@@ -16,11 +16,13 @@ const (
 	codeInternalError    = "internal_error"    // 500
 )
 
-// issue slugs — the fixed field-level vocabulary (never free-text echoing input).
+// issue slugs — the fixed field-level vocabulary (never free-text echoing input). The full
+// documented enum is Docs/api-contract.md's `details[].issue`; this domain uses the four below.
 const (
-	issueRequired  = "required"
-	issueMalformed = "malformed"
-	issueNotFound  = "not_found"
+	issueRequired   = "required"
+	issueMalformed  = "malformed"
+	issueOutOfRange = "out_of_range"
+	issueNotFound   = "not_found"
 )
 
 var fixedMessages = map[string]string{

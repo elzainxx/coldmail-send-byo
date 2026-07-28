@@ -39,7 +39,29 @@ reason, a credential, ciphertext, a key id, a stack trace, or an internal hostna
 `unprocessable` refusals that can name the field or flag responsible (an immutable field on a
 `PATCH`, an illegal account lifecycle transition). It is always optional and always additive:
 a client must not require it, and its absence never changes the meaning of `code`.
-`details[].issue` ∈ `{required, out_of_range, malformed, not_found, conflict, forbidden_value}`. The full, additive-only `error.code` enum:
+`details[].issue` ∈ `{required, out_of_range, malformed, not_found, conflict, forbidden_value}`.
+
+**One vocabulary across every surface (the rule a client can build generic per-field messaging on).**
+The issue slug distinguishes *why* a field was rejected, and the three rejection classes are never
+collapsed into one slug:
+
+| The field was… | `issue` | Example |
+|---|---|---|
+| absent, `null`, or empty | `required` | `POST /v1/run` with no `user_id`; `POST /v1/quote` with no `recipient_count` |
+| present but the wrong TYPE or shape | `malformed` | `user_id: "not-a-uuid"`; `recipient_count: "7"` (a string) |
+| present, right type, VALUE outside the allowed domain | `out_of_range` | `recipient_count: -5`; `smtp_port: 99999`; `daily_limit` below the live counter |
+
+A caller must be able to tell "you forgot this field" from "the value you sent is not allowed" — so a
+field that WAS supplied is never reported as `required`. A wrong-type value inside an otherwise
+well-formed body names the offending field (it is the one class where the JSON parses and exactly one
+field is at fault); an UNKNOWN field deliberately gets NO `details[]` entry, because its name is
+caller-supplied text and echoing it into a structured field a UI renders is the two-vocabulary hazard
+(the `code`/`message`/status are unaffected — still `400 validation_failed`).
+*(Both `/v1/quote` behaviours above were fixed 2026-07-28 — before that a negative count reported
+`required` and a wrong type reported an empty `details[]`. `details[]` being optional and additive
+means neither fix changed the contract's meaning, only its diagnosability.)*
+
+The full, additive-only `error.code` enum:
 
 | HTTP | `error.code` | When |
 |---|---|---|
@@ -243,7 +265,7 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `sender.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job |
+| POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `sender.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count (`cost: 0`), not a rejection |
 | POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
 | GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 

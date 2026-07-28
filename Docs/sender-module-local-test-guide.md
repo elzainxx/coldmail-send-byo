@@ -170,6 +170,21 @@ Do this by hand through the API, not through a script. You are testing whether t
 1. `GET /v1/describe` — tiers and pricing
 2. `POST /v1/quote` for N recipients
    - **Pass:** `N × unit_price_credits`
+   - Do it for several N including the edges — `0`, `1`, `250`, `10000` — and then retune
+     `unit_price_credits` and re-quote. **Pass:** `0` is a valid count quoting `cost: 0` (not a
+     rejection), and the retuned price takes effect on the very next `quote` AND on `describe` with
+     **no redeploy** (config-not-code; the two read the same live key so they cannot disagree).
+   - Then push past the happy path and quote the values a caller will actually send by mistake:
+     omitted, `null`, `-5`, `"7"` (a string), `2.5`, and an unknown extra field. Read the
+     `details[]` array in each envelope, not just the status code. **Pass:** all rejected `400
+     validation_failed`; **and each rejection is distinguishable** — absent/`null` →
+     `recipient_count:required`, `-5` → `recipient_count:out_of_range`, a wrong type →
+     `recipient_count:malformed`, an unknown field → empty `details[]` deliberately (its name is
+     caller-supplied text and must never be echoed into a field a UI renders). This found two real
+     defects: `-5` reported `required` — telling the caller a field it had plainly supplied was
+     missing, while `run`/`report` on the same server already distinguished the two — and a
+     wrong-type value returned an empty `details[]`, naming no field for a UI to attach the error
+     to. Both fixed in `2a97a13`. The status code alone would have looked green for all six.
 3. `POST /v1/run` with a small campaign
    - **Pass:** returns immediately; does not block on sending
 4. Poll `report` through the run
@@ -315,7 +330,7 @@ Do not deploy until every line is true.
 - [x] Tenant isolation holds *(Stage 5; cross-tenant `report` is byte-identical to a nonexistent id — `b290953`)*
 - [x] Both config-ordering invariants rejected at the API boundary *(Stage 6; **all four directions** of both pairs → HTTP 400 `config_ordering_violation` naming the conflicting key and its current value, nothing landing in the DB, no clamping. Ordered two-step widening AND narrowing both succeed; the wrong order is refused. `default_value` never mutated)*
 - [x] An invalid config type does not wedge the Brain *(Stage 6; 13 type violations → 400 with the DB unchanged, and no wedge proven by a real job reaching `sent` — not merely a 200 from `/health`. Going past the API with a direct SQL write found a real defect: a type fault was misreported as `db outage DETECTED` against a healthy DB — fixed in `a617fda`)*
-- [ ] quote → run → report cycle correct end to end
+- [x] quote → run → report cycle correct end to end *(Stage 7; `describe` pricing matches `sender.config` and its capability flags are honest — `sequences`/`open_tracking`/`click_tracking` all `false`; `quote` = N × unit for N ∈ {0,1,7,250,10000} and follows a live price retune with no redeploy; `run` returned 202 `state:queued` (never `sent`) so it did not block; `report` totals matched the DB at every sample and `fraction_complete` tracked 0.25→0.5→0.75→1; all messages in Mailpit with all 6 headers correct from the RAW source and Message-IDs distinct; jobs `sent` with `provider_message_id`, the `job_events` chain complete with the outcome attributed to `box` (never the dispatcher), `send_logs` written with the right TTL, and zero credential/ciphertext/nonce/key-id occurrences with the matcher proven non-vacuous. Reading `details[]` on quote's rejections rather than just the status code found two real defects — a supplied-but-negative count reported as `required`, and a wrong type naming no field at all — fixed in `2a97a13`)*
 - [ ] All three routing strategies distribute as specified
 - [ ] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput
 - [ ] Dedicated-pool fallback fires only on genuine exhaustion
