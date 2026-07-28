@@ -1,44 +1,93 @@
-# Sender Module (Module 2)
+# Sender Module
 
-Backend-only email-sending module of the platform. Users supply only a mail list + a
-template; everything else is handled backend-side. No UI.
+A backend-only email-sending service. A platform hands it a mail list and a template; it handles
+everything else — routing across a pool of SMTP accounts, pacing, retries, error classification,
+and pulling unhealthy accounts out of rotation. There is no UI and no user-facing surface: the
+platform calls its API, and operators run it.
 
-**This repository is at Phase 0 (groundwork).** It contains the scaffolded services, the
-migration tooling + empty `sender` schema, the real-infrastructure test harness, secrets/
-cert scaffolding, local dev, and docs discipline — **no product/feature behavior**. The
-nine locked phase specs live under `Docs/` and drive Phases 1–9.
+**Status: complete and sealed.** Eleven build phases are implemented, tested against real
+infrastructure, and closed. Verdict is GO for a pilot. Nothing is marked open. Before a first live
+deployment, work through [`Docs/go-live-checklist.md`](./Docs/go-live-checklist.md).
 
-- **Operating rules:** [`CLAUDE.md`](./CLAUDE.md) — read first; non-negotiable build discipline.
-- **Phase 0 spec:** [`Docs/phase-0-groundwork.md`](./Docs/phase-0-groundwork.md).
-- **Definition of Done:** [`Docs/definition-of-done.md`](./Docs/definition-of-done.md).
-- **Open Decisions:** [`Docs/open-decisions.md`](./Docs/open-decisions.md).
+## How it works
+
+Two services and one database. The **Brain** (Go) is the only thing that talks to Postgres and the
+only thing that can decrypt an SMTP credential; exactly one is ever active, guarded by a Postgres
+advisory lock. It claims queued jobs, picks a healthy sending account, decrypts that account's
+credential, and pushes the job over mutual TLS to a **sender box** (Node.js) — a dumb SMTP relay
+that ships no database driver and no KMS SDK, holds the credential in memory only, zeroes it on
+every exit path, and reports the outcome back. Boxes scale horizontally and are never publicly
+reachable. Everything tunable — 53 keys — is a seeded row in `sender.config`, changeable at
+runtime with no redeploy; there are no hardcoded tuning constants. Full shape in
+[`Docs/architecture-overview.md`](./Docs/architecture-overview.md).
+
+## Run it locally
+
+Needs Docker + Docker Compose. From a clone:
+
+```bash
+bash scripts/dev.sh certs   # dev CA + mTLS leaves + dev KMS key + operator key -> writes .env
+bash scripts/dev.sh up      # postgres -> migrate -> brain -> box -> mailpit, blocks on healthchecks
+bash scripts/dev.sh seed    # dev fixtures (system user + dev box row)
+bash scripts/dev.sh test    # the real-infra behavioral harness (should be all-green)
+```
+
+That gives you a working stack sending into [Mailpit](http://localhost:8025) — a local SMTP sink,
+so nothing leaves your machine. `bash scripts/dev.sh help` lists the rest (`logs`, `ps`, `reset`,
+`down`). `make` delegates to the same script where it is available.
+
+Nothing actually sends until `default_shared_pool_id` is set — that is expected, not a bug. See
+[`Docs/operator-runbook.md`](./Docs/operator-runbook.md).
+
+## Where to go next
+
+| You want to | Read |
+|---|---|
+| **Install this on a real server** | [`Docs/install-and-deploy.md`](./Docs/install-and-deploy.md) |
+| **Fix something that is broken right now** | [`Docs/operator-runbook.md`](./Docs/operator-runbook.md) |
+| Go live for the first time | [`Docs/go-live-checklist.md`](./Docs/go-live-checklist.md) |
+| Recover from a disaster / rotate keys | [`Docs/disaster-recovery.md`](./Docs/disaster-recovery.md) |
+| Look up a config key or its default | [`Docs/config-reference.md`](./Docs/config-reference.md) |
+| Call the API (platform or operator) | [`Docs/api-contract.md`](./Docs/api-contract.md) |
+| Understand how the system is built | [`Docs/architecture-overview.md`](./Docs/architecture-overview.md) |
+| Review the security posture and residual risks | [`Docs/security-posture.md`](./Docs/security-posture.md) |
+| Size a deployment | [`Docs/capacity-planning.md`](./Docs/capacity-planning.md) |
+| Know what is deliberately NOT built | [`Docs/future-work.md`](./Docs/future-work.md) |
+| **Change this code** | [`CLAUDE.md`](./CLAUDE.md) — non-negotiable build rules; read first |
+| Know why something is the way it is | [`Docs/history/`](./Docs/history/README.md) — specs, ADRs, decision ledger |
 
 ## Layout
 
 ```
-CLAUDE.md                 operating rules (the /init anchor)
-docker-compose.yml        canonical dev==CI stack (root)
-services/brain/           Go orchestrator — the ONLY DB client & sole decryptor
-services/box/             Node.js SMTP relay — NO DB, NO KMS, memory-only creds
-db/migrations/            central, self-tracking SQL migrations (sender_NNNN_*)
-tools/sender-migrate/     the thin migration runner (Go)
-tools/                    gen-certs, provision-box, gen-admin-key
-tests/harness/            real-infra behavioral test harness (real PG + Mailpit + procs)
-Docs/                     living docs: config ref, api contract, ADRs, DoD, open-decisions
-Docs/                     LOCKED phase specs (1–9, 9.5, contract completions, phase 0)
-deploy/                   prod/override material + .env.example
+CLAUDE.md                 operating rules — the build-discipline anchor
+docker-compose.yml        the dev stack, identical to what CI runs
+scripts/dev.sh            the one entrypoint for local dev
+services/brain/           Go orchestrator — the ONLY DB client, the SOLE decryptor
+services/box/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
+db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.down.sql)
+db/preflight/             platform-table existence checks, run before migrating
+tools/                    sender-migrate, gen-certs, provision-box, gen-admin-key
+tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
+tests/harness/checks/     the 5 blocking CI gates
+Docs/                     living documentation (operate + extend)
+Docs/history/             provenance — phase specs, ADRs, decision ledger, build record
+deploy/                   production override material
 ```
 
-## Quickstart (local dev == CI)
+## Tests and CI
 
-```bash
-scripts/dev.sh certs      # generate dev CA + mTLS leaves + dev KMS key + operator key
-scripts/dev.sh up         # postgres -> migrate -> brain -> box -> mailpit (healthchecked)
-scripts/dev.sh test       # run the real-infra harness against the live stack
-scripts/dev.sh reset      # tear down (-v) and bring back up clean
-scripts/dev.sh down       # tear down
-```
+Tests run against real infrastructure — real Postgres, a real Brain↔box mTLS channel, a real SMTP
+server. There are no mock-the-database or mock-the-box tests; that is a hard rule, not a
+preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite.
 
-> `make` is not installed on the Windows dev host; `scripts/dev.sh` is the portable
-> entrypoint and `Makefile` delegates to it (CI's Ubuntu image has `make`). See
-> `Docs/open-decisions.md` OD-16.
+Five blocking CI gates run on every push, each catching a specific class of drift:
+
+| Gate | Fails when |
+|---|---|
+| `config_drift` | a seeded config key is missing from `config-reference.md`, or vice versa |
+| `contract_drift` | a served route is undocumented in `api-contract.md`, or vice versa |
+| `migration_lint` | the migration chain has a gap, a missing `.down.sql`, or a non-self-tracking file |
+| `config_consumption` | a seeded key has no real consumer and is not marked RESERVED |
+| `no_secret_leak` | a credential or token appears in service logs |
+
+Run any of them directly: `bash tests/harness/checks/<name>.sh`.

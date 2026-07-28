@@ -13,8 +13,14 @@
 /Docs/api-contract.md            @sender-arch
 /Docs/config-reference.md        @sender-arch @platform-db
 
-# Definition of Done: the gate every future phase is held to.
-/Docs/definition-of-done.md      @sender-arch
+# Security posture: the page handed to a reviewer; residual risks stated honestly.
+/Docs/security-posture.md        @sender-arch
 
-# Locked phase specs — historical design record, not edited during build work.
+# Definition of Done: the gate every phase was held to.
+/Docs/history/definition-of-done.md  @sender-arch
+
+# Living operational + reference docs.
 /Docs/                           @sender-arch
+
+# Provenance: locked phase specs, ADRs, decision ledger, build record. Archive — not edited.
+/Docs/history/                   @sender-arch

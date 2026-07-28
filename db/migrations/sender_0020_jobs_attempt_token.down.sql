@@ -2,7 +2,7 @@
 -- version file: Chunk 1's sender.jobs.attempt_token column, and Chunk 5's seventeen content-variation
 -- config seeds (amended 2026-07-26 from fourteen, P8-OD-1 RULED-WIDEN — appended to the .up.sql of
 -- this SAME file — see the flagged migration-filename deviation recorded there and in
--- Docs/open-decisions.md P8-OD-1).
+-- Docs/history/open-decisions.md P8-OD-1).
 --
 -- IF EXISTS so the column drop is idempotent; the drop touches only the additive column, never a
 -- locked one. Reversing the column re-opens P7-OD-6 (a same-box stale replay becomes

@@ -131,7 +131,7 @@ func (s *StreamServer) Close() error {
 func (s *StreamServer) handle(conn net.Conn) {
 	defer conn.Close()
 
-	// SAFETY BOUND, not a config-not-code violation (Phase 4 closeout triage, Docs/open-decisions.md):
+	// SAFETY BOUND, not a config-not-code violation (Phase 4 closeout triage, Docs/history/open-decisions.md):
 	// bounds an UNAUTHENTICATED peer's register handshake so a silent connection cannot hold a slot
 	// forever. The register protocol has no legitimate variable-length case; this guards against
 	// abuse, not a real workload an operator would ever want to tune.

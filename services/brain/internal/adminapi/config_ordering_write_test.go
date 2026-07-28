@@ -1,6 +1,6 @@
 package adminapi
 
-// config_ordering_write_test.go — P9-OD-2 (RULED-AND-CLOSED, Docs/open-decisions.md): the config
+// config_ordering_write_test.go — P9-OD-2 (RULED-AND-CLOSED, Docs/history/open-decisions.md): the config
 // PUT boundary now rejects a write that would invert either config-ordering invariant, validated
 // against the counterpart key's LIVE value, not the submitted value in isolation. Real Postgres,
 // real HTTP against the actual production Server (CLAUDE.md Rule 3) — no mocks.

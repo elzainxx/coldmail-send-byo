@@ -40,7 +40,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// SAFETY BOUNDS (the Docs/open-decisions.md Phase-4-closeout class — infra liveness cadence, not
+// SAFETY BOUNDS (the Docs/history/open-decisions.md Phase-4-closeout class — infra liveness cadence, not
 // operator-facing send behavior; the same category as singleton.go's 200ms lock poll / 5s keeper
 // ticker and runner.go's defaultTickIntervalOnLoadErr). Deliberately NOT config keys: Phase 7 §5
 // seeds exactly six, and an outage-retry cadence is a guard rail on a dead socket, not a dial a

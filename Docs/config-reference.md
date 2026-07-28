@@ -1,7 +1,7 @@
 # Config reference (living mirror of Phase 9 §4)
 
-Authoritative source: **Phase 9 §4** (`../Docs/phase-9-polish-and-documentation.md`) — the
-53-key consolidated reference (amended from 50, `Docs/open-decisions.md` P8-OD-1: Phase 8
+Authoritative source: **Phase 9 §4** (`history/phase-9-polish-and-documentation.md`) — the
+53-key consolidated reference (amended from 50, `Docs/history/open-decisions.md` P8-OD-1: Phase 8
 grew from 14 to 17 keys post-Chunk-5). This file is the checked-in mirror, verified by the
 CI `config_drift` gate against the live `sender.config` seeds.
 
@@ -91,11 +91,11 @@ governed by the P7-11 ordering invariant below. The retention keys drive the sin
 
 Phase 8 seeds seventeen new keys — appended to the SAME `sender_0020` version file Chunk 1 created
 for `sender.jobs.attempt_token` (flagged migration-filename deviation from the locked spec's own
-`sender_0020_content_variation_config` name; see `Docs/open-decisions.md` P8-OD-1). **Amended from
+`sender_0020_content_variation_config` name; see `Docs/history/open-decisions.md` P8-OD-1). **Amended from
 fourteen to seventeen, 2026-07-26 (P8-OD-1, RULED):** three toggle parameters
 (`variation_css_magnitude_px`, `variation_zero_width_rate`, `variation_user_agent_rate`) were
 promoted from fixed in-code values to independent dials — see the ruling in
-`Docs/phase-8-content-variation.md`'s "Post-Chunk-5 amendment" section and Phase 9 §4.5. All
+`Docs/history/phase-8-content-variation.md`'s "Post-Chunk-5 amendment" section and Phase 9 §4.5. All
 seventeen default to off/neutral, so **the whole set at default is byte-identical to the Phase 3
 send path** (Phase 8 §4/T1). Every key is consumed by the box via the additive `push_job.variation`
 snapshot the Brain stamps per job (§2.2) — the box itself never reads `sender.config`.
@@ -126,7 +126,7 @@ Phase 9.5 seeds eleven new keys via `sender_0021` — the operability & control-
 (B1–B5) plus the two config-not-code completeness dials (S10, S11). Fully schema-neutral: no table,
 column, enum, constraint, or index is added or altered. Every default preserves current behavior
 except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safety choice (Phase 5's
-`enforce` behavior is reached by one config write — see `Docs/open-decisions.md`).
+`enforce` behavior is reached by one config write — see `Docs/history/open-decisions.md`).
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
@@ -198,6 +198,6 @@ promoting one to a real dial is a future additive migration, not a silent defaul
 | `services/box/src/index.js` register-retry cap/interval | 30 attempts / 1000ms | Startup-only bounded retry while the Brain may still be coming up — a deployment-ordering concern, not a per-campaign dial. |
 | `services/box/src/variation-headers.js` `HEADER_ORDERS` (the gmail/outlook/apple/thunderbird client-style header-position tables) | 4 fixed orderings | Phase 8 toggle 9 (`variation_header_style`) selects WHICH table to apply via the seeded config *enum* (`none`/`gmail`/`outlook`/`apple`/`thunderbird`/`random`) — the table CONTENTS (which header goes in which position for a given real mail client) are an external, empirically-observed fact about how those clients format mail, not a tunable rate/threshold/timeout. Making the header orders themselves config-driven would let an operator invent a fifth "client style" with no matching real client — the dial that exists (`variation_header_style`) is the correct one; the tables it selects between are reference data, the same class as the IANA timezone database `daily_reset_timezone` validates against. |
 
-See `Docs/open-decisions.md`'s Phase 4 closeout ("hardcoded-timeout triage") for the full
+See `Docs/history/open-decisions.md`'s Phase 4 closeout ("hardcoded-timeout triage") for the full
 historical enumeration and reasoning; this table is the Phase 9 §4 consolidation of the same
 audit, re-verified against the current tree.

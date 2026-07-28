@@ -19,4 +19,4 @@ reserved namespace that guarantees no collision on the shared instance.
 > live platform DB, confirm with platform-db that the platform's own migrator/advisory locks
 > avoid the reserved `9_000_000_000–9_999_999_999` band above. `pg_advisory_lock` scoping is
 > per-database, so a collision only matters when both run against the same instance
-> concurrently — which they do here. Recorded in the pre-live gate list (`Docs/pre-live-gates.md`).
+> concurrently — which they do here. Recorded in the pre-live gate list (`Docs/history/pre-live-gates.md`).

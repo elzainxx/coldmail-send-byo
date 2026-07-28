@@ -57,7 +57,7 @@ async function main() {
   process.on("SIGINT", shutdown);
 
   // connectOnce dials + registers with bounded retry. SAFETY BOUND (Phase 4 closeout triage,
-  // Docs/open-decisions.md): a startup-ordering retry, not a runtime dial — a box that can't register
+  // Docs/history/open-decisions.md): a startup-ordering retry, not a runtime dial — a box that can't register
   // within ~30 attempts is a deployment-ordering problem, not something an operator tunes.
   // A retry attempt is ~1s, so the budget is ~30s of dialling. That bound is a STARTUP-ORDERING
   // guard, and it must not be allowed to destroy buffered outcomes: exiting throws away the

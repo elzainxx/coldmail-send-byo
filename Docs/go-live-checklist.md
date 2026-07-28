@@ -7,8 +7,8 @@ without any of these. They become mandatory the moment this module points at a r
 database and starts sending real mail. Nothing here is code to write; each item is a setup step,
 a coordination point, or an operational decision an operator/ops team makes before or at launch.
 
-Cross-reference: `Docs/pre-live-gates.md` (G1-G4, the platform-coordination half) and
-`Docs/open-decisions.md` (G1-G5, P9-A, S8, S15) are the authoritative source for the reasoning
+Cross-reference: `Docs/history/pre-live-gates.md` (G1-G4, the platform-coordination half) and
+`Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the authoritative source for the reasoning
 behind each item; this document is the single ordered checklist a launch operator actually works
 through.
 

@@ -37,4 +37,4 @@ npm-debug.log*
 coverage/
 
 # Reference codebase (has its own nested .git; inspiration only, not part of this repo)
-Docs/mailflow-worker (Sender Inspiration)/
+Docs/history/mailflow-worker (Sender Inspiration)/

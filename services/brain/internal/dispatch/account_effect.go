@@ -9,7 +9,7 @@
 // autoquarantine_mode (§2.1) / autopause_enabled (§2.2) kill-switches WRAP the decision below by
 // editing only these two functions (and applyAccountEffect's single call site each) — no surgical
 // re-plumbing across the outcome handler, honoring the seam Phase 5 deliberately left
-// (Docs/open-decisions.md P5-OD-1).
+// (Docs/history/open-decisions.md P5-OD-1).
 package dispatch
 
 import (

@@ -262,7 +262,7 @@ func main() {
 	}
 
 	// Now the listeners come down. SAFETY BOUND (Phase 4 closeout triage,
-	// Docs/open-decisions.md): the HTTP/listener close grace is a deployment concern, not a runtime
+	// Docs/history/open-decisions.md): the HTTP/listener close grace is a deployment concern, not a runtime
 	// dial — same class as MAX_FALLBACK_HOPS. The DRAIN window above is the operator-tunable part.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -14,7 +14,7 @@
 // to another tenant returns the SAME 404-style not-found as a non-existent job (never 403), so a
 // caller cannot see, nor even confirm the existence of, another tenant's jobs. This is
 // defense-in-depth: even a platform-side bug that sends the wrong `user_id` cannot cross tenant
-// boundaries in the module. See `Docs/open-decisions.md` OD-25.
+// boundaries in the module. See `Docs/history/open-decisions.md` OD-25.
 package platformapi
 
 import (

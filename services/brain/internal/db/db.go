@@ -27,7 +27,7 @@ func Connect(ctx context.Context, dsn string) (*DB, error) {
 		return nil, fmt.Errorf("new pool: %w", err)
 	}
 
-	// SAFETY BOUND (Phase 4 closeout triage, Docs/open-decisions.md): a one-time startup
+	// SAFETY BOUND (Phase 4 closeout triage, Docs/history/open-decisions.md): a one-time startup
 	// reachability check, not a runtime behavior dial.
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

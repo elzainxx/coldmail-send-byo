@@ -127,7 +127,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// startup_reconnect_window_sec, shutdown_drain_timeout_sec, retention_sweep_interval_ms,
 	// retention_delete_batch_size, rollup_granularity, box_outcome_buffer_ttl_sec) + Phase 8's 17
 	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
-	// migration-filename deviation, Docs/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
+	// migration-filename deviation, Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
 	// P8-OD-1 RULED-WIDEN) + Phase 9.5's 11 (sender_0021: B1-B5 operability controls + S10/S11
 	// completeness dials) = 53.
 	// Phase 4 added NO config key (§0); Phase 7 and Phase 9.5 are fully schema-neutral (config seeds

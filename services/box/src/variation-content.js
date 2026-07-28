@@ -1,6 +1,6 @@
 // variation-content.js — Phase 8 CHUNKS 3+4: the body/content STAGES (toggles 1-5 shipped in
 // Chunk 3; toggle 8 dynamic preheader added in Chunk 4). Ported from the reference
-// (`Docs/mailflow-worker (Sender Inspiration)/src/features/content-variation.ts` B1-B6, B8), with
+// (`Docs/history/mailflow-worker (Sender Inspiration)/src/features/content-variation.ts` B1-B6, B8), with
 // ONE deliberate adaptation throughout: every random draw is replaced by the job_id+stream-seeded
 // PRNG from variation-seed.js (P8-5) so the same job always produces the same variation — the
 // reference used bare Math.random(), which this module never calls.

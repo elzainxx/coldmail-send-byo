@@ -1,7 +1,7 @@
 # Load test results — E11 single-Brain throughput ceiling
 
-Recorded, versioned results for **E11** (`Docs/phase-9_5-operability-and-control-plane-safety.md`
-§7 / `Docs/phase-0-groundwork.md` §4.7). This is a **before-you-SCALE gate, not a launch
+Recorded, versioned results for **E11** (`Docs/history/phase-9_5-operability-and-control-plane-safety.md`
+§7 / `Docs/history/phase-0-groundwork.md` §4.7). This is a **before-you-SCALE gate, not a launch
 blocker** — the numbers below are a measured ceiling on THIS run's hardware/config, not a
 pass/fail. Re-run `tests/harness/load_e11.sh` before any material capacity increase and append a
 new dated entry (OD-7 ruling: committed as a versioned doc artifact, never overwritten).

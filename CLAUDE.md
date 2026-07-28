@@ -6,9 +6,11 @@ owned SQL migrations). Read it before writing code, tests, migrations, or docs.
 These rules are NON-NEGOTIABLE and outlive any individual phase. If a task appears
 to require breaking one, STOP and file an Open Decision (Rule 2) — do not proceed.
 
-> **Status:** Phase 0 (groundwork) is implemented. The spec is `Docs/phase-0-groundwork.md`.
-> The nine locked phase specs live under `Docs/` and MUST NOT be edited as part of any
-> build work. Phase 0 builds NO product/feature behavior — only the ground the phases run on.
+> **Status (2026-07-28, Phase 10 close):** all eleven phases (0, 1–9, 9.5, 10) are implemented,
+> tested on real infra, and closed. The locked phase specs live under `Docs/history/` and MUST NOT
+> be edited as part of any build work. Living operational + reference docs are the top level of
+> `Docs/` — see `Docs/README.md`. Deferred work is registered in `Docs/future-work.md`, not left
+> open. Rules below are unchanged and outlive the build.
 
 ## 1. Config not code
 - Every tunable — timeout, window, limit, batch size, interval, mode — is a seeded
@@ -31,8 +33,8 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 
 ## 2. Flag, don't silently fix
 - Contradictions, ambiguities, and locked-fact conflicts are NOT resolved by
-  inventing an answer. Record them in the Open Decisions log (`Docs/open-decisions.md`
-  + an ADR in `Docs/decisions/`) and await the user's ruling.
+  inventing an answer. Record them in the Open Decisions log (`Docs/history/open-decisions.md`
+  + an ADR in `Docs/history/decisions/`) and await the user's ruling.
 - Never resolve a locked contradiction on your own authority. "Locked" means locked.
 - An Open Decision blocks only the ambiguous slice; keep unrelated work moving.
 
@@ -52,7 +54,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 - No change is complete until its docs are updated in the same PR. Docs never go
   stale; a diff that changes behavior without changing docs is incomplete.
 - The docs discipline (structure, ownership, staleness gate) is defined in the
-  Phase-0 documentation section (`Docs/phase-0-groundwork.md` §3) and the living docs
+  Phase-0 documentation section (`Docs/history/phase-0-groundwork.md` §3) and the living docs
   under `Docs/`. Follow it.
 
 ## 5. Contracts, errors, and honesty
@@ -212,7 +214,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   re-read) every earlier gate's claimed fix and can report CONFIRMED-IN-TREE or MISSING for each.
 
 ## Definition of Done (every phase is held to this)
-See `Docs/definition-of-done.md`. A phase is not done until all nine DoD items are
+See `Docs/history/definition-of-done.md`. A phase is not done until all nine DoD items are
 green: spec written; real behavioral tests green on real infra; docs updated in the
 same change; config keys seeded + documented; no hardcoded tuning constants; Open
 Decisions discharged; additive-only + migration chain intact; security properties

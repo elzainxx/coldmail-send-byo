@@ -1,24 +1,48 @@
-# docs/ — living documentation
+# Docs/ — living documentation
 
-These documents track the running system and are kept honest by CI drift gates. The
-**locked phase specs** (design of record) live under `../Docs/` and are not edited during
-build work.
+Everything in this directory tracks the **running system** and is kept honest by CI drift gates.
+Provenance — the eleven locked phase specs, the ADRs, the decision ledger, the build record — lives
+in [`history/`](./history/README.md) and is not part of operating or extending the module.
 
-| Topic | Authoritative source | Living mirror here |
+Start at the [root README](../README.md) if you have not already.
+
+## Operate
+
+| Doc | What it answers |
+|---|---|
+| [`install-and-deploy.md`](./install-and-deploy.md) | How do I stand this up on a real server, from a bare VPS to a verified first send? How do I add a box, redeploy, roll back? What is the safe migration/deploy ordering? |
+| [`operator-runbook.md`](./operator-runbook.md) | Something is broken — what do I do? Diagnostic trees for the real failure modes. |
+| [`go-live-checklist.md`](./go-live-checklist.md) | What must be confirmed before the first live deployment? |
+| [`disaster-recovery.md`](./disaster-recovery.md) | KMS key backup and recovery, DB restore, credential/key rotation. **Read the key-backup section before going live** — losing the master key is unrecoverable. |
+| [`monitoring.md`](./monitoring.md) | Where do I point uptime monitoring and the alert webhook? |
+| [`capacity-planning.md`](./capacity-planning.md) | How many accounts do I need for N sends/day, and what binds first? |
+| [`smoke-test-real-provider.md`](./smoke-test-real-provider.md) | The first-contact-with-a-real-provider procedure. Written, deliberately not yet run. |
+
+## Reference (the integrator/extender tier)
+
+| Doc | What it answers | Gate |
 |---|---|---|
-| Config keys / defaults | Phase 9 §4 (`../Docs/phase-9-polish-and-documentation.md`) | `config-reference.md` (CI-verified vs `sender.config`) |
-| Public + operator API (Domains A/B) | Phase 9 §5 | `api-contract.md` (CI-verified vs Brain routes) |
-| System shape / data flow | the two SVGs in `../Docs/` | `architecture-overview.md` |
-| Operating rules | `../CLAUDE.md` (canonical, OD-11) | — |
-| Definition of Done | this dir | `definition-of-done.md` |
-| Settled decisions | `decisions/NNNN-*.md` (ADRs) | linked from specs |
-| Unresolved contradictions | `open-decisions.md` | flag-don't-fix ledger |
-| Advisory-lock key registry | `advisory-locks.md` | — |
-| Load-test ceiling | `load-test-results.md` | committed, versioned artifact (OD-7) |
-| Pre-live confirmations | `pre-live-gates.md` (G1-G4) | `go-live-checklist.md` — the full ordered operator checklist |
+| [`config-reference.md`](./config-reference.md) | All 53 config keys: meaning, `value_type`, `default_value`, which subsystem consumes it. | `config_drift`, `config_consumption` |
+| [`api-contract.md`](./api-contract.md) | Every route on both auth domains: request/response shape, error envelopes, status codes. | `contract_drift` |
+| [`architecture-overview.md`](./architecture-overview.md) | The system's shape — services, boundaries, send path, where each guarantee is enforced. | — |
+| [`security-posture.md`](./security-posture.md) | What is protected, how, and the honest residual risks. The page to hand a security reviewer. | — |
+| [`future-work.md`](./future-work.md) | What is deliberately **not** built, and why it was deferred. | — |
+| [`advisory-locks.md`](./advisory-locks.md) | Every advisory-lock key in the repo + the reserved band. | — |
+| [`load-test-results.md`](./load-test-results.md) | The measured single-Brain throughput ceiling (committed artifact, not a dashboard). | — |
+| `config-manifest.txt`, `config-consumers.txt` | Machine-readable inputs to the config gates. Not prose — do not hand-edit without re-running the gates. | both config gates |
+| `sender_module_backend_architecture.svg`, `sender_module_job_lifecycle_states.svg` | The canonical diagrams. | — |
 
-**Build status: COMPLETE.** The nine-phase spec set + the Phase 9.5 operability layer are built,
-tested, and closed. See `architecture-overview.md`'s "BUILD COMPLETE" section for the final
-summary and verdict, and `go-live-checklist.md` before the first live deployment.
+**Operating rules for changing the code** are in [`../CLAUDE.md`](../CLAUDE.md) — canonical, and
+deliberately not mirrored here (OD-11).
 
-Phase 0 status and scope: `../Docs/phase-0-groundwork.md`.
+## The rule that keeps these docs useful
+
+The reference tier (`config-reference.md`, `api-contract.md`) is the **single source** for config
+keys and endpoint shapes. Operational docs **link** to it and never restate it — a config default
+copied into a runbook is a default that will silently go stale. If you are about to document a key's
+value or a request body outside the reference tier, don't.
+
+**Build status: COMPLETE.** All eleven phases are built, tested, and closed; the open-decisions
+ledger is empty and deferred work is registered in [`future-work.md`](./future-work.md). See
+[`architecture-overview.md`](./architecture-overview.md)'s "BUILD COMPLETE" section for the final
+summary and verdict, and [`go-live-checklist.md`](./go-live-checklist.md) before deploying live.

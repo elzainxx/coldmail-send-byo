@@ -222,7 +222,7 @@ export async function runSmtpSession(job, credential, opts = {}) {
     expect(dataReply, [250], "data_rejected_4xx");
 
     // 8) QUIT (best-effort). SAFETY BOUND, deliberately short and NOT timeoutMs (Phase 4 closeout
-    // triage, Docs/open-decisions.md): the send already succeeded by this point (DATA got 250), so
+    // triage, Docs/history/open-decisions.md): the send already succeeded by this point (DATA got 250), so
     // QUIT's outcome is discarded either way — waiting the full per-operation timeoutMs here would
     // only slow down freeing this connection for no benefit. Not a tunable send-behavior dial.
     try { await withTimeout(conn.write("QUIT").then(() => conn.read()), 2000); } catch { /* ignore */ }

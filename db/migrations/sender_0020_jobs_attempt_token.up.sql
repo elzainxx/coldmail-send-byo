@@ -4,7 +4,7 @@
 -- index, or trigger is changed, so the locked jobs_attempt_count_check, jobs_lease_valid_check, the
 -- job_state enum, and the state machine are all untouched.
 --
--- THE HOLE THIS CLOSES (Docs/open-decisions.md P7-OD-6). The box's outcome buffer deliberately
+-- THE HOLE THIS CLOSES (Docs/history/open-decisions.md P7-OD-6). The box's outcome buffer deliberately
 -- outlives its own attempt (box_outcome_buffer_ttl_sec 900s >> job_max_processing_time_sec 120s), so
 -- a job whose lease expires can be reclaimed, requeued, and RE-DISPATCHED while an older box still
 -- holds and replays the superseded attempt's outcome. Phase 7's attribution guard rejects that replay
@@ -71,12 +71,12 @@ COMMENT ON COLUMN sender.jobs.attempt_token IS
 -- pre-9.5 phase that already touches the push_job wire contract and owns migration 0020"). Rather
 -- than open a second `sender_0020` (impossible — versions are unique) or renumber a committed,
 -- self-tracking migration (forbidden — migrations are immutable once applied/committed, and
--- Docs/phase-9-polish-and-documentation.md §6.7/§6.8 + config-reference.md already cite
+-- Docs/history/phase-9-polish-and-documentation.md §6.7/§6.8 + config-reference.md already cite
 -- `sender_0020` as Phase 8's ONE migration), these fourteen INSERTs are appended to THIS SAME
 -- file. The chain stays contiguous (...0019 -> 0020 -> 0021 for Phase 9.5) and every doc that
 -- already says "Phase 8 = sender_0020" remains true.
 --
--- SEVENTEEN KEYS (amended 2026-07-26 from fourteen — Docs/open-decisions.md P8-OD-1, RULED-WIDEN).
+-- SEVENTEEN KEYS (amended 2026-07-26 from fourteen — Docs/history/open-decisions.md P8-OD-1, RULED-WIDEN).
 -- The build mandate asked to seed "the intensities/rates too" (a ZWJ rate, a CSS magnitude, a
 -- UA-injection rate). This originally contradicted the LOCKED 14-key enumeration in this spec's
 -- §6.1 and Phase 9 §4.5, so it was filed as P8-OD-1 (CLAUDE.md Rule 2) rather than resolved

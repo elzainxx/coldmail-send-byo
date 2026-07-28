@@ -35,7 +35,7 @@ import (
 // tied id becomes the leader — real exhaust-then-move-on, not incidental. Once Phase 5 computes
 // distinct scores the `score DESC` term already dominates and this tiebreak is inert on ties, so
 // the change has NO effect post-Phase-5. RULED by the user (2026-07-23): deterministic tiebreak,
-// not "accept spread instead of exhaust." Recorded as P4-OD-1 in Docs/open-decisions.md.
+// not "accept spread instead of exhaust." Recorded as P4-OD-1 in Docs/history/open-decisions.md.
 const defaultAccountOrderBy = "a.account_status_score DESC, a.id ASC"
 
 // randomAccountOrderBy is the random strategy (§3): a uniform draw across eligible accounts.

@@ -78,7 +78,7 @@ func validateFromName(n *string) *fieldDetail {
 // the throttle error class → pause, and a provider suspension maps to auth_failure → quarantine,
 // both already handled downstream — so this is a REPUTATION guard, not a correctness guard.
 // Promoting it to a real seeded config key later is a trivial additive change (new key + wire
-// this validator to it). See Docs/open-decisions.md OD-24 and ADR-0009's sibling reasoning.
+// this validator to it). See Docs/history/open-decisions.md OD-24 and ADR-0009's sibling reasoning.
 const DailyLimitCeiling = 100_000
 
 // validateDailyLimit checks 0 < daily_limit <= DailyLimitCeiling. The ≥ daily_sent_count rule on

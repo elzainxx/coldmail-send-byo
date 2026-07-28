@@ -129,7 +129,7 @@ export TEST_TEMPLATE_DB="sender_template"
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
 # own mounted client cert. (Host->localhost is intercepted by host antivirus TLS-inspection,
-# so an in-network probe is the correct, real test — see Docs/open-decisions.md OD-19.)
+# so an in-network probe is the correct, real test — see Docs/history/open-decisions.md OD-19.)
 BOXTOK="$(grep -E '^DEV_BOX_TOKEN=' .env | cut -d= -f2-)"
 reg_code() { # $1=token
   $DC exec -T box sh -c "curl -s -o /dev/null -w '%{http_code}' --cert /secrets/mtls/box.crt --key /secrets/mtls/box.key --cacert /secrets/mtls/ca.crt -X POST https://brain:8443/v1/box/register -H 'content-type: application/json' -d '{\"box_id\":\"dev-box-1\",\"token\":\"$1\"}'"

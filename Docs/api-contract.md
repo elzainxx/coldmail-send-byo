@@ -1,6 +1,6 @@
 # API contract (living mirror of Phase 9 §5)
 
-Authoritative source: **Phase 9 §5** + `../Docs/phase-9-contract-and-doc-completions.md`.
+Authoritative source: **Phase 9 §5** + `history/phase-9-contract-and-doc-completions.md`.
 This file mirrors the served surface and is verified by the CI `contract_drift` gate
 against the Brain's registered routes.
 
@@ -41,7 +41,7 @@ malformed, not_found, conflict, forbidden_value}`. The full, additive-only `erro
 | HTTP | `error.code` | When |
 |---|---|---|
 | 400 | `validation_failed` | Body/query failed field validation (see `details[]`). |
-| 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (`Docs/config-reference.md`) — enforced at the `PUT` boundary itself (rejected before the value lands) AND independently re-checked at config-LOAD as a defense-in-depth backstop (`Docs/open-decisions.md` P9-OD-2, RULED-AND-CLOSED). |
+| 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (`Docs/config-reference.md`) — enforced at the `PUT` boundary itself (rejected before the value lands) AND independently re-checked at config-LOAD as a defense-in-depth backstop (`Docs/history/open-decisions.md` P9-OD-2, RULED-AND-CLOSED). |
 | 401 | `unauthenticated` | Missing/invalid API key/token, either domain. |
 | 403 | `forbidden` | Reserved for future scoped roles; unused in V1's single-scope model. |
 | 404 | `not_found` | Resource id / config key does not exist, OR belongs to another tenant (no existence disclosure — never `403`). |
@@ -74,7 +74,7 @@ All under `/v1/admin/*`; every route requires the operator `platform_admin` bear
 `401 unauthenticated`. The surface only mounts when `ADMIN_API_KEY_HASHES` is configured
 (fail-closed). Error envelopes carry ONLY `{code, message, details[], request_id}` — never an
 internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal hostname (§1.2 of
-`../Docs/phase-2-account-management.md`). Additive-only: these routes never rename; later phases add.
+`history/phase-2-account-management.md`). Additive-only: these routes never rename; later phases add.
 
 **Accounts** (`sender.accounts`; `smtp_secret` is write-only — reads expose only `has_credential`):
 
@@ -114,7 +114,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 |---|---|---|
 | GET | `/v1/admin/config` | read all keys |
 | GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
-| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Config-ordering invariants (`Docs/open-decisions.md` P9-OD-2, RULED-AND-CLOSED):** for the four keys with a documented ordering counterpart (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`, `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`), this `PUT` validates the RESULTING pair against the counterpart's LIVE current value BEFORE writing — a write that would invert either invariant is rejected with `400 config_ordering_violation`, naming the conflicting counterpart key, its current value, and the required relation; the bad value never lands. The config-LOAD path independently re-checks the same invariant on every tick as a defense-in-depth backstop. Widening BOTH keys of a pair upward requires ordering the two `PUT`s (raise the boundary key first). |
+| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Config-ordering invariants (`Docs/history/open-decisions.md` P9-OD-2, RULED-AND-CLOSED):** for the four keys with a documented ordering counterpart (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`, `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`), this `PUT` validates the RESULTING pair against the counterpart's LIVE current value BEFORE writing — a write that would invert either invariant is rejected with `400 config_ordering_violation`, naming the conflicting counterpart key, its current value, and the required relation; the bad value never lands. The config-LOAD path independently re-checks the same invariant on every tick as a defense-in-depth backstop. Widening BOTH keys of a pair upward requires ordering the two `PUT`s (raise the boundary key first). |
 
 ## Phase 9.5 served routes — observability (Domain B)
 
@@ -268,7 +268,7 @@ means the last page.
 > injection rate table, replacing the box's own hardcoded `{low:5,medium:15,high:30}`) and
 > `css_skip_below_px` (integer, `omitempty` — the px value below which `css_micro` leaves a
 > padding/margin declaration untouched, replacing the box's own hardcoded `<3px`). **P9.5-OD-3**
-> (recorded in `Docs/open-decisions.md`): `sender_0021`'s `variation_zero_width_rate_pct` and
+> (recorded in `Docs/history/open-decisions.md`): `sender_0021`'s `variation_zero_width_rate_pct` and
 > `variation_css_micro_params.delta_px` are documented DUPLICATES of the already-wired
 > `variation_zero_width_rate`/`variation_css_magnitude_px` (P8-OD-1) under a different unit/shape —
 > ruled to wire only the two genuinely-new sub-values (the rate table, the skip-below threshold) onto

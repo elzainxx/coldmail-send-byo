@@ -1,6 +1,6 @@
 // variation-headers.js — Phase 8 CHUNK 4: the header/MIME STAGES (toggles 6, 7, 9, 10, 11 of §5;
 // toggle 12 Thread-Index is INERT and deliberately registers NO stage at all — see below). Ported
-// from the reference (`Docs/mailflow-worker (Sender Inspiration)/src/features/header-engineering.ts`
+// from the reference (`Docs/history/mailflow-worker (Sender Inspiration)/src/features/header-engineering.ts`
 // C1/C2/C6) plus toggle 6/7 from content-variation.ts's encoding note, with TWO deliberate
 // deviations from the reference, both already decided in the locked spec:
 //

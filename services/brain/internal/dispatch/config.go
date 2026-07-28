@@ -69,7 +69,7 @@ type Config struct {
 	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
 
 	// Phase 8 content-variation dials (all seventeen seeded sender_0020, appended to Chunk 1's
-	// version file — Docs/open-decisions.md P8-OD-1; amended 2026-07-26 from fourteen to
+	// version file — Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from fourteen to
 	// seventeen, RULED-WIDEN). GLOBAL scope (§3): one operator-owned set resolved once per
 	// LoadConfig and stamped verbatim onto every push_job.variation (variation.go). The Brain
 	// performs NO decision logic on these beyond reading + stamping; the box's
@@ -354,7 +354,7 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	// "Do not clamp or auto-correct — reject"). This is the load-time enforcement point; the admin
 	// write path deliberately does NOT couple these two independently-tuned dials at write time
 	// (Phase 6 §5.1), so the reject lives here where the Brain reads the whole set together. See
-	// P6-OD-1 (Docs/open-decisions.md) for the reconciliation of Rule 1's reject vs §5.1's warn.
+	// P6-OD-1 (Docs/history/open-decisions.md) for the reconciliation of Rule 1's reject vs §5.1's warn.
 	if err := validateConfigOrdering(c); err != nil {
 		return Config{}, err
 	}

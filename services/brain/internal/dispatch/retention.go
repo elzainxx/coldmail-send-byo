@@ -44,7 +44,7 @@ import (
 // maxSweepBatchesPerTick bounds how many batches one tick will delete before yielding to the next
 // tick, so a huge accumulated backlog cannot monopolize a connection or starve the dispatch/reclaim
 // loops for DB throughput (§3.1's "never competes ... for DB throughput"). A SAFETY BOUND in the
-// Docs/open-decisions.md Phase-4-closeout class, not an operator dial: the operator-facing knobs are
+// Docs/history/open-decisions.md Phase-4-closeout class, not an operator dial: the operator-facing knobs are
 // the seeded retention_delete_batch_size (rows per batch) and retention_sweep_interval_ms (cadence);
 // this only caps one tick's work so the remainder rolls to the next tick, which is always correct
 // because retention is a ceiling, not a deadline. With the defaults that is 1000 × 64 = 64k rows/tick.

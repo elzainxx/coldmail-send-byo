@@ -38,7 +38,7 @@ import (
 )
 
 // drainPollInterval is how often the drain loop re-counts in-flight jobs. A SAFETY BOUND (the
-// Docs/open-decisions.md Phase-4-closeout class — a shutdown-path poll granularity, like
+// Docs/history/open-decisions.md Phase-4-closeout class — a shutdown-path poll granularity, like
 // singleton.go's lock poll), NOT a tunable: the operator-facing dial is shutdown_drain_timeout_sec,
 // which bounds the whole wait. Phase 7 §5 seeds exactly six keys and this is not one of them.
 const drainPollInterval = 250 * time.Millisecond

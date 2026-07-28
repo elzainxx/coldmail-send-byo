@@ -4,7 +4,7 @@ package dispatch
 // seeded and write-time-validated since sender_0010 but never read by any daily-reset-boundary
 // computation (eligibility/consume, pool exhaustion, account scoring, the admin health endpoint) —
 // found during the systematic 53-key consumption sweep. Wired into all of them (§11 of
-// Docs/phase-1-data-model.md: "resetting at daily_reset_hour"). This test proves the wiring is
+// Docs/history/phase-1-data-model.md: "resetting at daily_reset_hour"). This test proves the wiring is
 // genuinely live, not just that it compiles: an account's eligibility flips when daily_reset_hour
 // changes, for an IDENTICAL daily_reset_day/daily_sent_count/daily_limit row — the only variable
 // is the config dial. Real Postgres, real Dispatcher — no mocks.
