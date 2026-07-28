@@ -186,6 +186,36 @@ attempting the dependent key first fails cleanly and instructively.
 A config set violating either invariant is rejected with external code `config_ordering_violation`
 — never clamped or auto-corrected (Rule 1) — at whichever boundary it is attempted.
 
+### A value of the wrong type is the OTHER config fault
+
+An ordering violation is two individually-valid values in the wrong relation. The other way a config
+set becomes unusable is a **single value that does not parse as the type its key is declared to
+hold** — a quoted numeric on an integer key, a missing `{"v": …}` wrapper, a corrupt row. The admin
+`PUT` boundary rejects that with `400 validation_failed` against the key's `value_type` (the table
+above), so it cannot arrive through the API; a live one therefore came from a direct SQL write, a
+restore/seed, or a bad migration.
+
+Both faults are handled the SAME way, and that sameness is the contract:
+
+- **Rejected, never clamped or defaulted** (Rule 1). `LoadConfig` returns a zeroed `Config` alongside
+  the error, so no loop can run on a partially-usable set.
+- **Fail-closed, not fail-stop.** The dispatch, reclaim and retention loops decline to act — nothing
+  is claimed, nothing is marked sent/failed/bounced/requeued, jobs stay exactly `queued` — while the
+  Brain **stays alive** and never crash-loops. Repair the value and the next tick resumes on its own,
+  with no restart and no redeploy.
+- **Classified as a CONFIGURATION fault, not a DB outage.** The database answered perfectly; only the
+  value is unusable. So a config fault must never log `db outage DETECTED`, and must never trip the
+  §2.2 outage gate (whose halt the next `SELECT 1` would immediately clear, flapping
+  DETECTED/RESOLVED at the 500ms base interval and burying the one log line that names the bad key).
+  Enforced structurally: every config-fault error implements the `configFault` marker interface that
+  `IsOutage` tests for, so a new fault class is exempt by construction rather than by remembering to
+  update the classifier. Asserted behaviorally in both directions —
+  `internal/dispatch/config_typefault_test.go` (type faults, every typed reader) and
+  `outage_test.go`'s `TestConfigOrdering_IsNotADBOutage` (ordering faults), each with a real severed
+  connection as the positive control proving a genuine outage still *does* halt and log.
+- **Diagnosable:** the logged message names the offending key, at `level=error`. Triage is
+  [`operator-runbook.md`](./operator-runbook.md) Step 8.
+
 ## Deliberate hardcoded safety BOUNDS (not dials — Phase 9 Chunk 3 consolidation)
 
 CLAUDE.md Rule 1 forbids a literal that governs runtime *behavior*. It does not forbid a literal

@@ -370,6 +370,51 @@ type configOrderingError struct{ detail string }
 
 func (e *configOrderingError) Error() string { return "config_ordering_violation: " + e.detail }
 
+func (e *configOrderingError) isConfigFault() {}
+
+// configFault is the MARKER every "the DB answered fine, but the config it returned is unusable"
+// error implements. IsOutage (dbhealth.go) tests for THIS interface rather than for each concrete
+// type, so the classification cannot be silently forgotten by a future error class: a new config
+// fault that does not implement the marker will not compile against configFaultError, and one that
+// does is exempt from outage classification automatically.
+//
+// WHY this is an interface and not a second errors.As on a concrete type (found 2026-07-28 walking
+// the local test guide, Stage 6): IsOutage originally exempted *configOrderingError ALONE. A
+// wrong-TYPE value (`{"v":"thirty"}` for an integer key, reachable by a direct SQL write or a bad
+// migration — exactly the path config.go's validateConfigOrdering comment calls out) was a bare
+// fmt.Errorf, so it fell to IsOutage's default `return true` and was reported as
+// `db outage DETECTED: ... the DB is unreachable` against a perfectly healthy DB — then cleared by
+// the next tick's SELECT 1, i.e. the precise 500ms DETECTED/RESOLVED flap that
+// TestConfigOrdering_IsNotADBOutage exists to prevent, arriving through a sibling error class the
+// test did not cover. Observed: 80 outage lines in a few seconds, burying the one line naming the
+// bad key. The halt itself was correct (nothing was claimed, no restart, self-healed in 1s on
+// repair) — the DIAGNOSIS handed to the operator was wrong, which is a Rule-5 honesty defect: it
+// sends whoever is holding the pager to look at the database instead of at the config row.
+type configFault interface {
+	error
+	isConfigFault()
+}
+
+// configValueError is a config value the DB returned intact but that does not parse as the type the
+// key is declared to hold (wrong JSON type, missing "v", corrupt row). want carries the SAME
+// human-readable shape the readers have always logged (e.g. `an integer {"v":N}`) so log greps and
+// operator muscle memory are unchanged — this refactor changed the error's TYPE, not its text.
+type configValueError struct {
+	key  string
+	want string
+}
+
+func (e *configValueError) Error() string {
+	return fmt.Sprintf("config %q is not %s", e.key, e.want)
+}
+
+func (e *configValueError) isConfigFault() {}
+
+// badConfigValue builds the config-fault error the typed readers return on a parse failure. A
+// function (not an inline &configValueError{}) so every reader below is provably using the marker
+// type: there is exactly one construction site to audit.
+func badConfigValue(key, want string) error { return &configValueError{key: key, want: want} }
+
 // validateConfigOrdering enforces BOTH documented config-ordering invariants at load (CLAUDE.md
 // Rule 1 lists them as (a) and (b); Phase 7 §5.3 is the authoritative table), delegating to
 // internal/configordering — the SAME pure functions the admin PUT boundary calls
@@ -509,7 +554,7 @@ func readIntKey(ctx context.Context, db *pgxpool.Pool, key string) (int, error) 
 		V *int `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return 0, fmt.Errorf("config %q is not an integer {\"v\":N}", key)
+		return 0, badConfigValue(key, `an integer {"v":N}`)
 	}
 	return *wrap.V, nil
 }
@@ -526,7 +571,7 @@ func readBoolKey(ctx context.Context, db *pgxpool.Pool, key string) (bool, error
 		V *bool `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return false, fmt.Errorf("config %q is not a boolean {\"v\":true|false}", key)
+		return false, badConfigValue(key, `a boolean {"v":true|false}`)
 	}
 	return *wrap.V, nil
 }
@@ -545,7 +590,7 @@ func readFloatKey(ctx context.Context, db *pgxpool.Pool, key string) (float64, e
 		V *float64 `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return 0, fmt.Errorf("config %q is not a number {\"v\":N}", key)
+		return 0, badConfigValue(key, `a number {"v":N}`)
 	}
 	return *wrap.V, nil
 }
@@ -565,7 +610,7 @@ func readStringArrayKey(ctx context.Context, db *pgxpool.Pool, key string) ([]st
 		V *[]string `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return nil, fmt.Errorf("config %q is not a string array {\"v\":[\"...\"]}", key)
+		return nil, badConfigValue(key, `a string array {"v":["..."]}`)
 	}
 	return *wrap.V, nil
 }
@@ -582,7 +627,7 @@ func readStringKey(ctx context.Context, db *pgxpool.Pool, key string) (string, e
 		V *string `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return "", fmt.Errorf("config %q is not a string {\"v\":\"...\"}", key)
+		return "", badConfigValue(key, `a string {"v":"..."}`)
 	}
 	return *wrap.V, nil
 }
@@ -601,7 +646,7 @@ func readNullableStringKey(ctx context.Context, db *pgxpool.Pool, key string) (*
 		V *string `json:"v"`
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil {
-		return nil, fmt.Errorf("config %q is not a nullable string {\"v\": \"...\"|null}", key)
+		return nil, badConfigValue(key, `a nullable string {"v": "..."|null}`)
 	}
 	return wrap.V, nil
 }

@@ -59,7 +59,7 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 | `accounts.quarantined` > 0 | [An account got quarantined](#an-account-got-quarantined) |
 | `boxes.stale` > 0, or `boxes.active` is 0 | [A box died](#a-box-died) |
 | `active_conditions[]` is non-empty | [Alert conditions](#alert-conditions--triage) |
-| Everything looks fine, `/readyz` is green, but nothing moves | The health surface cannot see a rejected config — [Step 8](#step-8--is-the-config-itself-rejected-config_ordering_violation-in-the-log) |
+| Everything looks fine, `/readyz` is green, but nothing moves | The health surface cannot see a rejected config — [Step 8](#step-8--is-the-config-itself-rejected-a-config-fault-in-the-log) |
 | Everything looks fine but sends are landing badly | [Deliverability seems to be dropping](#deliverability-seems-to-be-dropping) |
 | You are not sure what "fine" looks like | [Reading the health endpoint](#reading-the-health-endpoint) |
 
@@ -266,21 +266,40 @@ SELECT user_id, campaign_id, count(*), min(state::text) AS a_state
 More than one row for a `user_id` should not happen; a single row means that tenant's *current*
 campaign must finish (or be resolved) before another can start.
 
-### Step 8 — Is the config itself rejected? (`config_ordering_violation` in the log)
+### Step 8 — Is the config itself rejected? (a config fault in the log)
 
 The one cause on this list that **`/readyz` cannot see**. `/readyz` reports `db:true,
-singleton_lock:true` — genuinely true — while both the dispatch and the reclaim loop abandon *every*
-tick before doing any work, because the config they load fails one of the two ordering invariants.
-Nothing dispatches, nothing is reclaimed, and the only symptom is in the log:
+singleton_lock:true` — genuinely true — while the dispatch, reclaim and retention loops abandon
+*every* tick before doing any work, because the config they load is unusable. Nothing dispatches,
+nothing is reclaimed, and the only symptom is in the log.
+
+There are **two** kinds of config fault, and they look nearly identical in the log. Grep for both:
 
 ```bash
-journalctl -u sender-brain --since "15 min ago" | grep config_ordering_violation
+journalctl -u sender-brain --since "15 min ago" | grep -E 'tick error: config|sweep error: config'
+# (a) an ORDERING invariant — two keys that are individually fine but wrong relative to each other:
 # dispatch: tick error: config_ordering_violation: smtp_operation_timeout_sec (100) must be < job_max_processing_time_sec (50) level=error
 # reclaim:  tick error: config_ordering_violation: … level=error
+# (b) a wrong-TYPE / corrupt VALUE — one key that does not parse as the type it is declared to hold:
+# dispatch: tick error: config "smtp_operation_timeout_sec" is not an integer {"v":N} level=error
+# reclaim:  tick error: config "smtp_operation_timeout_sec" is not an integer {"v":N} level=error
 ```
 
-The message names both keys, both values, and the required relation — that is your whole diagnosis.
-Confirm against the table:
+Both name the offending key — that is your whole diagnosis. For (b) the fix is to write a
+well-formed value for the one key it names (`{"v": <value of the declared type>}`); check the key's
+`value_type` in [`config-reference.md`](./config-reference.md).
+
+**Neither is a database problem.** Both mean the DB answered perfectly and the Brain refused to act on
+what came back (Rule 1: reject, never clamp). You should see **no** `db outage DETECTED` line — if you
+do, it is a separate, genuine transport fault (see the failure-mode table at the end of this
+document), not this. Note for anyone reading old logs: before 2026-07-28 a type fault (b) *was*
+mislabeled `db outage DETECTED … the DB is unreachable` and repeated at ~2/second, which sent
+operators to Postgres instead of to the config row; the flood also buried the one line naming the bad
+key. If you are triaging an incident from an older build, `grep` for the key name rather than trusting
+the outage line.
+
+Confirm against the table — this also shows a corrupt value, since `value->>'v'` returns `NULL` for a
+row whose `v` key is missing entirely:
 
 ```sql
 SELECT key, value->>'v' AS value FROM sender.config
@@ -305,11 +324,13 @@ No restart, no redeploy: the next tick re-reads config and dispatch resumes on i
 lost while it was wedged — jobs stayed `queued`, which is exactly why the queue is what you noticed.
 
 **How it got there** matters for whether you should expect it again. The admin `PUT` boundary rejects
-a write that would invert either pair (`400 config_ordering_violation`), and config writes are
-serialized, so the API cannot produce this state — even from two simultaneous PUTs. A live inverted
-pair therefore means it arrived by some **other** path: a direct SQL `UPDATE` against
-`sender.config`, or a restore/seed that wrote both keys at once. Look there, not at the API.
-Both invariants, and why each exists, are in [`config-reference.md`](./config-reference.md).
+both classes before they land — a write that would invert either pair (`400
+config_ordering_violation`) and a value of the wrong type for its key (`400 validation_failed`) — and
+config writes are serialized, so the API cannot produce either state, even from two simultaneous PUTs.
+A live fault therefore means it arrived by some **other** path: a direct SQL `UPDATE` against
+`sender.config`, a restore/seed that wrote several keys at once, or a migration that seeded a bad
+value. Look there, not at the API. Both invariants, and every key's declared `value_type`, are in
+[`config-reference.md`](./config-reference.md).
 
 ---
 
@@ -783,6 +804,7 @@ curl -fsS $ADMIN/readyz
 | `readyz` says `singleton_lock:false`, log says `singleton lock not acquired within …: another Brain is active; exiting cleanly` | Another Brain holds the advisory lock. **This is correct behavior** — exactly one Brain may be active. | Find and stop the other one. There is no stale lock to clear: the lock is session-level, so even `SIGKILL` releases it. If nothing else is running, the lock is genuinely held by a live session — check `pg_stat_activity`. |
 | Log ends at `FATAL send-path config load` | A config key the Brain requires is missing or unreadable — most often the schema is older than the binary. | Run migrations, then start the Brain. **Migrations always lead the Brain deploy**; the ordering and why are in [`install-and-deploy.md`](./install-and-deploy.md) Part 6. |
 | `readyz` says `db:false`, log says `db outage DETECTED` | Postgres is unreachable. The Brain **stays alive**, halts the dispatch/reclaim/retention loops on bounded backoff, and invents nothing — no job is marked sent, failed, bounced, or requeued while the DB is down. | Fix Postgres. Recovery needs no reconciliation: the log will say `db outage RESOLVED … RESUMING loops from stored state`, boxes replay buffered outcomes, and each is acked only after it commits. |
+| `readyz` says `db:true` but the log repeats `tick error: config …` | A **config fault**, not a database fault: the DB answered and the Brain refused to act on an unusable value (a broken ordering invariant, or a value of the wrong type for its key). The loops halt and invent nothing, exactly as above — but Postgres is fine. There is deliberately **no** `db outage` line for this. | [Step 8](#step-8--is-the-config-itself-rejected-a-config-fault-in-the-log). The log names the offending key; write a valid value and the next tick resumes on its own — no restart. |
 | `admin API NOT mounted` / `platform API NOT mounted` in the log | The corresponding credential env var is unset, and the surface is **fail-closed** by design. | Set `ADMIN_API_KEY_HASHES` (Domain B) or `PLATFORM_TOKEN_HASHES` (Domain A). See [`install-and-deploy.md`](./install-and-deploy.md) Part 3. |
 | Clean shutdown that seems to hang | The drain: dispatch stops claiming while in-flight sends are given up to `shutdown_drain_timeout_sec` to report. | Let it finish. If your supervisor's stop timeout is *shorter* than that key, it will `SIGKILL` a Brain that was draining correctly — the systemd unit in the install guide sets `TimeoutStopSec` above it for exactly this reason. |
 | Jobs left in flight after shutdown | Deliberate leave-in-place. The log says so: `N job(s) left in flight and RECOVERABLE (not requeued, not marked)`. | Nothing. The next boot's startup rescan extends their leases so boxes can replay; genuinely stuck ones reclaim normally. |

@@ -200,17 +200,24 @@ func IsOutage(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, pgx.ErrNoRows) {
 		return false
 	}
-	// A config-ordering violation is a CONFIGURATION fault, not transport unavailability: the DB
-	// answered perfectly — we read the whole set and refused to act on an unsafe one (Rule 1). It must
-	// NOT be classified as an outage. If it were, every tick would (a) log a false "db outage DETECTED"
-	// naming a DB that is healthy, and (b) have that halt immediately cleared by the next tick's
-	// successful SELECT 1 probe — which RESETS the failure counter, so the bounded exponential backoff
-	// §2.2 requires could never grow and all three loops would flap at the 500ms base interval
-	// indefinitely. Returning false routes it to the caller's application-error branch instead: log and
-	// retry on the normal cadence, with the loops still correctly refusing to act on the unsafe pair
-	// (LoadConfig returns a ZEROED Config alongside this error, so nothing runs on bad values).
-	var cfgOrder *configOrderingError
-	if errors.As(err, &cfgOrder) {
+	// A CONFIG FAULT is not transport unavailability: the DB answered perfectly — we read the set and
+	// refused to act on a value we cannot use (Rule 1: reject, never clamp). It must NOT be classified
+	// as an outage. If it were, every tick would (a) log a false "db outage DETECTED" naming a DB that
+	// is healthy, and (b) have that halt immediately cleared by the next tick's successful SELECT 1
+	// probe — which RESETS the failure counter, so the bounded exponential backoff §2.2 requires could
+	// never grow and all three loops would flap at the 500ms base interval indefinitely, burying the one
+	// log line an operator needs (the offending key) under noise about an outage that is not happening.
+	// Returning false routes it to the caller's application-error branch instead: log and retry on the
+	// normal cadence, with the loops still correctly refusing to act (LoadConfig returns a ZEROED Config
+	// alongside the error, so nothing runs on bad values).
+	//
+	// This tests the configFault MARKER, not a list of concrete types. It checked *configOrderingError
+	// alone until 2026-07-28, which covered the ordering invariants but NOT a wrong-TYPE value — so a
+	// `{"v":"thirty"}` on an integer key (a direct SQL write or a bad migration) produced exactly the
+	// flap described above. Classifying by marker means the next config fault someone adds is exempt by
+	// construction rather than by remembering to edit this function. See config.go's configFault.
+	var cfgFault configFault
+	if errors.As(err, &cfgFault) {
 		return false
 	}
 	var pgErr *pgconn.PgError
