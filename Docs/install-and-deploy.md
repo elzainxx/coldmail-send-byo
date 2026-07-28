@@ -36,7 +36,9 @@ platform table shapes) that this guide assumes are settled.
 ```bash
 # Both Brain and box hosts:
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg git
+sudo apt-get install -y ca-certificates curl gnupg git jq
+# jq is not optional in practice: the admin/health API returns compact single-line JSON, and every
+# diagnostic in operator-runbook.md pipes through it. Install it before you need it at 3am.
 
 # Docker (the supported deployment shape — same images CI tests):
 curl -fsSL https://get.docker.com | sudo sh
@@ -342,7 +344,8 @@ most common "why is nothing happening" cause; the runbook's flagship tree starts
 ### Step 10 — Verify a real send end to end
 
 ```bash
-curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY"
+curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY" \
+  | jq '{dispatch, pools, boxes, accounts}'
 ```
 
 Expect: your pool present with headroom that is **not** `exhausted`, `dispatch_paused:false`, and at
