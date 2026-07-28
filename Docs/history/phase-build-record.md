@@ -1847,3 +1847,147 @@ pair now returns a clean `400 config_ordering_violation`. Full harness 53/53 gre
 green. See `Docs/open-decisions.md` P9-OD-2 for the full disposition and `Docs/go-live-checklist.md`
 for the deferred pre-live gates.
 
+
+---
+
+## Phase 10 state — final polish, operational documentation, close-out
+
+The last phase. It adds **no features and changes no behavior**: it produces the OPERATIONAL doc tier
+(audience: the operator installing on a fresh server, and the operator at 3am), reorganizes the docs
+into LIVING vs HISTORY, and closes the project out. The rule that kept it useful: Phase 9 already
+produced the REFERENCE tier (`config-reference.md`, `api-contract.md`) — Phase 10 **links** to it and
+never restates a config key or an endpoint shape.
+
+### Chunk 1 — docs reorganization + a real README entry point
+
+Split `Docs/` into LIVING (top level; operate + extend) and HISTORY (`Docs/history/`: 11 phase specs,
+the build diary split out of `architecture-overview.md`, the decision ledger, ADRs, DoD, pre-live
+gates, planning artifacts) with `Docs/history/README.md` explaining what the provenance is and when
+to consult it. `README.md` became an actual entry point: what the service is in three sentences,
+architecture in a paragraph, four commands to a running local stack, and a where-to-go-next map.
+
+The trap the spec warned about was real: `config_drift` and `contract_drift` both reference doc
+PATHS. Both gates were updated in the same commit and re-run green. The historical text was
+deliberately **left as written** — rewriting a build record so its paths match a later layout is how
+provenance quietly becomes fiction; `Docs/history/README.md` says so and gives the "prepend
+`history/`" rule instead.
+
+### Chunk 2 — install & deployment guide (generic VPS, not cloud-specific)
+
+`Docs/install-and-deploy.md`: fresh-machine setup end to end (prerequisites → Postgres → KMS key →
+mTLS certs → migrations → roles/grants → operator key → first box → first verified send), then
+production shape (Brain on one VPS, N boxes on separate VPSes over a private network, and **why no
+box endpoint is ever public**), systemd units, env vars per service, add/remove a box, redeploy,
+rollback.
+
+**VERSION SKEW got an explicit section** rather than being left to inference: migrations lead the
+Brain deploy (additive-only contracts make an older Brain safe against a newer schema, never the
+reverse), old boxes against a new Brain are fine because the box protocol is additive, and the safe
+rolling order is migrations → Brain → boxes.
+
+### Chunk 3 — the operator runbook (the highest-value deliverable)
+
+`Docs/operator-runbook.md`, organized by **symptom, not feature**. The flagship tree — "everything is
+queued and nothing is sending" — walks 7 causes in order with how to check, what you see, and how to
+fix each. Then: quarantine root-cause-before-unquarantine (and when unquarantining is the wrong
+move), pool exhaustion vs `waiting_for_capacity` (**not an error**), box death and exactly what
+self-heals vs when a human should intervene, each health alert condition → triage, the deliverability
+levers that actually exist in V1 (and the plain statement that there is **no bounce data**), and how
+to read the health endpoint field by field.
+
+Verified by **executing** it rather than reading it, which found three real doc bugs: the published
+`alias ahealth=...` did not work (aliases do not expand in the same parsed line, nor in
+non-interactive shells) → shell function; every `grep -A` example printed the whole blob because the
+endpoint emits compact single-line JSON → converted to `jq`, every published path validated against
+the live payload; and `install-and-deploy.md` never installed `jq` though the runbook now requires
+it → fixed at the source.
+
+### Chunk 4 — DR + key backup, rotation, security posture, capacity, monitoring, smoke test
+
+Five new living docs, each grounded in code rather than in the build diary. `disaster-recovery.md`
+leads with the one unrecoverable loss (the master key), gives the backup procedure, a
+where-it-lives/who-can-reach-it table to fill in, and a recovery **drill** whose point is that a
+clean Brain startup proves nothing about the key — only a completed send does. Rotation covers
+per-account (routine, zero downtime), the master key (**freeze first, then cut over**, because a
+Brain resolves exactly ONE `credential_key_id` — there is no dual-key window), admin/platform keys
+(append hash → migrate callers → remove), and CA/box certs. Master-key rotation is **re-entry by
+hand**, not a server-side transform, because `adminapi` holds an Encrypt-only primitive with no
+Decrypt method — a fact read out of the package split, not assumed.
+
+`security-posture.md` states ten residual risks honestly, the most important being that "the platform
+cannot read credentials" **depends on KMS/IAM separation being configured** — the caveat that can be
+believed while being false. `capacity-planning.md` frames the two ceilings as different *kinds* of
+number and computes peak rate over an 8h window, which is what makes the Brain bind at ~200k/day
+rather than the naive 533k/day. `monitoring.md` records the fact that decides whether alerting works
+at all: conditions are evaluated **when the health endpoint is called**, so with no poller no webhook
+ever fires. `smoke-test-real-provider.md` is deliberately **WRITTEN, NOT RUN** — running it is step
+one of the pilot, since it touches real sending reputation.
+
+Verification again by executing: the DR backup snippet's `cut -d= -f2-` swallowed the install guide's
+inline comment and yielded an unusable path (fixed with comment-stripping plus fail-fast size
+assertions), the smoke test's baseline and diff used different `jq` filters so the diff could never
+come back clean (fixed to matching filters), and docs referenced a `tools/gen-admin-key` that does
+not exist — the operator key is minted by `provision-box admin-key`.
+
+### Chunk 5 — verification: clean-slate reproduction, first-run empty state, hygiene, log noise
+
+**Clean-slate reproduction, proven not asserted.** A genuinely fresh `git clone` (no `.env`, only
+`secrets/.gitkeep`) followed by the README's four commands verbatim: 5s + 18s + 1s + 144s ≈ **193s to
+a green stack, 53 passed / 0 failed**, with no deviation from the written docs and no reliance on
+prior knowledge. The docs bugs that would have blocked it were already fixed in Chunks 3–4 by the
+same execute-don't-read method.
+
+**First-run empty state** was answered empirically by queueing a real job into a system with no
+accounts, no pools, and `default_shared_pool_id` unset. The system **does** tell the operator: the
+Brain logs `shared_pool_not_configured` (rate-limited to once per 60s, not per tick) and the health
+endpoint shows `waiting_for_capacity: 1` against `pools: []`. Not silence — which was the failure
+mode the spec asked about.
+
+**Hygiene sweep:** zero `TODO`/`FIXME`/`XXX`/`HACK` across `services/ db/ tools/ tests/ scripts/`,
+zero debug leftovers, `gofmt`/`go vet` clean, `go mod tidy` no-diff. `npm audit` is unusable by
+design — the box ships `dependencies: {}`, so there is nothing to audit, which is the structural
+no-DB/no-KMS boundary showing up as an absence.
+
+**The vulnerability scan found two real module vulns with live call paths** — `GO-2026-5004` (SQL
+injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop
+in `x/text`, fixed in v0.39.0). The remediation was **attempted, proven breaking, and reverted**
+rather than half-applied: bumping both rewrites `go 1.23` → `go 1.25.0`, which breaks the pinned
+`golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual `docker build`).
+Upgrading the toolchain is a build-infrastructure change, not polish — registered in
+`Docs/future-work.md` as the highest-priority item there.
+
+**Log-noise pass — measured, then tuned once.** Brain log volume over a full 144s/53-test harness run
+plus idle was **40 lines total**, and **90 seconds of true idle produced 0 lines** from both Brain and
+box. Logging is event-driven, not periodic: `dispatch: tick pushed N job(s)` fires only when it
+pushed something, and the `shared_pool_not_configured` warning is already rate-limited to once per
+60s rather than once per tick. No line dominated the distribution. The conclusion is that logging was
+already well-tuned, so the pass made exactly **one** change rather than inventing work.
+
+That one change: an ERROR-grep during an incident could not distinguish a caller's own mistake from a
+real server fault. `code=not_found reason=job_not_found` (routine) and
+`code=internal_error reason=read_job_item_failed` (a genuine fault) rendered in an identical shape.
+Both API packages now append `level=warn` / `level=error`, derived from the **existing** `codeStatus`
+map (`< 500` ⇒ `warn`) so a newly added code cannot be forgotten in a second list. Logging-only:
+no status code, envelope, or behavior changed, and the fields are appended, never rewritten.
+Live-verified on adjacent log lines from one run — 401/404/400 all `level=warn`, the `internal_error`
+`level=error`. Documented where an operator will look for it: the runbook's new "Reading the Brain's
+log during an incident" section, which also records the quiet-by-design property (silence means
+nothing happened, not a stuck logger) and that the internal `reason=` behind a client envelope exists
+**only** in the log — so without log retention a reported error is a code and a request id with
+nothing behind them.
+
+Three real defects were found during verification and **flagged, not fixed**, because each is a
+behavior change and Phase 10 changes no behavior. All three are in `Docs/future-work.md`:
+`POST /v1/run` returns HTTP 500 (`read_job_item_failed`) when `public.job_items.campaign_id` is NULL,
+because a nullable column is scanned into a non-nullable Go `string`
+(`internal/platformapi/store.go:69`) — a new operator's very first call can 500; the box exits
+permanently if `dev.sh up` races ahead of `dev.sh seed`, since `restart: "no"` plus a missing
+`sender.boxes` row is terminal; and a box **register rejection short-circuits the documented
+~30-attempt retry budget** (`services/box/src/stream.js` calls `this.stop()` on `accepted:false`, so
+`connectOnce` returns immediately) — measured exit after attempt 1, ~1s, so that budget covers
+dial/TLS failures only.
+
+One more trap worth recording because it bit a second time in a new place: `docker compose up`
+without `--no-deps` restarts postgres, and the harness override backs its data directory with
+`tmpfs` — so it **wipes the database**. Same class as the previously-documented `migrate status`
+trap.

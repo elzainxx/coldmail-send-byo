@@ -736,6 +736,35 @@ curl -fsS $ADMIN/readyz
 
 ---
 
+## Reading the Brain's log during an incident
+
+The Brain's log is quiet by design: it is **event-driven, not periodic**. A fully idle Brain with an
+empty queue writes *nothing* — no per-tick heartbeat lines. So if the log is silent, that is not a
+stuck logger; it means nothing happened. A full behavioral test run (53 tests) produces ~40 lines
+total. Consequently, **any line that appears is worth reading** — and a burst of them is itself a
+signal.
+
+Two grep-able fields carry most of the value:
+
+| Field | Use it to |
+|---|---|
+| `level=warn` vs `level=error` on API log lines | Separate *the caller's* mistake from *this system's* fault. A `4xx` (bad token, unknown id, invalid value) is `level=warn` and routine. A `5xx` is `level=error` and means something on this side broke. `grep 'level=error'` is the fastest way to find the real faults in a noisy window. |
+| `request_id=` / `rid=` | Bridge a client's error envelope to the cause. The envelope returned to a caller carries only `{code, message, request_id}`; the internal `reason=` behind it exists **only in this log**. Given a request id from a complaint, `grep` it here. |
+
+That second point has an operational consequence: **without log retention, a reported error is a code
+and a request id with nothing behind them.** Ship the logs somewhere ([`monitoring.md`](./monitoring.md)).
+
+```bash
+journalctl -u sender-brain --since "1 hour ago" | grep 'level=error'   # real faults only
+journalctl -u sender-brain | grep 'req_abc123…'                        # one caller's report
+```
+
+A `level=error` line is not automatically an outage — a single `internal_error` on one request is a
+bug to file, not a page. Volume and pattern are what distinguish the two, and the health endpoint's
+`errors_last_window` is the better first read for scale.
+
+---
+
 ## Where to go next
 
 | You need | Read |

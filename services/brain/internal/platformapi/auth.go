@@ -93,10 +93,22 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, e *apiError) {
 // --- logging (internal reason only; never a credential/body) ---
 
 func logReject(rid string, r *http.Request, reason string) {
-	log.Printf("platformapi reject rid=%s %s %s: %s", rid, r.Method, sanitizePath(r.URL.Path), reason)
+	log.Printf("platformapi reject rid=%s %s %s: %s level=warn", rid, r.Method, sanitizePath(r.URL.Path), reason)
 }
 func logError(rid string, r *http.Request, e *apiError) {
-	log.Printf("platformapi error rid=%s %s %s: code=%s reason=%s", rid, r.Method, sanitizePath(r.URL.Path), e.code, e.internalReason)
+	log.Printf("platformapi error rid=%s %s %s: code=%s reason=%s level=%s",
+		rid, r.Method, sanitizePath(r.URL.Path), e.code, e.internalReason, logLevelFor(e.code))
+}
+
+// logLevelFor separates "the caller asked for something that isn't there" (level=warn, routine and
+// expected) from "this side broke" (level=error, act on it). Both render identically otherwise, so
+// without this an operator grepping logs during an incident cannot tell a 404 from a 500. Derived
+// from codeStatus rather than a second list, so a new code cannot be added and forgotten here.
+func logLevelFor(code string) string {
+	if status, ok := codeStatus[code]; ok && status < http.StatusInternalServerError {
+		return "warn"
+	}
+	return "error"
 }
 
 // sanitizePath keeps only the route shape (no query string, which could carry ids).
