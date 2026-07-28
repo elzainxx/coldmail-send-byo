@@ -4,8 +4,21 @@ How many sending accounts you need for a given daily volume, how many boxes, and
 that actually decides a deployment — **which limit binds first**. The short answer is almost always
 *per-account daily limits*, not the Brain.
 
-Config *values* are not restated here; the keys named below are documented in
-[`config-reference.md`](./config-reference.md).
+[`config-reference.md`](./config-reference.md) is the authoritative source for every key named
+below, and the only file the `config_drift` CI gate checks. **Sizing arithmetic cannot be done
+without concrete numbers**, so this page does use three of them — declared once, here, rather than
+scattered through the prose:
+
+| Key | Value used in this page's arithmetic | Used for |
+|---|---|---|
+| `daily_limit_default` | 500 sends/account/day | §2's account-count table |
+| `send_delay_min_sec` / `send_delay_max_sec` | 3–7s | §2's per-lane rate note |
+| `debug_log_retention_days` | 7 days | §5's storage estimate |
+
+These were the seeded defaults when this page was written. They are **not** gate-checked here — only
+`config-reference.md` is — so if a number above disagrees with `config-reference.md`, that file wins
+and this table is stale. Re-do the arithmetic with your own configured values; the *shape* of each
+result (which ceiling binds) is what this page is for, not the specific figures.
 
 ---
 
@@ -33,7 +46,7 @@ V1 volume. Accounts are.
 Accounts needed ≈ **daily volume ÷ per-account daily limit**, then add headroom, because an account
 that is paused, quarantined, or throttled contributes nothing that day.
 
-At the default `daily_limit` of 500/account/day:
+At the 500/account/day figure declared above (`daily_limit_default`):
 
 | Target sends/day | Accounts at 500/day (bare minimum) | With ~30% headroom (**deploy this**) | Peak rate needed (over an 8h window) | Which limit binds first |
 |---|---|---|---|---|
@@ -53,7 +66,7 @@ constraint far earlier than the 533k/day arithmetic suggests. If you send around
 Two things this table does **not** account for, both of which push the account count up:
 
 - **Pacing.** `send_delay_min_sec`/`send_delay_max_sec` impose a random delay *per lane*, and
-  `concurrency_per_user_default` caps lanes per user. With the default 3–7s delay, a single lane
+  `concurrency_per_user_default` caps lanes per user. With the 3–7s delay declared above, a single lane
   sustains roughly 6–20 sends/min; a user's ceiling is about `lanes × that`. If your measured rate is
   well below the table's peak-rate column, pacing is the reason, not capacity —
   [`operator-runbook.md`](./operator-runbook.md) covers telling those apart.
@@ -120,7 +133,7 @@ table dominates it.
 
 - **`send_logs` is the growth driver**, holding the full rendered body per send. At ~10 KB/message
   and 10k sends/day that is ~100 MB/day *while within retention* — steady-state ≈
-  `daily volume × message size × debug_log_retention_days`. At the default 7 days and those numbers,
+  `daily volume × message size × debug_log_retention_days`. At the 7 days declared above and those numbers,
   ~700 MB. Content is dropped by the retention sweep after `debug_log_retention_days`; metadata rows
   remain.
 - **`job_events` and final job states are permanent by design** and never swept. They are small rows,
@@ -138,7 +151,8 @@ Do not size from this page alone. Two checks first:
 1. **Re-run the load test on your hardware.** `bash tests/harness/load_e11.sh [N_BOXES] [MAX_LANES]`,
    with a materially larger `N_BOXES` than 6 if you are anywhere near 200/min. Append a dated entry to
    [`load-test-results.md`](./load-test-results.md) — it is a versioned artifact, never overwritten.
-2. **Confirm your providers' real per-mailbox limits.** The default 500/day is a conservative stand-in.
+2. **Confirm your providers' real per-mailbox limits.** The seeded `daily_limit_default` is a
+   conservative stand-in.
    The provider's actual limit — and its tolerance for the rate you send at — is the number that
    matters, and exceeding it produces throttling and reputation damage that this module can pause
    around but cannot undo. Note also that a `250` acceptance is all this system can observe: there is

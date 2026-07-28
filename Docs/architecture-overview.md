@@ -95,72 +95,50 @@ defaults are in `config-reference.md`; when and how to flip them is `operator-ru
 
 `history/phase-build-record.md` is the per-phase build diary (what each phase landed, which review
 gates found what). `history/open-decisions.md` is the flag-don't-fix ledger, `history/decisions/`
-the ADRs, and `history/` the eleven locked phase specs. See `history/README.md` for when to consult
+the ADRs, and `history/` the locked phase specs (12 files for 11 phases — `history/README.md` says why). See it for when to consult
 which.
 
----
+## Build status and the two ceilings
 
-## BUILD COMPLETE — final summary
+**The build is complete and sealed.** All eleven phases are implemented, tested against real
+infrastructure, and closed; the verdict is **GO** for a pilot. The full behavioral harness is green
+and all five CI gates pass. `history/open-decisions.md`'s needs-user list is empty, with one
+deliberate non-blocking exception (R2-5, a stale example inside a locked spec). Deferred work is
+registered in `future-work.md` rather than left implicit. The evidence this verdict rests on — which
+phase verified what, and what each review gate found — is in `history/phase-build-record.md`'s
+"BUILD COMPLETE" section; it is provenance, not something you need in order to run the system.
 
-**What exists.** A complete Go "Brain" orchestrator (`services/brain`) + Node.js "Sender Box" SMTP
-worker (`services/box`) + centrally-owned SQL migration chain (`db/migrations`, `sender_0000`
-through `sender_0021`, 44 files, contiguous, self-tracking). Nine locked feature-phase specs
-(Phase 1 data model through Phase 9 polish/docs) plus the Phase 9.5 operability layer are fully
-built, tested, and closed. The system: accepts a campaign via `quote`/`run`/`report`/`describe`
-(Domain A, platform-facing); routes jobs across a shared/dedicated SMTP account pool with per-user
-pacing and concurrency lanes; decrypts credentials in the Brain only and pushes them to a DB-less,
-KMS-less box over mutual TLS for the actual SMTP session; classifies failures into a taxonomy that
-drives auto-quarantine (shadow-mode by default) and auto-pause; reclaims dead-box/expired-lease
-jobs without penalizing the account; buffers and idempotently replays outcomes across restarts and
-DB outages; retains debug content on a bounded TTL; optionally applies content variation (all
-default off, byte-identical when off); and gives an operator a full `/v1/admin/*` surface
-(accounts, pools, all 53 config keys, lifecycle transitions, a read-only health/alert endpoint) —
-all through the same two-vocabulary error discipline and additive-only contract versioning that
-have held since Phase 1.
+Two capacity ceilings exist and they are different kinds of number:
 
-**Verdict: GO.** Confirmed by the Phase 9 Chunk 6 live end-to-end pass (a real campaign flowing
-quote→run→dispatch→send→report against real Postgres/real box/real Mailpit; a live config-dial
-change observed without redeploy; the panic switch's lossless halt/resume; the failed-vs-waiting
-distinction; both config-ordering invariants now genuinely rejecting an unsafe `PUT`) and the
-Chunk 5 cross-phase consistency audit (eight properties, each independently adversarially
-re-verified against the actual code, zero contradictions found across eleven phases). The full
-harness is 53/53 green; all 5 CI gates (`config_drift`/`contract_drift`/`migration_lint`/
-`config_consumption`/`no_secret_leak`) are green; `Docs/history/open-decisions.md`'s needs-user list is
-empty (one deliberate, non-blocking exception: R2-5, a stale example in a locked spec).
+- **Per-account daily volume** is a hard, deliberate cap (`daily_limit` per account), reached in the
+  normal course of business. Raising it is a reputation decision.
+- **Single-Brain send rate** is a soft, *measured* ceiling — ~370 sends/min on the specific dev
+  hardware of the 2026-07-26 run, with that run's own caveat that the box side was likely still a
+  partial co-bottleneck.
 
-**The measured throughput ceiling — and what actually binds first.** The single-Brain load test
-(`Docs/load-test-results.md`, 2026-07-26) measured **370 sends/min** at lanes=8/boxes=6 on dev
-hardware before saturating (regressing to 322/min at lanes=12) — the Brain's own per-tick capacity
-ceiling under that specific box count, not a hard architectural limit (the run's own caveat: 6
-boxes was likely still a partial co-bottleneck; re-run with more boxes before treating 370 as the
-Brain's true isolated ceiling). **In most realistic operating configurations, this ceiling is NOT
-what limits throughput** — `daily_limit_default` seeds at **500 sends/account/day** (Phase 1
-`sender_0010`). Reaching the Brain's ~370/min ceiling on account daily limits ALONE would require
-the pool's summed daily limits, spread across the sending window, to itself exceed ~370/min — on
-the order of **1,000+ accounts spread over a full 24h window** (or ~350+ accounts if sending is
-concentrated into an 8h window); arithmetic: `370/min × window_minutes ÷ 500`. A shared pool of the
-size V1 realistically starts with (single digits to low tens of accounts) caps out at low hundreds
-to low thousands of sends/day — nowhere near the Brain's per-tick ceiling. **Account daily limits
-are the binding constraint in essentially every V1-scale deployment**; the Brain's throughput
-ceiling only becomes relevant once the account pool grows into the hundreds, which is itself the
-signal that a scale-out (HA/sharding) conversation is due — exactly the ceiling's stated purpose
-(§7 of the Phase 9.5 spec), not a claim about how many emails today's deployment can send.
+**In essentially every V1-scale deployment, account daily limits bind first and the Brain is idle.**
+The Brain's throughput only becomes the constraint once the account pool grows into the hundreds —
+which is itself the signal that a scale-out conversation is due, and scale-out is a CLAUDE.md Rule 7
+matter (one active Brain, by invariant), not a knob. The arithmetic, a volume→accounts table, and
+what to measure before committing to a number are in `capacity-planning.md`; the measured run is
+`load-test-results.md`.
 
-**Known operational limits (unchanged from the Chunk 6 verdict, restated for the sealed build):**
-- **The accepted-duplicate window** (crash-after-SMTP-`250`-before-persist) is a rare, bounded,
-  accepted residual — `provider_message_id UNIQUE` plus the pre-persist idempotency check ensure it
-  is at most one extra *delivery*, never a second billed *job* or a corrupted state (Phase 6 §2.6,
-  the SOLE authoritative definition, referenced — never redefined — everywhere else it's mentioned).
-- **Bounce/complaint ingestion and open/click tracking are deferred** (post-V1, stated honestly in
-  `describe`'s own capabilities — `sequences:false`, no tracking).
-- **One effective shared pool in V1** — dedicated pools exist and route correctly, but price
-  identically to shared (isolation, not a premium); a future price differentiator is an additive
-  value change, not a contract change.
-- **Auto-quarantine starts in `shadow` mode** (the seeded default) — it decides and logs but does
-  not act until an operator promotes it to `enforce` with one config write (see the GO-LIVE
-  CHECKLIST for what to watch before promoting).
-- **The admin write-path config-ordering invariants (P9-OD-2) are now enforced**, closing what was
-  the one remaining known gap between the Phase 9 spec's own claims and the running system.
+## Known operational limits
 
-See `Docs/go-live-checklist.md` for the deferred pre-live gates (platform-side coordination items,
-not build blockers) that must be confirmed before the first LIVE deployment.
+Stated here because each one is a property of the architecture, not a bug:
+
+- **The accepted-duplicate window** (a crash after SMTP `250` but before persist) is a rare, bounded,
+  accepted residual. `provider_message_id UNIQUE` plus the pre-persist idempotency check bound it to
+  at most one extra *delivery* — never a second billed job, never a corrupted state. Phase 6 §2.6 is
+  the sole authoritative definition; it is referenced, never redefined.
+- **No bounce or complaint ingestion, and no open/click tracking.** A provider `250` is recorded as
+  `sent` and nothing downstream is observed. Synchronous SMTP-time bounces *are* classified; what is
+  absent is everything a provider says after accepting the message. `describe` reports this honestly
+  in its own capabilities block. See `future-work.md` §1 — it is the largest single gap.
+- **One effective shared pool.** Dedicated pools exist and route correctly; campaign-to-pool binding
+  beyond `default_shared_pool_id` is future work.
+- **Auto-quarantine starts in `shadow`.** It decides and logs but does not act until an operator
+  promotes it — see `go-live-checklist.md` for what to watch first.
+
+`go-live-checklist.md` is the ordered set of platform-coordination and operator actions that must be
+confirmed before the first live deployment.

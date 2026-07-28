@@ -51,10 +51,15 @@ Nothing actually sends until `default_shared_pool_id` is set — that is expecte
 | Call the API (platform or operator) | [`Docs/api-contract.md`](./Docs/api-contract.md) |
 | Understand how the system is built | [`Docs/architecture-overview.md`](./Docs/architecture-overview.md) |
 | Review the security posture and residual risks | [`Docs/security-posture.md`](./Docs/security-posture.md) |
-| Size a deployment | [`Docs/capacity-planning.md`](./Docs/capacity-planning.md) |
+| Size a deployment | [`Docs/capacity-planning.md`](./Docs/capacity-planning.md) — and [`Docs/load-test-results.md`](./Docs/load-test-results.md) for the measured run behind it |
+| Wire up monitoring and alerting | [`Docs/monitoring.md`](./Docs/monitoring.md) |
+| Send the first real message through a real provider | [`Docs/smoke-test-real-provider.md`](./Docs/smoke-test-real-provider.md) |
 | Know what is deliberately NOT built | [`Docs/future-work.md`](./Docs/future-work.md) |
 | **Change this code** | [`CLAUDE.md`](./CLAUDE.md) — non-negotiable build rules; read first |
 | Know why something is the way it is | [`Docs/history/`](./Docs/history/README.md) — specs, ADRs, decision ledger |
+
+The full index, including the rule that keeps these docs from drifting, is
+[`Docs/README.md`](./Docs/README.md).
 
 ## Layout
 

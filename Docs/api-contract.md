@@ -108,7 +108,14 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | PATCH | `/v1/admin/pools/{id}` | update (`kind`/`owner_user_id` immutable) |
 | DELETE | `/v1/admin/pools/{id}` | delete (RESTRICT if it still has accounts → clean 409) |
 
-**Config** (`sender.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable):
+**Config** (`sender.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
+
+The `PUT` request body is `{"value": <v>}` — the bare JSON value at `value`, **not** the stored
+`{"v": …}` envelope, which is an internal storage detail the API unwraps on read and re-wraps on
+write. `<v>` is typed per the key's `value_type` (`integer` → a JSON number, `boolean` → `true`/
+`false`, `string`/`enum` → a JSON string, `json` → an object). A value of the wrong type is
+`400 validation_failed`; the key's `value_type` and legal range are in
+[`config-reference.md`](./config-reference.md), which is the only place values are documented:
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -123,6 +130,56 @@ Same operator admin auth as the routes above (`Authorization: Bearer <admin key>
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/admin/health` | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, per-pool eligibility headroom, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
+
+### `GET /v1/admin/health` response fields
+
+The authoritative field list (`internal/adminapi/health_handler.go`'s `healthResponse`). Every
+top-level block is always present; `errors_last_window` always carries all six `error_class` keys
+even when a class did not fire, so a poller can index it by name unconditionally.
+`oldest_active_heartbeat_age_sec` is the one omittable field (absent when no box is active).
+For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-runbook.md).
+
+| Field | Type | Notes |
+|---|---|---|
+| `generated_at` | string (RFC 3339 UTC) | when the snapshot was computed |
+| `window_sec` | int | the rolling window all `*_last_window` fields cover (`health_metrics_window_sec`) |
+| `dispatch.dispatch_paused` | bool | live `dispatch_enabled` inverted |
+| `dispatch.ticks_per_min` | float | observed dispatch cadence |
+| `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
+| `dispatch.send_rate_per_min` | float | derived from the two above |
+| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `sender.jobs` — one field per `job_state` |
+| `queue.waiting_for_capacity` | int | queued jobs whose resolved pool chain has ZERO eligible accounts. **Not an error state** |
+| `boxes.{active,stale,disabled}` | int | counts by `box_status` |
+| `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
+| `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
+| `pools[]` | array | `{pool_id, kind, eligible_accounts, headroom}` — `headroom` is a word, not a number |
+| `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys |
+| `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
+| `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
+| `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
+| `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all three V1 conditions |
+
+### Alert webhook payload (outbound, `alert_webhook_url`)
+
+Not a served route — an outbound POST across a trust boundary, listed here because it is a contract
+a receiver depends on. Fires on the **rising edge** of a condition, deduped by
+`(condition, subject.id)` until it clears; there is no all-clear POST. Shape:
+`internal/adminapi/health_alerts.go`'s `webhookPayload`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `condition` | string | `pool_exhausted` \| `account_quarantined` \| `box_death` |
+| `severity` | string | `critical` |
+| `subject` | object | `{type, id}` — the id of the pool / account / box the condition is about |
+| `detail` | object | condition-specific counts and ids only |
+| `fired_at` | string (RFC 3339 UTC) | rising-edge timestamp |
+| `module` | string | constant module identifier, so a shared receiver can route |
+
+Deliberately absent, per CLAUDE.md Rule 5 (the webhook is untrusted outbound egress): no message
+content, no recipient address, no credential, no internal reason string, no SQL/SQLSTATE, no
+internal hostname. A receiver gets condition codes, subject ids, and timestamps — nothing else.
+Transport bounds (a 5-second client timeout, 3 attempts, then dropped) are code constants, not
+config keys: see `config-reference.md`'s hardcoded-bounds note.
 
 ## Phase 3 served routes — platform-facing API (Domain A)
 

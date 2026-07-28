@@ -45,7 +45,7 @@ curl -fsS $ADMIN/readyz    # is the Brain alive and is it THE Brain?
 ahealth                    # everything else
 ```
 
-`/readyz` returning `{"db":true,"singleton_lock":true,"status":"ready"}` means the Brain is up, can
+`/readyz` returning `{"status":"ready","db":true,"singleton_lock":true,"at":"…"}` means the Brain is up, can
 reach Postgres, and holds the singleton lock. Anything else, or no response at all, and you are in
 [The Brain is not running](#the-brain-is-not-running) — stop there, because every other symptom is
 downstream of it.
@@ -77,7 +77,8 @@ Walk the seven steps in order; the first one that matches is your cause.
 curl -fsS $ADMIN/readyz
 ```
 
-Expect `{"db":true,"singleton_lock":true,"status":"ready"}`. If the request fails or
+Expect `{"status":"ready","db":true,"singleton_lock":true,"at":"…"}` (`at` is the check timestamp;
+the three fields before it are what you read). If the request fails or
 `singleton_lock` is `false`, see [The Brain is not running](#the-brain-is-not-running). No Brain
 means no dispatch, and everything below is moot.
 

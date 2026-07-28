@@ -1,8 +1,14 @@
 # Definition of Done (per phase)
 
-Every phase 1–9 is held to this gate. A phase is NOT done — no merge, no "move on" — until
-**all nine** items below are green. This block is the gate CLAUDE.md references; copy it into
-each phase spec's own "Exit Criteria" and tick the local copy to close a phase.
+Every phase is held to this gate — all eleven, from Phase 0 through Phase 10 including 9.5. A phase
+is NOT done — no merge, no "move on" — until **all nine** items below are green. This block is the
+gate CLAUDE.md references; copy it into each phase spec's own "Exit Criteria" and tick the local copy
+to close a phase.
+
+Each phase's tick-off is recorded at the bottom of this file, in phase order. Where an item has
+nothing to bind to in a given phase (a documentation phase seeds no config key; a phase that adds no
+row lock has no race test to ship), the tick-off says so explicitly rather than claiming a vacuous
+green — a ✅ that means "not applicable" is only honest if it says which.
 
 ```text
 DoD-1  SPEC WRITTEN
@@ -578,3 +584,72 @@ config write), `autopause_enabled` and `variation_enabled` (simple on/off kill-s
 below the quarantine ladder per the spec's own justification), `alert_webhook_url` (empty = off,
 conditions still visible via the endpoint either way). Brain singleton (re-verified, not rebuilt)
 remains the enforcement of "no second dispatch path" this rule also names) ✅.
+
+---
+
+**Phase 9's DoD status (polish, contract & documentation completion):** DoD-1 (specs
+`Docs/history/phase-9-polish-and-documentation.md` and
+`Docs/history/phase-9-contract-and-doc-completions.md` — two spec files for the one phase, the
+second added when the contract/doc completions were split out) ✅ · DoD-2 (real behavioral tests
+green on real infra: `quote_test.go` proves `quote` is pure/side-effect-free/idempotent against real
+Postgres and that retry/reclaim churn plus a duplicate `run` never inflate the billable job-row
+count; `TestUnitPrice_QuoteAndDescribeReflectLiveConfig` proves a live `unit_price_credits` write
+moves both tiers together; the Chunk 6 end-to-end pass drove a real campaign
+quote→run→dispatch→send→report through real Postgres/real box/real Mailpit; full harness green on
+the phase's final commit. **No new concurrency path and no new row lock**, so Rule 9/Rule 10's
+race-test requirements have nothing to bind to in this phase — recorded as not-applicable rather
+than ticked) ✅ · DoD-3 (`config-reference.md` and `api-contract.md` — the living reference tier
+this phase *created* — plus `architecture-overview.md`, all in the same change; both drift gates
+green) ✅ · DoD-4 (**no new tunable**: Phase 9 seeds no config row. Its §4 config reference is the
+authoritative mirror of the keys the earlier phases seeded, and `config_drift` verifies the mirror
+against the live table. Both ordering invariants re-asserted green) ✅ · DoD-5 (the phase's own
+Chunk 3 consolidation *is* the hardcoded-constant audit: every deliberate safety bound in the tree
+was enumerated into `config-reference.md`'s bounds table so the "no hardcoded tuning constant" claim
+became auditable against a complete rather than a plausible list) ✅ · DoD-6 (Open Decisions: P9-A
+and P9-OD-2 both **RULED**; the write-path config-ordering enforcement P9-OD-2 called for is
+implemented and behaviorally proven. One deliberate non-blocking exception, **R2-5**, remains open
+by explicit choice — a stale example inside a locked spec, where the fix would mean editing a frozen
+document (CLAUDE.md §8) and the authoritative living contract is already correct) ✅ · DoD-7
+(**additive only**: `quote`'s response gained fields, `describe` replaced a stub with a superset —
+no rename, no removal, no enum touched. **Zero migrations**, so the chain is trivially intact at
+`0000..0021` contiguous) ✅ · DoD-8 (security re-verified: the phase touches no credential, KMS, or
+box path at all — `quote`/`describe` are read-only pricing surfaces. Two-vocabulary rule re-audited
+across the whole documented contract as part of writing `api-contract.md`, which is where the error
+envelope's `{code, message, details[], request_id}`-only shape is now recorded normatively) ✅ ·
+DoD-9 (control-plane safety: no autonomous subsystem added or modified; the five kill-switches and
+the singleton guard were re-verified unchanged, and the Chunk 6 end-to-end pass observed the panic
+switch's lossless halt/resume live) ✅.
+
+**Phase 10's DoD status (final polish, operational documentation, close-out):** DoD-1 (**no spec
+file, deliberately** — Phase 10 is the close-out phase and its scope arrived as the user's own
+six-chunk instruction rather than as a locked spec written ahead of code. This is the one phase
+without a `Docs/history/phase-10-*.md`, which is why the spec count is 12 files for 11 phases; the
+phase's record is this document's "Phase 10 state" section) ✅ · DoD-2 (full harness green — and for
+the first time since Phase 8, *trustworthily* green: Phase 10 refused to accept the inherited "known
+flake" characterization of `P8 T3`, diagnosed it to a genuine test defect — a fixture with two
+closing tags against a 30%-per-tag injection rate, i.e. a 49%-failure assertion — and fixed it at the
+fixture without raising the rate or weakening the assertion. Verified by repetition: **four
+consecutive 53/53 runs**, which under the old fixture had roughly a 7% chance of happening. No new
+concurrency path, so Rule 9/10 again have nothing to bind to) ✅ · DoD-3 (docs *are* the change:
+the living/history split, the README entry point, the install guide, the runbook, DR/key-backup/
+rotation/security-posture/capacity/monitoring/smoke-test pages, and the Future Work register. The
+`config_drift`/`contract_drift` gates reference doc paths and were updated in the same commit as the
+move, then proven still green) ✅ · DoD-4 (**no new tunable** — the phase adds no behavior, so it
+adds no key. `config_consumption` and `config_drift` both green against the unchanged 53-key set) ✅
+· DoD-5 (the hygiene sweep re-audited the tree for leftover TODO/FIXME/debug code and found no new
+hardcoded tuning constant; the two constants the log-level work touched are level *labels*, not
+tuning values) ✅ · DoD-6 (the ledger is confirmed genuinely empty across phases 0–10 including 9.5.
+Deferred work was **moved, not deleted**, into `future-work.md` — that register is what makes "zero
+open items" an honest statement rather than a bookkeeping trick. R2-5 remains the one deliberate
+open item, named rather than quietly closed) ✅ · DoD-7 (**zero migrations, zero contract changes**;
+chain intact at `0000..0021`. The only code changes in the whole phase are the two `logLevelFor`
+additions and one test fixture — no served route, response shape, enum, or column touched) ✅ ·
+DoD-8 (security properties re-verified and, more usefully, *written down for a reviewer* in
+`security-posture.md`, including the residual risks stated honestly: a compromised box exposes the
+credentials of accounts actively sending through it (bounded); `send_logs` holds plaintext bodies and
+recipients at rest with retention as the sole privacy control; "the platform cannot read credentials"
+depends on KMS/IAM separation actually being configured, which is not code-checkable and is therefore
+a go-live sign-off item. `no_secret_leak` green) ✅ · DoD-9 (control-plane safety: nothing autonomous
+was added or altered. The kill-switches are documented operationally for the first time — when and
+how to flip each one — in the runbook and the go-live checklist, including that promoting
+`autoquarantine_mode` to `enforce` is the one flip that changes what happens to a real account) ✅.

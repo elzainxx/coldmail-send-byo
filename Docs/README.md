@@ -1,7 +1,7 @@
 # Docs/ — living documentation
 
 Everything in this directory tracks the **running system** and is kept honest by CI drift gates.
-Provenance — the eleven locked phase specs, the ADRs, the decision ledger, the build record — lives
+Provenance — the locked phase specs, the ADRs, the decision ledger, the build record — lives
 in [`history/`](./history/README.md) and is not part of operating or extending the module.
 
 Start at the [root README](../README.md) if you have not already.
@@ -44,5 +44,7 @@ value or a request body outside the reference tier, don't.
 
 **Build status: COMPLETE.** All eleven phases are built, tested, and closed; the open-decisions
 ledger is empty and deferred work is registered in [`future-work.md`](./future-work.md). See
-[`architecture-overview.md`](./architecture-overview.md)'s "BUILD COMPLETE" section for the final
-summary and verdict, and [`go-live-checklist.md`](./go-live-checklist.md) before deploying live.
+[`architecture-overview.md`](./architecture-overview.md)'s build-status section for the verdict and
+the known operational limits, and [`go-live-checklist.md`](./go-live-checklist.md) before deploying
+live. The build-by-build *evidence* behind the verdict is provenance:
+[`history/phase-build-record.md`](./history/phase-build-record.md).

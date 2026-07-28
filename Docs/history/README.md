@@ -1,9 +1,9 @@
 # Docs/history/ — provenance, not documentation
 
 **Nobody should read this directory to understand the system.** Everything here is the record of
-how the module was designed and built: eleven locked phase specs, the build diary, the
-flag-don't-fix decision ledger, and the ADRs. It is kept because *why* a thing is the way it is
-matters when you change it — but it is not the manual.
+how the module was designed and built: the locked phase specs, the build diary, the flag-don't-fix
+decision ledger, and the ADRs. It is kept because *why* a thing is the way it is matters when you
+change it — but it is not the manual.
 
 **If you are trying to do something, go to the living docs instead:**
 
@@ -24,7 +24,7 @@ matters when you change it — but it is not the manual.
 
 | File / dir | What it is | Consult it when |
 |---|---|---|
-| `phase-0-groundwork.md` … `phase-9-polish-and-documentation.md` | The **locked phase specs** (11 files incl. `phase-9_5-…` and `phase-9-contract-and-doc-completions.md`). The design of record, written before the code. **Never edited during build work** — see CLAUDE.md. | You need the authoritative intent behind a behavior, or the §-reference a code comment cites. |
+| `phase-0-groundwork.md` … `phase-9_5-operability-and-control-plane-safety.md` | The **locked phase specs** — the design of record, written before the code. **Never edited during build work** — see CLAUDE.md. **12 files for 11 phases**, which is deliberate and worth knowing before you count them: Phase 9 has *two* (`phase-9-polish-and-documentation.md` plus `phase-9-contract-and-doc-completions.md`, split out when the contract/doc completions were separated), Phase 9.5 has its own, and **Phase 10 has none** — it was the close-out phase and its scope arrived as an instruction rather than a locked spec, so its record is `phase-build-record.md`'s "Phase 10 state" section. | You need the authoritative intent behind a behavior, or the §-reference a code comment cites. |
 | `phase-build-record.md` | The **build diary** — what each phase actually landed, chunk by chunk, plus what each review gate found and how it was fixed. Split out of the living `architecture-overview.md` in Phase 10. | You want to know which phase introduced something, or what a review pass caught. |
 | `open-decisions.md` | The **flag-don't-fix ledger**. Every contradiction, ambiguity, and locked-fact conflict found across all phases, with its ruling and disposition. CLAUDE.md Rule 2's artifact. | You hit something that looks wrong and want to know whether it was already ruled on. |
 | `decisions/NNNN-*.md` | **ADRs** — the formal record for decisions that resolved an ambiguity or locked a trade-off. Append-only; superseding writes a new ADR and flips the old one's status. | You want the Context/Decision/Consequences for a specific settled trade-off. |

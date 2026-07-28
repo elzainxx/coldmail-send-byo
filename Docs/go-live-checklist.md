@@ -1,6 +1,6 @@
 # GO-LIVE CHECKLIST
 
-The build is sealed (`Docs/architecture-overview.md`'s BUILD COMPLETE section; verdict **GO**).
+The build is sealed (`Docs/architecture-overview.md`'s build-status section; verdict **GO**).
 Everything below is a **going-live confirmation or operator action**, not a build blocker — the
 module is implemented and proven in the real-infra harness (`scripts/dev.sh test`, 53/53 green)
 without any of these. They become mandatory the moment this module points at a real platform
@@ -163,8 +163,9 @@ what happens to a REAL account (it starts getting quarantined), not just what th
 
 **Why it blocks:** the module has NO built-in warm-up/ramp mechanism for a newly-added SMTP
 account — `daily_limit` applies at its full configured value from the account's very first day.
-A brand-new account added to a shared pool at, say, `daily_limit=500` will be routed up to 500
-sends on day one if the pool needs the volume, with no automatic gradual ramp.
+A brand-new account added to a shared pool inherits `daily_limit_default` and will be routed up to
+that full figure on day one if the pool needs the volume, with no automatic gradual ramp. (What the
+default actually is: [`config-reference.md`](./config-reference.md).)
 
 **Action:** if the SMTP accounts being provisioned are genuinely new (freshly created mailboxes,
 new sending domains, accounts that haven't built sending reputation with receiving providers),
