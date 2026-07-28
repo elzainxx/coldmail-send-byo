@@ -18,7 +18,7 @@ Single repository, multiple deployable services:
   lock so exactly one is ever active. Serves the platform (Domain A) and operator (Domain B)
   surfaces and the mTLS box-link.
 - **Sender boxes** (`services/box/`, Node.js) — pure SMTP relays. NO DB, NO KMS; credentials
-  held in memory only and zeroed on exit. Scale by adding box containers.
+  held in memory only and zeroed on every exit from the send path. Scale by adding box containers.
 - **Shared Postgres/Supabase** — the module owns the `sender` schema (owned by the non-login
   `sender_owner` role); the platform owns `public`. The module reads exactly two platform
   tables (`public.users`, `public.job_items`) read-only.
@@ -54,7 +54,9 @@ The full threat model, what each boundary actually protects, and the honest resi
    ciphertext to `account.id ‖ credential_key_id`) and pushes the job + credential to a connected
    box over the mTLS stream, with a lease and an attempt token.
 4. **The box runs the SMTP session** — TLS before AUTH, always — and reports the outcome back on
-   the same stream. It holds the credential in memory only and zeroes it on every exit path. It
+   the same stream. It holds the credential in memory only and zeroes it on every exit from the
+   send path — `finally`, so accept, SMTP error and thrown exception all zero; process-level
+   shutdown and uncaught-exception zeroing are registered residuals (`security-posture.md` §3.12). It
    never touches the DB or KMS.
 5. **Brain records the outcome** idempotently (`provider_message_id UNIQUE` + a pre-persist
    idempotency check), writes the `job_events` audit row via a DB trigger, applies the error
@@ -77,7 +79,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Append-only audit | `job_events` / `account_events` triggers + `REVOKE UPDATE, DELETE` | DB (`sender_0008`, `sender_0014`) |
 | Exactly one active Brain | session-level advisory lock, fixed key | `internal/singleton` (`Docs/advisory-locks.md`) |
 | Brain is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Brain role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
-| Box holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every exit path | `services/box` (structural) |
+| Box holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every **send-path** exit (not on shutdown — `security-posture.md` §3.12) | `services/box` (structural) |
 | Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (box token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
 | Tenant isolation | `user_id` on every table; RLS on all `sender.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `sender_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |

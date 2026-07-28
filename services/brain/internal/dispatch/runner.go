@@ -86,7 +86,11 @@ func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("dispatch: tick error: %v", err)
+		// level=error matches the admin/platform surfaces' logging convention so ONE
+		// `grep 'level=error'` finds every genuine fault, dispatch-side included (the runbook's
+		// incident-triage advice depends on that being true; before Phase 10's R4 gate these loop
+		// errors carried no level= at all and were invisible to exactly that grep).
+		log.Printf("dispatch: tick error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)
@@ -154,7 +158,7 @@ func (r *ReclaimRunner) tick(ctx context.Context) (interval time.Duration) {
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("reclaim: tick error: %v", err)
+		log.Printf("reclaim: tick error: %v level=error", err) // level=error: see the dispatch loop
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)

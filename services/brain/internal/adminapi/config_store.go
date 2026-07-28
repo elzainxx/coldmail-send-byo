@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // configStore reads/writes sender.config, translating the Phase 1 JSONB envelope {"v": …} to a
@@ -26,8 +25,9 @@ type configRow struct {
 
 var errConfigKeyNotFound = errors.New("config key not found")
 
-// getConfig reads one key. Returns errConfigKeyNotFound if absent.
-func getConfig(ctx context.Context, db *pgxpool.Pool, key string) (*configRow, error) {
+// getConfig reads one key. Returns errConfigKeyNotFound if absent. Takes pgxDB (not *pgxpool.Pool)
+// so the PUT path can read INSIDE its own write transaction — see handleConfigPut.
+func getConfig(ctx context.Context, db pgxDB, key string) (*configRow, error) {
 	var (
 		valJSON, defJSON []byte
 		vtype, desc      string
@@ -59,7 +59,7 @@ func getConfig(ctx context.Context, db *pgxpool.Pool, key string) (*configRow, e
 }
 
 // listConfig reads all keys ordered by key (§6.2 — the set is small, no pagination).
-func listConfig(ctx context.Context, db *pgxpool.Pool) ([]configRow, error) {
+func listConfig(ctx context.Context, db pgxDB) ([]configRow, error) {
 	rows, err := db.Query(ctx,
 		`SELECT key, value, default_value, value_type, description,
 		        to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
@@ -96,7 +96,7 @@ func listConfig(ctx context.Context, db *pgxpool.Pool) ([]configRow, error) {
 // updateConfigValue re-wraps value into {"v": value} and writes it (§6.3). Only `value` +
 // `updated_at` change; key/default_value/value_type/description are immutable via the API.
 // Returns errConfigKeyNotFound if the key does not exist (keys are not operator-creatable).
-func updateConfigValue(ctx context.Context, db *pgxpool.Pool, key string, value json.RawMessage) error {
+func updateConfigValue(ctx context.Context, db pgxDB, key string, value json.RawMessage) error {
 	wrapped, err := wrapV(value)
 	if err != nil {
 		return err

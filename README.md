@@ -16,7 +16,7 @@ only thing that can decrypt an SMTP credential; exactly one is ever active, guar
 advisory lock. It claims queued jobs, picks a healthy sending account, decrypts that account's
 credential, and pushes the job over mutual TLS to a **sender box** (Node.js) — a dumb SMTP relay
 that ships no database driver and no KMS SDK, holds the credential in memory only, zeroes it on
-every exit path, and reports the outcome back. Boxes scale horizontally and are never publicly
+every exit from the send path, and reports the outcome back. Boxes scale horizontally and are never publicly
 reachable. Everything tunable — 53 keys — is a seeded row in `sender.config`, changeable at
 runtime with no redeploy; there are no hardcoded tuning constants. Full shape in
 [`Docs/architecture-overview.md`](./Docs/architecture-overview.md).

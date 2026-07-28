@@ -59,6 +59,7 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 | `accounts.quarantined` > 0 | [An account got quarantined](#an-account-got-quarantined) |
 | `boxes.stale` > 0, or `boxes.active` is 0 | [A box died](#a-box-died) |
 | `active_conditions[]` is non-empty | [Alert conditions](#alert-conditions--triage) |
+| Everything looks fine, `/readyz` is green, but nothing moves | The health surface cannot see a rejected config — [Step 8](#step-8--is-the-config-itself-rejected-config_ordering_violation-in-the-log) |
 | Everything looks fine but sends are landing badly | [Deliverability seems to be dropping](#deliverability-seems-to-be-dropping) |
 | You are not sure what "fine" looks like | [Reading the health endpoint](#reading-the-health-endpoint) |
 
@@ -69,7 +70,8 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 The flagship symptom: `queue.queued` is non-zero and stays non-zero, `dispatch.sends_last_window` is
 0. **Almost always a configuration gap, not a fault** — and the system is *designed* to sit here
 quietly rather than fail your jobs, so silence is expected behavior, not a crash. Nothing is lost.
-Walk the seven steps in order; the first one that matches is your cause.
+Walk the eight steps in order; the first one that matches is your cause. (Step 8 is the one that a
+green `/readyz` actively hides — check the log even when every endpoint looks healthy.)
 
 ### Step 1 — Is the Brain running and holding the lock?
 
@@ -263,6 +265,51 @@ SELECT user_id, campaign_id, count(*), min(state::text) AS a_state
 
 More than one row for a `user_id` should not happen; a single row means that tenant's *current*
 campaign must finish (or be resolved) before another can start.
+
+### Step 8 — Is the config itself rejected? (`config_ordering_violation` in the log)
+
+The one cause on this list that **`/readyz` cannot see**. `/readyz` reports `db:true,
+singleton_lock:true` — genuinely true — while both the dispatch and the reclaim loop abandon *every*
+tick before doing any work, because the config they load fails one of the two ordering invariants.
+Nothing dispatches, nothing is reclaimed, and the only symptom is in the log:
+
+```bash
+journalctl -u sender-brain --since "15 min ago" | grep config_ordering_violation
+# dispatch: tick error: config_ordering_violation: smtp_operation_timeout_sec (100) must be < job_max_processing_time_sec (50) level=error
+# reclaim:  tick error: config_ordering_violation: … level=error
+```
+
+The message names both keys, both values, and the required relation — that is your whole diagnosis.
+Confirm against the table:
+
+```sql
+SELECT key, value->>'v' AS value FROM sender.config
+ WHERE key IN ('smtp_operation_timeout_sec','job_max_processing_time_sec',
+               'box_outcome_buffer_ttl_sec','startup_reconnect_window_sec') ORDER BY key;
+```
+
+**Recovery — order the two writes; do not try to fix both at once.** Each `PUT` is validated against
+the counterpart's value at that moment, so move the **boundary** key first, then the dependent one.
+For the pair above (needs `smtp_operation_timeout_sec < job_max_processing_time_sec`):
+
+```bash
+# 1. Raise the boundary key clear of the dependent key's current value.
+curl -fsS -X PUT $ADMIN/v1/admin/config/job_max_processing_time_sec \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{"value":120}'
+# 2. NOW bring the dependent key back under it.
+curl -fsS -X PUT $ADMIN/v1/admin/config/smtp_operation_timeout_sec \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{"value":30}'
+```
+
+No restart, no redeploy: the next tick re-reads config and dispatch resumes on its own. Nothing was
+lost while it was wedged — jobs stayed `queued`, which is exactly why the queue is what you noticed.
+
+**How it got there** matters for whether you should expect it again. The admin `PUT` boundary rejects
+a write that would invert either pair (`400 config_ordering_violation`), and config writes are
+serialized, so the API cannot produce this state — even from two simultaneous PUTs. A live inverted
+pair therefore means it arrived by some **other** path: a direct SQL `UPDATE` against
+`sender.config`, or a restore/seed that wrote both keys at once. Look there, not at the API.
+Both invariants, and why each exists, are in [`config-reference.md`](./config-reference.md).
 
 ---
 
@@ -754,7 +801,7 @@ Two grep-able fields carry most of the value:
 
 | Field | Use it to |
 |---|---|
-| `level=warn` vs `level=error` on API log lines | Separate *the caller's* mistake from *this system's* fault. A `4xx` (bad token, unknown id, invalid value) is `level=warn` and routine. A `5xx` is `level=error` and means something on this side broke. `grep 'level=error'` is the fastest way to find the real faults in a noisy window. |
+| `level=warn` vs `level=error` | Separate *the caller's* mistake from *this system's* fault. On API lines, a `4xx` (bad token, unknown id, invalid value) is `level=warn` and routine; a `5xx` is `level=error` and means something on this side broke. The dispatch and reclaim loops' `tick error:` lines are `level=error` too, so ONE `grep 'level=error'` finds every genuine fault, API-side and dispatch-side. |
 | `request_id=` / `rid=` | Bridge a client's error envelope to the cause. The envelope returned to a caller carries only `{code, message, request_id}`; the internal `reason=` behind it exists **only in this log**. Given a request id from a complaint, `grep` it here. |
 
 That second point has an operational consequence: **without log retention, a reported error is a code

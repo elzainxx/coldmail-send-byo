@@ -153,6 +153,16 @@ the table by any OTHER path (a direct SQL write, a future second write surface).
 points call the SAME pure functions in `internal/configordering` — they cannot silently diverge on
 what "valid" means for either pair.
 
+**Config writes are serialized against each other** (Phase 10 R4). The read of the counterpart's
+value, the ordering check, and the write all happen in ONE transaction, holding a transaction-scoped
+advisory lock (`Docs/advisory-locks.md`, `9_300_000_001`) that every config `PUT` takes. Without
+that, two *concurrent* PUTs — one lowering the boundary key, one raising the dependent key — each
+read a counterpart value that was still valid at the moment it read, so both passed the check and
+both committed, landing an inverted pair anyway. Serializing costs nothing (config writes are rare
+operator actions, never on a hot path) and closes the window rather than documenting it. The
+practical consequence for an operator: two simultaneous PUTs to the two halves of one pair will see
+one succeed and one rejected with `config_ordering_violation`, never both succeed.
+
 - `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6 (load) /
   Phase 9 CLOSEOUT (write)** (both keys seeded: the timeout via `sender_0018`, the lease via
   `sender_0010`). A `PUT` to either key that would invert the pair is rejected with

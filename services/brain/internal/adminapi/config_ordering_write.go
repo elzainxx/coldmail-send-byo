@@ -17,7 +17,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sender-module/brain/internal/configordering"
 )
 
@@ -28,7 +27,7 @@ import (
 // apiError naming the conflicting counterpart key, its current value, and the required relation —
 // so an operator is never left guessing which key to change or by how much (two-vocabulary rule:
 // this detail is safe operational information, not an internal reason/credential/SQL detail).
-func checkConfigOrderingOnWrite(ctx context.Context, db *pgxpool.Pool, key string, newValue int) *apiError {
+func checkConfigOrderingOnWrite(ctx context.Context, db pgxDB, key string, newValue int) *apiError {
 	// counterpartVal/explain are keyed on `key` (the one being WRITTEN) — used for the error
 	// message, which must name the OTHER key regardless of which side of the invariant `key`
 	// happens to be. configordering.Violation's own Key/CounterpartKey fields are fixed to the
@@ -98,9 +97,10 @@ func counterpartReadErr(counterpartKey string, err error) *apiError {
 
 // readConfigIntDirect reads one integer-typed sender.config key's CURRENT value, unwrapping the
 // {"v": N} envelope. Distinct from getConfig's caller-facing configRow because this needs only
-// the raw int, and must read fresh inside the SAME request as the write it is guarding — never a
-// cached value.
-func readConfigIntDirect(ctx context.Context, db *pgxpool.Pool, key string) (int, error) {
+// the raw int, and must read fresh inside the SAME TRANSACTION as the write it is guarding — never
+// a cached value, and never on a separate connection (see handleConfigPut on why the transaction,
+// not merely the freshness, is what makes the check sound).
+func readConfigIntDirect(ctx context.Context, db pgxDB, key string) (int, error) {
 	row, err := getConfig(ctx, db, key)
 	if err != nil {
 		return 0, err
