@@ -2084,6 +2084,60 @@ behavior the test exists to observe.
 Under the old fixture, four clean runs in a row had roughly a 7% chance of happening — so this is
 evidence rather than luck, which is exactly the standard Rule 10 asks for.
 
+#### The four review gates (R1–R4) — run SEQUENTIALLY, each re-verifying the last
+
+Run one at a time as separate invocations, per CLAUDE.md Rule 11 — the rule Phase 8 was burned into
+existence by. Each later gate independently **re-verified in the tree** (not re-read from a report)
+every prior gate's claimed fix. Commits: `1e7b6ec` (R1), `413e704` (R2), `fd532a4` (R3), `ab0f93f`
+(R4). Across all four, **0 claimed fixes were MISSING** — the first multi-gate sequence in this repo
+with that result, and the direct payoff of not running them in parallel.
+
+- **R1 (architect — docs organization).** 7 findings. Two HIGH: `config_drift.sh` gates only
+  `Docs/config-reference.md`, so numbers restated in other docs are ungated (fixed by giving
+  `capacity-planning.md` a declared-assumptions table that says so out loud rather than by silently
+  duplicating defaults); and the two `api-contract.md` tables needed field-level verification against
+  the Go structs. `phase-build-record.md` moved into `history/` here — it is provenance, not docs.
+- **R2 (senior-devops — is the install guide actually executable?).** 9 findings, found by walking it
+  as an operator rather than reading it. Two HIGH, both of which would have stopped a first install
+  cold: `provision-box seed` emits an `UPDATE`, so it cannot create the first `sender.boxes` row (the
+  guide now uses `INSERT … ON CONFLICT`), and `docker-compose.yml` hardcodes `MIGRATE_DATABASE_URL`
+  while whole-file interpolation aborts on `DEV_BOX_TOKEN_HASH`'s bcrypt `$` sigils.
+- **R3 (senior-security — is the posture honest?).** 12 findings (4 HIGH, 5 MED, 3 LOW), and the most
+  valuable gate of the four. Its recurring class: a `security-posture.md` control row that is **true
+  of the mechanism it cites but broader than the code**. Fixed by narrowing each claim and adding the
+  converse as a residual (§3.11–3.16), never by deleting the row. The sharpest was HIGH-2: clearing
+  `sender.boxes.token_hash` is checked **only in the register handshake**, so it refuses the *next*
+  connect but does not disconnect a box already streaming — an operator following the old text would
+  have "evicted" a compromised box that kept receiving a fresh credential per job. That correction is
+  procedural, so it went into `disaster-recovery.md` §4a (isolate the host FIRST), the runbook, the
+  install guide and the go-live checklist — not just the posture page. Nine capabilities were
+  **flagged into `future-work.md` §4a rather than built**, each with the design decision it needs.
+- **R4 (code review — did any code change behavior?).** Part A re-ran all 25 prior claims: 25
+  CONFIRMED-IN-TREE, 0 MISSING, including a third independent re-derivation of R1's api-contract
+  tables. Part B confirmed the hygiene sweep and log-noise pass changed **no** behavior: 18
+  comment-only files (all three touched migrations included — and no checksum mechanism exists in
+  `sender.schema_migrations` that a comment edit could disturb, so it is not an additive-only
+  violation), and `logLevelFor` derives from the existing `codeStatus` map, so it cannot drift from
+  the status actually returned. It then found **1 HIGH by demonstration against the live stack, not
+  by reasoning**: `handleConfigPut`'s read-then-write was not transactional, so two *concurrent* PUTs
+  each read a counterpart value valid at the moment it read, both passed the ordering check, and an
+  inverted pair committed — wedging **both** the dispatch and reclaim loops at config-LOAD on every
+  tick while `/readyz` stayed green. A routine admin write could invisibly halt the Brain. Fixed by
+  closing the window (one transaction + a `pg_advisory_xact_lock` config-write serializer,
+  `9_300_000_001`) rather than by softening the docs' claim, with a forced-interleave behavioral test
+  and the paired negative control Rule 10 requires — proven able to fail by temporarily disabling the
+  lock and reproducing R4's exact signature. Also: four docs still said the box zeroes credentials "on
+  every exit path", re-opening R3's HIGH-2 (narrowed); and the dispatch/reclaim `tick error` lines
+  carried no `level=`, so the runbook's `grep 'level=error'` advice had a blind spot over exactly the
+  dispatch-side faults (both now emit it, and the runbook says so).
+
+**Scope note, stated plainly because it qualifies "Phase 10 changes no behavior":** commit `23eb83d`
+(the config-ordering write boundary, discharging P9-OD-2) landed inside the Phase 10 window and **is**
+a real functional change — config writes that previously returned 200 now return
+`400 config_ordering_violation`. R4 reviewed it as new code and found it sound apart from the
+concurrency window above. The hygiene and logging passes, which are what the no-behavior-change
+constraint governed, changed none.
+
 ---
 
 ## BUILD COMPLETE — the sealed-build summary (moved here in Phase 10 R1)
