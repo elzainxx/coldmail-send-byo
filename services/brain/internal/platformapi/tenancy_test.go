@@ -70,6 +70,40 @@ func (r resp) str(k string) string {
 	return ""
 }
 
+// errorMessageOnly returns the envelope's client-facing message.
+func (r resp) errorMessageOnly() string {
+	if e, ok := r.body["error"].(map[string]any); ok {
+		if m, ok := e["message"].(string); ok {
+			return m
+		}
+	}
+	return ""
+}
+
+// errorDetailFields returns the "field:issue" pairs from the envelope's details[], in order, so a
+// test can assert WHICH field an error points at — not merely that some detail exists.
+func (r resp) errorDetailFields() []string {
+	e, ok := r.body["error"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	list, ok := e["details"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, d := range list {
+		m, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		f, _ := m["field"].(string)
+		i, _ := m["issue"].(string)
+		out = append(out, f+":"+i)
+	}
+	return out
+}
+
 // TestTenancy_CrossTenantReportIsNotFound (OD-25) — tenant A creates a job; tenant B, using B's
 // own valid selector, CANNOT read A's job by job_id NOR by job_item_id: both return 404 not_found,
 // identical to a non-existent id (no existence disclosure, never 403). Anti-vacuity: A reading A's

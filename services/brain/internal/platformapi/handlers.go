@@ -196,8 +196,20 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		// Name the selector the CALLER actually sent. This branch is reached by either selector, and
+		// hardcoding "job_id" pointed a job_item_id lookup at a field the caller never supplied —
+		// misleading on the one code path (a polling integration keyed by job_item_id) where the
+		// operator has no job_id to go check. The validation branches above already draw this
+		// distinction, and store.go's run/quote not-founds already name job_item_id.
+		// NO EXISTENCE DISCLOSURE (OD-25): this echoes back the caller's OWN choice of selector, not
+		// anything about the row. Both selectors still return the SAME code, message, and status as a
+		// wholly nonexistent job, so a cross-tenant probe learns nothing.
+		field := "job_id"
+		if jobID == "" {
+			field = "job_item_id"
+		}
 		s.fail(w, r, newErr(codeNotFound, "job_not_found").
-			withDetails(fieldDetail{Field: "job_id", Issue: issueNotFound}))
+			withDetails(fieldDetail{Field: field, Issue: issueNotFound}))
 		return
 	}
 	// Clean external state ONLY (§6.3): job_id, state, provider_message_id (when sent),

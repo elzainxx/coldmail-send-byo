@@ -231,7 +231,13 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > module scopes every `sender.jobs` read/write `WHERE user_id = <tenant>`. A `run` for a
 > `job_item_id` **owned by another tenant**, or a `report` for a `job_id`/`job_item_id` belonging to
 > another tenant, returns the SAME `404 not_found` as a non-existent id (never `403`) — so a caller
-> can neither read nor confirm the existence of another tenant's jobs. A missing/malformed
+> can neither read nor confirm the existence of another tenant's jobs. "The same" means the same
+> `code`, `message`, AND `details[]`: `report`'s not-found names **the selector the caller sent**
+> (`job_id` for a `?job_id=` lookup, `job_item_id` for a `?job_item_id=` lookup), which echoes back
+> the caller's own input and so discloses nothing about the row — a cross-tenant miss and a wholly
+> nonexistent id remain byte-identical apart from `request_id`. Both halves are asserted together
+> behaviorally, since making the error more specific is exactly how existence disclosure gets
+> introduced. A missing/malformed
 > `user_id` → clean `400 validation_failed`. This is module-level defense-in-depth: even a
 > platform-side bug that passes the wrong `user_id` cannot cross tenant boundaries here.
 
