@@ -296,9 +296,9 @@ Do not deploy until every line is true.
 - [ ] All Go and Node suites green; `gofmt`/`vet` clean
 - [ ] Clean-slate reproduction completed from the docs alone, without deviation
 - [ ] Empty state tells an operator what is missing
-- [ ] Every admin lifecycle transition works and is audited
-- [ ] Credential never appears in any read, list, or log — plaintext **or base64**
-- [ ] Tenant isolation holds
+- [x] Every admin lifecycle transition works and is audited *(Stage 4; refusals also made diagnosable — `12dade8`, `6004cd7`)*
+- [x] Credential never appears in any read, list, or log — plaintext **or base64** *(Stage 5; verified AFTER a real authenticated send so AUTH had actually run, across all 21 `/v1/admin/*` routes, and for the ciphertext + `credential_key_id` too. The shipped scans grepped plaintext only — fixed in `9daa622`)*
+- [x] Tenant isolation holds *(Stage 5; cross-tenant `report` is byte-identical to a nonexistent id — `b290953`)*
 - [ ] Both config-ordering invariants rejected at the API boundary
 - [ ] An invalid config type does not wedge the Brain
 - [ ] quote → run → report cycle correct end to end
