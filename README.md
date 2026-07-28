@@ -66,7 +66,7 @@ services/brain/           Go orchestrator — the ONLY DB client, the SOLE decry
 services/box/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
 db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.down.sql)
 db/preflight/             platform-table existence checks, run before migrating
-tools/                    sender-migrate, gen-certs, provision-box, gen-admin-key
+tools/                    sender-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
 tests/harness/checks/     the 5 blocking CI gates
 Docs/                     living documentation (operate + extend)
