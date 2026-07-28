@@ -161,7 +161,7 @@ Do this by hand through the API, not through a script. You are testing whether t
      `db outage DETECTED` line, and repairing the value resumes dispatch within a tick with no
      restart. Doing this found a real defect — the fault was reported as `db outage DETECTED … the DB
      is unreachable` at ~2 lines/second against a perfectly healthy DB, pointing the operator at
-     Postgres instead of the config row and burying the one useful line. Fixed in `<STAGE6_SHA>`.
+     Postgres instead of the config row and burying the one useful line. Fixed in `a617fda`.
 
 ---
 
@@ -314,7 +314,7 @@ Do not deploy until every line is true.
 - [x] Credential never appears in any read, list, or log — plaintext **or base64** *(Stage 5; verified AFTER a real authenticated send so AUTH had actually run, across all 21 `/v1/admin/*` routes, and for the ciphertext + `credential_key_id` too. The shipped scans grepped plaintext only — fixed in `9daa622`)*
 - [x] Tenant isolation holds *(Stage 5; cross-tenant `report` is byte-identical to a nonexistent id — `b290953`)*
 - [x] Both config-ordering invariants rejected at the API boundary *(Stage 6; **all four directions** of both pairs → HTTP 400 `config_ordering_violation` naming the conflicting key and its current value, nothing landing in the DB, no clamping. Ordered two-step widening AND narrowing both succeed; the wrong order is refused. `default_value` never mutated)*
-- [x] An invalid config type does not wedge the Brain *(Stage 6; 13 type violations → 400 with the DB unchanged, and no wedge proven by a real job reaching `sent` — not merely a 200 from `/health`. Going past the API with a direct SQL write found a real defect: a type fault was misreported as `db outage DETECTED` against a healthy DB — fixed in `<STAGE6_SHA>`)*
+- [x] An invalid config type does not wedge the Brain *(Stage 6; 13 type violations → 400 with the DB unchanged, and no wedge proven by a real job reaching `sent` — not merely a 200 from `/health`. Going past the API with a direct SQL write found a real defect: a type fault was misreported as `db outage DETECTED` against a healthy DB — fixed in `a617fda`)*
 - [ ] quote → run → report cycle correct end to end
 - [ ] All three routing strategies distribute as specified
 - [ ] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput
