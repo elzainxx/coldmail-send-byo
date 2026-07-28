@@ -43,9 +43,18 @@ sudo apt-get install -y ca-certificates curl gnupg git jq
 # Docker (the supported deployment shape — same images CI tests):
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"   # log out and back in for this to take effect
+
+# Go toolchain — BRAIN HOST ONLY, and it is not optional:
+sudo apt-get install -y golang-go
 ```
 
-Verify: `docker --version && docker compose version`.
+Verify: `docker --version && docker compose version && go version`.
+
+> **Why Go is a prerequisite even though everything runs in containers.** `tools/provision-box`
+> ships no Dockerfile, and it is what mints the operator admin key, the platform service token, and
+> every box token. You need it at Step 6 — *before* the Brain can be configured at all — so
+> `go: command not found` there blocks the entire install. It is a build-once tool: run it, keep the
+> binary, and Go is not needed again. Only the Brain host needs it; box hosts do not.
 
 > **Running without Docker** is possible — the Brain is a static Go binary, the box is Node.js —
 > but the containers are what CI exercises, so they are what this guide covers.
@@ -153,6 +162,11 @@ and a client leaf per box.
 ```bash
 bash tools/gen-certs.sh
 # writes secrets/dev/certs/: ca.crt ca.key brain.crt brain.key box.crt box.key sink.crt sink.key
+#
+# NOTE: if secrets/dev/certs/ca.crt already exists the script prints a message and EXITS 0 without
+# regenerating anything. That reads like success. Pass --force to actually regenerate — and be aware
+# that a new CA invalidates every existing box leaf, so every box needs its new leaf before it can
+# reconnect.
 ```
 
 > **`tools/gen-certs.sh` is explicitly DEV-ONLY** — it says so in its own header. It self-signs a
@@ -179,32 +193,62 @@ registration token is what authorizes it (Step 7).
 Migrations are centrally owned, contiguous, self-recording, and applied in ascending order. The
 runner takes an advisory lock so two migrators cannot race.
 
-```bash
-export MIGRATE_DATABASE_URL='postgres://<admin-role>:<pw>@<host>:5432/<db>'
-export SENDER_MODULE_PASSWORD='<a strong password for the app role>'
+**Do not run the migrator through `docker-compose.yml`.** That file is the *dev* stack, and two
+things about it make it the wrong tool against a real database — both verified, not theoretical:
 
-# Inspect first — shows applied vs pending, changes nothing:
-docker compose run --rm --no-deps migrate status
+1. Its `migrate` service **hardcodes** `MIGRATE_DATABASE_URL` to the in-compose dev Postgres
+   (`docker-compose.yml`, the `migrate:` `environment:` block). A `MIGRATE_DATABASE_URL` you export
+   in your shell is silently **overridden** — you would point the runner at a database that does not
+   exist on a production host, or worse, at the wrong one.
+2. Compose interpolates the **entire file** before running any service, so a `docker compose run
+   migrate` on a fresh clone with no `.env` aborts on `DEV_BOX_TOKEN_HASH is missing a value` — a
+   variable the migrator does not use. (Reproduce: `docker compose config` in a fresh clone.)
+
+Build the runner image once and run it directly. This is the whole of Step 5:
+
+```bash
+# Build the migration-runner image (context is the repo root — the Dockerfile copies the module):
+docker build -f tools/sender-migrate/Dockerfile -t sender-migrate:local .
+
+MIGRATE_DATABASE_URL='postgres://<admin-role>:<pw>@<host>:5432/<db>'
+SENDER_MODULE_PASSWORD='<a strong password for the app role>'
+
+# Inspect first — read-only, shows applied vs pending, changes nothing:
+docker run --rm \
+  -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" \
+  -e MIGRATIONS_DIR=/db/migrations \
+  -e PREFLIGHT_SQL=/db/preflight/check_platform_tables.sql \
+  -v "$PWD/db:/db:ro" \
+  sender-migrate:local status
 
 # Apply the chain, then set the app role's password out-of-band:
-docker compose run --rm --no-deps migrate up-and-set-password
+docker run --rm \
+  -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" \
+  -e SENDER_MODULE_PASSWORD="$SENDER_MODULE_PASSWORD" \
+  -e MIGRATIONS_DIR=/db/migrations \
+  -e PREFLIGHT_SQL=/db/preflight/check_platform_tables.sql \
+  -v "$PWD/db:/db:ro" \
+  sender-migrate:local up-and-set-password
 ```
 
-> **`--no-deps` is not optional, and omitting it is destructive.** The `migrate` service
-> `depends_on` the dev `postgres` service, so without `--no-deps`, `docker compose run` will start
-> — and can **recreate** — that container. Against a production external database that is merely
-> pointless; against a local stack it silently destroys your data volume. This was found by running
-> the command as first written while drafting this guide: it recreated the postgres container and
-> wiped the dev database. `--no-deps` runs the one-shot alone, which is what you want in every
-> environment where Postgres is not managed by this compose file.
+`--network` may be needed depending on where your database lives: add `--network host` for a
+Postgres on the same host, or `--network <your-net>` to reach one on a Docker network. A managed
+database reachable over the public internet needs neither.
+
+> **If you nonetheless use the dev compose file locally, `--no-deps` is not optional and omitting it
+> is destructive.** The `migrate` service `depends_on` the dev `postgres`, so without `--no-deps`,
+> `docker compose run` will start — and can **recreate** — that container, silently destroying the
+> data volume. This was found by running the command as first written while drafting this guide: it
+> recreated the postgres container and wiped the dev database.
 >
-> Verify what you are about to touch before running `up` anywhere real: `status` is read-only, so
-> run it first, always.
+> Either way: `status` is read-only, so run it first, always.
 
 What that does: runs the preflight (platform tables exist?), applies every pending
 `sender_NNNN_*.up.sql` in order, records each in `sender.schema_migrations`, creates the
 non-login `sender_owner` (schema owner, so `FORCE ROW LEVEL SECURITY` actually enforces) and the
-login-only `sender_module` app role, and seeds all 53 config keys with their documented defaults.
+login-only `sender_module` app role, and seeds every config key with its documented default
+(the authoritative key set is [`config-reference.md`](./config-reference.md) — the one file the
+`config_drift` gate checks; a count restated here would be a number nothing verifies).
 
 The role password is set via `set-app-password` rather than in SQL specifically so it never lands
 in a migration file or the DB's statement logs.
@@ -212,7 +256,7 @@ in a migration file or the DB's statement logs.
 **Migrations are forward-only in production.** `down` refuses to run unless you explicitly set
 `SENDER_MIGRATE_ALLOW_DOWN=true`. Do not casually override that — see the rollback section (Part 5).
 
-Confirm: `docker compose run --rm --no-deps migrate status` shows every version applied and none pending.
+Confirm: re-run the `status` command above — every version applied, none pending.
 
 ### Step 6 — Start the Brain
 
@@ -243,9 +287,23 @@ separately:
 
 ```bash
 cd tools/provision-box && go build -o bin/provision-box .
-./bin/provision-box admin-key    # prints ADMIN_API_KEY (keep) + ADMIN_API_KEY_HASH (deploy)
-./bin/provision-box admin-key    # run AGAIN for the platform token — a distinct credential
+
+./bin/provision-box admin-key    # run 1 -> the OPERATOR key   (Domain B)
+./bin/provision-box admin-key    # run 2 -> the PLATFORM token (Domain A) — a distinct credential
 ```
+
+**Both runs print lines named `ADMIN_API_KEY=` and `ADMIN_API_KEY_HASH=`.** The tool has one
+key-minting subcommand and does not know which domain you are minting for, so the variable names it
+prints are only right for the first run. Map them yourself:
+
+| Run | `ADMIN_API_KEY=` (the plaintext) goes to | `ADMIN_API_KEY_HASH=` goes into |
+|---|---|---|
+| 1 | your secret store, as the **operator admin key** — the `Authorization: Bearer` value for `/v1/admin/*` | `ADMIN_API_KEY_HASHES` |
+| 2 | your secret store, as the **platform service token** — the bearer value the platform uses for `quote`/`run`/`report`/`describe` | `PLATFORM_TOKEN_HASHES` |
+
+Pasting run 2's output verbatim into your env file overwrites `ADMIN_API_KEY_HASHES` and leaves
+`PLATFORM_TOKEN_HASHES` empty — which fails closed, so Domain A silently stays off and every
+platform call returns `401`. (`scripts/dev.sh` greps the two runs apart for exactly this reason.)
 
 The Brain stores only hashes and compares in constant time. Record the plaintexts in your secret
 store; they are not recoverable from the hash.
@@ -280,13 +338,46 @@ cd tools/provision-box && go build -o bin/provision-box .
 cannot be recovered after this step. It goes into that box's own secret config.
 
 ```bash
-# 2. Emit the SQL that seeds the sender.boxes row, and run it as the migration-admin role:
+# 2. Emit the SQL that seeds the sender.boxes row:
 ./bin/provision-box seed --id <box-uuid> --token-hash '<hash>'
-#    -> pipe/paste into psql "$MIGRATE_DATABASE_URL"
+```
+
+**Read the emitted SQL before you run it — for a box that does not exist yet, it is the wrong
+statement.** `provision-box seed` emits an `UPDATE`, which is correct for *rotating* an existing
+box's token but matches **zero rows** on a first install, reports success, and leaves you with a box
+that is refused at registration for a reason nothing logs as an error. For the **first** row for a
+given box id, run an `INSERT` instead, as the migration-admin role:
+
+```bash
+psql "$MIGRATE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
+  INSERT INTO sender.boxes (id, user_id, token_hash, status)
+  VALUES ('<box-uuid>', '<owning-user-uuid>', '<hash>', 'active')
+  ON CONFLICT (id) DO UPDATE SET token_hash = EXCLUDED.token_hash, status = 'active';"
+```
+
+Two columns the tool's output does not mention and you cannot omit:
+
+- **`user_id` is `NOT NULL` with an FK to `public.users(id)`** (`sender_0006`). It must be a real
+  platform user id or the `INSERT` fails on the FK. Use the platform user that owns this box's
+  sending — for a single-tenant install, the same user id you use elsewhere.
+- **`status` must be `'active'`.** A box row with `status='disabled'` is refused at registration
+  exactly like a revoked one.
+
+Confirm the row landed before starting the box — this is the check that turns a silent failure into
+an obvious one:
+
+```bash
+psql "$MIGRATE_DATABASE_URL" -tAc \
+  "SELECT id, status, token_hash IS NOT NULL FROM sender.boxes WHERE id='<box-uuid>';"
+# expect exactly one row:  <box-uuid>|active|t
 ```
 
 Note `sender.boxes.id` is a **UUID**. The token is the authority (verified against `token_hash`);
 the cert CN is transport only.
+
+For **rotating** an already-seeded box's token later, `provision-box seed`'s `UPDATE` is exactly
+right — see [Adding a box](#adding-a-box) and [Removing a box](#removing-a-box) in Part 5. The
+distinction is first-insert vs rotate, not a defect in the tool.
 
 ### Step 8 — Start the box
 
@@ -294,8 +385,7 @@ On the box host, with its own leaf certs and its token:
 
 ```bash
 BRAIN_HOST=<brain-private-hostname>
-BRAIN_BOXLINK_PORT=8443
-BRAIN_STREAM_PORT=8444
+BRAIN_STREAM_PORT=8444          # the box connects on the send stream only
 BRAIN_SERVER_NAME=<the name in the Brain cert's SAN>
 BOX_ID=<the box uuid you seeded>
 BOX_TOKEN=<the plaintext token from step 7>
@@ -328,9 +418,19 @@ KEY='<the plaintext ADMIN_API_KEY>'
 curl -fsS -X POST $ADMIN/v1/admin/pools -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' -d '{"kind":"shared","name":"primary"}'
 
-# 2. An SMTP account in it (the credential is encrypted on arrival; the Brain never returns it):
+# 2. An SMTP account in it (the credential is encrypted on arrival; the Brain never returns it).
+#    The admin surface decodes STRICTLY — a misspelled field name is a 400, not an ignored key.
+#    Full field table incl. the optional ones: api-contract.md.
 curl -fsS -X POST $ADMIN/v1/admin/accounts -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{ ... see api-contract.md ... }'
+  -H 'Content-Type: application/json' -d '{
+        "pool_id":       "<pool-uuid from step 1>",
+        "smtp_host":     "smtp.example.com",
+        "smtp_port":     587,
+        "smtp_username": "<mailbox username>",
+        "smtp_secret":   "<mailbox password>",
+        "from_address":  "you@example.com",
+        "from_name":     "Your Name"
+      }'
 
 # 3. Designate the default shared pool — base sending does NOT work until this is set:
 curl -fsS -X PUT $ADMIN/v1/admin/config/default_shared_pool_id -H "Authorization: Bearer $KEY" \
@@ -383,18 +483,26 @@ are a different thing entirely and live in the database — see
 | `ADMIN_API_KEY_HASHES` | Domain B operator key hashes, comma-separated. **Empty = admin API off.** |
 | `PLATFORM_TOKEN_HASHES` | Domain A platform service token hashes. **Empty = platform API off.** |
 | `DEV_BOX_TOKEN_HASH` | Token hash for the register/heartbeat route. |
-| `SENDER_ALERT_WEBHOOK_URL` | Optional. Empty = alerting off. See [`monitoring.md`](./monitoring.md). |
+
+**Not in this table on purpose:** `SENDER_ALERT_WEBHOOK_URL` appears in `.env.example` but **no code
+reads it** — it is inert. The webhook destination comes only from the `alert_webhook_url` config row.
+Setting the env var and expecting alerts is a silent no-op; see [`monitoring.md`](./monitoring.md).
 
 ### Box
 
 | Variable | Purpose |
 |---|---|
-| `BRAIN_HOST`, `BRAIN_BOXLINK_PORT`, `BRAIN_STREAM_PORT` | Where to connect (private network). |
+| `BRAIN_HOST`, `BRAIN_STREAM_PORT` | Where to connect (private network). `BRAIN_STREAM_PORT` defaults to `8444`. |
 | `BRAIN_SERVER_NAME` | Must match the Brain cert's SAN, or TLS verification fails. |
 | `BOX_ID` | The UUID seeded into `sender.boxes`. |
 | `BOX_TOKEN` | The plaintext registration token — **the box's actual authority**. |
 | `MTLS_CLIENT_CERT` / `MTLS_CLIENT_KEY` / `MTLS_CA_CERT` | This box's own leaf + trust root. Never the CA key. |
-| `BOX_HEARTBEAT_INTERVAL_SEC`, `BOX_SMTP_TIMEOUT_MS` | Liveness cadence; SMTP socket timeout. |
+| `BOX_HEARTBEAT_INTERVAL_SEC`, `BOX_SMTP_TIMEOUT_MS` | Liveness cadence; SMTP socket timeout. Both are **bootstrap defaults only** — the Brain overrides them from seeded config on `register_ack`. |
+
+A box connects on the **send stream** (`:8444`) only; it does not dial the register/heartbeat port
+itself, so there is no `BRAIN_BOXLINK_PORT` for the box to set. `docker-compose.yml` passes one to
+the dev box container and the box ignores it — it reads only the variables above
+(`services/box/src/index.js`).
 
 **Never set on a box:** `DATABASE_URL`, any KMS variable, `ca.key`, `brain.key`. If a box host has
 any of these, that is a security incident, not a misconfiguration —
@@ -556,7 +664,10 @@ sudo systemctl enable --now sender-box      # on each box host
 Boxes are additive and need no Brain restart.
 
 1. On the Brain host: `provision-box new --id <id>` → record the token.
-2. `provision-box seed --id <uuid> --token-hash '<hash>'` → run the SQL as the migration admin.
+2. Insert the `sender.boxes` row as the migration admin. **A new box needs the `INSERT` from
+   [Step 7](#step-7--provision-the-first-box), not `provision-box seed`'s `UPDATE`** — the `UPDATE`
+   matches zero rows for an id that does not exist yet and silently reports success. Verify the row
+   with the `SELECT` in Step 7 before continuing.
 3. Bring up the box with its own leaf certs and its token.
 4. Confirm `box registered id="<id>"` in the Brain log, and that
    `GET /v1/admin/health` counts the new box.
@@ -592,7 +703,7 @@ curl -fsS http://localhost:8080/readyz
 Restarting the Brain is safe by design: it drains in-flight work, buffered outcomes replay on
 reconnect, and anything still in flight is reclaimed. Boxes reconnect on their own.
 
-**Config changes are not deploys.** All 53 dials live in `sender.config` and take effect on the next
+**Config changes are not deploys.** Every dial lives in `sender.config` and takes effect on the next
 tick — `PUT /v1/admin/config/{key}` and you are done. Restarting the Brain to change a timeout means
 something is wrong with your mental model, not with the Brain.
 
@@ -610,7 +721,7 @@ If you genuinely must:
 
 1. Take a database backup first. Not optional.
 2. Stop the Brain (do not leave it running against a schema being changed underneath it).
-3. `SENDER_MIGRATE_ALLOW_DOWN=true docker compose run --rm --no-deps migrate down <version>` — one version at
+3. `docker run --rm -e SENDER_MIGRATE_ALLOW_DOWN=true -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" -e MIGRATIONS_DIR=/db/migrations -v "$PWD/db:/db:ro" sender-migrate:local down <version>` — one version at
    a time, verifying between.
 4. Deploy the matching older Brain **before** starting anything.
 

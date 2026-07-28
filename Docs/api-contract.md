@@ -87,6 +87,30 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | DELETE | `/v1/admin/accounts/{id}` | hard delete (audit row survives) |
 | GET | `/v1/admin/accounts/{id}/events` | read the account audit trail (cursor paginated) |
 
+### `POST /v1/admin/accounts` request body
+
+The admin surface decodes **strictly** (`DisallowUnknownFields`) — an unrecognised or misspelled
+field name is a hard `400 validation_failed`, not a silently ignored key. So the field set matters:
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `pool_id` | **yes** | uuid | The account's pool. `user_id` is *derived* from the pool — never sent |
+| `smtp_host` | **yes** | string | |
+| `smtp_username` | **yes** | string | |
+| `smtp_secret` | **yes** | string | **Write-only.** Encrypted on write; never returned by any read. Reads expose `has_credential` only |
+| `from_address` | **yes** | string | |
+| `smtp_port` | no | int | Defaults per the module's port handling (587/25 STARTTLS, 465 implicit TLS) |
+| `from_name` | no | string | |
+| `daily_limit` | no | int | Defaults to `daily_limit_default`; capped by the `DailyLimitCeiling` bound |
+
+`PATCH /v1/admin/accounts/{id}` takes the same fields, all optional — and **omitting `smtp_secret`
+leaves the stored credential unchanged**, which is structural rather than a convenience: there is no
+way to read a credential back, so a partial update cannot round-trip one.
+
+`POST /v1/admin/pools` takes `kind` (**required**, `shared`\|`dedicated`) and `name` (**required**),
+plus optional `owner_user_id`, `routing_strategy`, `fallback_pool_id`, `enabled`. `kind` and
+`owner_user_id` are immutable after creation.
+
 **Account lifecycle transitions** (manual, audited — one `account_events` row each; `actor='admin'`):
 
 | Method | Path | Purpose |
