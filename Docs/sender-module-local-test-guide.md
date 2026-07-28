@@ -201,17 +201,54 @@ Do this by hand through the API, not through a script. You are testing whether t
 1. Add a second account. Set the pool strategy to `round_robin`, run a campaign.
    - **Pass:** sends distribute across both accounts (check `assigned_account_id` spread)
 2. Repeat with `random`, then `one_by_one`
-   - **Pass:** each distributes as specified
+   - **Pass:** each distributes as specified. **Distinguish them by STRUCTURE, not just by count** — a
+     13/7 split could be produced by any of the three. What separates them: `round_robin` gives a
+     strictly alternating `ABABAB…` (a run of 2 is already a failure); `random` shows *runs* (a run of
+     5 identical picks is structurally impossible under round-robin); `one_by_one` is a single long run.
+   - **`one_by_one` needs EQUAL `daily_limit`s to be sticky.** With unequal limits it hands the lead
+     to a larger-limit peer after as little as ONE send — the score's `w_prox` term (weight 15)
+     penalizes `daily_sent_count ÷ daily_limit`, so a small-limit account sheds score fastest. If you
+     cap one account to force a handover, cap the one that is *actually leading* (`score DESC`), not
+     whichever you seeded first. See the `one_by_one` note in [`operator-runbook.md`](./operator-runbook.md).
 3. Pause one account mid-campaign
-   - **Pass:** it is skipped; sends continue on the other
+   - **Pass:** it is skipped; sends continue on the other. Pause it with jobs still `queued` (slow the
+     pacing so the campaign outlives the pause) or the test is vacuous — check the paused account's
+     last `completed_at` really precedes the pause, and that the peer absorbed every remaining job.
+     Then `/unpause` it: a **manual** pause lifts cleanly (200), which is the contrast to the
+     `daily_limit` pause below.
 4. Measure throughput against `lanes ÷ average delay`
-   - **Pass:** observed rate matches within tolerance
+   - **Pass:** observed rate matches within tolerance. Expect it slightly UNDER the ideal — the SMTP
+     round trip is real work the delay doesn't account for. Observed: 1 lane at delay 4–5s gave
+     11.17 sends/min against a ~13.3 ideal (≈0.87s/send of overhead). Measure `max(completed_at) −
+     min(completed_at)` over `sent` jobs and divide by `count−1`, not by `count`.
 5. Double the concurrency, measure again
    - **Pass:** roughly double the throughput — this proves per-lane pacing rather than a single global rate
+   - Observed across a 4× range: 1 lane → 11.17/min, 2 → 24.69/min (2.21×), 4 → 50.47/min (2.04×).
+     Near-linear in lanes is the actual proof; a flat or sub-linear curve would mean a global rate.
+     Set `concurrency_per_user_default` through `PUT /v1/admin/config/{key}`, not direct SQL, so the
+     write serializer and validation run.
 6. Create a dedicated pool for one user, exhaust it, and watch fallback
    - **Pass:** falls back to shared **only** when the dedicated pool is genuinely unavailable, not before
+   - **Assert BOTH halves — "not before" is the one that catches a bug.** Give the dedicated account a
+     small `daily_limit` and queue more than that: the first N must land on the dedicated pool and only
+     the overflow on shared (observed 4 dedicated then 4 shared at `daily_limit=4`, 8 jobs). Then raise
+     the limit, age `daily_reset_day`, and re-run: **zero** jobs may touch shared while the dedicated
+     pool still has headroom (observed 5/5 dedicated).
+   - **Also check dedicated→dedicated is refused (P4-3).** Point the dedicated pool's `fallback_pool_id`
+     at *another tenant's* dedicated pool and exhaust: that fallback must be **ignored** (it resolves
+     only to an enabled *shared* pool) and routing must fall through to `default_shared_pool_id`.
+     Observed: all 3 jobs on shared, zero on the other tenant's accounts. One tenant's overflow must
+     never land on another tenant's identities.
 7. Start a second campaign for a user who already has one active
    - **Pass:** rejected outright, cleanly; no job rows created
+   - `409 conflict` per attempt, and `SELECT count(*) FROM sender.jobs WHERE campaign_id = <B>` must be
+     **0** — the rejection is what's under test, but the *zero rows* is what makes it "outright" rather
+     than "queued and ignored". Confirm the envelope carries only `{code, message, request_id}` — the
+     internal reason `user_campaign_active` must not appear (Rule 5).
+   - **Two controls, or this proves nothing.** (a) A repeat `run` within the SAME campaign must still
+     be accepted while that campaign has non-terminal jobs — the gate is per-*campaign*, not
+     per-in-flight-job (already exercised by running all N items of campaign A). (b) Once A drains to
+     terminal, B must be accepted (observed 3 × 202) — otherwise a blanket "always reject" would pass.
 
 ---
 
@@ -331,10 +368,10 @@ Do not deploy until every line is true.
 - [x] Both config-ordering invariants rejected at the API boundary *(Stage 6; **all four directions** of both pairs → HTTP 400 `config_ordering_violation` naming the conflicting key and its current value, nothing landing in the DB, no clamping. Ordered two-step widening AND narrowing both succeed; the wrong order is refused. `default_value` never mutated)*
 - [x] An invalid config type does not wedge the Brain *(Stage 6; 13 type violations → 400 with the DB unchanged, and no wedge proven by a real job reaching `sent` — not merely a 200 from `/health`. Going past the API with a direct SQL write found a real defect: a type fault was misreported as `db outage DETECTED` against a healthy DB — fixed in `a617fda`)*
 - [x] quote → run → report cycle correct end to end *(Stage 7; `describe` pricing matches `sender.config` and its capability flags are honest — `sequences`/`open_tracking`/`click_tracking` all `false`; `quote` = N × unit for N ∈ {0,1,7,250,10000} and follows a live price retune with no redeploy; `run` returned 202 `state:queued` (never `sent`) so it did not block; `report` totals matched the DB at every sample and `fraction_complete` tracked 0.25→0.5→0.75→1; all messages in Mailpit with all 6 headers correct from the RAW source and Message-IDs distinct; jobs `sent` with `provider_message_id`, the `job_events` chain complete with the outcome attributed to `box` (never the dispatcher), `send_logs` written with the right TTL, and zero credential/ciphertext/nonce/key-id occurrences with the matcher proven non-vacuous. Reading `details[]` on quote's rejections rather than just the status code found two real defects — a supplied-but-negative count reported as `required`, and a wrong type naming no field at all — fixed in `fe27588`)*
-- [ ] All three routing strategies distribute as specified
-- [ ] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput
-- [ ] Dedicated-pool fallback fires only on genuine exhaustion
-- [ ] Second concurrent campaign per user rejected
+- [x] All three routing strategies distribute as specified *(Stage 8; distinguished by STRUCTURE, not count: `round_robin` 12 jobs → exactly 6/6 strictly alternating `ABABABABABAB`; `random` 20 jobs → 13/7 with runs of 5 (structurally impossible under round-robin); `one_by_one` 12/0 fully sticky at equal `daily_limit`s. Both accounts' scores healed to 100 after their successes. Walking this step found a docs defect — the runbook claimed the default order "exhausts" the leading account before moving on; it names the wrong default (`round_robin` is the default) and `one_by_one` actually hands over after ONE send when limits are unequal, because the score's `w_prox` term penalizes `daily_sent_count ÷ daily_limit`. Code is correct and locked; docs fixed and the asymmetry pinned by `onebyone_handover_test.go`)*
+- [x] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput *(Stage 8; at delay 4–5s: 1 lane → 11.17 sends/min vs the ~13.3 ideal, the ~0.87s/send gap being real SMTP round-trip overhead; 2 lanes → 24.69/min (2.21×); 4 lanes → 50.47/min (2.04×). Near-linear across a 4× range, which is the per-lane-pacing proof — a global rate would be flat. All three config keys driven through `PUT /v1/admin/config/{key}` so the write serializer and validation ran, then restored to seeded defaults)*
+- [x] Dedicated-pool fallback fires only on genuine exhaustion *(Stage 8, both halves. "Only on exhaustion": dedicated account at `daily_limit=4` with 8 jobs → jobs 1–4 dedicated, 5–8 shared, in that order. "Not before": limit raised + `daily_reset_day` aged → all 5 of 5 jobs stayed dedicated, ZERO on shared. Plus the P4-3 kind policy — `fallback_pool_id` pointed at ANOTHER tenant's dedicated pool was ignored and routing fell through to `default_shared_pool_id` (3/3 on shared, zero on the other tenant's accounts), so one tenant's overflow never lands on another tenant's identities)*
+- [x] Second concurrent campaign per user rejected *(Stage 8; campaign B attempted 3× while A had 3 non-terminal jobs → `409 conflict` each time and `campB_job_rows=0` — rejected outright, not queued. Envelope carried only `{code, message, request_id}`; the internal reason `user_campaign_active` did not leak (Rule 5). Both controls green: a repeat `run` within the SAME campaign is still accepted while that campaign is in flight (all 6 of A's items went through with 3 already non-terminal), and B was accepted 3×202 once A drained — so this is not a blanket reject)*
 - [ ] Every error class produces the correct job **and** account outcome
 - [ ] Hard bounce does not penalise the account
 - [ ] Box death produces exactly one delivered copy

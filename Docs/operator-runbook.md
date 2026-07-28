@@ -727,12 +727,33 @@ DMARC aggregate reports, and postmaster tools. Bounce/complaint ingestion is reg
 
 | Lever | How | What it does |
 |---|---|---|
-| **Account rotation** | Add accounts to the pool; set the pool's `routing_strategy` | Spreads volume across identities instead of concentrating it. The default order prefers the highest-scoring account and exhausts it before moving on; `round_robin` spreads instead. |
+| **Account rotation** | Add accounts to the pool; set the pool's `routing_strategy` | Spreads volume across identities instead of concentrating it. `round_robin` is the **default** and spreads strictly; `random` draws uniformly; `one_by_one` prefers the highest-scoring account — but see the note below, it does **not** drain that account to its limit first. |
 | **Per-account daily limits** | `daily_limit` per account (`daily_limit_default` for new ones) | The hardest cap on per-identity volume, and usually the limit that binds first. Enforced in the database, not in memory. |
 | **Pacing** | `send_delay_min_sec` / `send_delay_max_sec`, `concurrency_per_user_default` | Randomized per-lane inter-send delay. Throughput ≈ lanes ÷ average delay — this is deliberately *not* a single global rate. |
 | **Content variation** | `variation_enabled` plus the per-feature `variation_*` keys | Reduces byte-identical repetition across messages (HTML minification, comment injection, CSS micro-variation, encoding/boundary rotation, preheaders, header style). All default to off/neutral, so the whole set at defaults is byte-identical to no variation at all. |
 | **Sender identity hygiene** | Per-account `from_address` / `from_name` | Must match what the provider has verified. A mismatch is a rejection or a spam signal, not a subtle effect. |
 | **Auto-quarantine** | `autoquarantine_mode`, `quarantine_threshold` | Pulls failing accounts out of rotation before they do more damage. In `shadow` (the default) it only *reports* — promote to `enforce` when you trust the threshold. |
+
+> **`one_by_one` is not "drain one account, then the next."** The name suggests it, and the earlier
+> wording of the rotation row above said so outright, but that is not what it does. The order is
+> `account_status_score DESC, id ASC`, and the score subtracts a **proximity** penalty —
+> `w_prox × (daily_sent_count ÷ daily_limit)`, weight 15 of 100 by default. So an account *loses
+> score as it consumes its own limit*, and it loses that score **faster the smaller its limit is**.
+>
+> The practical consequence: with **unequal** `daily_limit`s, the leader hands over to a
+> larger-limit peer **long before** it is exhausted — an account with `daily_limit=10` alongside a
+> peer at 1000 gives up the lead after a **single** send, at 1/10 of its own cap, while still fully
+> eligible. With **equal** limits both rows shed proximity identically, `score DESC` stays tied, the
+> `id ASC` tiebreak holds, and `one_by_one` *is* fully sticky — one account takes everything until
+> something genuinely removes it from eligibility.
+>
+> This is deliberate and it is the safer behavior: steering away from an account that is approaching
+> its cap beats slamming into the cap and then discovering it. But it means **you cannot use
+> `one_by_one` to deliberately concentrate volume on one identity while other accounts in the pool
+> have larger limits** — it will spread anyway. If you want concentration, give the accounts equal
+> limits, or put the identity you want to drain in a pool by itself. Pinned by
+> `services/brain/internal/dispatch/onebyone_handover_test.go` (both directions: early handover on
+> unequal limits, full stickiness on equal ones). Found walking Stage 8 of the local test guide.
 
 ### What does not exist in V1 — do not go looking for it
 
