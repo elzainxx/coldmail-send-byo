@@ -3,8 +3,11 @@
 # known dev secrets (the box registration token and its bcrypt hash) and FAILS if any appears.
 # Enforces CLAUDE.md Rule 5/6 "a credential is never logged" as an automated regression guard:
 # today boxlink logs only the box id + cert CN (safe), but a future log.Printf(req.Token) would
-# be caught here rather than shipping. Phase 0 has no SMTP credential yet — that leak scan
-# arrives with the send path (Phase 5); this covers the token/hash that DO flow today.
+# be caught here rather than shipping. SCOPE: this gate covers the BOX TOKEN + its hash only,
+# because those are the credentials that flow on every stack, with no send required. The SMTP
+# credential is a different credential on a different path (it only exists once an account is
+# provisioned and only reaches a box during a send), so its leak scan lives with the send harness —
+# tests/harness/phase3_send.sh S1, which greps plaintext AND base64 in logs and in the DB.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 DC="${COMPOSE_INVOCATION:-docker compose -f docker-compose.yml -f tests/harness/compose.test.yml}"

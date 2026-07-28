@@ -162,11 +162,46 @@ else
 fi
 $DC up -d box >/dev/null 2>&1 || true   # bring the box back
 
-# --- S1: the plaintext credential never appears anywhere ---
-LOGS="$($DC logs brain box 2>&1 || true)"
-if grep -qF "$CANARY" <<<"$LOGS"; then bad "S1: the canary credential appears in brain/box logs"; else ok "S1: canary absent from brain/box logs"; fi
+# --- S1: the credential never appears anywhere — in PLAINTEXT **or BASE64** ---
+# --profile multibox so box2's logs are scanned too when it is running: box 2 receives pushed
+# credentials on the same stream, so a leak there must not hide from this gate.
+LOGS="$($DC --profile multibox logs 2>&1 || true)"
+if grep -qF "$CANARY" <<<"$LOGS"; then bad "S1: the canary credential appears in service logs"; else ok "S1: canary absent from service logs (plaintext)"; fi
+# BASE64 is not a paranoid extra: SMTP AUTH transmits the credential base64-encoded, so any code
+# that logs the AUTH exchange (or a wire dump) leaks a WORKING credential while every plaintext
+# grep above still reports clean. Three encodings, because the leak's shape depends on the
+# mechanism: AUTH LOGIN base64s the secret ALONE (padded, and unpadded in case of a trimming
+# encoder), while AUTH PLAIN base64s "\0user\0secret" as ONE blob in which the secret's own base64
+# does NOT appear as a substring. Checking only the first form would miss an AUTH PLAIN dump.
+# Found walking Docs/sender-module-local-test-guide.md Stage 5, whose step 4 requires exactly this.
+CANARY_B64="$(printf '%s' "$CANARY" | base64 | tr -d '\n')"
+CANARY_B64NP="${CANARY_B64//=/}"
+CANARY_PLAIN_B64="$(printf '\0%s\0%s' "sender@ourdomain.com" "$CANARY" | base64 | tr -d '\n')"
+# canary_b64_in <haystack> — exit 0 if ANY of the three encodings appears. A function, not an inline
+# loop, because phase8_variation.sh re-runs this same scan with variation ON and is sourced after
+# this file: a second copy of the encoding logic is a copy that can drift out of agreement with this
+# one, and the whole point is that all three forms are always checked together.
+canary_b64_in() {
+  local hay="$1" enc
+  for enc in "$CANARY_B64" "$CANARY_B64NP" "$CANARY_PLAIN_B64"; do
+    # An `if` (rather than a bare &&-chain) keeps the loop body's exit status 0 on a NON-match:
+    # a chain ending false makes the loop return false, which is harmless today but would silently
+    # abort the script the day someone adds `set -e`.
+    if [[ -n "$enc" ]] && grep -qF "$enc" <<<"$hay"; then return 0; fi
+  done
+  return 1
+}
+if canary_b64_in "$LOGS"; then
+  bad "S1: the canary credential appears BASE64-ENCODED in service logs (a working credential leaked)"
+else
+  ok "S1: canary absent from service logs (base64: LOGIN padded/unpadded + PLAIN blob)"
+fi
 DBLEAK="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY}%' OR smtp_response LIKE '%${CANARY}%' OR headers::text LIKE '%${CANARY}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY}%')" || true)"
 [[ "${DBLEAK:-0}" == "0" ]] && ok "S1: canary absent from send_logs/jobs" || bad "S1: canary leaked into send_logs/jobs ($DBLEAK hits)"
+# Same base64 reasoning applies to the DB: a persisted AUTH exchange or header dump would carry the
+# encoded credential past the plaintext LIKEs above.
+DBLEAK64="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY_B64}%' OR smtp_response LIKE '%${CANARY_B64}%' OR headers::text LIKE '%${CANARY_B64}%' OR body LIKE '%${CANARY_PLAIN_B64}%' OR headers::text LIKE '%${CANARY_PLAIN_B64}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY_B64}%' OR last_error_message LIKE '%${CANARY_PLAIN_B64}%')" || true)"
+[[ "${DBLEAK64:-0}" == "0" ]] && ok "S1: canary absent from send_logs/jobs (base64)" || bad "S1: canary leaked BASE64-ENCODED into send_logs/jobs ($DBLEAK64 hits)"
 # The DB credential column must be genuine ciphertext, not the plaintext canary.
 CIPHER_OK="$(PSQL "SELECT position('${CANARY}'::bytea in credential_ciphertext)=0 FROM sender.accounts WHERE id='$ACCT'" || true)"
 [[ "$CIPHER_OK" == "t" ]] && ok "S1: credential column is ciphertext (canary bytes absent)" || bad "S1: plaintext canary found in credential_ciphertext"

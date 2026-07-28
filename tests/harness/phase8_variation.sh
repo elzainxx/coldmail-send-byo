@@ -118,11 +118,30 @@ else
 fi
 
 # --- S1 (live, re-checked WITH variation on): the credential canary still never appears anywhere ---
-LOGS8="$($DC logs brain box 2>&1 || true)"
-if grep -qF "$CANARY" <<<"$LOGS8"; then bad "P8 S1: the canary credential appears in brain/box logs with variation ON"; else ok "P8 S1: canary absent from brain/box logs with variation ON"; fi
+# PLAINTEXT **and BASE64**, via phase3_send.sh's canary_b64_in (this file is sourced after it). The
+# base64 forms matter here for the same reason they do in Phase 3 — SMTP AUTH transmits the
+# credential encoded, so a logged AUTH exchange leaks a WORKING credential past every plaintext
+# grep — and they matter SEPARATELY here because variation rewrites the message on its way out: this
+# is the only scan that covers the credential with the variation code paths active.
+LOGS8="$($DC --profile multibox logs 2>&1 || true)"
+if grep -qF "$CANARY" <<<"$LOGS8"; then bad "P8 S1: the canary credential appears in service logs with variation ON"; else ok "P8 S1: canary absent from service logs with variation ON (plaintext)"; fi
+if canary_b64_in "$LOGS8"; then
+  bad "P8 S1: the canary credential appears BASE64-ENCODED in service logs with variation ON"
+else
+  ok "P8 S1: canary absent from service logs with variation ON (base64)"
+fi
 if echo "$RAW8T3" | grep -qF "$CANARY"; then bad "P8 S1: the canary credential appears in the delivered message body/headers"; else ok "P8 S1: canary absent from the delivered message"; fi
+# The delivered message is the one place a variation bug could inject the credential into content;
+# check the encoded forms there too, not just the logs.
+if canary_b64_in "$RAW8T3"; then
+  bad "P8 S1: the canary credential appears BASE64-ENCODED in the delivered message"
+else
+  ok "P8 S1: canary absent from the delivered message (base64)"
+fi
 DBLEAK8="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY}%' OR smtp_response LIKE '%${CANARY}%' OR headers::text LIKE '%${CANARY}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY}%')" || true)"
 [[ "${DBLEAK8:-0}" == "0" ]] && ok "P8 S1: canary absent from send_logs/jobs with variation ON" || bad "P8 S1: canary leaked into send_logs/jobs with variation ON ($DBLEAK8 hits)"
+DBLEAK8B64="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY_B64}%' OR smtp_response LIKE '%${CANARY_B64}%' OR headers::text LIKE '%${CANARY_B64}%' OR body LIKE '%${CANARY_PLAIN_B64}%' OR headers::text LIKE '%${CANARY_PLAIN_B64}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY_B64}%' OR last_error_message LIKE '%${CANARY_PLAIN_B64}%')" || true)"
+[[ "${DBLEAK8B64:-0}" == "0" ]] && ok "P8 S1: canary absent from send_logs/jobs with variation ON (base64)" || bad "P8 S1: canary leaked BASE64-ENCODED into send_logs/jobs with variation ON ($DBLEAK8B64 hits)"
 
 # --- restore every toggle flipped above to its seeded default, so a later harness run (or another
 # suite reading these same keys) is not left with variation silently ON. ---
