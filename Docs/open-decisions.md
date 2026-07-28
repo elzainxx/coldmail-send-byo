@@ -555,6 +555,24 @@ parallel, per CLAUDE.md §11); R2 independently re-verified R1's claimed fix in 
 starting its own review. Every MEDIUM/LOW finding from both gates is now FIXED except R2-5, which is
 correctly FLAGGED (a locked-spec edit, not a build action) rather than silently patched.
 
+## Ledger-wide confirmation (Phase 9 CLOSEOUT, 2026-07-27) — needs-user is EMPTY across Phases 0-9.5
+
+Every dated section above (Phase 0 through Phase 9.5, plus this CLOSEOUT) was re-scanned for its own
+"Needs-user" line. Result: every single one reads **empty**, **none**, or a completed **RULED**
+disposition — with exactly ONE deliberate exception:
+
+- **R2-5** (§ "Review gates R1/R2" above) — a stale request-body example in
+  `phase-9-polish-and-documentation.md`, one of the nine LOCKED phase specs. CLAUDE.md forbids
+  editing a locked spec during build work; the authoritative living contract (`api-contract.md`,
+  the document `contract_drift` actually verifies against) is already correct. This is intentionally
+  left open for the user's own call on whether to spend a deliberate, reviewed edit (CLAUDE.md §8)
+  on a frozen document's stale example — **not a build blocker, not a contract gap, not a defect any
+  operator or UI team would ever hit** (they read `api-contract.md`, which is correct).
+
+No other item across the entire ledger — OD-1 through OD-25, P4-OD-1, P5-OD-1..3, P6-OD-1..2,
+P7-OD-1..8, P8-OD-1, P9.5-OD-1..6, P9-OD-1, P9-OD-2 — has an open needs-user. **The build has zero
+outstanding decisions blocking launch.**
+
 ## Pre-live gates (required before the first LIVE run; NOT before Phase 1 build)
 
 All consolidated in **`Docs/pre-live-gates.md`**. These are confirmed against the real shared

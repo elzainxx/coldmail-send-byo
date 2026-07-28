@@ -14,5 +14,11 @@ build work.
 | Settled decisions | `decisions/NNNN-*.md` (ADRs) | linked from specs |
 | Unresolved contradictions | `open-decisions.md` | flag-don't-fix ledger |
 | Advisory-lock key registry | `advisory-locks.md` | — |
+| Load-test ceiling | `load-test-results.md` | committed, versioned artifact (OD-7) |
+| Pre-live confirmations | `pre-live-gates.md` (G1-G4) | `go-live-checklist.md` — the full ordered operator checklist |
+
+**Build status: COMPLETE.** The nine-phase spec set + the Phase 9.5 operability layer are built,
+tested, and closed. See `architecture-overview.md`'s "BUILD COMPLETE" section for the final
+summary and verdict, and `go-live-checklist.md` before the first live deployment.
 
 Phase 0 status and scope: `../Docs/phase-0-groundwork.md`.

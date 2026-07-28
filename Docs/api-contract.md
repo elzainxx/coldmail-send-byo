@@ -41,7 +41,7 @@ malformed, not_found, conflict, forbidden_value}`. The full, additive-only `erro
 | HTTP | `error.code` | When |
 |---|---|---|
 | 400 | `validation_failed` | Body/query failed field validation (see `details[]`). |
-| 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (§4.6-equivalent in `Docs/config-reference.md`) — **see the note on the config `PUT` row below: this code is currently emitted only at config-LOAD time, not yet at the `PUT` itself; `Docs/open-decisions.md` P9-OD-2.** |
+| 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (`Docs/config-reference.md`) — enforced at the `PUT` boundary itself (rejected before the value lands) AND independently re-checked at config-LOAD as a defense-in-depth backstop (`Docs/open-decisions.md` P9-OD-2, RULED-AND-CLOSED). |
 | 401 | `unauthenticated` | Missing/invalid API key/token, either domain. |
 | 403 | `forbidden` | Reserved for future scoped roles; unused in V1's single-scope model. |
 | 404 | `not_found` | Resource id / config key does not exist, OR belongs to another tenant (no existence disclosure — never `403`). |
@@ -114,7 +114,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 |---|---|---|
 | GET | `/v1/admin/config` | read all keys |
 | GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
-| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Note (`Docs/open-decisions.md` P9-OD-2):** the two config-ordering invariants (`Docs/config-reference.md`) are enforced at config-LOAD (the next dispatch/reclaim tick refuses to run on a bad set), but this `PUT` itself does NOT yet reject a value that would violate either invariant — it currently returns `200` even for an invariant-violating write. `config_ordering_violation` is real and reachable in logs at load time, not yet at this endpoint. Flagged, not fixed. |
+| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Config-ordering invariants (`Docs/open-decisions.md` P9-OD-2, RULED-AND-CLOSED):** for the four keys with a documented ordering counterpart (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`, `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`), this `PUT` validates the RESULTING pair against the counterpart's LIVE current value BEFORE writing — a write that would invert either invariant is rejected with `400 config_ordering_violation`, naming the conflicting counterpart key, its current value, and the required relation; the bad value never lands. The config-LOAD path independently re-checks the same invariant on every tick as a defense-in-depth backstop. Widening BOTH keys of a pair upward requires ordering the two `PUT`s (raise the boundary key first). |
 
 ## Phase 9.5 served routes — observability (Domain B)
 

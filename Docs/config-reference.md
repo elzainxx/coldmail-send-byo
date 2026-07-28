@@ -142,25 +142,39 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 | `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_zero_width_rate` (P8-OD-1, fraction 0–1); that key remains the sole source of truth for this rate to avoid two competing dials driving the same box behavior. Phase 9.5 §2.4. |
 | `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). `skip_below_px` is box-consumed via `push_job.variation` (P9.5-OD-3) — that sub-field is CONSUMED. `delta_px` is **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_css_magnitude_px` (P8-OD-1), which remains the sole source of truth for the CSS magnitude. Phase 9.5 §2.4. |
 
-## Both config-ordering invariants (enforced at config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
+## Both config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 
-- `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6** (both keys
-  now seeded: the timeout via `sender_0018`, the lease via `sender_0010`). `LoadConfig`
-  (`services/brain/internal/dispatch/config.go`) rejects a violating set (strict `<`; equality also
-  rejected), so the Brain never runs on an inverted pair. The admin *write* path deliberately does
-  not couple the two dials at write time (spec §5.1); the reject lives at load where the whole set is
-  read together (P6-OD-1).
-- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` — **enforced as of Phase 7** (both keys
-  now seeded via `sender_0019`). A reconnecting box must still hold its buffered outcome when it
-  re-attaches inside the rescan window; if the buffer TTL is shorter than the window, a box that
-  reconnects late-but-in-window has already dropped its outcome → the job is lease-reclaimed and
-  re-sent → a **silent duplicate**. `LoadConfig` rejects a violating set (P7-11, §5.3). Bare equality
-  is the floor; a margin (~2×, defaults `900 ≥ 2×120`) covers reconnect-backoff. This is the exact
-  analogue of the Phase 6 invariant above — a correctness dependency between two independently-tunable
-  dials, made safe by an ordering rule rather than by coupling the dials at write time.
+**Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**
+the admin `PUT /v1/admin/config/{key}` boundary rejects a write that would invert either pair
+BEFORE it ever lands in `sender.config` (validated against the counterpart key's LIVE value, not
+the submitted value alone); the config-LOAD path (`internal/dispatch/config.go`'s `LoadConfig`)
+independently re-checks the same invariant on every tick as a backstop, in case a bad pair reaches
+the table by any OTHER path (a direct SQL write, a future second write surface). Both enforcement
+points call the SAME pure functions in `internal/configordering` — they cannot silently diverge on
+what "valid" means for either pair.
 
-A config set violating either is rejected with external code `config_ordering_violation` — never
-clamped or auto-corrected (Rule 1).
+- `smtp_operation_timeout_sec < job_max_processing_time_sec` — **enforced as of Phase 6 (load) /
+  Phase 9 CLOSEOUT (write)** (both keys seeded: the timeout via `sender_0018`, the lease via
+  `sender_0010`). A `PUT` to either key that would invert the pair is rejected with
+  `400 config_ordering_violation`, naming the counterpart key, its current value, and the required
+  relation; the value never lands. `LoadConfig` additionally rejects a violating set at load (strict
+  `<`; equality also rejected) as defense in depth, so the Brain never runs on an inverted pair even
+  if one somehow reaches the table by another path.
+- `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec` — **enforced as of Phase 7 (load) /
+  Phase 9 CLOSEOUT (write)** (both keys seeded via `sender_0019`). Same dual-boundary enforcement as
+  above. A reconnecting box must still hold its buffered outcome when it re-attaches inside the
+  rescan window; if the buffer TTL is shorter than the window, a box that reconnects
+  late-but-in-window has already dropped its outcome → the job is lease-reclaimed and re-sent → a
+  **silent duplicate**. Bare equality is the floor; a margin (~2×, defaults `900 ≥ 2×120`) covers
+  reconnect-backoff.
+
+**Widening BOTH keys of a pair upward requires ordering the two writes** — each individual `PUT` is
+validated against the counterpart's value AT THAT MOMENT, so raising the boundary key first (the
+lease, or the reconnect window), then the dependent key (the timeout, or the buffer TTL), succeeds;
+attempting the dependent key first fails cleanly and instructively.
+
+A config set violating either invariant is rejected with external code `config_ordering_violation`
+— never clamped or auto-corrected (Rule 1) — at whichever boundary it is attempted.
 
 ## Deliberate hardcoded safety BOUNDS (not dials — Phase 9 Chunk 3 consolidation)
 
