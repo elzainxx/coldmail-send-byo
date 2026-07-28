@@ -1991,3 +1991,95 @@ One more trap worth recording because it bit a second time in a new place: `dock
 without `--no-deps` restarts postgres, and the harness override backs its data directory with
 `tmpfs` — so it **wipes the database**. Same class as the previously-documented `migrate status`
 trap.
+
+### Chunk 6 — the Future Work register + closing every open item
+
+**`Docs/future-work.md`** is the chunk's deliverable and the answer to a bookkeeping problem: the
+honest way to reach zero open items is not deletion, it is moving deferred work OUT of the decision
+ledger into a labelled register. Eight sections — deliverability feedback (the largest gap), routing
+and pool capabilities, operator surface, data at rest, build infrastructure, known defects flagged
+not fixed, the one genuinely open decision, and related docs. Each item carries **what it is** and
+**why it was deferred**, because the reason is the load-bearing part: several were deferred because
+building them requires a design decision nobody has made, not because they were forgotten, and
+picking one up without its reason is how a scoped-out item becomes an accidental redesign.
+
+Every claim in it was **verified against code**, not transcribed from the build diary. That mattered
+more than expected:
+
+- **The bounce framing was wrong on the first pass and had to be corrected.** `job_state` includes
+  `bounced` and `error_class` includes `bounce_permanent`, and `classify.go` genuinely disambiguates
+  a `550` 5.1.x addressing bounce from a 5.7.x policy rejection. So "no bounce handling" would have
+  been false. What is actually missing is **asynchronous** feedback — DSN mail, ARF complaints, a
+  provider webhook — i.e. everything the provider tells you *after* it returned `250`. A synchronous
+  SMTP-time bounce is handled. The register states the distinction rather than the slogan.
+- **`/v1/admin/boxes` genuinely does not exist** — the served route set was enumerated from the code
+  (`accounts`, `pools`, `config`, `health`, plus the Domain A trio) rather than assumed.
+- **`rate_limited` (429) is in the error vocabulary but nothing emits it** — grepped `codeRateLimited`
+  across the tree; only the enum definition matches. Reserved deliberately, which is what makes
+  adding limiting later additive.
+- **`SENDER_ALERT_WEBHOOK_URL` appears exactly once in the repo**, in `.env.example:42`, read by
+  nothing.
+- **`send_logs` write-once is real** (`sender_0009`'s `BEFORE UPDATE` reject-trigger + `REVOKE
+  UPDATE`), so "hardened except that the content is not encrypted" is precise rather than generous.
+- **`account_events` records `request_id`, not a human identity** — which is what makes the
+  single-omnipotent-admin-key limitation concrete rather than theoretical.
+
+The register's highest-priority item is not a feature: it is the **Go toolchain upgrade** that clears
+`GO-2026-5004` (pgx/v5) and `GO-2026-5970` (x/text), both real, both with live call paths, whose
+remediation Chunk 5 proved breaks the pinned builder. It is listed as blocking a pilot that carries
+real data.
+
+**The open-decisions ledger was audited end to end and is confirmed EMPTY** across every phase, 0–10
+including 9.5 — OD-1..25, P4-OD-1, P5-OD-1..3, P6-OD-1..2, P7-OD-1..8, P8-OD-1, P9-OD-1..2,
+P9.5-OD-1..6, and every review-gate finding from R1..R4 across phases 4–9. **One item is left open
+deliberately, and it is named rather than quietly closed:** R2-5, the stale `{job_item_id}` example
+in a LOCKED phase spec that omits the required `user_id`. CLAUDE.md forbids editing a locked spec as
+build work; the living contract `api-contract.md` (what `contract_drift` actually verifies) is
+correct. Closing it costs a deliberate reviewed edit to a frozen document (CLAUDE.md §8) — the user's
+call, not a build decision. Listing it is the honest disposition; deleting it would not have been.
+
+**`Docs/go-live-checklist.md` grew four items** that Phase 10's own deliverables now gate, and one of
+them is sequenced deliberately earlier than "before launch": **item 8, the master-key backup AND
+recovery drill, is required before the first real credential is entered** — the moment a real
+`smtp_secret` exists, an unbacked-up key is an unrecoverable-loss exposure. Item 9 is the two module
+vulns. Item 10 is monitoring, whose checklist entry states the missable fact directly (with nothing
+polling `/v1/admin/health`, **no webhook ever fires**) and requires a test alert actually
+**received**, not merely configured. Item 11 is the real-provider smoke test, with item 8 named as
+its prerequisite. The order-of-operations and final pre-flight were rewritten to match, and the
+pre-flight now ends by requiring that the operator has read `future-work.md` and accepts the V1
+limits — particularly that there is no bounce data, so provider-side monitoring is the only
+deliverability feedback loop that exists.
+
+**Final verification:** every `.md` link across all living docs and `README.md` resolves (swept
+mechanically, not spot-checked) — `future-work.md` was the last dangling forward reference in the
+tree, pointed at by nine files. Full harness 53/53 green; all 5 CI gates green.
+
+#### The Phase 8 harness flake — diagnosed properly and fixed (test-fixture only)
+
+The final verification run came back **52/53**, failing on `P8 T3: comment_injection did not inject
+any comment at 'high' intensity on a real send`. This is the failure the build record has called a
+"pre-existing probabilistic test-fixture flake" since Phase 8 — and it was diagnosed rather than
+waved through, which is the reason it is now gone.
+
+The arithmetic, confirmed from the code and the seeded config rather than assumed:
+`injectComments` (`services/box/src/variation-content.js`) makes an **independent** seeded draw **per
+closing tag**, at the bucket's rate — and `variation_comment_intensity_rates` seeds `high` to `30`
+(read live out of `sender.config`: `{"v": {"low": 5, "high": 30, "medium": 15}}`). The T3 fixture
+`RICH_BODY` contained exactly **two** closing tags (`</p>`, `</a>`). So the probability of injecting
+nothing at all was `0.7² = 49%` — the assertion was a **coin flip**.
+
+That makes it a genuine test defect under CLAUDE.md Rule 3 ("a test that cannot fail is not a test" —
+its mirror image, a test that fails half the time regardless of the product, is just as worthless),
+and Rule 10's central point applies directly: an intermittent failure is **indistinguishable from a
+real regression in CI output**. It also means "full harness green" has been an unreliable claim since
+Phase 8, which is the part worth fixing rather than annotating.
+
+The fix is **test-fixture only** — no product code, no config, no behavior. `RICH_BODY` grew from 2 to
+**17** closing tags, moving the miss probability from 49% to `0.7¹⁷ ≈ 0.23%`, with the arithmetic
+written into the fixture's comment so nobody shrinks it back. Note what was NOT done: the rate was
+not raised, and the assertion was not weakened to "injected or not" — either would have hidden the
+behavior the test exists to observe.
+
+**Verified by repetition, not by one pass:** four consecutive full-harness runs, **53/53 every time**.
+Under the old fixture, four clean runs in a row had roughly a 7% chance of happening — so this is
+evidence rather than luck, which is exactly the standard Rule 10 asks for.

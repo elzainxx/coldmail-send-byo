@@ -1135,3 +1135,51 @@ an on/off toggle whose strength is hardcoded is only half a dial (config-not-cod
   place with the three new keys and the 39→42 count update; `config_drift` moves from 39 to 42.
 
 **Needs-user:** none remaining — ruled. Tracking closes here.
+
+---
+
+## Phase 10 closeout (2026-07-28) — the ledger is confirmed empty; deferred work moved to a register
+
+Phase 10's final chunk audited this ledger end to end across **every phase, 0 through 10 including
+9.5**, and confirms the state below. The audit was a re-read of the actual file, not of a summary of
+it.
+
+**Confirmed EMPTY.** Zero items across the entire ledger await a ruling — OD-1..OD-25, P4-OD-1,
+P5-OD-1..3, P6-OD-1..2, P7-OD-1..8, P8-OD-1, P9-OD-1..2, P9.5-OD-1..6, and every review-gate finding
+(R1..R4 across phases 4–9) are RULED, APPLIED, FIXED, or explicitly closed with their disposition
+implemented. P9-OD-2 — the last substantive one, the config-ordering write-path gap — was ruled and
+closed in the Phase 9 closeout and is enforced at **both** boundaries today.
+
+**One item is deliberately left open, and it is the user's call rather than a build decision:**
+
+- **R2-5** — the stale `{job_item_id}` example in `phase-9-polish-and-documentation.md` §5.3, which
+  omits the required `user_id`. It sits in one of the **locked** phase specs, and CLAUDE.md forbids
+  editing a locked spec as part of build work. The authoritative living contract
+  (`Docs/api-contract.md`, the document `contract_drift` actually verifies) is correct. Closing it
+  means spending a deliberate, reviewed edit on a frozen document (CLAUDE.md §8). Listing it as open
+  is the honest disposition — **not** a build blocker, **not** a contract gap, and not something an
+  operator or UI team would ever hit.
+
+**Deferred work no longer lives here.** The honest way to reach zero open items is not deletion, so
+everything that was scoped out across eleven phases now has a labelled home in
+**`Docs/future-work.md`** — bounce/complaint ingestion, open/click tracking, warm-up logic,
+multi-shared-pool campaign binding, dedicated→dedicated fallback, Brain horizontal scaling (locked
+out by Rule 7, not merely deferred), sequences, per-pool variation scope, `/v1/admin/boxes` CRUD,
+server-side bulk credential re-encryption, a multi-key keyring, admin RBAC, API rate limiting, a
+metrics endpoint, cleared-alert webhooks, `send_logs` at-rest encryption, the Go toolchain upgrade
+that clears two live-call-path module vulns, and a CI vuln gate. Each carries one line on **what it
+is** and **why it was deferred**, because the reason is the part that matters when someone picks one
+up.
+
+That register also carries the four defects Phase 10's verification found and **flagged rather than
+fixed**, each because its fix is a behavior change and Phase 10 changes no behavior: the
+`POST /v1/run` HTTP 500 on a NULL `public.job_items.campaign_id`
+(`internal/platformapi/store.go:69` — a nullable column scanned into a non-nullable Go `string`), the
+box's permanent exit when `dev.sh up` outruns `dev.sh seed` (reproduced during Phase 10's own gate
+run), the register-rejection short-circuit of the documented ~30-attempt retry budget
+(`services/box/src/stream.js` — measured exit after attempt 1, ~1s), and the inert
+`SENDER_ALERT_WEBHOOK_URL` in `.env.example`. None was known-and-hidden; each was found by executing
+the documented behavior rather than reading it.
+
+**Tracking closes here.** Any future item opens a new dated section in this file with an ADR
+(CLAUDE.md Rule 2); it does not reopen a closed one.

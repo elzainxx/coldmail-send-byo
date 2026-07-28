@@ -70,7 +70,15 @@ curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_uni
 curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_injection" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
 curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_intensity" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"high"}'
 
-RICH_BODY='<p>Hello Phase 8 T3</p><a href="https://example.com/landing">landing page</a>'
+# RICH_BODY must contain MANY closing tags, and that is load-bearing rather than cosmetic.
+# injectComments makes an INDEPENDENT seeded draw per closing tag at the bucket's rate (high = 0.30,
+# from variation_comment_intensity_rates). The original fixture had exactly TWO closing tags, so the
+# probability of injecting nothing at all was 0.7^2 = 49% — the T3 comment assertion below was a coin
+# flip, and it failed intermittently from Phase 8 through Phase 10 for that reason alone, never
+# because of a product defect. With the 17 closing tags below the miss probability is 0.7^17 ≈ 0.23%.
+# Do not shrink this body: a test that fails half the time is indistinguishable from a real
+# regression in CI output, which is the failure mode CLAUDE.md Rule 10 exists to close.
+RICH_BODY='<p>Hello Phase 8 T3</p><a href="https://example.com/landing">landing page</a><div><span>a</span><span>b</span><span>c</span><span>d</span></div><div><span>e</span><span>f</span><span>g</span><span>h</span></div><ul><li>one</li><li>two</li><li>three</li><li>four</li></ul>'
 JI8T3="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','p8t3@example.com','Phase 8 T3',$(printf '%s' "$RICH_BODY" | sed "s/'/''/g;s/^/'/;s/$/'/"),'pending') RETURNING id" || true)"
 RUN8T3="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI8T3\",\"user_id\":\"$SYSUSER\"}")"
 JOB8T3="$(echo "$RUN8T3" | head -1 | grep -oE '"job_id":"[0-9a-f-]+"' | cut -d'"' -f4 || true)"

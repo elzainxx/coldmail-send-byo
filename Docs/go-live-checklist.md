@@ -178,17 +178,93 @@ reactive handling is not a substitute for a sensible warm-up plan on the operato
 
 ---
 
+## 8. Back up the master key, and run the recovery drill (REQUIRED — the one unrecoverable loss)
+
+**Why it blocks:** SMTP credentials are encrypted with a key held **outside** the database. A DB
+backup restores ciphertext and nothing else. Lose the key and **every SMTP credential is permanently
+unrecoverable** — recovery is a manual password reset at each provider, for every account. There is
+no escrow and no recovery share, and Decrypt is Brain-only by design (CLAUDE.md Rule 6), so nothing
+can rescue the plaintext.
+
+**Action:** work through [`disaster-recovery.md`](./disaster-recovery.md) §1 before the **first real
+credential is entered** — not before launch, before the first `smtp_secret`. Specifically:
+
+- [ ] The key is backed up **off-host**, encrypted, in at least two independent locations, with the
+      passphrase held separately.
+- [ ] The `CREDENTIAL_KEY_ID` **pairing** is recorded with the backup (a restore under the wrong
+      label fails AAD authentication).
+- [ ] The "where the backup lives / who can reach it" table is **filled in**. An unfilled table is
+      the same as no backup.
+- [ ] The **recovery drill has been run** on staging and reached a completed send. A clean Brain
+      startup proves only that the key is 32 bytes — it does **not** prove the key is right. Only a
+      decrypt proves a restore.
+
+---
+
+## 9. Clear the two known module vulnerabilities
+
+**Why it blocks:** `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`) and
+`GO-2026-5970` (infinite loop in `golang.org/x/text`) are both real, both have **live call paths**,
+and neither is a toolchain-only advisory. Remediation was attempted in Phase 10 and reverted because
+it breaks the pinned builder — the details, and why it is build infrastructure rather than polish,
+are in [`future-work.md`](./future-work.md) §5.
+
+**Action:** upgrade the builder image, bump `pgx` to ≥ v5.9.2 and `x/text` to ≥ v0.39.0, then re-run
+the **full harness** and all 5 gates on the new toolchain. Do this before a pilot carries real data.
+
+---
+
+## 10. Wire monitoring, and know that the webhook needs a poller
+
+**Why it blocks:** alert conditions are evaluated **when `GET /v1/admin/health` is called**, not by a
+background scanner. **With nothing polling it, no webhook ever fires** — alerting is silently inert.
+This is the single most missable operational fact in the system.
+
+**Action:** [`monitoring.md`](./monitoring.md).
+
+- [ ] Uptime monitor points at **`/readyz`** (not `/healthz`, which stays green while nothing is
+      dispatching), alerting after two consecutive failures.
+- [ ] A scheduled health poll exists (the cron entry in `monitoring.md` §3). This is what makes the
+      webhook work.
+- [ ] `alert_webhook_url` is set, and a test alert has actually been **received** — not just
+      configured. Note `SENDER_ALERT_WEBHOOK_URL` in `.env.example` is **inert**; the config row is
+      the only source.
+- [ ] Logs are shipped somewhere with retention. The internal `reason=` behind a client error
+      envelope exists **only** in the Brain's log; without retention, a reported error is a code and
+      a request id with nothing behind them.
+
+---
+
+## 11. Run the real-provider smoke test (the first live send)
+
+**Why it blocks:** every test up to this point sends into a local sink. The first contact with a real
+provider touches **real sending reputation**, and a bad first impression is not a test failure you
+re-run.
+
+**Action:** [`smoke-test-real-provider.md`](./smoke-test-real-provider.md), start to finish, in that
+order — one message to yourself, then a second provider, then the deliberate failure-handling checks,
+then a small real batch. It is written to be small, to addresses you control, and reversible. Item 8
+(key backup **and** drill) is a prerequisite of this item, not a follow-up.
+
+---
+
 ## Order of operations (recommended)
 
 1. **Before the first live migration run:** items 2 (column shapes) and 3 (advisory-lock band +
    migration credential) — these are platform-coordination items that must be settled before the
    module's schema exists in the live DB.
-2. **Before the first live send:** item 4 (KMS/IAM sign-off) — the sole-decryptor security
+2. **Before the first real credential is entered:** item 8 (key backup **and** the recovery drill).
+   Deliberately earlier than "before launch" — the moment a real `smtp_secret` exists, an unbacked-up
+   key is an unrecoverable-loss exposure. Item 9 (the two module vulns) belongs here too: fix the
+   build before it carries real data.
+3. **Before the first live send:** item 4 (KMS/IAM sign-off) — the sole-decryptor security
    property must be verified against real infrastructure before any real credential is decrypted.
-3. **Before the first live campaign:** items 1 (`default_shared_pool_id`) and 5 (box
+   Item 10 (monitoring) as well: going live unmonitored means finding out from a customer.
+4. **Before the first live campaign:** items 1 (`default_shared_pool_id`) and 5 (box
    provisioning) and 7 (account pre-warming) — the system has no capacity to route a job until
-   these are done.
-4. **After a launch-safety observation window:** item 6 (auto-quarantine promotion) — deliberately
+   these are done. Then item 11 (the real-provider smoke test) — the first live send is a
+   deliberate, small, watched one, never a campaign.
+5. **After a launch-safety observation window:** item 6 (auto-quarantine promotion) — deliberately
    NOT day-one; give the shadow ladder real time to prove itself first.
 
 ## Final pre-flight (run immediately before flipping live traffic on)
@@ -200,5 +276,10 @@ reactive handling is not a substitute for a sensible warm-up plan on the operato
 - [ ] `GET /readyz` reports `db:true, singleton_lock:true`.
 - [ ] `GET /v1/admin/health` shows the expected pool(s) with non-`exhausted` headroom and
       `dispatch_paused:false`.
-- [ ] Items 1-5 and 7 above are done; item 6 is deliberately deferred to a post-launch observation
-      window, per its own section.
+- [ ] Items 1–5 and 7–11 above are done; item 6 is deliberately deferred to a post-launch
+      observation window, per its own section.
+- [ ] The master key backup **and drill** (item 8) are done. This is the one item on this page whose
+      omission cannot be corrected after the fact.
+- [ ] You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
+      particularly that there is **no bounce or complaint data**, so provider-side monitoring is your
+      only deliverability feedback loop.
