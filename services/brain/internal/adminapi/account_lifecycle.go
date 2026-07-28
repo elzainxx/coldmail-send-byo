@@ -25,7 +25,25 @@ type transitionSpec struct {
 	apply func(accountFlags) accountFlags
 }
 
-func alreadyInState(reason string) *apiError { return newErr(codeUnprocessable, reason) }
+// transitionRefusal builds the 422 for a failed precondition. The internal reason stays rich (and
+// log-only); the CLIENT gets a curated sentence naming the flag that blocked the transition plus a
+// details[] entry pointing at it — enough for an operator to self-diagnose without a log dive.
+// Every message is a FIXED constant chosen by the caller: nothing here interpolates request input,
+// so the two-vocabulary rule (Rule 5) holds. The flag names are already public in the account
+// read model's `status` object, so naming one discloses nothing new.
+//
+// WHY: found walking Docs/sender-module-local-test-guide.md Stage 4 as an operator. Every illegal
+// transition was correctly rejected and correctly wrote no audit row, but all six returned the
+// same bare `{"code":"unprocessable","message":"The request is well-formed but cannot be
+// processed."}` — indistinguishable from each other, and silent about WHICH precondition failed.
+// Stage 4's pass criterion is "illegal transitions are rejected with a USABLE error", and the
+// config-ordering path (config_ordering_write.go) already sets the in-repo bar: it names the
+// conflicting counterpart and attaches details[]. This brings lifecycle up to that bar.
+func transitionRefusal(reason, message, flag string) *apiError {
+	return newErr(codeUnprocessable, reason).
+		withMessage(message).
+		withDetails(fieldDetail{Field: flag, Issue: issueConflict})
+}
 
 var (
 	specQuarantine = transitionSpec{
@@ -33,7 +51,8 @@ var (
 		setClause: "quarantined = TRUE",
 		precondition: func(f accountFlags) *apiError {
 			if f.Quarantined {
-				return alreadyInState("already_in_state:quarantined")
+				return transitionRefusal("already_in_state:quarantined",
+					"This account is already quarantined.", "quarantined")
 			}
 			return nil
 		},
@@ -44,7 +63,8 @@ var (
 		setClause: "quarantined = FALSE",
 		precondition: func(f accountFlags) *apiError {
 			if !f.Quarantined {
-				return alreadyInState("not_in_state:quarantined")
+				return transitionRefusal("not_in_state:quarantined",
+					"This account is not quarantined.", "quarantined")
 			}
 			return nil
 		},
@@ -55,7 +75,8 @@ var (
 		setClause: "disabled = TRUE",
 		precondition: func(f accountFlags) *apiError {
 			if f.Disabled {
-				return alreadyInState("already_in_state:disabled")
+				return transitionRefusal("already_in_state:disabled",
+					"This account is already disabled.", "disabled")
 			}
 			return nil
 		},
@@ -66,7 +87,8 @@ var (
 		setClause: "disabled = FALSE",
 		precondition: func(f accountFlags) *apiError {
 			if !f.Disabled {
-				return alreadyInState("not_in_state:disabled")
+				return transitionRefusal("not_in_state:disabled",
+					"This account is not disabled.", "disabled")
 			}
 			return nil
 		},
@@ -77,7 +99,8 @@ var (
 		setClause: "paused = TRUE, pause_reason = 'manual'",
 		precondition: func(f accountFlags) *apiError {
 			if f.Paused {
-				return alreadyInState("already_in_state:paused")
+				return transitionRefusal("already_in_state:paused",
+					"This account is already paused.", "paused")
 			}
 			return nil
 		},
@@ -95,10 +118,18 @@ var (
 		setClause: "paused = FALSE, pause_reason = NULL",
 		precondition: func(f accountFlags) *apiError {
 			if !f.Paused {
-				return alreadyInState("not_in_state:paused")
+				return transitionRefusal("not_in_state:paused",
+					"This account is not paused.", "paused")
 			}
 			if f.PauseReason == nil || *f.PauseReason != "manual" {
-				return newErr(codeUnprocessable, "not_manual_pause")
+				// The most operationally confusing refusal in the surface: the account IS paused and
+				// the operator IS authorized, yet unpause refuses — because this pause belongs to the
+				// daily-limit/throttle logic, which clears it on its own. Say so, and name the field
+				// (`pause_reason`) whose value the operator can already read back, so the next step is
+				// obvious: wait for it to auto-clear rather than hunt for a broken endpoint.
+				return transitionRefusal("not_manual_pause",
+					"This pause was not set manually and clears automatically; only a manual pause can be lifted here.",
+					"pause_reason")
 			}
 			return nil
 		},

@@ -122,6 +122,15 @@ plus optional `owner_user_id`, `routing_strategy`, `fallback_pool_id`, `enabled`
 | POST | `/v1/admin/accounts/{id}/pause` | `paused = true, pause_reason = 'manual'` |
 | POST | `/v1/admin/accounts/{id}/unpause` | clears only a `pause_reason='manual'` pause |
 
+A refused transition is `422 unprocessable` with **no** `account_events` row written (the
+precondition is checked before the write). The refusal is diagnosable without a log dive: the
+`message` is a curated sentence specific to the precondition that failed, and `details[]` carries
+one entry naming the blocking flag (`quarantined`/`disabled`/`paused`, or `pause_reason` when the
+pause exists but is not `manual`) with `issue: "conflict"`. The seven refusals are mutually
+distinct — asserted behaviorally, not by convention. Flag names are already public in the account
+read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
+the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
+
 **Pools** (`sender.pools`; `user_id` derived from `kind`, never a request field):
 
 | Method | Path | Purpose |
