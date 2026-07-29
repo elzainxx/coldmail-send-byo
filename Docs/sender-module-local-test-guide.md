@@ -1016,6 +1016,59 @@ The most valuable stage.
      lockless Brain does not recover on its own — it needs the restart.
 7. **Migration down/up** — roll the latest migration down and back up
    - **Pass:** reversible, no data loss on the down path
+   - **Read the down file before you run it, and know what the latest migration touches.** "No data
+     loss" is a claim about *your* migration, not a property of the runner: a down path that drops a
+     column drops its data no matter how careful the runner is. Here the latest is
+     `sender_0022_job_events_error_context`, which is **trigger-bodies-only** — two
+     `CREATE OR REPLACE FUNCTION`s (same signatures, so `sender_0008`'s triggers keep pointing at
+     them) plus one helper predicate. No table, column, constraint, enum, index, grant, or row is
+     touched, so no fixture data from Stages 7–10 is at risk. A migration that *did* drop a column
+     would need the fixtures rebuilt afterwards, or the whole stack reset.
+   - **Down is dev-gated and fails closed.** `sender-migrate down <NNNN>` requires
+     `SENDER_MIGRATE_ALLOW_DOWN=true` or it refuses with
+     `down is forbidden unless SENDER_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. It rolls back
+     **exactly one** version, and needs the version argument.
+     ```bash
+     MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \
+       -e SENDER_MIGRATE_ALLOW_DOWN=true -e MIGRATE_SKIP_PREFLIGHT=true \
+       migrate down 0022
+     ```
+     Use `--no-deps` — see Part 2 on how a bare `docker compose run` can recreate `postgres` and wipe
+     the fixtures out from under you.
+   - **"No data loss" has to be MEASURED, not eyeballed.** Take a row-count fingerprint across every
+     table before the down, and diff it after. Anything less passes vacuously.
+   - **Observed (live, 2026-07-29). PASS.** `rolled back 0022`, exit 0.
+     - **Fingerprint before and after the down was IDENTICAL** — `accounts` 6, `jobs` 487,
+       `job_events` 2535, `send_logs` 500, `pools` 5, `boxes` 3, `config` 53, `account_events` 62. The
+       only differences anywhere: `schema_migrations` 23 → 22 (the `0022` row deleted, as intended)
+       and the helper function dropped. **Zero rows of real data lost.**
+     - **The down reverted BEHAVIOR, not just objects** — which for a trigger migration is the part
+       that matters, since a `CREATE OR REPLACE` that silently no-ops leaves a green run and an
+       unchanged database. Both trigger bodies were confirmed back to their `sender_0008` form
+       (`prosrc LIKE '%v_is_error%'` → **false** for both), i.e. the down file **deliberately
+       reinstates the defect 0022 fixed**, which is what "reversible" must mean: a down that keeps
+       half the up's behavior is not a reverse.
+     - **The Brain kept running on the downgraded schema** — `readyz` `ready`, and a fresh 2-job
+       campaign went `sent`. This also confirms the down file's own compatibility claim: a **post-0022
+       Brain on a pre-0022 schema still reports a correct `errors_last_window`**, because
+       `queryErrorsInWindow` filters on transition shape in Go independently of the trigger. Verified
+       rather than trusted — every error-tagged row inside `health_metrics_window_sec` was genuinely
+       error-shaped (`to_state IN ('failed','bounced')` or a requeue): `timeout` 9 and `unknown` 151,
+       **none** of them a success or a forward transition.
+     - **Up restored everything.** `applied 0022_job_events_error_context`, back to version `0022`,
+       helper function present, both trigger bodies gated again, all functions still owned by
+       **`sender_owner`** (Rule 6 — a down/up must not quietly reassign ownership to the migrating
+       superuser, or `FORCE ROW LEVEL SECURITY` stops enforcing). The helper answers all six
+       transition shapes correctly (genesis `f`, `queued→assigned` `f`, `sending→sent` `f`, requeue
+       `t`, `failed` `t`, `bounced` `t`), and a fresh campaign's events came back **fully untagged** —
+       `sending→sent` carrying `NULL` error context, the exact row whose spurious tag 0022 exists to
+       remove. `up` is idempotent: a second run printed `no pending migrations (already current)`, and
+       `status` showed `23 applied, 0 pending`. All 6 CI gates green afterwards.
+   - **Note on a reporting anomaly seen earlier in this walkthrough and NOT reproduced here:** `up`
+     once printed `no pending migrations (already current)` while actually applying work. On this run
+     it reported honestly in both directions (`applied 0022…` when it applied, `no pending` only when
+     genuinely current). Left unfiled for want of a reproduction — if you see it, capture the exact
+     invocation and `status` output before anything else.
 
 ---
 
@@ -1084,6 +1137,7 @@ Do not deploy until every line is true.
 - [x] Credential rotation completed without interruption *(Stage 11 step 2, by the documented `disaster-recovery.md` §3 route, and "without interruption" proven non-vacuously — **4 real jobs were parked in the freeze and spanned the entire rotation**, since a drained queue would prove nothing. New key gpg-backed-up BEFORE use; `dispatch_paused: true` confirmed before the cutover. In the unreadable window the error is the **explicit** `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2")` — `credential.go:57` checks the label before touching AES, so a rotation mistake is never a silent wrong-key attempt, provably distinct from the generic auth failure. Jobs requeued, Mailpit `count: 0`, nothing invented. Re-entry × 6 → `200`; §3's own verification queries returned `cred-dek-v2|6` and **empty** for rows off the new label, with **6 distinct nonces and 6 distinct ciphertexts** from 6 identical plaintexts. The same 4 parked job ids then went `sent` with **one `send_logs` row each despite `attempt_count = 3`** — no duplicate from the failed attempts — and all six accounts decrypted under v2 with zero failures, 6 audited writes under 6 distinct `request_id`s, and a clean leak grep. Both halves fail closed by **different** errors: right label + wrong key gives generic GCM auth failure (47 of them, Mailpit 0). §3's abandon path was exercised too and is symmetric as documented — rolled back to v1, which is the correct dev-stack end state since `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`)*
 - [x] Adding a box requires no Brain reconfiguration *(Stage 11 steps 3–4. **Add:** a third identity provisioned, its `token_hash` seeded, container started reusing the dev cert — registered, health `active: 3`, and it received real work (15 jobs split 4/9/2, its sends carrying a `provider_message_id` and `sending→sent` written by actor `box`). The claim is proven by what did **not** change: the Brain's `StartedAt` and `restarts=0` were **identical before and after**, and its env held only box-1 material, so the token gate is DB-driven. Box-3's security envelope re-verified independently: no DB/KMS env, only `box.crt`/`box.key`/`ca.crt`, no `/secrets/kms/`, no `brain.key`/`ca.key`, 0 credential matches in its log. **Remove:** stopped cleanly (exit 0) with a job genuinely `sending` — held there by a blackhole listener, because polling cannot catch a fast send. The job stayed `sending` with `attempt_token` unchanged (nothing invented for an absent box), was requeued 5 s after its lease by **`reclaim_loop`** with `timeout`/"lease expired" — never by `box` — then sent on a surviving box with **one** Mailpit copy. All 13 box-3 jobs ended `sent`; the cluster-wide non-terminal sweep was empty. A fresh 12-job campaign then went 12/12 `sent` split 10/2 with **0** to the removed box. Box 3 aged `active`→`stale` with no operator action)*
 - [x] Graceful shutdown strands no job; second Brain exits cleanly *(Stage 11 steps 5 and 6. **Shutdown:** the §4.1 sequence observed in order (stop-claim → drain → leave-in-place); 7 jobs still `queued` at the signal **stayed `queued`** with the Brain down, boxes waited (`ENOTFOUND brain; retrying`) rather than inventing, and all 16 reached `sent` on restart with 16 Mailpit copies / 16 `send_logs` rows. The in-flight branch was **forced** with a blackhole, because an empty drain finishes in 1 ms and proves nothing: the in-flight job was left exactly as stored — `sending`, `attempt_token` and lease unchanged, no terminal event — even when SIGKILLed mid-drain, then recovered by the next boot's rescan (`extended 1 orphaned in-flight lease(s)`) with the **box replaying its own buffered outcome** (actor `box`, not `reclaim_loop`) and sent with exactly one copy. Cluster-wide non-terminal sweep empty. Forcing that branch also **found and fixed a real defect**: `shutdown_drain_timeout_sec` is 30 s but `docker-compose.yml` declared no `stop_grace_period`, so Docker's 10 s default SIGKILLed every drain (`exitcode=137`) — an invariant already documented in `config-reference.md`, the systemd unit, and the runbook, contradicted only by the dev file. `stop_grace_period: 90s` added and proven by a paired control: 137/truncated → **exit 0** with `drain complete in 18.076s — every in-flight job reported and resolved normally`. **Second Brain:** waited the bounded `1m0s` and exited **code 3** with the incumbent still `ready`; note the separate mid-life lock-loss defect filed as `G11-OD-1` / ADR-0011, which this checklist item does NOT cover)*
+- [x] The latest migration rolls down and back up with no data loss *(Stage 11 step 7. This line did not exist until step 7 was walked — the step was in Part 3 but had no sign-off counterpart, so a reversibility failure could not have blocked a deploy. `sender_0022` is trigger-bodies-only (two `CREATE OR REPLACE FUNCTION`s + one helper), so no fixture data was at risk; a migration that dropped a column would need the fixtures rebuilt instead. Measured, not eyeballed: a row-count fingerprint across all nine tables was **byte-identical** before and after the down (`accounts` 6, `jobs` 487, `job_events` 2535, `send_logs` 500, `pools` 5, `boxes` 3, `config` 53, `account_events` 62), with the only deltas being the deleted `schema_migrations` row and the dropped helper. Behavior reverted too, not just objects — both trigger bodies confirmed back to their `sender_0008` form, which deliberately reinstates the defect 0022 fixed, since a down that keeps half the up is not a reverse. The Brain kept serving on the downgraded schema and the down file's own compatibility claim was **verified rather than trusted**: a post-0022 Brain on a pre-0022 schema still reports a correct `errors_last_window` because the reader filters on transition shape in Go — every counted row was genuinely error-shaped. Up restored version `0022`, the helper, both gates, and `sender_owner` ownership on all four functions (Rule 6 — a down/up must not reassign ownership to the migrating superuser or `FORCE ROW LEVEL SECURITY` stops enforcing); a fresh campaign's `sending→sent` came back untagged. `up` idempotent, `status` `23 applied, 0 pending`, all 6 gates green)*
 - [ ] All-toggles-off is byte-identical; security holds with all toggles on
 - [ ] Auto-quarantine returned to **shadow** before you finish
 
