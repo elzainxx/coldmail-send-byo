@@ -439,11 +439,33 @@ ORDER BY p.created_at`
 // queryErrorsInWindow is COUNT job_events GROUP BY error_class within the trailing window (§3.2
 // "errors_last_window"). Zero-valued classes are OMITTED (the handler fills the fixed six-class
 // vocabulary with 0 defaults so the response shape is stable even when a class never fired).
+//
+// The `to_state`/`from_state` filter is NOT redundant with `error_class IS NOT NULL`, for two
+// distinct reasons — this counter is an OPERATOR-FACING incident-sizing number (the runbook's
+// "Sends are failing" triage reads it first), so over-counting is a real operational harm:
+//
+//	(1) HISTORY. Before sender_0022, sender_0008's triggers copied the job row's STICKY
+//	    last_error_class onto EVERY event, so one requeue left four tagged rows — the requeue plus
+//	    the following queued->assigned, assigned->sending, and sending->SENT. Observed live at
+//	    Stage 9 of Docs/sender-module-local-test-guide.md: errors_last_window read
+//	    {"unknown": 4} for a single failure. job_events is append-only (by REVOKE and by trigger),
+//	    so those rows were deliberately NOT rewritten; filtering here makes the metric correct
+//	    IMMEDIATELY on deploy instead of only after health_metrics_window_sec rolls them out.
+//	(2) DEFENSE IN DEPTH, permanently. The predicate makes the count structurally correct
+//	    regardless of what any present or future writer stamps into the column: a success can never
+//	    be counted as an error, because `sending -> sent` is excluded by shape.
+//
+// The transition shape mirrors sender.fn_job_event_is_error_transition (sender_0022) — terminal
+// 'failed'/'bounced', plus a requeue (a non-genesis transition back to 'queued'). Kept in both
+// places on purpose: the trigger governs what is WRITTEN, this governs what is COUNTED, and the
+// counter must stay right over rows written by an older trigger.
 func queryErrorsInWindow(ctx context.Context, db *pgxpool.Pool, windowSec int) (map[string]int, error) {
 	rows, err := db.Query(ctx,
 		`SELECT error_class::text, COUNT(*)
 		   FROM sender.job_events
 		  WHERE error_class IS NOT NULL
+		    AND (to_state IN ('failed','bounced')
+		         OR (to_state = 'queued' AND from_state IS NOT NULL))
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1
 		  GROUP BY error_class`, windowSec)
 	if err != nil {

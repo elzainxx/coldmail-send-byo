@@ -105,9 +105,24 @@ is registered here.
 
 ## 6. Known defects, flagged not fixed
 
-Found during Phase 10's verification passes. Each is real and reproduced; each fix is a **behavior
-change**, which is why none was made in a phase whose contract is that behavior does not change.
-Listed most-likely-to-be-hit first.
+Found during Phase 10's verification passes, plus one gap found later while walking
+[`sender-module-local-test-guide.md`](./sender-module-local-test-guide.md). Each is real and
+reproduced; each fix is a **behavior change**, which is why none was made in a phase whose contract is
+that behavior does not change. Listed most-likely-to-be-hit first.
+
+> **Missing test infrastructure: there is no controllable SMTP sink on the dev stack.** Found walking
+> Stage 9 (failure injection). The compose sink is Mailpit with `MP_SMTP_AUTH_ACCEPT_ANY: "true"`; it
+> accepts any credential and cannot be made to emit a 535, 550, 4xx, or throttle, so the live stack can
+> demonstrate the **success path only**. `docker-compose.yml`'s comment on that service used to claim
+> the failure paths "use a controllable Go sink (`tests/harness`)" — **that sink was never built**; the
+> comment described an intention. The comment is now corrected to state the limitation instead.
+> The failure-path behaviour *is* genuinely covered — `internal/dispatch`'s `policy_test.go`,
+> `score_test.go`, `statemachine_test.go`, `shadowmode_test.go`, and `classify_test.go` drive real SMTP
+> response text through the real `OutcomeHandler` against real Postgres (see the Stage 9 preamble's
+> step→test table) — so this is a **gap in live-stack demonstrability, not in verification**. Building
+> the sink would let an operator *see* a 550 become a `bounced` job end-to-end rather than trust a Go
+> suite. Not a deploy blocker; it is why Stage 9 steps 1–4 are marked "covered by suite" rather than
+> hand-ticked.
 
 | Defect | Evidence | Why not fixed here |
 |---|---|---|

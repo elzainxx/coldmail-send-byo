@@ -708,6 +708,18 @@ ahealth | jq .errors_last_window
 | `transport_4xx` | Provider or network trouble, usually transient. |
 | `timeout` | Boxes or the provider are hanging. Check [A box died](#a-box-died). |
 | `bounce_permanent` | Bad recipient addresses. List quality, not account health — and it never penalizes the account. |
+
+These are counts of **failures**, so they size the incident directly: 12 in `transport_4xx` means twelve
+failed attempts, not twelve log rows from fewer real failures. A job that failed once and then
+succeeded on retry contributes exactly 1 here and shows up in `queue.sent` — a non-zero
+`errors_last_window` alongside a healthy `send_rate_per_min` is normal retry churn, not an outage.
+
+> If you query `sender.job_events` by hand rather than through this endpoint, filter on the transition
+> shape (`to_state IN ('failed','bounced') OR (to_state='queued' AND from_state IS NOT NULL)`), not just
+> on `error_class IS NOT NULL`. Rows written before migration `sender_0022` carry a stale class on
+> success and forward-progress transitions too, and `job_events` is append-only so they were not
+> rewritten. The endpoint already applies this filter; a raw `COUNT(*)` does not. See
+> [`api-contract.md`](./api-contract.md)'s `errors_last_window` note.
 | `unknown` | Novel provider behavior the classifier could not place. Read `error_message` directly; these are worth reporting. |
 
 **"Sends are accepted but not arriving"** is the harder problem, and here you must be told plainly:
@@ -815,7 +827,7 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 | `accounts.quarantined` | 0 | > 0 → the standing count of accounts needing manual attention. Unlike the alert condition, this does **not** age out. |
 | `accounts.disabled` | Whatever you set | Unexpectedly non-zero → someone disabled an account; check `account_events`. |
 | `pools[].eligible_accounts` / `headroom` | `> 0` / `"ok"` | `0` / `"exhausted"` → that pool cannot serve. Harmless on a pool with nothing routed to it. |
-| `errors_last_window` | Small, spread across classes | Any class spiking. The six classes always appear, `0` included, so the shape is stable — a class at 0 is genuine, not missing data. |
+| `errors_last_window` | Small, spread across classes | Any class spiking. The six classes always appear, `0` included, so the shape is stable — a class at 0 is genuine, not missing data. Counts **failures, not rows**: one failing send contributes exactly 1 even if it is retried and later succeeds, so this is a usable incident size. |
 | `shadow.autoquarantine_mode` | `shadow` before go-live, `enforce` after you have calibrated | `off` means auto-quarantine is fully disabled — deliberate, but know that it is. |
 | `shadow.would_quarantine_count` / `recent[]` | Low | High in `shadow` mode → what `enforce` *would* be doing. This is your calibration data for `quarantine_threshold`. |
 | `active_conditions[]` | `[]` | Non-empty → [Alert conditions](#alert-conditions--triage). |

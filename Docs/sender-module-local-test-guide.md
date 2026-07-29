@@ -254,18 +254,67 @@ Do this by hand through the API, not through a script. You are testing whether t
 
 ### Stage 9 — Failure injection
 
-The most valuable stage. Use whatever failing-SMTP mechanism your Phase 5 error-taxonomy tests already use to force specific responses.
+The most valuable stage.
+
+> **Read this before starting: steps 1–4 have no live-stack mechanism, by omission not by design.**
+> This stage used to open with "use whatever failing-SMTP mechanism your Phase 5 error-taxonomy tests
+> already use." **There isn't one on the live stack.** Walking the stage found three separate things:
+> - The compose sink is **Mailpit** with `MP_SMTP_AUTH_ACCEPT_ANY: "true"`. It accepts *any*
+>   credential and cannot be made to emit a 535, a 550, a 4xx, or a throttle. So it can prove the
+>   success path and nothing else.
+> - `docker-compose.yml`'s own comment on that service claims "the failed-AUTH / no-STARTTLS /
+>   requeue paths use a controllable Go sink (`tests/harness`)." **That Go sink was never built.**
+>   The comment describes an intention, not a file.
+> - The only controllable sink that exists is `services/box/test/sink.mjs` — in-process Node, reached
+>   only by the box's own unit tests, not reachable from a running container.
+>
+> Where the coverage for steps 1–4 actually lives, and it is real coverage — all of it in
+> `services/brain/internal/dispatch/`, driven through the real `TryDispatch` + `OutcomeHandler`
+> against real Postgres, with the SMTP text fed in as the box would report it:
+>
+> | Step | Test | What it pins |
+> |---|---|---|
+> | 1 auth failure | `policy_test.go::TestPolicy_AuthFailureQuarantines` | 535 → `auth_failure`, job requeued, account quarantined, `paused`/`disabled` untouched, exactly one `account_events(system, quarantine, auth_failure)` |
+> | 1 shadow half | `shadowmode_test.go::TestShadowMode_*` | the same condition under `shadow` **decides without acting** (flag not set, would-quarantine row logged), under `enforce` acts, under `off` no decision at all |
+> | 1 re-route half | `exitcriteria_test.go::TestExit_AuthFailureThenSendsViaDifferentAccount` | after the 535 the job sends via a **different** account |
+> | 2 hard bounce | `dispatch_test.go::TestOutcome_BouncedTerminal` + `score_test.go::TestScore_BounceNeverPenalizes` | 550 → `bounced` (terminal, lease cleared, `completed_at` set); score, `consecutive_failures`, `last_failure_at` **byte-unchanged** and zero `account_events` — with a paired `transport_4xx` positive control proving the scorer isn't just dead |
+> | 3 transient 4xx | `classify_test.go` + `policy_test.go` | a bare 4xx classifies `transport_4xx` (**not** `throttle`) and requeues without quarantine |
+> | 4 throttle | `policy_test.go::TestPolicy_ThrottlePauses` + `statemachine_test.go::TestStateMachine_ThrottleAutoClears` | 421 → paused with `reason='throttle'`, `throttle_paused_at` stamped, **not** quarantined; the pause self-clears at the timer on the next consume, and a `manual` pause in the same pool is **not** swept up |
+>
+> Note `policy_test.go` reaches its assertions because the harness pins `autoquarantine_mode=enforce`
+> (`harness_test.go`); the seeded default is `shadow`. That is why step 1 has two rows above — the
+> enforce behaviour and the shadow-ladder behaviour are separate tests, and the guide's own wording
+> ("in shadow … the flag is *not* set") is the `shadowmode_test.go` half.
+>
+> **So:** treat steps 1–4 as *verified by those suites*, and steps 5–10 as live-stack work. Do not
+> mark 1–4 green by hand-writing a `job_events` row or hand-setting a `last_error_class` — that
+> proves the column is writable, not that the classifier and policy work. Closing this properly means
+> building the controllable sink the compose comment already promises; that is registered in
+> [`future-work.md`](./future-work.md), not left implicit here.
 
 1. **Auth failure** — point an account at a credential the sink rejects
    - **Pass:** classified `auth_failure`; in shadow, a would-quarantine decision is logged and the flag is *not* set; the job requeues and sends via the other account
+   - *No live mechanism (see the note above). Covered by `classify_test.go` + `policy_test.go`'s `TestPolicy_AuthFailureQuarantines`.*
 2. **Hard bounce (550)** — force a 550 for one recipient
    - **Pass:** job is `bounced` (not `failed`), no retry, and the account's score and `consecutive_failures` are **unchanged**
+   - *No live mechanism. Covered by `carveout_test.go` — the "bounce never penalizes" carve-out is asserted byte-for-byte there.*
 3. **Transient 4xx** — force a 4xx
    - **Pass:** retried, then requeued; no account quarantine
+   - *No live mechanism. Covered by `classify_test.go` (a bare 4xx → `transport_4xx`, not `throttle`) + `policy_test.go`.*
 4. **Throttle** — force a throttle response
    - **Pass:** account paused, job requeued, pause auto-clears without intervention
+   - *No live mechanism. Covered by `policy_test.go`'s `TestPolicy_ThrottlePauses` + the P5-13 expired-throttle self-clear in `eligibility_test.go`.*
 5. **Daily limit** — set an account's `daily_limit` low enough to hit mid-campaign
    - **Pass:** pauses, requeues to the other account, and `report` shows *waiting for capacity* — never failed
+   - **Two traps.** (a) `waiting_for_capacity` requires **zero** eligible accounts across *all* the
+     tenant's reachable pools — a capped account sitting beside a healthy peer correctly reports `0`,
+     so cap **every** account or the assertion is vacuous. (b) To age `daily_reset_day` you must use
+     the **container's** clock, not the host's: `docker compose exec postgres date -u`. Setting it to
+     the host's "yesterday" was a no-op here because the container had already rolled over to the
+     next UTC day.
+   - Also assert the *recovery* is the same rows: after aging the reset day, the **same job ids** go
+     `queued → sent`, total job rows unchanged (nothing re-created), and `attempt_count` did not move
+     while they were waiting — waiting must not burn retry budget.
 6. **Box death** — `docker kill` a box container mid-send (abrupt, not a graceful stop)
    - **Pass:** the reclaim loop recovers the job, it re-dispatches to the surviving box, and Mailpit shows **exactly one** copy
 7. **Brain restart** — restart the Brain mid-campaign

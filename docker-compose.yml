@@ -161,8 +161,17 @@ services:
       MP_SMTP_REQUIRE_STARTTLS: "true"     # force STARTTLS so the TLS path is really tested
       # Accept any AUTH credential — but ONLY over STARTTLS (ALLOW_INSECURE=false). This lets the
       # Phase-3 happy-path send authenticate (the box always AUTHs) while still exercising
-      # STARTTLS-before-AUTH. The failed-AUTH / no-STARTTLS / requeue paths use a controllable Go
-      # sink (tests/harness) that Mailpit's fixed behavior cannot express.
+      # STARTTLS-before-AUTH.
+      #
+      # LIMITATION, stated plainly because this comment used to overstate it: Mailpit accepts any
+      # credential and cannot be made to emit a 535 / 550 / 4xx / throttle, so THIS STACK PROVES THE
+      # SUCCESS PATH ONLY. The failed-AUTH / no-STARTTLS / requeue paths are covered by
+      # services/brain/internal/dispatch (policy_test.go, score_test.go, statemachine_test.go,
+      # shadowmode_test.go, classify_test.go) against real Postgres, and by the box's own in-process
+      # Node sink (services/box/test/sink.mjs). A CONTROLLABLE SINK SERVICE reachable from this
+      # compose network DOES NOT EXIST — an earlier version of this comment claimed one lived in
+      # tests/harness; it was never built. Registered in Docs/future-work.md §6; see also the
+      # Stage 9 preamble in Docs/sender-module-local-test-guide.md.
       MP_SMTP_AUTH_ACCEPT_ANY: "true"
       MP_SMTP_TLS_CERT: /certs/sink.crt
       MP_SMTP_TLS_KEY:  /certs/sink.key

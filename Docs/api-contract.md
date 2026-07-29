@@ -211,11 +211,30 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
 | `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
 | `pools[]` | array | `{pool_id, kind, eligible_accounts, headroom}` — `headroom` is a word, not a number |
-| `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys |
+| `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys. Counts **error transitions only** — see the note below |
 | `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
 | `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
 | `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
 | `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all three V1 conditions |
+
+**`errors_last_window` counts one failure once.** It counts `sender.job_events` rows in the window
+that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis
+transition back to `queued`). Forward progress (`queued→assigned`, `assigned→sending`) and success
+(`sending→sent`) are never counted, so the number is a count of *failures*, not of rows that happen to
+carry a class. Read it as incident size: one failing send contributes exactly 1, no matter how many
+times that job is later retried and eventually succeeds.
+
+> Until `sender_0022` this was not true. `sender_0008`'s triggers copied the job row's **sticky**
+> `last_error_class` onto every event, so a single requeue tagged four rows — the requeue plus the
+> `queued→assigned`, `assigned→sending`, and `sending→sent` that followed — and this field reported
+> `{"unknown": 4}` for one failure. `sender_0022` gates the trigger; `queryErrorsInWindow` also filters
+> on the transition shape, so the count is correct even over rows an older trigger already wrote
+> (`job_events` is append-only and was deliberately not rewritten). Note the two-sided consequence: a
+> database still carrying pre-`sender_0022` rows returns the correct count from this endpoint, but a
+> **hand-written** `COUNT(*) WHERE error_class IS NOT NULL` against `job_events` will still over-count
+> on those old rows. Filter on the transition shape in ad-hoc queries too. Pinned by
+> `TestHealth_ErrorsLastWindowCountsOnlyErrorTransitions` and
+> `TestJobEvents_ErrorContextOnlyOnErrorTransitions`.
 
 ### Alert webhook payload (outbound, `alert_webhook_url`)
 
