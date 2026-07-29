@@ -390,6 +390,46 @@ The most valuable stage.
 8. **Database outage** — `docker stop` Postgres for a few minutes, then start it
    - **Pass:** the Brain halts cleanly, does not crash-loop, and **invents nothing** — no job is marked sent or failed during the outage. On recovery it resumes with no double-processing.
    - *This is the single most important assertion in the guide.*
+   - **Snapshot before you pull the plug, or "invented nothing" is unprovable.** Counting rows only
+     afterwards cannot distinguish "nothing was written" from "something was written and looks
+     plausible". Capture totals **and** `max(seq)` — the sequence is the strongest evidence, because a
+     single fabricated transition anywhere in the system advances it:
+     ```bash
+     docker compose exec -T postgres psql -U postgres -d platform -tAc "
+       SELECT (SELECT count(*) FROM sender.jobs), (SELECT count(*) FROM sender.job_events),
+              (SELECT count(*) FROM sender.send_logs), (SELECT max(seq) FROM sender.job_events)"
+     ```
+     Freeze `box2` first (step 6's trick) so a job is genuinely in-flight when the DB dies — an outage
+     with nothing in flight is the easy case and skips the whole question.
+   - **Four things to check while it is down**, each a different failure mode:
+     1. `docker compose ps brain` says **running**, and `docker inspect --format '{{.RestartCount}}'`
+        is **0**. A crash-loop would "recover" by luck and lose the drain guarantees.
+     2. The log says **`loops remain PAUSED, no state invented`** on a backoff, not a flood. Probes
+        should space out (seconds → capped re-probe), not spin.
+     3. `GET /v1/admin/health` and `POST /v1/run` **fail closed** — and their envelopes carry only
+        `{code, message, request_id}`. `run` must **refuse**, never return a `queued` job it could not
+        persist.
+     4. The internal reason appears **in the log keyed by that same `request_id`** and nowhere else.
+        This is Rule 5 in both directions; grep the response body for `SQLSTATE`, `5432`,
+        `sender_module`, `postgres`, `select` and expect **nothing**.
+   - **Observed (live, 2026-07-29).** 16 jobs, 15 sent, 1 pinned `sending` on frozen `box2`; snapshot
+     266 jobs / 1088 events / 265 send_logs / `max(seq)`=1088. Postgres stopped for **1m48s**.
+     - Brain stayed `running (healthy)` with **0 restarts**. Backoff went 0→3→4→9→14→27→46→59→78→91s
+       with the re-probe capping at 30s, every line ending `loops remain PAUSED, no state invented`.
+       The singleton lock connection was correctly noticed as lost (`57P01`) and **marked not-held**
+       rather than presumed still held.
+     - `health` → `500 internal_error`, `run` → `500 internal_error`, both with only
+       `{code, message, request_id}`. The reasons `health_window_read_failed` and `begin_tx_failed`
+       appeared in the log against the exact matching `request_id`s. The leak grep found **nothing**.
+     - Recovery: `db outage RESOLVED after 1m48s — RESUMING loops from stored state`, then
+       `reclaim: tick reclaimed 1 job(s)`.
+     - **The decisive comparison:** `jobs_total` **266 → 266** (nothing fabricated), `send_logs`
+       **265 → 266** — exactly **one** new send, for the one job that genuinely needed re-sending.
+       `job_events` 1088 → 1092, and the four new rows are seq **1089–1092**, i.e. the next four after
+       the snapshot: **zero events were written during the outage**. The orphan's chain shows the
+       honest story — `sending→queued` by `reclaim_loop` with `error_class='timeout'` (the box never
+       reported, and no outcome was invented for it), then a clean re-dispatch to `sent` by `box`.
+       One `send_logs` row for it; Mailpit **16/16** subjects, **zero** duplicates.
 9. **Pool exhaustion** — quarantine or disable every account mid-campaign
    - **Pass:** jobs **wait** (not failed) with a clean waiting-for-capacity status; re-enable one and the same jobs complete
 10. **Attempt token** — inspect `attempt_token` across a re-dispatch
@@ -500,7 +540,7 @@ Do not deploy until every line is true.
 - [x] Hard bounce does not penalise the account *(Stage 9 step 2; `TestScore_BounceNeverPenalizes` — a 550 leaves score, `consecutive_failures`, and `last_failure_at` byte-unchanged and writes zero `account_events`, with a paired `transport_4xx` positive control proving the scorer is not simply inert)*
 - [x] Box death produces exactly one delivered copy *(Stage 9 step 6; `docker pause` then SIGKILL **while frozen** — 0 Mailpit copies pre-kill so no outcome could ever arrive, which the first attempt got wrong by unpausing first and proved nothing. The lease expired, `reclaim_loop` requeued with `error_class='timeout'`, the surviving box re-sent: exactly one Mailpit copy and one `send_logs` row, `sending→queued` attributed to `reclaim_loop` not `box`. Also confirmed `sender_0022` live — the `sending→sent` event carried no error class while the row correctly retained `timeout`)*
 - [x] Brain restart loses and duplicates nothing *(Stage 9 step 7; restarted with 1 job genuinely in-flight on a frozen box. Drained gracefully, and the startup rescan **extended** the orphan's lease rather than reclaiming it — orphan still `sending`/token 1/attempts 0/no error, so nothing was invented on the way down. The box then reconnected inside its window and **replayed its buffered outcome** onto the ORIGINAL `attempt_token=1`: 4-row event chain with `sending→sent` by `box`, no requeue, no second dispatch, one `send_logs` row, 14/14 Mailpit subjects, zero duplicates)*
-- [ ] **Database outage invents no outcomes**
+- [x] **Database outage invents no outcomes** *(Stage 9 step 8, the guide's most important assertion. Postgres stopped 1m48s with a job genuinely in-flight. Brain stayed `running (healthy)`, **0 restarts**, backoff to a 30s re-probe cap, every line `loops remain PAUSED, no state invented`, singleton lock correctly marked not-held on `57P01`. `health` and `run` failed **closed** with only `{code, message, request_id}` while the internal reasons went to the log under the matching `request_id` (Rule 5, both directions, leak grep clean). Decisive: `jobs_total` 266→266, `send_logs` 265→**266** (exactly one new send, for the one job that needed it), and the 4 new `job_events` are seq **1089–1092** — the next four after the snapshot, so **zero rows were written during the outage**. Mailpit 16/16, zero duplicates)*
 - [ ] Pool exhaustion waits rather than fails
 - [ ] Panic switch halts and resumes losslessly
 - [ ] Shadow mode logs without acting; enforce acts on the same condition
