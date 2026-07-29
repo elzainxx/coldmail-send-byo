@@ -490,8 +490,42 @@ The most valuable stage.
 
 1. **Panic switch** — set `dispatch_enabled = false` mid-campaign
    - **Pass:** dispatch stops; nothing fails; jobs stay queued; `report` shows a clean operator-paused state
+   - **Flipping it mid-campaign is the weaker test; launching a campaign *into* the halt is the
+     stronger one.** A local campaign can drain in seconds, so "dispatch stopped" may just mean "there
+     was nothing left to dispatch" — a vacuous pass (Rule 10). Do both: flip it mid-flight, then
+     `run` a fresh campaign while it is still `false` and confirm those jobs never move.
+   - **Prove the halt by the event log, not by polling states.** A state snapshot can read a
+     transaction that committed *before* the flip and look like a violation. The real question is
+     whether any NEW transition was written after it:
+     ```bash
+     docker compose exec -T postgres psql -U postgres -d platform -c \
+       "SELECT max(created_at) FROM sender.job_events"   # must predate the flip
+     ```
+   - **Observed (live, 2026-07-29).** Flipped mid-campaign: the last `job_events` row system-wide was
+     **3s before** the flip and **zero** events followed it, so dispatch genuinely stopped claiming.
+     Launched 10 jobs into the halt: all sat `queued`, `assigned_account_id` NULL, `attempt_count=0`,
+     **nothing failed**, for as long as it was left off. `/v1/report` read clean
+     `{"state":"queued","attempt_count":0}` — no internal reason, no error (two-vocabulary rule), and
+     `/v1/run` kept **accepting** work (the switch halts dispatch, it does not reject callers).
+     `/v1/admin/health` showed `dispatch.dispatch_paused: true` with `waiting_for_capacity: 0`, which
+     is the distinction that matters to an operator: an intentional halt is not a capacity fault.
+   - **A halt does not block outcome persistence, and should not.** A job already in-flight when the
+     switch flipped still had its outcome accepted and committed when its box reported. That is
+     correct — refusing it would strand a real send and force a duplicate later. The switch stops the
+     Brain from *claiming and pushing*, not from telling the truth about work already out the door.
+   - *One-campaign-per-user still applies during a halt:* a second `run` is refused `409 conflict`
+     while the first campaign has non-terminal jobs — which it will, because they are frozen. Let the
+     first drain (or clear it) before launching the "into the halt" case.
 2. Re-enable
    - **Pass:** the **same** job rows resume and complete — nothing lost, nothing re-created
+   - **Diff the id list, and check the event chains.** "The same rows" is the claim; counting 10 sent
+     cannot distinguish resumed rows from 10 new ones.
+   - **Observed (live, 2026-07-29).** Set back to `true`: all 10 reached `sent` within ~45s, the id
+     list **byte-identical** to the pre-flip capture (nothing re-created), and `attempt_count` still
+     **0** on every one — an operator halt burns no retry budget. Event chains were exactly 4 rows per
+     job (`→queued`, `queued→assigned`, `assigned→sending`, `sending→sent` by `box`) — **40 rows
+     total, zero requeues and zero reclaims**, so the halt cost nothing but time. Mailpit: 10
+     subjects, 1 copy each.
 3. **Shadow mode** — drive an account's score below the quarantine threshold
    - **Pass:** a would-quarantine decision is logged; the flag stays unset; the account keeps sending
 4. Set `enforce` and repeat
@@ -584,7 +618,7 @@ Do not deploy until every line is true.
 - [x] Brain restart loses and duplicates nothing *(Stage 9 step 7; restarted with 1 job genuinely in-flight on a frozen box. Drained gracefully, and the startup rescan **extended** the orphan's lease rather than reclaiming it — orphan still `sending`/token 1/attempts 0/no error, so nothing was invented on the way down. The box then reconnected inside its window and **replayed its buffered outcome** onto the ORIGINAL `attempt_token=1`: 4-row event chain with `sending→sent` by `box`, no requeue, no second dispatch, one `send_logs` row, 14/14 Mailpit subjects, zero duplicates)*
 - [x] **Database outage invents no outcomes** *(Stage 9 step 8, the guide's most important assertion. Postgres stopped 1m48s with a job genuinely in-flight. Brain stayed `running (healthy)`, **0 restarts**, backoff to a 30s re-probe cap, every line `loops remain PAUSED, no state invented`, singleton lock correctly marked not-held on `57P01`. `health` and `run` failed **closed** with only `{code, message, request_id}` while the internal reasons went to the log under the matching `request_id` (Rule 5, both directions, leak grep clean). Decisive: `jobs_total` 266→266, `send_logs` 265→**266** (exactly one new send, for the one job that needed it), and the 4 new `job_events` are seq **1089–1092** — the next four after the snapshot, so **zero rows were written during the outage**. Mailpit 16/16, zero duplicates)*
 - [x] Pool exhaustion waits rather than fails *(Stage 9 step 9, **both** verdicts, and walking it found the step itself was wrong — it said to disable every account and expect a WAIT, which correctly produces `failed` + `pool_exhausted: all eligible accounts terminal_blocked (§5.1)`. Per the locked §5.1 three-way verdict, quarantined/disabled/manually-paused is `terminal_blocked` → FAIL (needs a human; queueing forever behind a block nothing will lift would be dishonest), while daily-limit / at-limit / in-window-throttle is `self_recovering` → WAIT. Verified the WAIT path properly: 6 jobs `queued`, `attempt_count=0`, zero writes, `waiting_for_capacity: 6`. Re-opening ONE account via the automatic daily reset — `unpause` correctly refuses a non-manual pause with 422 — completed the **byte-identical six ids** on that account with `attempt_count` still 0 for four, so waiting burns no retry budget. Guide corrected; code untouched)*
-- [ ] Panic switch halts and resumes losslessly
+- [x] Panic switch halts and resumes losslessly *(Stage 10 steps 1–2, both directions and both the mid-flight flip and the stronger "launch a campaign INTO the halt" case, since a local campaign drains fast enough that the flip alone can pass vacuously. Halt proven by the event log — last `job_events` row 3s before the flip, zero after — not by a state snapshot, which can read a pre-flip commit and look like a violation. 10 jobs launched into the halt stayed `queued`/unassigned/`attempt_count=0` with nothing failed; `report` read clean `queued` with no internal reason; health showed `dispatch_paused: true` with `waiting_for_capacity: 0`, distinguishing an intentional halt from a capacity fault. Re-enabled: **byte-identical** 10 ids all `sent`, `attempt_count` still 0, exactly 4 events each — **40 rows, zero requeues, zero reclaims**. Also confirmed a halt does not block outcome persistence for work already in flight, which is correct: refusing it would strand a real send)*
 - [ ] Shadow mode logs without acting; enforce acts on the same condition
 - [ ] Health endpoint reflects true state; all three alerts fire
 - [ ] **KMS key restore drill passed**
