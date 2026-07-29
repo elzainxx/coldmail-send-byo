@@ -741,6 +741,48 @@ The most valuable stage.
 1. **KMS key restore** — back up the local key, destroy the working copy, restore from backup alone, then decrypt an existing credential
    - **Pass:** decryption succeeds from the backup
    - Practise it locally where it costs nothing. In production, losing this key means every stored SMTP credential is permanently unrecoverable.
+   - The procedure is `Docs/disaster-recovery.md` §1 — follow it rather than improvising, since the
+     point of the drill is to test **the documented route**. Its backup/restore steps work verbatim on
+     the dev stack (`gpg --symmetric --cipher-algo AES256`, then `--decrypt`, confirm 32 bytes).
+   - **This drill is worthless without the wrong-key negative control, and the reason is a property
+     the DR doc states explicitly: the failure is SILENT until send time.** A Brain that loads a
+     32-byte key of the *wrong* value starts perfectly cleanly, so "the Brain came up" proves only that
+     the file is the right length. Confirmed live: with a random 32-byte key installed, startup logged
+     `kms dev key loaded (sole decryptor; 32 bytes …)`, `readyz` returned
+     `{"db":true,"singleton_lock":true,"status":"ready"}`, and the container went `healthy` — nothing
+     anywhere said the key was wrong. **Only a completed send proves a key.** So: baseline send → destroy
+     the key → install a wrong one → prove the send FAILS → restore → prove the SAME jobs now succeed.
+   - **Observed (live, 2026-07-29). PASS.** Baseline: 2 jobs `sent` on the live key. The working copy
+     was then `shred -u`'d, leaving the gpg backup as the **only** copy (verified: the path did not
+     exist).
+     - **Negative control — a random 32-byte key.** Clean start as described above. Two fresh jobs then
+       failed at dispatch, repeatedly and honestly:
+       `dispatch: decrypt failed for account <id> (job <id>): credential decrypt failed (authentication) — requeued`.
+       Jobs sat `queued` with `attempt_count` climbing and **`assigned_account_id` NULL** — requeued, never
+       claimed as sent, so Rule 5 held (no invented outcome). **Mailpit `count: 0`** for that tag: zero
+       mail escaped, so no plaintext went anywhere. The client `report` showed only
+       `state: "queued"` / `pending: 2` — grepping its body for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`
+       found **0 matches**, and the internal reason stayed in the Brain log (Rule 5, both directions).
+       The log itself leaked no key material either: **0 matches** for either key's hash, `cred-dek`,
+       `ciphertext`, or `nonce`.
+     - **Restore, from the backup alone.** `gpg --decrypt` → **32 bytes**, SHA-256 **identical** to the
+       pre-drill original (`4c9ca879…`). Note the DR doc's `mode 0400` step does **not** take effect on
+       Windows — `chmod 0400` lands as `-r--r--r--` (0444), because the Git-Bash/NTFS layer does not carry
+       the group/other bits. Harmless here (the container mounts it `:ro` and the real control is the
+       host filesystem ACL), but do not read a dev-stack `ls` as evidence that the production
+       permissions step works; verify that one on the Brain host.
+     - **The proof that counts.** After the restart, the **same two job ids** that had just failed
+       authentication went `sent` with a `provider_message_id`, **exactly one** Mailpit copy each and
+       **one** `send_logs` row each — no duplicate from the failed attempts. Then all six accounts'
+       credentials were exercised, not just the two the shared pool happened to pick: 12 shared-pool
+       jobs (`s7b@` 6, `step7@` 6) plus one job per dedicated tenant via `CAMPAIGN_USER_ID`
+       (`s8ded@`, `s8other@`, `s10shadow@`, `s10enf@`) — **all `sent`**, every credential written
+       *before* the drill. **Zero** decrypt failures after the restore.
+   - **Trap when counting the "after" state:** `docker logs --since <ts>` on a container that has been
+     **restarted** returns the whole stream, not just the tail — it reported 93 decrypt failures that
+     were all pre-restart. Use `docker logs -t` and filter on the real timestamp
+     (`awk '$1 > "<restart ts>"'`), which showed the true count of **0**, with the last failure 2s
+     *before* the restart.
 2. **Credential rotation** — rotate the key and re-encrypt existing credentials
    - **Pass:** sending continues; `credential_key_id` reflects the new key; old ciphertexts migrate
 3. **Add a box** — provision a third identity (`tools/provision-box/bin/provision-box new --id dev-box-3`), seed its row into `sender.boxes`, and start a container with that `BOX_ID` + `BOX_TOKEN`. It can reuse the dev cert: the cert is transport, the token is the authority.
@@ -863,7 +905,7 @@ Do not deploy until every line is true.
 - [x] Panic switch halts and resumes losslessly *(Stage 10 steps 1–2, both directions and both the mid-flight flip and the stronger "launch a campaign INTO the halt" case, since a local campaign drains fast enough that the flip alone can pass vacuously. Halt proven by the event log — last `job_events` row 3s before the flip, zero after — not by a state snapshot, which can read a pre-flip commit and look like a violation. 10 jobs launched into the halt stayed `queued`/unassigned/`attempt_count=0` with nothing failed; `report` read clean `queued` with no internal reason; health showed `dispatch_paused: true` with `waiting_for_capacity: 0`, distinguishing an intentional halt from a capacity fault. Re-enabled: **byte-identical** 10 ids all `sent`, `attempt_count` still 0, exactly 4 events each — **40 rows, zero requeues, zero reclaims**. Also confirmed a halt does not block outcome persistence for work already in flight, which is correct: refusing it would strand a real send)*
 - [x] Shadow mode logs without acting; enforce acts on the same condition *(Stage 10 steps 3–4, **live on the stack, not deferred to the unit suites** — a dead `smtp_port` (2599) makes the box report `connect_refused` → class `timeout`, which despite classify.go's "no penalty" comment (that means no *flag* action) is genuinely penalizing and drives the score. Needs a **never-succeeded** account: the formula `100 − 60·min(1,cf/5) − 15·prox − 25·recency` bottoms out near 40 for an account with a recent success, above the threshold of 30, so a warm account never trips. Shadow: score 100→27→15, `cf` to 10, **seven** `shadow_would_quarantine` rows all with `from_flags = to_flags`, `quarantined` false throughout, jobs requeuing normally. Third leg proven separately rather than assumed — a low score is only an ORDER BY term in `eligibility.go`, never a filter — and after restoring the port all 6 jobs `sent`, 1 Mailpit copy each, with **4 of 6 attributed to the score-15 account itself** (checked via `assigned_account_id`, because `default_shared_pool_id` puts a shared pool in every tenant's chain, so a job count alone does not say which account sent it). Enforce, second fresh account, identical condition: `quarantined=true` at `cf=4`/score 27 with a real `action='quarantine'`, `reason='score_below_threshold'`, `from_flags ≠ to_flags`, **exactly one** row — and the flag changed ROUTING, not just a boolean: all 6 of that tenant's jobs completed on the fallback accounts, **zero** on the quarantined one, which re-routed rather than failed. Enforce stopped at `cf=4` where shadow ran to `cf=10` — which is the point of the ladder)*
 - [x] Health endpoint reflects true state; all three alerts fire *(Stage 10 steps 6–7. Health: every field cross-checked against its own query (queue, accounts, boxes, all 5 pools' eligible counts, `errors_last_window` timeout:18/unknown:15, shadow count 9 with real score/threshold pairs), then **perturbed** — pause + disable moved `healthy` 6→4, `paused` 0→1, `disabled` 0→1 and flipped two pools to `headroom: "exhausted"`, so the numbers are live, not cached. Two apparent discrepancies checked before filing and both correct: `sends_last_window` 136 vs 152 `send_logs` rows reconciles exactly at `count(DISTINCT job_id)`=136 (per-job vs per-attempt), and `quarantined: 0` beside an `account_quarantined` condition is by design — that condition is window-scoped over `account_events` since a quarantine has no "still true" row state. Alerts: all three fired with deliveries to a receiver on the compose network, dedup proven (4 polls → 1 delivery), `pool_exhausted` needing a genuinely **waiting** job (a manual pause is terminal_blocked → `failed`, not queued; the daily limit is the self_recovering block that works) and firing once per pool in the chain, `box_death` at 6m51s and **auto-clearing** on reconnect. Payloads two-vocabulary clean: condition code, subject id, timestamps, nothing else. No-webhook half done on a FRESH edge, not a deduped repeat: HTTP 200, all conditions surfaced, delivery count unchanged, zero errors)*
-- [ ] **KMS key restore drill passed**
+- [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
 - [ ] Credential rotation completed without interruption
 - [ ] Adding a box requires no Brain reconfiguration
 - [ ] Graceful shutdown strands no job; second Brain exits cleanly
