@@ -110,9 +110,11 @@ has been in `.github/workflows/real-infra.yml` since it was added). Deferred wor
 `future-work.md` rather than left implicit.
 
 **Open Decisions are NOT all discharged.** `history/open-decisions.md` carries a needs-user list
-again: the pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced **G11-OD-1**
-and **G12-OD-1**, both awaiting the user's ruling, plus the standing non-blocking exception (R2-5, a
-stale example inside a locked spec). Read that file, not this paragraph, for the live list. The evidence this verdict rests on — which
+again: the pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced **G11-OD-1** and
+**G12-OD-1**. **G11-OD-1 was ruled on 2026-07-29 (option B — pause dispatch, bounded re-acquire) and
+is implemented, tested on real infra, and closed**; **G12-OD-1 remains awaiting the user's ruling**.
+The standing non-blocking exception (R2-5, a stale example inside a locked spec) also remains. Read
+that file, not this paragraph, for the live list. The evidence this verdict rests on — which
 phase verified what, and what each review gate found — is in `history/phase-build-record.md`'s
 "BUILD COMPLETE" section; it is provenance, not something you need in order to run the system.
 

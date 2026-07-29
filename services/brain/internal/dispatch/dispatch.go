@@ -69,9 +69,64 @@ type Dispatcher struct {
 	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
 	// state, so a sustained misconfiguration never floods the log (spec §4.3, test T10 assertion 5).
 	// lastDispatchPausedLog is the Phase 9.5 B1 analogue for dispatch_enabled=false (§1.2).
+	// lastNotLeaderLog is the same throttle for the G11-OD-1 / ADR-0011 leadership gate below.
 	diagMu                         sync.Mutex
 	lastSharedPoolNotConfiguredLog time.Time
 	lastDispatchPausedLog          time.Time
+	lastNotLeaderLog               time.Time
+
+	// leader is the G11-OD-1 / ADR-0011 (option B, ruled 2026-07-29) LEADERSHIP gate: "do I still
+	// hold the singleton advisory lock?". Wired from main.go to singleton.Guard.Healthy. While it
+	// answers false the dispatch, reclaim and retention loops PAUSE — exactly as they pause on a DB
+	// outage, and for the same reason (Rule 7: one dispatcher or none).
+	//
+	// WHY THIS EXISTS AS A SEPARATE GATE from DBHealth even though both pause the same three loops:
+	// they are different questions with different answers. DBHealth asks "can I reach the DB" and a
+	// halted DBHealth means nothing CAN be written; leader asks "am I entitled to dispatch" and a
+	// false leader means the DB is perfectly reachable and writes would succeed — which is precisely
+	// the danger. Folding leadership into DBHealth would make a lockless Brain look like an outage,
+	// muddling both the log line and readyz.
+	//
+	// nil (never wired) => leadership is not checked, preserving behavior for callers that construct
+	// a Dispatcher without a Guard (every dispatch-package test does). Those tests hold no lock and
+	// must not be gated by one; the real Brain always wires it in main.go.
+	leader atomic.Pointer[func() bool]
+}
+
+// SetLeadership wires the singleton-lock gate (G11-OD-1 / ADR-0011). Pass singleton.Guard.Healthy.
+// Called once at startup before the loops run; safe at any time (read atomically per tick, so an
+// operator-visible change takes effect on the next tick, no redeploy).
+func (d *Dispatcher) SetLeadership(fn func(context.Context) bool) {
+	if fn == nil {
+		d.leader.Store(nil)
+		return
+	}
+	f := func() bool { return fn(context.Background()) }
+	d.leader.Store(&f)
+}
+
+// IsLeader reports whether this Brain still holds the singleton advisory lock. True when no
+// leadership gate is wired (see the leader field's comment: an un-wired Dispatcher is a test
+// Dispatcher, which holds no lock and must not be gated by one).
+func (d *Dispatcher) IsLeader() bool {
+	fn := d.leader.Load()
+	if fn == nil {
+		return true
+	}
+	return (*fn)()
+}
+
+// logNotLeader emits the ADR-0011 pause diagnostic, throttled across the whole process to at most
+// once per notLeaderLogInterval (same shape as the §4.3 and B1 diagnostics) so a Brain that sits
+// paused for hours produces a bounded trickle, not one line per tick per loop.
+func (d *Dispatcher) logNotLeader(loop string) {
+	d.diagMu.Lock()
+	defer d.diagMu.Unlock()
+	if time.Since(d.lastNotLeaderLog) < notLeaderLogInterval {
+		return
+	}
+	d.lastNotLeaderLog = time.Now()
+	log.Printf("%s: singleton_lock_not_held — this Brain does not hold the singleton advisory lock, so it claimed/routed/pushed/reclaimed/swept NOTHING this tick; queued and in-flight jobs are untouched and no outcome is invented. Another Brain may be the active dispatcher. The outcome path stays UP so an in-flight send can still report. Resumes automatically on re-acquire (ADR-0011 option B) level=error", loop)
 }
 
 // sharedPoolNotConfiguredLogInterval bounds how often the §4.3 diagnostic repeats. Not a
@@ -80,6 +135,9 @@ type Dispatcher struct {
 // is the same exemption for the Phase 9.5 B1 panic-switch diagnostic (§1.2).
 const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
 const dispatchPausedLogInterval = 1 * time.Minute
+
+// notLeaderLogInterval is the same log-noise-floor exemption for the ADR-0011 leadership gate.
+const notLeaderLogInterval = 1 * time.Minute
 
 // NewDispatcher wires the send path. dec is the SOLE decryptor (Brain-only); it is never handed
 // to the admin surface. There is no config snapshot stored on the Dispatcher itself — every entry

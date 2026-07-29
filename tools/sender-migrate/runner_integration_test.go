@@ -98,7 +98,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020", "0021", "0022"}
+		"0020", "0021", "0022", "0023"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -129,11 +129,11 @@ func TestRunnerLifecycle(t *testing.T) {
 	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
 	// migration-filename deviation, Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
 	// P8-OD-1 RULED-WIDEN) + Phase 9.5's 11 (sender_0021: B1-B5 operability controls + S10/S11
-	// completeness dials) = 53.
-	// Phase 4 added NO config key (§0); Phase 7 and Phase 9.5 are fully schema-neutral (config seeds
-	// only, no table).
-	if n := configKeyCount(t, admin); n != 53 {
-		t.Fatalf("after Up: sender.config has %d keys, want 53 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5)", n)
+	// completeness dials) + G11-OD-1's 1 (sender_0023: brain_singleton_reacquire_interval_sec) = 54.
+	// Phase 4 added NO config key (§0); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral
+	// (config seeds only, no table).
+	if n := configKeyCount(t, admin); n != 54 {
+		t.Fatalf("after Up: sender.config has %d keys, want 54 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -196,6 +196,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !isErrorTransition(t, admin, "assigned", "queued") {
 		t.Fatal("after Up: fn_job_event_is_error_transition('assigned','queued') is FALSE — a requeue would lose its error context (sender_0022 predicate wrong)")
 	}
+	// sender_0023 (G11-OD-1 / ADR-0011 option B): the mid-life singleton re-acquire cadence. Its ONLY
+	// object is one sender.config row, so existence alone would be a weak check — assert the seeded
+	// value AND default_value, because Rule 1 requires every key to ship a documented default_value
+	// and the whole point of the key is that the cadence is configured, not hardcoded. A seed that
+	// landed with a NULL/absent default would satisfy configKeyExists and still violate Rule 1.
+	if !configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
+		t.Fatal("after Up: sender.config missing \"brain_singleton_reacquire_interval_sec\" (sender_0023 seed not applied)")
+	}
+	if v, d := configValueAndDefault(t, admin, "brain_singleton_reacquire_interval_sec"); v != `{"v": 5}` || d != `{"v": 5}` {
+		t.Fatalf("after Up: brain_singleton_reacquire_interval_sec value=%s default_value=%s, want both {\"v\": 5} (sender_0023 seeded the wrong shape — the reader in main.go unwraps {\"v\": ...} and a bare 5 would silently fall back to 0 = never re-acquire)", v, d)
+	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -243,6 +254,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0022" && functionExists(t, admin, "fn_job_event_is_error_transition") {
 			t.Fatal("after Down 0022: sender.fn_job_event_is_error_transition is still present (down did not drop it)")
+		}
+		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
+			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -316,6 +330,20 @@ func configKeyExists(t *testing.T, c *pgx.Conn, key string) bool {
 		t.Fatalf("config key exists lookup %q: %v", key, err)
 	}
 	return ok
+}
+
+// configValueAndDefault returns a config row's value and default_value as text. Used by the
+// sender_0023 anti-vacuity check: that migration's only object is a config row, so proving it
+// "landed" means proving the JSONB {"v": ...} wrapper and the Rule-1 default_value are both right —
+// not merely that a row with the key exists.
+func configValueAndDefault(t *testing.T, c *pgx.Conn, key string) (string, string) {
+	t.Helper()
+	var value, def string
+	if err := c.QueryRow(context.Background(),
+		`SELECT value::text, default_value::text FROM sender.config WHERE key=$1`, key).Scan(&value, &def); err != nil {
+		t.Fatalf("config value lookup %q: %v", key, err)
+	}
+	return value, def
 }
 
 // indexExists reports whether an index of the given name exists in the sender schema.

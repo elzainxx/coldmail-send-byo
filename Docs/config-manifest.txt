@@ -77,3 +77,4 @@ unit_price_credits
 variation_comment_intensity_rates
 variation_zero_width_rate_pct
 variation_css_micro_params
+brain_singleton_reacquire_interval_sec

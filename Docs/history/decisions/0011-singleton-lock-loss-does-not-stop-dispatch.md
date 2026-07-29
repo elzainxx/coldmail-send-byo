@@ -1,6 +1,7 @@
 # ADR-0011: a Brain that LOSES the singleton lock mid-life keeps dispatching, so two Brains can dispatch at once
 
-- **Status:** proposed — **awaiting the user's ruling** (CLAUDE.md Rule 2)
+- **Status:** **accepted — option (B) ruled by the user 2026-07-29; implemented and tested on real
+  infra the same day** (see "Ruling and what landed" below)
 - **Date:** 2026-07-29
 - **Found by:** Stage 11 of `Docs/sender-module-local-test-guide.md`, before its step 1 was reached —
   the dev stack was found already in the faulted state, left there by Stage 9 step 8's database-outage
@@ -105,9 +106,100 @@ queued afterwards is **not** dispatched while the lock is unheld, with a paired 
 proving the same job dispatches once the lock is back. Asserting only "the log says not-held" would
 restate the behavior that already works and would have passed against today's broken tree.
 
+## Ruling and what landed (2026-07-29)
+
+**The user ruled option (B): "pause dispatch, bounded re-acquire."** Both halves shipped together —
+a pause without recovery would leave a live process permanently useless, and a re-acquire without a
+pause is the unsafe (C).
+
+**The pause.** `Dispatcher` gained a leadership predicate (`SetLeadership`/`IsLeader`, an
+`atomic.Pointer` to a func), and `main.go` wires it to `guard.Healthy`. The three loop ticks —
+`Runner.tick`, `ReclaimRunner.tick`, `RetentionRunner.tick` — check it and return
+`notLeaderRetryInterval` when it is false, immediately after the Phase-7 outage gate. The order is
+deliberate: a lost lock is usually *caused by* a DB restart, so the outage gate should be the one
+logging and setting the cadence. `logNotLeader` throttles a `singleton_lock_not_held … level=error`
+line so a long pause does not flood the log while staying visible to the runbook's
+`grep 'level=error'`.
+
+**Where the gate sits, and why not lower.** `Dispatcher.Tick`/`ReclaimTick`/`RetentionTick` are the
+low-level mechanisms and are **deliberately NOT gated**. The gate belongs in the loop tick because
+that is what returns a wait interval; a gate inside `Tick` would have to invent a `Config` to return
+and could yield a zero interval and a hot loop. That placement is only safe because the loop ticks are
+the *sole* production callers of the three low-level ticks —
+`TestLeadershipGate_LowLevelTickIsDeliberatelyUngated` pins that boundary behaviorally rather than
+leaving it to a comment a future reader could "fix" the wrong way.
+
+**Deliberately NOT gated: the outcome path**, plus the mTLS listeners and the admin/platform read
+surfaces. A box reporting an in-flight send must always be persisted even by a Brain that no longer
+holds the lock: that job was pushed while this Brain *was* the leader, the box really did run the SMTP
+session, and refusing the report would either invent a non-outcome (Rule 5) or force a needless
+duplicate send later. Persisting is idempotent (`provider_message_id` UNIQUE plus the pre-persist
+check), so a successor Brain reaching the same row cannot double-count it. None of those surfaces
+*claim* work, which is the property the gate actually protects.
+
+**Two gates, not merged.** `DBHealth` asks "can I reach the DB" (halted ⇒ nothing *can* be written);
+leadership asks "am I entitled to dispatch" (false ⇒ the DB is reachable and writes *would* succeed —
+precisely the danger). Collapsing them would lose that distinction.
+
+**The re-acquire.** `Guard.SetReacquireInterval` gives the keeper a bounded retry cadence, seeded as
+`brain_singleton_reacquire_interval_sec` (default 5) by `sender_0023` — config-not-code (Rule 1).
+`readSingletonReacquireInterval` falls back to **0 = never re-acquire** on any read/parse failure.
+That direction is deliberate and fail-closed: 0 leaves the Brain paused-and-honest (`readyz` 503,
+container unhealthy, dispatching nothing) until an operator acts, whereas guessing a cadence would
+resume dispatch on a schedule nobody configured.
+
+**An un-wired `Dispatcher` reports itself as leader** (`IsLeader` returns true with no predicate set).
+Every dispatch-package test builds a `Dispatcher` with no `Guard`; defaulting to "not leader" would
+silently vacuum the entire package. `TestLeadershipGate_UnwiredDispatcherIsLeader` pins that default
+as intentional rather than incidental.
+
+**Tests** (`internal/dispatch/leadership_test.go`, 7 tests, real Postgres). The core pair kills the
+lock connection with `pg_terminate_backend` — exactly what the observed `57P01` did — waits for the
+loss to be *observed* (failing if the flag never flips, so "nothing changed" cannot read as "paused"),
+confirms `pg_locks` really shows no lock, then asserts a job queued afterwards stays `queued`/attempt
+0 with no push. Its paired positive control flips **one bool** and nothing else. Recovery is asserted
+the same way: after the keeper re-acquires unaided, a newly queued job dispatches;
+`TestSingletonReacquireDisabledStaysPaused` is its negative control at interval 0, proving recovery is
+driven by the seeded key rather than happening unconditionally. Every assertion was confirmed to FAIL
+against a deliberately disabled gate.
+
+**Verified on the live stack, not just in the test harness** — because the defect was originally
+observed in the real container and `main.go`'s wiring is only exercised there. The image was rebuilt,
+the lock backend terminated with `pg_terminate_backend`, and the whole cycle observed end to end:
+`pg_locks` went to **zero** holders, the Brain logged the pause, `singleton_lock_not_held` appeared
+once (throttled, from the dispatch loop), the keeper logged `lock RE-ACQUIRED … after 5s not-held`,
+`pg_locks` returned to **one** holder, `readyz` returned to `ready`, and the container to `healthy` —
+with no restart (`RestartCount` unchanged). Contrast the pre-fix behavior on the same drill: zero lock
+holders and 56 minutes of continued dispatch. The 58-check harness is green against this binary.
+
+**That live pass found a defect the seven green tests could not.** The first re-acquire log line read
+`after 2562047h47m16s not-held` — ~292 years, i.e. `time.Since(zero)`. The loss was being stamped only
+in `logReacquireFailure`, so on the common path (the *first* attempt succeeds) nothing ever stamped it.
+Every test asserted job state; none looked at the duration, so all seven passed on nonsense output. The
+stamp moved to where the loss is *detected*, and `Guard.NotHeldFor()` now exposes the span so a test can
+pin it: asserted non-zero **and under a minute** while paused (a one-sided `> 0` would not have caught
+it — `time.Since(zero)` is hugely positive), and asserted back to zero after recovery so the two
+assertions validate each other. Both directions were confirmed to fail against the reintroduced bug.
+The lesson generalizes: a number an operator reads *during an incident* to size the problem is
+load-bearing output, and "the tests are green" says nothing about output no test reads.
+
+**A Rule-10 trap found by these tests, recorded so it is not re-derived.** `notLeaderRetryInterval` is
+1s and the seeded `dispatch_tick_interval_ms` is **also** 1000ms, so a paused dispatch tick and a fully
+successful one return the *same* duration. Asserting `wait == notLeaderRetryInterval` on the dispatch
+loop is therefore vacuous (satisfied by both), and asserting `wait != …` on a resumed loop is simply
+wrong (it fired on correct behavior and failed the test — observed twice). The dispatch-side tests now
+assert **observable state only** — job state, `attempt_count`, push count, `job_events`. The reclaim
+(15000ms) and retention (3600000ms) loops have no such collision so their test *can* assert the wait,
+but it now **guards that precondition explicitly** against the live config before relying on it, so a
+future reseed cannot silently re-introduce the hole. That guard was itself verified by temporarily
+seeding a colliding value and watching it fire.
+
 ## Consequences of leaving it open
 
-- Rule 7's guarantee is **conditional in the current tree**: it holds from startup, but a mid-life
+*(Historical — this described the tree BEFORE the option-(B) fix above. Retained because it is the
+evidence the ruling was made on. Every item is now closed.)*
+
+- Rule 7's guarantee **was conditional**: it held from startup, but a mid-life
   lock loss silently degrades it. Any DB restart, failover, connection reaper, or
   `pg_terminate_backend` opens the window, and the window stays open until someone restarts the Brain.
 - The window is *detectable* today — `readyz` 503, container `unhealthy` — so an orchestrator with a

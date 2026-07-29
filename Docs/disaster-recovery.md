@@ -172,9 +172,18 @@ risk, not a corruption risk — decide deliberately whether to hold dispatch aft
 
 ### Restore procedure
 
-1. **Stop the Brain first.** Exactly one Brain is ever active (advisory-lock singleton); a Brain
-   running against a database being restored under it is undefined. Stopping it also releases the
-   lock — the lock is session-level, so there is never a stale lock to clear.
+1. **Stop the Brain first — actually stop it, do not rely on it pausing itself.** Exactly one Brain is
+   ever active (advisory-lock singleton); a Brain running against a database being restored under it is
+   undefined. Stopping it also releases the lock — the lock is session-level, so there is never a stale
+   lock to clear.
+
+   This step matters *more* since G11-OD-1 / ADR-0011, not less. A Brain left running will lose its
+   lock when the database goes away and correctly **pause** — but the keeper then re-attempts
+   acquisition every `brain_singleton_reacquire_interval_sec` (default 5s), so the moment the restored
+   database accepts connections it re-acquires and **resumes dispatching against the restored data on
+   its own**, mid-procedure and before you have completed step 3's ownership re-verification. Pausing
+   is a safety property for a *transient* outage; it is not a substitute for stopping the process
+   during a deliberate restore.
 2. Restore the database by your provider's procedure (`pg_restore`, Supabase PITR, snapshot
    rollback). This module does not prescribe one.
 3. **Re-verify roles and ownership.** A restore into a fresh cluster can land the `sender` schema

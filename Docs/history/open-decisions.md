@@ -1186,14 +1186,72 @@ the documented behavior rather than reading it.
 
 ---
 
-## Pre-deploy gate, Stage 11 (2026-07-29) — one item, NEEDS-USER
+## Pre-deploy gate, Stage 11 (2026-07-29) — one item, RULED AND CLOSED
 
 Opened per the rule directly above: a new dated section with an ADR, not a reopened item. Found while
 walking Stage 11 of `Docs/sender-module-local-test-guide.md`.
 
+**Status: DISCHARGED 2026-07-29.** The user ruled **option (B)** — pause dispatch, bounded
+re-acquire. Implemented, tested on real infra, docs updated in the same change. The item's
+`Disposition` column below is preserved as the state at the time of the ruling; the outcome is
+recorded immediately after the table.
+
 | Id | Item | Severity | Disposition |
 |---|---|---|---|
 | G11-OD-1 | **A Brain that LOSES the singleton advisory lock mid-life keeps dispatching, so two Brains can dispatch against one database.** `internal/singleton/singleton.go`'s keeper correctly notices a dead lock connection, logs `marking not-held`, and exits without re-acquiring — but `held=false` is read by **`readyz` only**. `cmd/brain/main.go:205` passes `guard` to the health server and to nothing else; no dispatch/reclaim/retention path consults `guard.Healthy()`. Observed live, from an ordinary documented drill rather than a contrived setup: Stage 9 step 8's outage dropped the lock at 00:46:55 (`57P01`), `pg_locks` then held **zero** advisory locks on key `9200000001`, and that same process (`RestartCount` 0) **kept dispatching for 56 minutes** — `dispatch: tick pushed …` at 01:26:33 and 01:43:03. Driven to its consequence: a second Brain started against the same DB **acquired the lock instantly** and came fully up (`brain ready`), so two Brains were live with the newcomer holding the lock — the "second dispatch path" Rule 7 exists to prevent. Nothing was corrupted here only because the compose DNS alias `brain` still resolved to the incumbent, so both boxes stayed on it — luck about DNS, not a property of the design. | **HIGH** (Rule 7 is a load-bearing locked invariant, and its guarantee is conditional in the current tree: it holds from startup and degrades silently on any DB restart, failover, connection reaper, or `pg_terminate_backend`) | **FLAGGED — NEEDS-USER, not fixed.** Three remediations differ in operational behavior, so the choice is a locked-invariant ruling (Rule 2), not an implementation detail: **(A)** exit on loss — most Rule-7-consistent, but converts a transient DB blip into a restart and discards the graceful-drain guarantees Phase 7 built and Stage 9 step 8 just proved (0 restarts, nothing invented); **(B)** pause dispatch while not-held and keep the process up, reusing the DB-outage pause that already exists and is already tested, with bounded re-acquisition; **(C)** re-acquire in the keeper alone — narrowest, but unsafe without (B), since resuming after a successor came and went would dispatch from stale in-memory state (box registrations, fairness cursor, leases). **Recommendation: (B) with bounded re-acquire** — the only option that closes the window while keeping every property the drills have proven. Full analysis, the live evidence, and the required anti-vacuous test shape in **ADR-0011**. |
+
+**RULING (user, 2026-07-29): option (B) — "pause dispatch, bounded re-acquire."** Both halves shipped
+together; a pause with no recovery leaves a live-but-useless process, and a re-acquire with no pause is
+the unsafe (C). What landed:
+
+- **Pause.** `Dispatcher.SetLeadership`/`IsLeader` (an `atomic.Pointer` to a predicate), wired in
+  `main.go` to `guard.Healthy`. The three loop ticks (`Runner.tick`, `ReclaimRunner.tick`,
+  `RetentionRunner.tick`) return `notLeaderRetryInterval` when it is false, checked immediately AFTER
+  the Phase-7 outage gate — a lost lock is usually *caused by* a DB restart, so the outage gate is the
+  one that should log and set the cadence. `logNotLeader` throttles a
+  `singleton_lock_not_held … level=error` line (visible to the runbook's `grep 'level=error'`, but it
+  cannot flood during a long pause).
+- **Gate boundary.** `Dispatcher.Tick`/`ReclaimTick`/`RetentionTick` stay UNGATED on purpose: the gate
+  must return a wait interval, and pushing it lower would force it to invent a `Config` and risk a zero
+  interval / hot loop. Safe only because the loop ticks are the sole production callers — pinned
+  behaviorally by `TestLeadershipGate_LowLevelTickIsDeliberatelyUngated`, not by a comment.
+- **Deliberately NOT gated: the outcome path**, the mTLS listeners, and the admin/platform read
+  surfaces. A box's report on an in-flight send is persisted even by a Brain that lost the lock: that
+  job was pushed while this Brain WAS leader, the SMTP session really ran, and refusing it would invent
+  a non-outcome (Rule 5) or force a duplicate send. Persisting is idempotent (`provider_message_id`
+  UNIQUE + the pre-persist check). None of those surfaces CLAIM work, which is what the gate protects.
+- **Re-acquire.** `Guard.SetReacquireInterval`, cadence from the new seeded
+  `brain_singleton_reacquire_interval_sec` (default 5, `sender_0023`) — config-not-code (Rule 1). The
+  fallback on an unreadable/invalid row is **0 = never re-acquire**: fail-closed, leaving the Brain
+  paused-and-honest (`readyz` 503, container unhealthy, dispatching nothing) rather than resuming on a
+  guessed cadence.
+- **Tests** — `internal/dispatch/leadership_test.go`, 7 tests on real Postgres, all green, and every
+  assertion confirmed to FAIL against a deliberately disabled gate. The core pair terminates the lock
+  backend (`pg_terminate_backend` — exactly what the observed `57P01` did), waits for the loss to be
+  *observed* (failing if the flag never flips, so "nothing changed" cannot read as "paused"), confirms
+  `pg_locks` shows no lock, then asserts a job queued afterwards stays `queued`/attempt 0 with no push;
+  the paired positive control flips one bool and nothing else. Recovery is asserted the same way, with
+  `TestSingletonReacquireDisabledStaysPaused` (interval 0) as its negative control.
+- **Verified on the LIVE stack too**, since the defect was originally observed in the real container:
+  image rebuilt, lock backend terminated, and the full cycle observed — `pg_locks` to **zero** holders,
+  pause logged, `lock RE-ACQUIRED … after 5s not-held`, back to **one** holder, `readyz` `ready`,
+  container `healthy`, no restart. The 58-check harness is green against that binary. **That live pass
+  found a bug the seven green tests missed:** the recovery line printed `after 2562047h47m16s not-held`
+  (`time.Since(zero)`) because the loss was stamped only on a *failed* re-acquire and the first attempt
+  normally succeeds. Fixed at the detection point, and now pinned by `Guard.NotHeldFor()` assertions in
+  both directions (non-zero **and** bounded while paused; zero after recovery), each confirmed to fail
+  against the reintroduced bug. A duration an operator reads during an incident is load-bearing output;
+  green tests prove nothing about output no test reads.
+- **A Rule-10 trap these tests exposed, recorded so it is not re-derived:** `notLeaderRetryInterval`
+  is 1s and the seeded `dispatch_tick_interval_ms` is ALSO 1000ms, so a paused dispatch tick and a
+  successful one return the SAME duration — `wait == notLeaderRetryInterval` is vacuous there, and
+  `wait != …` is outright wrong (it failed on correct behavior, twice). Dispatch-side assertions are now
+  observable-state only. Reclaim (15000ms) and retention (3600000ms) do not collide so their test may
+  assert the wait, but it now GUARDS that precondition against the live config first, so a future
+  reseed cannot silently re-introduce the hole — verified by seeding a colliding value and watching the
+  guard fire.
+
+Full analysis and the live evidence remain in **ADR-0011** (status: accepted).
 
 **Not part of this item, and recorded so it is not conflated:** Stage 11 step 6 **passes on its own
 terms**. Against a *healthy* incumbent, a second Brain waited the full bounded `1m0s`, logged

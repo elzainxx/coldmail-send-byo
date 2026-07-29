@@ -77,6 +77,19 @@ func main() {
 	defer guard.Release(context.Background())
 	log.Printf("singleton lock acquired (key=%d)", singleton.LockKey)
 
+	// G11-OD-1 / ADR-0011 (option B, ruled 2026-07-29): install the bounded re-acquire cadence for a
+	// MID-LIFE lock loss. A dropped lock connection (DB restart, failover, pg_terminate_backend,
+	// connection reaper) no longer leaves the keeper dead — it pauses dispatch (see SetLeadership
+	// below) and re-attempts on this cadence. Config-not-code (Rule 1); 0/unreadable = never
+	// re-acquire, which leaves the Brain paused-and-honest rather than resuming on a guessed cadence.
+	reacquireEvery := readSingletonReacquireInterval(ctx, database.Pool)
+	guard.SetReacquireInterval(reacquireEvery)
+	if reacquireEvery > 0 {
+		log.Printf("singleton: mid-life lock loss will PAUSE dispatch/reclaim/retention and re-attempt acquisition every %s (brain_singleton_reacquire_interval_sec)", reacquireEvery)
+	} else {
+		log.Printf("singleton: mid-life re-acquisition DISABLED (brain_singleton_reacquire_interval_sec=0 or unreadable) — on lock loss this Brain pauses dispatch and stays paused until restarted")
+	}
+
 	// Brain is the SOLE decryptor: load the dev KMS key path. The box holds NO KMS key
 	// and cannot reach this material (enforced by container mounts + a harness test).
 	decryptor, err := kms.LoadDev(cfg.KMSDevKeyFile)
@@ -149,6 +162,21 @@ func main() {
 	// and a success resumes them promptly. The Brain writes NO job state while the DB is unreachable;
 	// it stays alive on bounded backoff and never crash-loops.
 	outcome.WithHealth(dispatcher.Health())
+
+	// G11-OD-1 / ADR-0011 (option B): the LEADERSHIP gate. Until this line existed, guard was passed
+	// ONLY to the health server, so held=false was visible on readyz and acted on NOWHERE — a Brain
+	// that lost the lock kept claiming and pushing (observed: 56 minutes, while a second Brain held
+	// the lock and came fully up). Now the same three loops that pause on a DB outage also pause on
+	// lost leadership.
+	//
+	// DELIBERATELY NOT GATED: the outcome path. A box reporting an in-flight send must always be
+	// persisted, even by a Brain that no longer holds the lock — that job was pushed while this Brain
+	// WAS the leader, the box really did run the SMTP session, and refusing the report would either
+	// invent a non-outcome (Rule 5) or force a needless duplicate send later. Persisting it is
+	// idempotent (provider_message_id UNIQUE + the pre-persist check), so a successor Brain reaching
+	// the same row cannot double-count it. Same reasoning for the mTLS listeners and the admin/
+	// platform read surfaces: none of them CLAIM work.
+	dispatcher.SetLeadership(guard.Healthy)
 
 	// Phase 7 (§1): the one-time STARTUP RESCAN — reconnect-reconciliation (P7-2). It runs ONCE,
 	// BEFORE the dispatch/reclaim loops start, so there is no window in which both it and Detector B
@@ -290,6 +318,31 @@ func readSingletonAcquireTimeout(ctx context.Context, pool *pgxpool.Pool, envDef
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil || *wrap.V < 0 {
 		return envDefault
+	}
+	return time.Duration(*wrap.V) * time.Second
+}
+
+// readSingletonReacquireInterval reads the live brain_singleton_reacquire_interval_sec (G11-OD-1 /
+// ADR-0011 option B, seeded sender_0023) — the cadence at which a Brain that LOST the lock
+// re-attempts it. Same minimal scoped-reader shape and same reasoning as
+// readSingletonAcquireTimeout above.
+//
+// The failure fallback here is 0 (never re-acquire), NOT a hardcoded interval, and that direction is
+// deliberate: 0 leaves the Brain paused-and-honest (readyz 503, container unhealthy, dispatching
+// nothing) until an operator or supervisor acts, whereas guessing a cadence would resume dispatch on
+// a schedule nobody configured. Rule 1 says a literal that governs runtime behavior is a bug — a
+// literal that DISABLES an optional behavior when its config is unreadable is the fail-closed
+// default, which is the same posture PLATFORM_TOKEN_HASHES-empty and alert_webhook_url-empty take.
+func readSingletonReacquireInterval(ctx context.Context, pool *pgxpool.Pool) time.Duration {
+	var raw []byte
+	if err := pool.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'brain_singleton_reacquire_interval_sec'`).Scan(&raw); err != nil {
+		return 0
+	}
+	var wrap struct {
+		V *int `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil || *wrap.V < 0 {
+		return 0
 	}
 	return time.Duration(*wrap.V) * time.Second
 }

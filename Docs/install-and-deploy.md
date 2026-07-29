@@ -319,6 +319,14 @@ Brain is ever active** — a second instance waits for the lock (bounded by
 `brain_singleton_acquire_timeout_sec`) and then exits. Never run two, and never add a second
 dispatch path.
 
+That guarantee covers **two** events, not just startup. A running Brain can also *lose* the lock (the
+lock is session-level, so a Postgres restart or a killed backend drops it); when that happens it
+**pauses** dispatch/reclaim/retention rather than continuing without the lock, and re-attempts
+acquisition every `brain_singleton_reacquire_interval_sec` (default 5s) — see
+[`operator-runbook.md`](./operator-runbook.md#readyz-says-singleton_lockfalse-on-a-brain-that-was-ready-mid-life-lock-loss).
+So `singleton_lock:false` on a live process means "running but dispatching nothing," which is a normal
+transient state during a DB restart and not by itself a reason to intervene.
+
 ### Step 7 — Provision the first box
 
 Box lifecycle is an out-of-band operator procedure; there is deliberately no `/v1/admin/boxes` REST
@@ -917,7 +925,7 @@ failures**: some sends get the new treatment, some don't, until the roll complet
 | Old schema, new Brain | **No** | A missing config key is a fatal startup error. Migrate first — this is why the order is fixed. |
 | New Brain, old boxes | **Yes** | Unknown frames ignored, unknown fields ignored, `box_version` is observability not a gate. Expect mixed behavior mid-roll, not failures. |
 | Old Brain, new boxes | **Yes** | Same tolerance in the other direction. |
-| Two Brains at once | **Never** | The singleton advisory lock prevents it; the second exits after a bounded wait. Serialize deploys so they don't fight over it. |
+| Two Brains **dispatching** at once | **Never** | The singleton advisory lock prevents it. At startup the second exits after a bounded wait; if a running Brain *loses* the lock it pauses dispatch and re-attempts acquisition, so at most one process is ever entitled to dispatch. Two Brain *processes* can therefore briefly coexist during a lock handover — one of them dispatching nothing. Serialize deploys so they don't fight over it. |
 | Two migrators at once | **Prevented** | The runner holds an advisory lock; the second waits. |
 
 ---

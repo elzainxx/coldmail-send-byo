@@ -155,6 +155,14 @@ func (r *RetentionRunner) tick(ctx context.Context) (interval time.Duration) {
 	if ok, wait := r.d.health.Ready(ctx); !ok {
 		return wait
 	}
+	// ADR-0011 leadership gate (same as dispatch/reclaim): the sweep DELETES rows, so only the
+	// lock-holding Brain runs it. Two Brains sweeping concurrently would not corrupt anything (the
+	// DELETE is idempotent by predicate), but a non-leader writing sender.* at all violates the
+	// single-owner-of-DML property Rule 7 rests on.
+	if !r.d.IsLeader() {
+		r.d.logNotLeader("retention")
+		return notLeaderRetryInterval
+	}
 	cfg, deleted, err := r.d.RetentionTick(ctx)
 	if err != nil {
 		if r.d.health.Note(err) {

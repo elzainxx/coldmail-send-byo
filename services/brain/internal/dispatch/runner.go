@@ -11,6 +11,15 @@ import (
 // dispatch_tick_interval_ms (config-not-code) — the very next successful Tick re-reads it fresh.
 const defaultTickIntervalOnLoadErr = 1 * time.Second
 
+// notLeaderRetryInterval is how long a loop waits before re-checking leadership after finding it
+// does not hold the singleton lock (G11-OD-1 / ADR-0011). Same SAFETY-BOUNDS exemption as
+// dbhealth.go's outage backoff and singleton.go's keeper ticker: it is a guard-rail cadence on a
+// paused loop, not a send-behavior dial an operator or campaign would tune. The tunable that DOES
+// exist here is brain_singleton_reacquire_interval_sec (seeded, sender_0023) — how often the keeper
+// re-attempts the LOCK. This constant only governs how often a paused loop re-reads an atomic bool,
+// so making it a config key would seed a row nobody has a reason to change.
+const notLeaderRetryInterval = 1 * time.Second
+
 // Runner drives the Phase-4 polling dispatch loop (§1.2): a single Brain ticks every
 // dispatch_tick_interval_ms, re-reading config each time (Phase 2 OD-14 — no redeploy needed for a
 // config change to take effect). Kick is an OPTIONAL responsiveness nudge — e.g. `run` creating a
@@ -77,6 +86,15 @@ func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
 	// exponentially-backed-off cadence and the Brain stays alive (never a crash-loop).
 	if ok, wait := r.d.health.Ready(ctx); !ok {
 		return wait
+	}
+	// G11-OD-1 / ADR-0011 (option B): the LEADERSHIP gate. A Brain that has lost the singleton
+	// advisory lock claims nothing and pushes nothing — Rule 7 is "one dispatcher or none", and
+	// before this gate existed a lockless Brain kept dispatching for 56 minutes while a second Brain
+	// held the lock. Checked AFTER the outage gate deliberately: losing the lock is usually caused by
+	// a DB restart, so the outage gate is the one that should be logging and setting the cadence.
+	if !r.d.IsLeader() {
+		r.d.logNotLeader("dispatch")
+		return notLeaderRetryInterval
 	}
 	cfg, pushed, err := r.d.Tick(ctx)
 	if err != nil {
@@ -152,6 +170,13 @@ func (r *ReclaimRunner) tick(ctx context.Context) (interval time.Duration) {
 	// cannot write the §2.4 transition without the DB anyway.
 	if ok, wait := r.d.health.Ready(ctx); !ok {
 		return wait
+	}
+	// ADR-0011 leadership gate. Load-bearing for reclaim specifically: reclaim REASSIGNS in-flight
+	// jobs (sending→queued), so a non-leader running it would yank jobs out from under the box a
+	// LEADER Brain is currently pushing to — the double-dispatch this gate exists to prevent.
+	if !r.d.IsLeader() {
+		r.d.logNotLeader("reclaim")
+		return notLeaderRetryInterval
 	}
 	cfg, reclaimed, err := r.d.ReclaimTick(ctx)
 	if err != nil {

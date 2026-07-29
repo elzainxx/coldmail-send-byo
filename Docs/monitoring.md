@@ -38,7 +38,13 @@ alert on: any non-200, or db:false, or singleton_lock:false
   stays alive and recovers on its own when the DB returns, needing no reconciliation.
 - `singleton_lock:false` — the Brain is running but does **not** hold the dispatch lock, so **nothing
   is dispatching**. This is the failure a naive `/healthz` check misses entirely, and it is the
-  reason to probe `/readyz` instead.
+  reason to probe `/readyz` instead. Since 2026-07-29 (G11-OD-1 / ADR-0011) this is **enforced, not
+  merely reported**: the dispatch, reclaim and retention loops pause while the lock is unheld, and the
+  keeper re-attempts acquisition every `brain_singleton_reacquire_interval_sec` (default 5s), so a
+  transient loss usually self-heals within seconds and the alert clears on its own. Two consecutive
+  failures therefore mean the lock is *genuinely* unavailable — most often because another Brain took
+  it — not that a blip is in progress. See the runbook's
+  [`singleton_lock:false` on a Brain that was previously ready](operator-runbook.md#readyz-says-singleton_lockfalse-on-a-brain-that-was-ready-mid-life-lock-loss).
 
 A 30–60s interval is plenty. Alert on two consecutive failures rather than one, so a restart during a
 deploy does not page anyone.

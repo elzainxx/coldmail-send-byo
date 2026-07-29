@@ -84,6 +84,10 @@ the three fields before it are what you read). If the request fails or
 `singleton_lock` is `false`, see [The Brain is not running](#the-brain-is-not-running). No Brain
 means no dispatch, and everything below is moot.
 
+If the process is clearly **alive** and answering but reports `singleton_lock:false`, that is the
+mid-life lock loss — a different situation from a Brain that never started. Go straight to
+[`readyz` says `singleton_lock:false` on a Brain that WAS ready](#readyz-says-singleton_lockfalse-on-a-brain-that-was-ready-mid-life-lock-loss).
+
 ### Step 2 — Is dispatch switched off?
 
 `dispatch_enabled` is the panic switch. When it is `false` the Brain claims, routes, and pushes
@@ -860,6 +864,55 @@ curl -fsS $ADMIN/readyz
 | Brain exits **137** on shutdown instead of 0 | The stop grace is shorter than `shutdown_drain_timeout_sec`, so the supervisor killed a drain in progress. Under Compose that is `stop_grace_period` (Docker's default is only **10 s**); under systemd it is `TimeoutStopSec`; if a unit wraps a compose file, **both** apply and the shorter wins. | Raise the grace above the key. Not urgent and never unsafe — §4.2 leave-in-place requeues nothing and marks nothing, and the next boot's rescan recovers the in-flight jobs — but it converts a clean drain into avoidable reclaim work. The `drain_grace` CI gate enforces this for the committed dev file and the documented unit; it cannot see your prod file. |
 | Jobs left in flight after shutdown | Deliberate leave-in-place. The log says so: `N job(s) left in flight and RECOVERABLE (not requeued, not marked)`. | Nothing. The next boot's startup rescan extends their leases so boxes can replay; genuinely stuck ones reclaim normally. |
 | `DELETE /v1/admin/accounts/{id}` returns **500**, log says `account_write_error: … sender.job_events is append-only: UPDATE forbidden` | **KNOWN DEFECT, deterministic — not a transient error, do not retry** (G12-OD-1 / ADR-0012, unfixed pending a ruling). The account has been assigned a job at least once, so `job_events` holds rows referencing it; the FK's `ON DELETE SET NULL` cleanup is an `UPDATE`, which that table's append-only trigger rejects. Deleting a **box** with job history fails the same way. An account with no job history still deletes `204`. | The delete aborts atomically — **nothing is dropped, nulled, or corrupted**, so there is no cleanup to do and no risk in leaving it. To take a used account out of service now, use `POST /v1/admin/accounts/{id}/disable` (or `/quarantine`), which is the intended operational lever and leaves the audit trail intact. Hard deletion of a used account is unavailable until ADR-0012 is ruled on. |
+
+---
+
+## `readyz` says `singleton_lock:false` on a Brain that WAS ready (mid-life lock loss)
+
+A Brain can **lose** the singleton advisory lock while running — the lock is session-level, so a
+Postgres restart, a failover, a connection reaper, or a stray `pg_terminate_backend` on its lock
+session all drop it. This is a different situation from the startup contention in the table above: the
+process is alive and answering, it simply no longer holds the right to dispatch.
+
+**What the Brain does about it (you usually need to do nothing).** Since 2026-07-29 (G11-OD-1 /
+ADR-0011) a lockless Brain **pauses**: the dispatch, reclaim and retention loops stop claiming,
+pushing, reclaiming, and sweeping — no job is claimed, no credential is pushed, no `sender.*` row is
+written by that process. Meanwhile the keeper re-attempts `pg_try_advisory_lock` every
+`brain_singleton_reacquire_interval_sec` (default **5s**). A transient loss therefore self-heals within
+seconds, with no restart and no reconciliation, and dispatch resumes from stored state.
+
+Confirm which state you are in:
+
+```bash
+# 1. Is it paused, and for how long? (throttled to ~1 line/minute across all three loops, not a flood)
+journalctl -u sender-brain --since "15 min ago" | grep 'singleton_lock_not_held'
+# 2. Did it lose the lock, and did it get it back on its own? (both halves of the story)
+journalctl -u sender-brain --since "15 min ago" | grep -E 'singleton: (lock connection lost|lock RE-ACQUIRED|re-acquire attempt)'
+# 3. Who holds the lock right now? Zero rows = nobody; a row = a live session, possibly another Brain.
+psql "$DATABASE_URL" -c "SELECT pid, backend_start FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+  WHERE l.locktype='advisory' AND ((l.classid::bigint<<32)|l.objid::bigint) = 9200000001"
+```
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `singleton_lock` flips back to `true` within seconds | Normal recovery. The lock was briefly free (typically a DB restart) and this Brain took it back. | **Nothing.** Dispatch resumed on its own. The paused interval delayed sends; it did not lose or duplicate them. |
+| `re-acquire attempt N failed (lock is held by another Brain …)`, and step 3 shows **another** `pid` | Another Brain acquired the lock while this one was paused. **The pause is doing its job** — this process is dispatching nothing, so there is no split brain. | Decide which Brain you want. Stop the extra one; the survivor keeps (or re-acquires) the lock. Do not "clear" the lock — it is session-level and held by a live session, and it releases even on `SIGKILL`. |
+| `re-acquire attempt N failed (dedicated reconnect failed: …)` | The Brain cannot open its dedicated lock connection at all — the DB is still down or refusing connections. Usually paired with `db:false`. | Fix Postgres; this clears itself. The re-attempt cadence keeps running, so no restart is needed. |
+| `singleton_lock_not_held` repeats with **no** `re-acquire attempt` line at all, and step 3 returns **zero rows** | Nobody holds the lock and this Brain is not even trying. `brain_singleton_reacquire_interval_sec = 0`, which **disables** re-acquisition — also the fail-closed fallback when that config row is unreadable. | Read the boot log: it states which mode is active (`… will PAUSE … and re-attempt every 5s` vs `mid-life re-acquisition DISABLED …`). Set the key to a non-zero value **and restart**. Unlike most config keys, this one is **not** re-read every tick: the Brain reads it once at startup, so a write alone will not take effect on a running process. (A restart re-acquires the lock at startup anyway, which is the faster fix.) |
+| Jobs pile up `queued` during the pause | Expected and correct. A paused Brain refuses to dispatch rather than dispatching without the lock. | Nothing. They dispatch when the lock returns. In-flight jobs are unaffected — see below. |
+
+**Two things deliberately keep working while paused**, and knowing this prevents a wrong diagnosis:
+
+- **The outcome path stays UP.** A box finishing a send it was given *before* the loss can still report,
+  and that outcome is persisted. Refusing it would either invent a non-outcome or force a duplicate
+  send later; persisting is idempotent, so a successor Brain cannot double-count it. Expect
+  `sending → sent` transitions from a Brain whose `readyz` says `singleton_lock:false`.
+- **The mTLS listeners and the read surfaces stay UP**, so boxes stay connected and
+  `/v1/admin/*` + `/v1/describe` keep answering. None of them *claim* work, which is the property the
+  pause protects.
+
+**Alerting.** `readyz` is the signal ([`monitoring.md`](./monitoring.md)); alert on two consecutive
+failures so a 5s self-healing blip does not page anyone.
 
 ---
 
