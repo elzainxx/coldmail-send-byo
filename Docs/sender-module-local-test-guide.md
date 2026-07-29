@@ -1162,11 +1162,97 @@ The most valuable stage.
      `operator` value; a manual edit is `admin`. This is a test-only manoeuvre: nothing in the
      product ever re-queues a `sent` job (§4.2 leave-in-place exists precisely so it cannot).
 4. Confirm zero-width insertion is **off** by default; enable and verify the rate
+   - **Observed: PASS, both halves.** Off by default is asserted at the widest scope available:
+     swept **every one of the 497 messages** Mailpit had ever held across all twelve stages for
+     `U+200D` (`e2 80 8d`, and its quoted-printable form `=E2=80=8D`) — **zero**. Then enabled it
+     with `variation_zero_width_rate = 0.5` on a body of 60 words (59 word-boundary spaces × 4
+     recipients = **236 independent draws**): **112 inserted, observed 0.4746** against a configured
+     0.500 — within noise (σ ≈ 0.033 over 236 Bernoulli draws, so 0.8σ). Structural check too: every
+     ZWJ sat immediately **before** a space, never inside a tag, attribute, or URL.
+   - **The dial genuinely governs (not merely read).** Same body, same 236 draws, rate returned to
+     the default `0.05` → **10 inserted, 0.0424**. 112 vs 10 is not a rounding difference; the
+     parameter is load-bearing. Verifying a *rate* needs enough draws to distinguish it from its
+     neighbours — 2 recipients cannot tell 0.05 from 0.15, which is why this uses a
+     deliberately word-heavy body rather than the HTML fixture.
+   - **Trap:** `variation_zero_width_rate` (0–1) and `variation_zero_width_rate_pct` (percent) are
+     documented duplicates of one parameter under different units (P9.5-OD-3, RULED). Only
+     `..._rate` is wired to the box; setting `..._pct` alone changes nothing.
 5. Confirm Thread-Index emits nothing
+   - **Observed: PASS.** `variation_thread_index=true`, then inspected the delivered headers: no
+     `Thread-Index`, `Thread-Topic`, `References`, or `In-Reply-To` on either message. The header
+     set was exactly `From, To, Subject, Reply-To, Message-ID, Date, MIME-Version, Content-Type,
+     Content-Transfer-Encoding` (plus Mailpit's own `Return-Path`/`Received`). Consistent with the
+     code: toggle 12 deliberately registers **no stage at all** (`variation-headers.js` — "trivially
+     inert in BOTH directions and can never affect `isNeutral`"), because V1 has no sequences and so
+     no thread to index.
+   - **Positive control — otherwise "NONE" only proves the sniffer is blind.** With
+     `variation_user_agent_injection=true` and `variation_user_agent_rate=1.0`, the *same* sniffer on
+     the *same* run reported a `User-Agent` header on both messages. So it can see an added header;
+     Thread-Index really adds none.
 6. Inspect a link/image URL parameter
    - **Pass:** unique per recipient, and contains **no** tracking or callback
+   - **Observed: PASS.** 6 recipients, 4 URLs each (2 `href`, 2 `img src`): **6 distinct `_ref` and
+     6 distinct `_v`**, and within each message a *single* value shared by every link — matching the
+     per-**recipient** (not per-link) hash the spec calls for, since one job = one recipient.
+   - **"No tracking or callback" asserted mechanically, not by eyeballing.** All 24 URLs were parsed
+     and compared field-by-field against the four the author wrote: every one keeps the author's
+     **scheme, host, and path** and retains its own query params (`?ref=abc` survives, joined with
+     `&`); the **only** addition is `_ref`/`_v`; no scheme downgrade; and no host appears anywhere
+     that the author did not write — no redirector, no tracking domain, no new endpoint. That is the
+     permanent forward boundary in `variation-content.js`: an inert cache-buster on the author's own
+     destination URL, never a tracker.
+   - Fragment and existing-param handling are visible in the output: `?` vs `&` chosen correctly, and
+     a URL already carrying the param is skipped rather than doubled.
 7. Re-run the Stage 5 security checks with **every toggle on**
    - **Pass:** all still pass — variation must never touch the credential path
+   - **Observed: PASS, all seven.** Every one of the **14** variation dials was driven to maximum
+     activity — all 11 booleans `true`, `comment_intensity=high`, `header_style=random`,
+     `precedence=marketing`, `user_agent_rate=1.0` — and a throwaway account with a fresh secret
+     **actually SMTP-authenticated 3 sends** through that fully-varied path before any assertion
+     ran. Checking a quiet system proves nothing here.
+     1. `GET` + `LIST`: `has_credential: true`, secret absent, **no** credential-ish key at all.
+     2. `PATCH` without `smtp_secret`: `credential_ciphertext`, `credential_nonce`, **and**
+        `credential_key_id` all byte-unchanged — while `daily_limit` did change, so the request was
+        genuinely processed.
+     3. `PATCH` with a new secret: ciphertext **and** nonce both changed, `credential_key_id`
+        recorded (`cred-dek-v1`) — and the rotated secret still authenticated real sends.
+     4. Logs (`brain`, `box`, `box2`, `postgres`; 630 KB) swept for **both** secrets in **five**
+        forms — plaintext, base64, base64 `AUTH PLAIN` (`\0user\0pass`), unpadded base64, and a
+        24-char base64 prefix (to catch an SMTP soft-wrap): **clean**. Also swept the 8 delivered
+        messages, since variation rewrites the body: clean.
+     5. Cross-tenant `GET /v1/report?job_id=…&user_id=<other>` → `404 not_found` naming only the
+        caller's own selector; the correctly scoped request → `200`.
+     6. Admin call with no key → `401`; wrong key → `401`; **and the Domain-A platform token →
+        `401`** (Rule 6: the two auth domains never share a credential).
+     7. All **14** admin routes swept (9 GET + pause/unpause/quarantine/unquarantine/PATCH): 31 KB
+        of responses, zero occurrences of either secret in any form; `has_credential` is the only
+        credential signal that exists.
+   - **Trap — a "clean" verdict can be worth nothing, and was.** The first log sweep reported clean
+     across all four services. Its positive control then reported clean **too**, on a file with the
+     secret deliberately planted in it — because the shell glob had expanded to **zero files** and
+     the checker happily iterated an empty list. Both detectors now abort on an empty file list
+     (`ABORT: no files given — a leak check over zero files is vacuous`) and both carry a proven
+     positive control: they find planted plaintext, find a planted base64 `AUTH PLAIN` blob, and
+     still call an untampered file clean. **Never accept a green leak check that has not just
+     demonstrated it can go red.**
+   - **Trap:** `POST /v1/admin/accounts` decodes strictly, and `POST /v1/admin/pools` too — a wrong
+     field name is a hard `400 validation_failed` with `issue: "malformed"` for the whole body, not a
+     partial accept. The real field set is `pool_id` (**not** `user_id` — it is derived from the
+     pool), `smtp_secret` (**not** `smtp_password`), and `from_address`/`from_name` (**not**
+     `email_address`/`display_name`). Likewise `variation_precedence` takes
+     `auto|marketing|personal` — `bulk` is the *header value* it emits, not a config value, and is
+     correctly refused as `forbidden_value`.
+   - **This step found a real defect, in its own cleanup — see `G12-OD-1` / ADR-0012.** Deleting the
+     throwaway account returned **`500`**: `DELETE /v1/admin/accounts/{id}` is wedged for any account
+     that has ever been assigned a job, because `job_events`' two `ON DELETE SET NULL` FKs are
+     blocked by that table's unconditional append-only trigger. **FLAGGED, not fixed** (Rule 2: the
+     fix would revise ADR-0009's explicit "closed / correct as-is" finding, which is a ruling). It is
+     wedged, not lossy — the delete aborts atomically. **Workaround, verified:**
+     `POST /v1/admin/accounts/{id}/disable` returns `200` and the account then received **0 of 6**
+     subsequent jobs.
+   - **Close the stage by restoring defaults.** All 14 dials were written back to their
+     `default_value` and confirmed at **0 drift** — a stage that leaves toggles on silently changes
+     the baseline for every later run.
 
 ---
 
@@ -1219,7 +1305,7 @@ Do not deploy until every line is true.
 - [x] Adding a box requires no Brain reconfiguration *(Stage 11 steps 3–4. **Add:** a third identity provisioned, its `token_hash` seeded, container started reusing the dev cert — registered, health `active: 3`, and it received real work (15 jobs split 4/9/2, its sends carrying a `provider_message_id` and `sending→sent` written by actor `box`). The claim is proven by what did **not** change: the Brain's `StartedAt` and `restarts=0` were **identical before and after**, and its env held only box-1 material, so the token gate is DB-driven. Box-3's security envelope re-verified independently: no DB/KMS env, only `box.crt`/`box.key`/`ca.crt`, no `/secrets/kms/`, no `brain.key`/`ca.key`, 0 credential matches in its log. **Remove:** stopped cleanly (exit 0) with a job genuinely `sending` — held there by a blackhole listener, because polling cannot catch a fast send. The job stayed `sending` with `attempt_token` unchanged (nothing invented for an absent box), was requeued 5 s after its lease by **`reclaim_loop`** with `timeout`/"lease expired" — never by `box` — then sent on a surviving box with **one** Mailpit copy. All 13 box-3 jobs ended `sent`; the cluster-wide non-terminal sweep was empty. A fresh 12-job campaign then went 12/12 `sent` split 10/2 with **0** to the removed box. Box 3 aged `active`→`stale` with no operator action)*
 - [x] Graceful shutdown strands no job; second Brain exits cleanly *(Stage 11 steps 5 and 6. **Shutdown:** the §4.1 sequence observed in order (stop-claim → drain → leave-in-place); 7 jobs still `queued` at the signal **stayed `queued`** with the Brain down, boxes waited (`ENOTFOUND brain; retrying`) rather than inventing, and all 16 reached `sent` on restart with 16 Mailpit copies / 16 `send_logs` rows. The in-flight branch was **forced** with a blackhole, because an empty drain finishes in 1 ms and proves nothing: the in-flight job was left exactly as stored — `sending`, `attempt_token` and lease unchanged, no terminal event — even when SIGKILLed mid-drain, then recovered by the next boot's rescan (`extended 1 orphaned in-flight lease(s)`) with the **box replaying its own buffered outcome** (actor `box`, not `reclaim_loop`) and sent with exactly one copy. Cluster-wide non-terminal sweep empty. Forcing that branch also **found and fixed a real defect**: `shutdown_drain_timeout_sec` is 30 s but `docker-compose.yml` declared no `stop_grace_period`, so Docker's 10 s default SIGKILLed every drain (`exitcode=137`) — an invariant already documented in `config-reference.md`, the systemd unit, and the runbook, contradicted only by the dev file. `stop_grace_period: 90s` added and proven by a paired control: 137/truncated → **exit 0** with `drain complete in 18.076s — every in-flight job reported and resolved normally`. **Second Brain:** waited the bounded `1m0s` and exited **code 3** with the incumbent still `ready`; note the separate mid-life lock-loss defect filed as `G11-OD-1` / ADR-0011, which this checklist item does NOT cover)*
 - [x] The latest migration rolls down and back up with no data loss *(Stage 11 step 7. This line did not exist until step 7 was walked — the step was in Part 3 but had no sign-off counterpart, so a reversibility failure could not have blocked a deploy. `sender_0022` is trigger-bodies-only (two `CREATE OR REPLACE FUNCTION`s + one helper), so no fixture data was at risk; a migration that dropped a column would need the fixtures rebuilt instead. Measured, not eyeballed: a row-count fingerprint across all nine tables was **byte-identical** before and after the down (`accounts` 6, `jobs` 487, `job_events` 2535, `send_logs` 500, `pools` 5, `boxes` 3, `config` 53, `account_events` 62), with the only deltas being the deleted `schema_migrations` row and the dropped helper. Behavior reverted too, not just objects — both trigger bodies confirmed back to their `sender_0008` form, which deliberately reinstates the defect 0022 fixed, since a down that keeps half the up is not a reverse. The Brain kept serving on the downgraded schema and the down file's own compatibility claim was **verified rather than trusted**: a post-0022 Brain on a pre-0022 schema still reports a correct `errors_last_window` because the reader filters on transition shape in Go — every counted row was genuinely error-shaped. Up restored version `0022`, the helper, both gates, and `sender_owner` ownership on all four functions (Rule 6 — a down/up must not reassign ownership to the migrating superuser or `FORCE ROW LEVEL SECURITY` stops enforcing); a fresh campaign's `sending→sent` came back untagged. `up` idempotent, `status` `23 applied, 0 pending`, all 6 gates green)*
-- [ ] All-toggles-off is byte-identical; security holds with all toggles on
-- [ ] Auto-quarantine returned to **shadow** before you finish
+- [x] All-toggles-off is byte-identical; security holds with all toggles on *(Stage 12, all 7 steps. **Off:** `variation_enabled=false` and all-sub-toggles-at-default produce the same 454-byte message (sha `9db8dbd5…`) — the shipped default already **is** off. **On:** identical content to two recipients differs only in ±1px CSS and inert `_ref`/`_v` params; the same `job_id` re-sent is byte-identical (`ff52b48e…` twice) while a different id differs, so the seed is genuinely id-derived. Zero-width off by default across **all 497** messages Mailpit ever held, and its rate dial governs (112/236 draws at 0.5 vs 10/236 at 0.05, same body). Thread-Index emits nothing even ON — with a `User-Agent`-at-rate-1.0 positive control proving the sniffer is not blind. URL params 6/6 unique per recipient, one value per message, and mechanically asserted inert: 24 URLs keep the author's scheme+host+path and own query params, only `_ref`/`_v` added, no host the author did not write. **Security with all 14 dials at maximum**, after 3 genuinely SMTP-authenticated sends through the varied path: all seven Stage 5 checks re-pass — secret absent from reads and from 630 KB of service logs in **five** encodings (plaintext, base64, base64 `AUTH PLAIN`, unpadded, 24-char prefix) and from the delivered bodies; ciphertext+nonce byte-stable without `smtp_secret` and both changed with one; rotated secret still authenticates; cross-tenant `404` vs correct-tenant `200`; admin `401` for missing, wrong, **and Domain-A** credentials; 14 admin routes swept with `has_credential` the only credential signal. **The first log sweep's "clean" verdict was worthless** — its own positive control also came back clean because the glob matched zero files; both detectors now abort on an empty file list and are proven to go red on planted plaintext and planted base64. Step 7's cleanup found `G12-OD-1` / ADR-0012 (a used account cannot be hard-deleted — wedged, not lossy; **FLAGGED**, with the `/disable` workaround verified). All 14 dials restored to `default_value`, 0 drift)*
+- [x] Auto-quarantine returned to **shadow** before you finish *(verified at the Stage 12 close, together with the other three kill-switches, since Stage 10 step 4 drove it to `enforce` and an `enforce` left behind would let a later stage quarantine a real account unattended: `autoquarantine_mode = shadow`, `dispatch_enabled = true`, `autopause_enabled = true`, `variation_enabled = true`. Whole-table drift is the stronger check and is also clean — the **only** row differing from `default_value` is the intentional `default_shared_pool_id` fixture, with 0 non-terminal jobs cluster-wide)*
 
 When this is all green, deploy — and pick the real-send guide up at its Layer 2.
