@@ -430,8 +430,50 @@ The most valuable stage.
        honest story — `sending→queued` by `reclaim_loop` with `error_class='timeout'` (the box never
        reported, and no outcome was invented for it), then a clean re-dispatch to `sent` by `box`.
        One `send_logs` row for it; Mailpit **16/16** subjects, **zero** duplicates.
-9. **Pool exhaustion** — quarantine or disable every account mid-campaign
-   - **Pass:** jobs **wait** (not failed) with a clean waiting-for-capacity status; re-enable one and the same jobs complete
+9. **Pool exhaustion** — exhaust every account mid-campaign
+   - **Pass:** jobs **wait** (not failed) with a clean waiting-for-capacity status; re-open one and the same jobs complete
+   - > **This step as originally written was wrong, and following it literally reports a false
+     > failure.** It said to "quarantine or disable every account" and expect the jobs to WAIT. Doing
+     > exactly that produced 8 jobs in state `failed` with
+     > `pool_exhausted: all eligible accounts terminal_blocked (§5.1)`. **The code is correct and the
+     > guide was not.** `internal/dispatch/exhaustion.go` implements a locked three-way verdict, first
+     > match wins: (1) any eligible account → CLAIM; (2) empty/unresolvable chain → WAIT (a config gap
+     > is never an exhaustion); (3) any **self_recovering** account → WAIT; (4) otherwise all
+     > **terminal_blocked** → FAIL. Quarantined / disabled / **manually**-paused is
+     > `terminal_blocked` — it needs a human, so failing the job is the honest outcome rather than
+     > queueing forever behind a block nothing will lift. `daily_limit`-paused, at-limit-this-cycle,
+     > and throttle-paused-within-window are `self_recovering` — a timer reopens them, so those WAIT.
+     > **To test the WAIT path you must exhaust accounts self-recoveringly, not block them.**
+   - **The WAIT setup** — put every account in the tenant's chain at its daily limit on the current
+     cycle (not disabled, not quarantined, not manually paused):
+     ```bash
+     docker compose exec -T postgres psql -U postgres -d platform -c \
+       "UPDATE sender.accounts SET daily_sent_count=daily_limit, daily_reset_day=CURRENT_DATE,
+              paused=TRUE, pause_reason='daily_limit' WHERE user_id='<tenant>'"
+     ```
+     Remember Stage 5's trap: it must be **every** account the tenant can reach, or a healthy peer
+     absorbs the work and `waiting_for_capacity` correctly reads `0`.
+   - **Capture the job ids before re-opening capacity.** "The same jobs complete" is the actual claim,
+     and it is unfalsifiable if you only count rows — 6 sent could be 6 *new* jobs. Diff the id list.
+   - **You cannot re-open a `daily_limit` pause with `unpause` — and shouldn't be able to.** That
+     returns **422** `unprocessable`: *"This pause was not set manually and clears automatically; only
+     a manual pause can be lifted here."* Correct: the operator surface only lifts what an operator
+     set. Re-open capacity the way production does, by letting the automatic path fire — age **one**
+     account's `daily_reset_day` and leave the rest at the limit. Use the **container's** clock
+     (`docker compose exec postgres date -u`), not the host's.
+   - **Observed (live, 2026-07-29).** Both halves.
+     - *FAIL half (terminal):* both shared-pool accounts disabled through the real admin API → 8 jobs
+       `failed`, `attempt_count=0`, message `pool_exhausted: all eligible accounts terminal_blocked
+       (§5.1)`. Per §5.1 this is the specified behaviour.
+     - *WAIT half (self-recovering):* both accounts at limit on the current cycle → 6 jobs sat
+       `queued` with `attempt_count=0` and **zero writes** (no churn), and `GET /v1/admin/health`
+       reported `queued: 6, waiting_for_capacity: 6` — waiting, not failed.
+     - *Recovery:* aged **one** account's reset day; the lazy daily reset re-opened it and the
+       **byte-identical six ids** (diffed against the pre-capture list) all reached `sent`, all on
+       that one account, with `attempt_count` still `0` for four of them — **waiting did not burn
+       retry budget**. `waiting_for_capacity` returned to `0`, and Mailpit showed 1 copy each.
+   - *Mailpit's search tokenizes:* a `s9wait2` query also returned an unrelated `S9 s9wait 2` subject
+     left over from an earlier run. Match exact subjects before calling a count a duplicate.
 10. **Attempt token** — inspect `attempt_token` across a re-dispatch
     - **Pass:** a distinct token per dispatch
     - **Verified by step 6's run — no separate setup needed.** A re-dispatch is exactly what a reclaim
@@ -541,7 +583,7 @@ Do not deploy until every line is true.
 - [x] Box death produces exactly one delivered copy *(Stage 9 step 6; `docker pause` then SIGKILL **while frozen** — 0 Mailpit copies pre-kill so no outcome could ever arrive, which the first attempt got wrong by unpausing first and proved nothing. The lease expired, `reclaim_loop` requeued with `error_class='timeout'`, the surviving box re-sent: exactly one Mailpit copy and one `send_logs` row, `sending→queued` attributed to `reclaim_loop` not `box`. Also confirmed `sender_0022` live — the `sending→sent` event carried no error class while the row correctly retained `timeout`)*
 - [x] Brain restart loses and duplicates nothing *(Stage 9 step 7; restarted with 1 job genuinely in-flight on a frozen box. Drained gracefully, and the startup rescan **extended** the orphan's lease rather than reclaiming it — orphan still `sending`/token 1/attempts 0/no error, so nothing was invented on the way down. The box then reconnected inside its window and **replayed its buffered outcome** onto the ORIGINAL `attempt_token=1`: 4-row event chain with `sending→sent` by `box`, no requeue, no second dispatch, one `send_logs` row, 14/14 Mailpit subjects, zero duplicates)*
 - [x] **Database outage invents no outcomes** *(Stage 9 step 8, the guide's most important assertion. Postgres stopped 1m48s with a job genuinely in-flight. Brain stayed `running (healthy)`, **0 restarts**, backoff to a 30s re-probe cap, every line `loops remain PAUSED, no state invented`, singleton lock correctly marked not-held on `57P01`. `health` and `run` failed **closed** with only `{code, message, request_id}` while the internal reasons went to the log under the matching `request_id` (Rule 5, both directions, leak grep clean). Decisive: `jobs_total` 266→266, `send_logs` 265→**266** (exactly one new send, for the one job that needed it), and the 4 new `job_events` are seq **1089–1092** — the next four after the snapshot, so **zero rows were written during the outage**. Mailpit 16/16, zero duplicates)*
-- [ ] Pool exhaustion waits rather than fails
+- [x] Pool exhaustion waits rather than fails *(Stage 9 step 9, **both** verdicts, and walking it found the step itself was wrong — it said to disable every account and expect a WAIT, which correctly produces `failed` + `pool_exhausted: all eligible accounts terminal_blocked (§5.1)`. Per the locked §5.1 three-way verdict, quarantined/disabled/manually-paused is `terminal_blocked` → FAIL (needs a human; queueing forever behind a block nothing will lift would be dishonest), while daily-limit / at-limit / in-window-throttle is `self_recovering` → WAIT. Verified the WAIT path properly: 6 jobs `queued`, `attempt_count=0`, zero writes, `waiting_for_capacity: 6`. Re-opening ONE account via the automatic daily reset — `unpause` correctly refuses a non-manual pause with 422 — completed the **byte-identical six ids** on that account with `attempt_count` still 0 for four, so waiting burns no retry budget. Guide corrected; code untouched)*
 - [ ] Panic switch halts and resumes losslessly
 - [ ] Shadow mode logs without acting; enforce acts on the same condition
 - [ ] Health endpoint reflects true state; all three alerts fire
