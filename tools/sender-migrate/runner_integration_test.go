@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +99,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020", "0021", "0022", "0023"}
+		"0020", "0021", "0022", "0023", "0024"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -207,6 +208,18 @@ func TestRunnerLifecycle(t *testing.T) {
 	if v, d := configValueAndDefault(t, admin, "brain_singleton_reacquire_interval_sec"); v != `{"v": 5}` || d != `{"v": 5}` {
 		t.Fatalf("after Up: brain_singleton_reacquire_interval_sec value=%s default_value=%s, want both {\"v\": 5} (sender_0023 seeded the wrong shape — the reader in main.go unwraps {\"v\": ...} and a bare 5 would silently fall back to 0 = never re-acquire)", v, d)
 	}
+	// sender_0024 (G12-OD-1 / ADR-0012 option A): job_events' append-only trigger gains the narrow
+	// per-nullable-FK-column carve-out, so a parent DELETE's own `SET <col> = NULL` maintenance update
+	// is permitted and the documented hard delete works again. This migration replaces ONE function
+	// BODY and adds no object, so it is invisible to every existence check above — it has to be DRIVEN.
+	// PAIRED, per Rule 10: the permitted half alone would report "landed" for a tree with the trigger
+	// DROPPED, which is a strictly worse bug (a mutable audit log) than the wedge 0024 fixes.
+	if !jobEventsCarveoutActive(t, admin) {
+		t.Fatal("after Up: an ON DELETE SET NULL-shaped UPDATE on sender.job_events (account_id -> NULL) was REJECTED — sender_0024's carve-out did not land, so DELETE /v1/admin/accounts/{id} is still wedged for any account with job history (ADR-0012)")
+	}
+	if !jobEventsContentUpdateRejected(t, admin) {
+		t.Fatal("after Up: a CONTENT update on sender.job_events (actor -> 'admin') was PERMITTED — sender_0024's carve-out is too wide, or the append-only trigger is gone entirely; the audit log is mutable")
+	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -257,6 +270,12 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
+		}
+		// 0024's down restores sender_0008's UNCONDITIONAL body, deliberately reinstating the wedge —
+		// that is what "reversible" means here. Driving the probe is the only way to see it, and this
+		// assertion is what proves the down is real rather than a version-row deletion.
+		if v == "0024" && jobEventsCarveoutActive(t, admin) {
+			t.Fatal("after Down 0024: an account_id -> NULL update on sender.job_events is STILL permitted (down did not restore sender_0008's unconditional reject-trigger)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -369,6 +388,131 @@ func functionExists(t *testing.T, c *pgx.Conn, name string) bool {
 		t.Fatalf("function exists lookup %q: %v", name, err)
 	}
 	return ok
+}
+
+// jobEventsCarveoutActive reports whether sender_0024's FK-aware carve-out is in force, by DRIVING
+// the trigger rather than by reading its source. sender_0024 replaces one function BODY and adds no
+// object at all, so functionExists/columnExists/configKeyExists are all blind to it and a
+// pg_get_functiondef text match would assert the migration's own SQL against itself (it would pass
+// against a carve-out that was syntactically present but logically wrong).
+//
+// So: insert a throwaway job_events row with account_id set, attempt the exact mutation the FK's
+// ON DELETE SET NULL maintenance statement performs, and report whether it was permitted. Wrapped in
+// a transaction that is always ROLLED BACK, so the lifecycle DB is unchanged either way. Runs as the
+// admin/superuser connection deliberately — sender_module has UPDATE revoked (sender_0008), so a
+// rejection seen as that role would prove the REVOKE, not the trigger.
+func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin carve-out probe: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// The FK chain job_events requires: a users row, a pool, an account, a job_item and a job. The
+	// probe event row is INSERTed directly (not taken from the genesis trigger) because it needs
+	// account_id already NON-NULL — the genesis row is born with it NULL, the job not yet being
+	// assigned — and job_events rows cannot be updated into shape, which is the whole point.
+	var userID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.users (email, is_active) VALUES ('carveout-probe@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("carve-out probe: seed user: %v", err)
+	}
+	var poolID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.pools (user_id, kind, name) VALUES ($1,'shared','carveout-probe') RETURNING id`,
+		userID).Scan(&poolID); err != nil {
+		t.Fatalf("carve-out probe: seed pool: %v", err)
+	}
+	var acctID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.accounts
+		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address)
+		 VALUES ($1,$2,'probe.invalid',587,'probe@ourdomain.com','\x00','k','\x00','probe@ourdomain.com')
+		 RETURNING id`, userID, poolID).Scan(&acctID); err != nil {
+		t.Fatalf("carve-out probe: seed account: %v", err)
+	}
+	var jobItemID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, status)
+		 VALUES ($1,$1,'probe@example.com','S','<p>b</p>','pending') RETURNING id`, userID).Scan(&jobItemID); err != nil {
+		t.Fatalf("carve-out probe: seed job_item: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','system',true)`); err != nil {
+		t.Fatalf("carve-out probe: set actor: %v", err)
+	}
+	var jobID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
+		 VALUES ($1,$2,$2,'probe@example.com','S','<p>b</p>','queued',NOW()) RETURNING id`,
+		jobItemID, userID).Scan(&jobID); err != nil {
+		t.Fatalf("carve-out probe: seed job: %v", err)
+	}
+	var evID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.job_events (job_id, user_id, from_state, to_state, actor, account_id)
+		 VALUES ($1,$2,'queued','assigned','dispatcher',$3) RETURNING id`,
+		jobID, userID, acctID).Scan(&evID); err != nil {
+		t.Fatalf("carve-out probe: seed job_events row: %v", err)
+	}
+
+	// THE PROBE: exactly what `ON DELETE SET NULL` issues. Permitted only under sender_0024.
+	permitted := true
+	if _, err := tx.Exec(ctx, `UPDATE sender.job_events SET account_id=NULL WHERE id=$1`, evID); err != nil {
+		permitted = false
+		// A rejection must come from the append-only trigger; anything else means the probe itself is
+		// broken and the answer would be meaningless.
+		if !strings.Contains(err.Error(), "append-only: UPDATE forbidden") {
+			t.Fatalf("carve-out probe: UPDATE failed for an unexpected reason (probe is broken, not the schema): %v", err)
+		}
+		// The transaction is now aborted; the deferred Rollback handles it.
+	}
+	return permitted
+}
+
+// jobEventsContentUpdateRejected is the paired NEGATIVE half of the probe above: with the carve-out
+// active, a CONTENT mutation must STILL raise. Without this, jobEventsCarveoutActive alone would
+// report "true" for a tree with the trigger dropped entirely — the exact regression that would turn
+// an append-only audit log into a mutable one.
+func jobEventsContentUpdateRejected(t *testing.T, c *pgx.Conn) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin content-reject probe: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var userID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.users (email, is_active) VALUES ('carveout-probe2@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("content-reject probe: seed user: %v", err)
+	}
+	var jobItemID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, status)
+		 VALUES ($1,$1,'probe2@example.com','S','<p>b</p>','pending') RETURNING id`, userID).Scan(&jobItemID); err != nil {
+		t.Fatalf("content-reject probe: seed job_item: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','system',true)`); err != nil {
+		t.Fatalf("content-reject probe: set actor: %v", err)
+	}
+	var jobID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
+		 VALUES ($1,$2,$2,'probe2@example.com','S','<p>b</p>','queued',NOW()) RETURNING id`,
+		jobItemID, userID).Scan(&jobID); err != nil {
+		t.Fatalf("content-reject probe: seed job: %v", err)
+	}
+	var evID string
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM sender.job_events WHERE job_id=$1 ORDER BY seq LIMIT 1`, jobID).Scan(&evID); err != nil {
+		t.Fatalf("content-reject probe: read genesis event: %v", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE sender.job_events SET actor='admin' WHERE id=$1`, evID)
+	return err != nil && strings.Contains(err.Error(), "append-only: UPDATE forbidden")
 }
 
 // isErrorTransition evaluates sender_0022's predicate directly. It is IMMUTABLE SQL over the

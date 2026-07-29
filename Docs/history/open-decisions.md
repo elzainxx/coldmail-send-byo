@@ -1261,15 +1261,84 @@ mid-life lock **loss**, which is a different event from a startup **contention**
 
 ---
 
-## Pre-deploy gate, Stage 12 (2026-07-29) — one item, NEEDS-USER
+## Pre-deploy gate, Stage 12 (2026-07-29) — one item, RULED AND CLOSED
 
 Opened per the same rule: a new dated section with an ADR, not a reopened item. Found while walking
 Stage 12 step 7 of `Docs/sender-module-local-test-guide.md`.
 
+> **RULING (2026-07-29). The user ruled option (A): the ADR-0009 pattern applied per-column.**
+> Shipped as `sender_0024` — `CREATE OR REPLACE` of `sender.fn_job_events_reject_update`'s body,
+> same signature/trigger/owner, **no** object added and no grant or FK action changed
+> (additive-only, Rule 5). `sender_0008`'s `REVOKE UPDATE, DELETE … FROM sender_module` is
+> untouched, so the app role still cannot issue *any* update; the carve-out is reachable only by
+> the FK's own maintenance statement and by the schema owner.
+>
+> **Permitted iff all of:** `account_id` unchanged or non-NULL→NULL; `box_id` unchanged or
+> non-NULL→NULL; **at least one actually nulled** (a bare no-op UPDATE still raises — no
+> referential action performs it); and every content column byte-identical (`id`, `job_id`,
+> `user_id`, `seq`, `from_state`, `to_state`, `actor`, `error_class`, `error_message`, `metadata`,
+> `created_at`). Two per-column clauses, not the looser "an FK column changed" — that is what
+> permits a box-and-account delete while still rejecting a nulled FK being **re-pointed at a
+> different row**, which would rewrite provenance to blame an account that was never involved.
+>
+> **A Postgres semantic that decided the implementation, caught by a failing control rather than by
+> reading.** The unchanged-side comparisons must be `IS NOT DISTINCT FROM`, not `=` — `NULL = NULL`
+> is NULL, not TRUE, so `=` fails closed. A control with `=` substituted failed in **two** places:
+> the anticipated one (the second of two sequential per-constraint updates — Postgres issues one
+> `UPDATE ONLY … SET <col> = NULL` **per FK constraint**, not one combined statement), and an
+> **unanticipated** one — a plain single-FK *box* delete, because the genesis event row is born with
+> `account_id` NULL (`fn_job_events_on_insert` copies `NEW.assigned_account_id` from a job that is
+> not yet assigned). The `=` form would therefore have wedged the *ordinary* box delete too. A
+> reviewer reasoning only about "the combined case" would have shipped it.
+>
+> **Tests:** `internal/dispatch/job_events_fk_carveout_test.go` (5 tests, real Postgres) plus two
+> driven probes in the migration lifecycle test. Jobs reach a terminal state through the REAL
+> dispatch/outcome paths, so the rows under test carry trigger-written FK values. Content
+> immutability is asserted against a per-row pre-delete fingerprint, with the FK columns
+> fingerprinted **separately** — a whole-row hash could not distinguish "the FK was nulled"
+> (permitted) from "the actor was rewritten" (forbidden). Each positive also asserts the *other* FK
+> UNCHANGED (the per-column half) and the row count unchanged (nothing cascaded away). All negatives
+> run as **superuser**: `sender_module` has UPDATE revoked, so a rejection seen as that role would
+> prove the REVOKE and would pass with no trigger present.
+>
+> **Anti-vacuity, three controls actually run (Rule 10):** (1) revert to `sender_0008`'s
+> unconditional body → all three positives failed with the exact wedge message; (2)
+> `DROP TRIGGER` → the negative-controls test failed on the first content UPDATE; (3) `=` for
+> `IS NOT DISTINCT FROM` → failed in the two places above. No single regression satisfies both
+> halves. The lifecycle probe is paired the same way (permitted **and** content-still-rejected after
+> Up; rejected again after `Down 0024`, proving the down is real), because `sender_0024` adds no
+> object and every existence check is structurally blind to it.
+>
+> **ADR-0009 was corrected, not quietly patched around.** Its "the pattern is CLOSED" claim rested
+> on a census that had not been carried out. That census was **re-run against the live schema**
+> (migrated `0000..0024`), not against the migration files: exactly three immutability triggers
+> (`account_events`, `job_events`, `send_logs`); six `ON DELETE SET NULL` FKs, of which the three on
+> trigger-bearing tables are now all carved out and the other three sit on freely-updatable tables;
+> and **zero** inbound FKs referencing any of the three event/log tables, confirming `send_logs`'
+> "no inbound FK" claim by query rather than by assumption.
+
 | Id | Item | Severity | Disposition |
 |---|---|---|---|
-| G12-OD-1 | **`DELETE /v1/admin/accounts/{id}` returns `500` for any account that has ever been assigned a job — the documented hard delete is unavailable.** `sender.job_events` declares TWO `ON DELETE SET NULL` FKs (`job_events_account_fk` → `accounts`, `job_events_box_fk` → `boxes`), and Postgres implements `SET NULL` as an internal `UPDATE ONLY … SET <col> = NULL`. The table's `BEFORE UPDATE` reject-trigger (`sender_0008`'s `fn_job_events_reject_update`) raises on **every** update with no carve-out, so the FK's own maintenance update aborts the parent delete: `reason=account_write_error: ERROR: sender.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)`. Deleting a **box** with job history fails identically (`SET "box_id" = NULL`). This is the SAME defect ADR-0009 diagnosed and fixed for `account_events` — on the table ADR-0009 examined and **explicitly cleared**: its "pattern is CLOSED" section asserts `job_events`' inbound cleanup "is `CASCADE DELETE` … correct as-is", which is wrong about the schema as built (it is both kinds; the two SET NULL FKs were not enumerated). Reproduced at the SQL level as the schema **owner** in a rolled-back transaction, so it is not a grants or API-layer artifact, with a negative control proving the trigger is the blocker: an account with ZERO `job_events` rows deletes cleanly, because `SET NULL` then matches no row. That split is why the defect survived the build — Phase 2's T5/T9 delete accounts that were never dispatched to, and via the API a never-used account returns `204` while a used one returns `500`. Nothing is corrupted or dropped: the delete aborts atomically, so this is a **wedged operation**, not data loss. | **MEDIUM** (contradicts `api-contract.md:112` "hard delete (audit row survives)" and the Phase 2 locked §2.5 unconditional-`204`; leaves NO erasure path for a used account through any interface, including direct owner SQL — a GDPR-style hard delete is currently impossible. Not HIGH: no send-path, credential, or audit-integrity impact, and no silent wrong answer) | **FLAGGED — NEEDS-USER, not fixed.** The likely fix (extend the trigger with the same narrow FK carve-out `account_events` has) would **revise an accepted ADR's explicit conclusion**, which is a ruling and not a refactor (Rule 2: never resolve a locked contradiction on your own authority). It is also not a copy of `account_events`': `job_events` has TWO nullable FK columns, so the permitted-transition set is strictly larger and deciding it is deciding how far the immutability guarantee bends — too wide and the audit hole widens, too narrow and the delete stays wedged. Options, the live evidence, and the required both-directions test shape (positive: rows survive with the FK nulled and every content column byte-identical; negative: a bundled content change still raises, or the carve-out is indistinguishable from deleting the trigger) in **ADR-0012**. **Recommendation: (A)**, the ADR-0009 pattern applied per-column. |
+| G12-OD-1 | **`DELETE /v1/admin/accounts/{id}` returns `500` for any account that has ever been assigned a job — the documented hard delete is unavailable.** `sender.job_events` declares TWO `ON DELETE SET NULL` FKs (`job_events_account_fk` → `accounts`, `job_events_box_fk` → `boxes`), and Postgres implements `SET NULL` as an internal `UPDATE ONLY … SET <col> = NULL`. The table's `BEFORE UPDATE` reject-trigger (`sender_0008`'s `fn_job_events_reject_update`) raises on **every** update with no carve-out, so the FK's own maintenance update aborts the parent delete: `reason=account_write_error: ERROR: sender.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)`. Deleting a **box** with job history fails identically (`SET "box_id" = NULL`). This is the SAME defect ADR-0009 diagnosed and fixed for `account_events` — on the table ADR-0009 examined and **explicitly cleared**: its "pattern is CLOSED" section asserts `job_events`' inbound cleanup "is `CASCADE DELETE` … correct as-is", which is wrong about the schema as built (it is both kinds; the two SET NULL FKs were not enumerated). Reproduced at the SQL level as the schema **owner** in a rolled-back transaction, so it is not a grants or API-layer artifact, with a negative control proving the trigger is the blocker: an account with ZERO `job_events` rows deletes cleanly, because `SET NULL` then matches no row. That split is why the defect survived the build — Phase 2's T5/T9 delete accounts that were never dispatched to, and via the API a never-used account returns `204` while a used one returns `500`. Nothing is corrupted or dropped: the delete aborts atomically, so this is a **wedged operation**, not data loss. | **MEDIUM** (contradicts `api-contract.md:112` "hard delete (audit row survives)" and the Phase 2 locked §2.5 unconditional-`204`; leaves NO erasure path for a used account through any interface, including direct owner SQL — a GDPR-style hard delete is currently impossible. Not HIGH: no send-path, credential, or audit-integrity impact, and no silent wrong answer) | **RULED (A) 2026-07-29 AND CLOSED — fixed by `sender_0024`.** Was FLAGGED–NEEDS-USER because the fix **revises an accepted ADR's explicit conclusion** (ADR-0009's "pattern is CLOSED / correct as-is"), which is a ruling, not a refactor (Rule 2), and because `job_events` has TWO nullable FK columns where `account_events` has one, so the permitted set is strictly larger and deciding it is deciding how far the immutability guarantee bends. The user ruled the ADR-0009 pattern applied **per-column**. Landed: the carve-out permits only a non-NULL→NULL transition on `account_id`/`box_id` with **every** content column byte-identical and at least one FK actually nulled; a bundled content change, a no-op UPDATE, and re-pointing a nulled FK at a different row all still raise. 5 behavioral tests + 2 driven migration probes, **three** anti-vacuity controls run (unconditional body → positives fail; trigger dropped → negatives fail; `=` for `IS NOT DISTINCT FROM` → wedges in two places, one unanticipated). ADR-0009's census re-run against the live schema. **Re-driven end-to-end on the live dev stack through the API that produced the `500`**: runner-applied `0024`, throwaway account, 3 real sends (`sent`), then `DELETE` → **`204`**, with all 6 audit rows surviving, `account_id` NULL, and content + `box_id` verbatim. Full detail in the RULING block above and **ADR-0012**. |
 
 **Recorded so it is not conflated:** tenant erasure (`DELETE FROM public.users`) also fails, but for
 an unrelated reason — `pools_user_fk` declares no referential action and refuses first, before any
 `job_events` trigger fires. It reaches the item above only by the longer path (pools → accounts).
+**Still true after `sender_0024`**, and deliberately not changed by it: `sender_0024` fixes the
+`job_events` collision only. A one-statement `DELETE FROM public.users` remains refused by
+`pools_user_fk`; tenant erasure is an **accounts-then-pools-then-user** sequence, and each of those
+three steps now works — driven end-to-end on real Postgres in a rolled-back transaction against a
+tenant with `job_events` history (`DELETE 1` at each step, and the one-statement user delete still
+refused with `violates foreign key constraint "pools_user_fk"`).
+
+**One thing that probe surfaced, which is not obvious from the account-delete behavior:** the final
+`DELETE FROM public.users` **cascades the tenant's `job_events` rows away entirely**
+(`job_events_user_fk` is `ON DELETE CASCADE`; the probe's two event rows went to zero). So
+"audit row survives" is a property of deleting an **account or box** — where the FK is `SET NULL` and
+`sender_0024`'s carve-out applies — not of erasing a **tenant**, where a different FK with a different
+referential action removes the rows before any UPDATE trigger is reachable. That asymmetry is
+intentional as built (a GDPR erasure that left the tenant's per-job audit trail behind would be a
+worse defect than the one just fixed), but it means the two operations must not be described in the
+same breath. Making the user delete cascade *pools* on its own would be a separate ruling about
+tenant data lifecycle, not a consequence of this one — registered in `Docs/future-work.md`, not
+silently absorbed.

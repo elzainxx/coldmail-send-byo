@@ -109,12 +109,14 @@ and all **six** CI gates pass (`config_drift`, `contract_drift`, `migration_lint
 has been in `.github/workflows/real-infra.yml` since it was added). Deferred work is registered in
 `future-work.md` rather than left implicit.
 
-**Open Decisions are NOT all discharged.** `history/open-decisions.md` carries a needs-user list
-again: the pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced **G11-OD-1** and
-**G12-OD-1**. **G11-OD-1 was ruled on 2026-07-29 (option B — pause dispatch, bounded re-acquire) and
-is implemented, tested on real infra, and closed**; **G12-OD-1 remains awaiting the user's ruling**.
-The standing non-blocking exception (R2-5, a stale example inside a locked spec) also remains. Read
-that file, not this paragraph, for the live list. The evidence this verdict rests on — which
+**Open Decisions.** The pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced two
+new ones, **G11-OD-1** and **G12-OD-1**, and **both were ruled on 2026-07-29, implemented, tested on
+real infra, and closed**: G11-OD-1 option B (a Brain that loses the singleton lock **pauses** dispatch
+and re-acquires on a bounded retry rather than exiting — ADR-0011), and G12-OD-1 option A (an FK-aware
+per-column carve-out on `job_events`' append-only trigger, restoring the documented hard delete —
+`sender_0024`, ADR-0012). The standing non-blocking exception (R2-5, a stale example inside a locked
+spec) remains the only open item. Read `history/open-decisions.md`, not this paragraph, for the live
+list. The evidence this verdict rests on — which
 phase verified what, and what each review gate found — is in `history/phase-build-record.md`'s
 "BUILD COMPLETE" section; it is provenance, not something you need in order to run the system.
 

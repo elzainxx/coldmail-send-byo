@@ -104,18 +104,28 @@ column transition the schema already committed to is allowed. A blanket "reject 
 UPDATE/DELETE" trigger is a latent bug whenever the table is the *target* of an FK whose parent
 can be deleted.
 
-**The pattern is CLOSED for the current schema.** The only tables carrying an immutability
-trigger are:
+**The pattern is CLOSED for the current schema.**
+> **This claim was WRONG when written, and stayed wrong for eight migrations. Corrected
+> 2026-07-29 by ADR-0012 (`sender_0024`).** The enumeration below missed two FKs, so "closed"
+> described a schema survey that had not actually been carried out. The generalized rule above is
+> the correct one and would have caught it; the ADR asserted closure on an incomplete census
+> instead of applying its own rule. The pattern IS closed now — but by `sender_0024`, not by this
+> ADR.
+
+The only tables carrying an immutability trigger are:
 - `sender.job_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `CASCADE DELETE`,
   handled by the no-`BEFORE-DELETE` approach (correct as-is).
-  > **CORRECTION (2026-07-29) — this bullet is WRONG about the schema as built; see ADR-0012.**
-  > `job_events`' inbound cleanup is *both* kinds. `job_events_job_fk`/`job_events_user_fk` are
-  > `ON DELETE CASCADE` as stated, but `job_events_account_fk` and `job_events_box_fk` are
-  > **`ON DELETE SET NULL`** — the same shape as the `account_events` FK this ADR was written to
-  > fix — and were not enumerated here. The unconditional UPDATE-reject therefore *does* collide
-  > with a referential action, wedging `DELETE /v1/admin/accounts/{id}` (and box deletes) for any
-  > account/box with job history. The generalized rule below is correct and would have caught
-  > this; it simply was not applied to `job_events`. Tracked as G12-OD-1, NEEDS-USER.
+  > **CORRECTION (2026-07-29) — this bullet is WRONG about the schema as built; FIXED by
+  > `sender_0024` (ADR-0012, G12-OD-1 ruled option A).** `job_events`' inbound cleanup is *both*
+  > kinds. `job_events_job_fk`/`job_events_user_fk` are `ON DELETE CASCADE` as stated, but
+  > `job_events_account_fk` and `job_events_box_fk` are **`ON DELETE SET NULL`** — the same shape as
+  > the `account_events` FK this ADR was written to fix — and were not enumerated here. The
+  > unconditional UPDATE-reject therefore *did* collide with a referential action, wedging
+  > `DELETE /v1/admin/accounts/{id}` (and box deletes) with `500` for any account/box with job
+  > history, for the whole of Phases 3–10. `sender_0024` gives the trigger this ADR's own carve-out,
+  > enumerated **per nullable FK column** because `job_events` has two where `account_events` has
+  > one. Current state: `job_events`' inbound cleanup is CASCADE *and* SET NULL, and BOTH are now
+  > handled — CASCADE by installing no `BEFORE DELETE` trigger, SET NULL by the carve-out.
 - `sender.account_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `SET NULL`,
   handled by the FK-aware `BEFORE UPDATE` trigger (this ADR).
 - `sender.send_logs` — write-once (`INSERT, SELECT, DELETE`; `REVOKE UPDATE` + `BEFORE UPDATE`
@@ -126,6 +136,25 @@ trigger are:
 There are no other append-only/write-once tables in `sender.*` (verified against the migration
 chain `0000..0014`). Any table added in a later phase that installs an immutability trigger MUST
 apply this pattern in the same migration.
+
+**Census RE-RUN 2026-07-29 against the live schema, not against the migration files** — because
+reading the chain is exactly what produced the two-FK miss above. Queried on a database migrated
+`0000..0024`:
+
+- Immutability triggers (`pg_trigger … tgname ILIKE '%reject%'`, non-internal, schema `sender`):
+  **exactly three** — `trg_account_events_reject_update`, `trg_job_events_reject_update`,
+  `trg_send_logs_reject_update`. No fourth table crept in across Phases 3–10.
+- Every `ON DELETE SET NULL` FK in the schema (`pg_constraint … confdeltype='n'`): **six** —
+  `pools_fallback_fk`, `jobs_assigned_account_fk`, `jobs_assigned_box_fk`,
+  `job_events_account_fk`, `job_events_box_fk`, `account_events_account_fk`. The first three sit on
+  tables with **no** immutability trigger (`pools`, `jobs` are freely updatable), so they cannot
+  collide. The last three are the ones on trigger-bearing tables, and all three are now carved out.
+- Inbound FKs *referencing* `send_logs`, `job_events`, or `account_events`
+  (`confrelid IN (…)`): **zero rows**. So `send_logs`' "no inbound FK" claim is confirmed by query
+  rather than assumed, and nothing references the two event tables either.
+
+That is the check this ADR should have run the first time. A future phase adding either an
+immutability trigger **or** a `SET NULL` FK must re-run both queries, not re-read this list.
 
 ## Links
 `Docs/phase-2-account-management.md` §2.5/§7.4/§12, ADR-0002 (Phase 1 #23 append-only ordering /
