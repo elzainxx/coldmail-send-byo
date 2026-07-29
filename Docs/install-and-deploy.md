@@ -458,6 +458,16 @@ unset KEY   # when you are done with this shell session
 certificate verification** for those — a test affordance for the local sink — so the credential would
 cross an unverified TLS connection. See [`security-posture.md`](./security-posture.md) §3.13.
 
+> **On the local dev stack, the account above points at the bundled sink: `"smtp_host": "smtp-sink"`,
+> `"smtp_port": 1025`** (Mailpit, reachable from the box over the compose network; its web UI is
+> <http://localhost:8025>). `smtp_username`/`smtp_secret` can be anything — Mailpit accepts any
+> credential, but only over STARTTLS, so the box's STARTTLS-before-AUTH path is genuinely exercised.
+> This is stated here because it is the one value in Step 9 a local reader cannot derive from this
+> doc: every other field has a self-explanatory placeholder, but `smtp.example.com` does not resolve
+> and there is no hint of what to use instead. Found by walking this doc verbatim on a clean slate
+> (2026-07-29) — it was the first hard stop. The public-hostname warning above still applies in
+> production; `smtp-sink` is exactly the "test affordance" it refers to.
+
 `default_shared_pool_id` seeds `NULL` and stays `NULL` until you set it. Until then, base-campaign
 jobs stay cleanly `queued` — they are not lost and not failed, but nothing sends. This is the single
 most common "why is nothing happening" cause; the runbook's flagship tree starts there.
@@ -472,8 +482,74 @@ curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY" \
 Expect: your pool present with headroom that is **not** `exhausted`, `dispatch_paused:false`, and at
 least one connected box. What each field means and what warrants action is in the runbook.
 
-Then run one real campaign through `quote` → `run` → `report` (Domain A, platform service token) with
-a single recipient you control, and confirm the job reaches `sent`.
+Then run one real campaign through `quote` → `run` → `report` (Domain A, **platform service token**,
+not the admin key) with a single recipient you control, and confirm the job reaches `sent`. The three
+bodies, because this is where a first-time reader stops (full field tables:
+[`api-contract.md`](./api-contract.md)):
+
+```bash
+PLAT=<platform service token>          # Domain A. NOT the admin key from Step 9.
+OWNER=<the owning tenant's uuid>       # a public.users row.  NOT `UID=` — see below.
+ITEM=<a public.job_items uuid owned by $OWNER>
+
+# quote — recipient_count ONLY. It is pure, side-effect-free, and takes no tenant:
+curl -fsS -X POST $ADMIN/v1/quote -H "Authorization: Bearer $PLAT" \
+  -H 'Content-Type: application/json' -d '{"recipient_count":1}'
+
+# run — job_item_id is SINGULAR, and there is no campaign_id field (that lives on the job_items row):
+curl -fsS -X POST $ADMIN/v1/run -H "Authorization: Bearer $PLAT" \
+  -H 'Content-Type: application/json' -d "{\"user_id\":\"$OWNER\",\"job_item_id\":\"$ITEM\"}"
+# -> 202 {"job_id":"...","state":"queued"}   (async kickoff; it does NOT block on the send)
+
+# report — QUERY parameters, not a path segment. /v1/report/<id> is a bare router 404:
+curl -fsS "$ADMIN/v1/report?job_id=<job_id>&user_id=$OWNER" -H "Authorization: Bearer $PLAT"
+```
+
+Expect `report` to reach `{"state":"sent", "provider_message_id":"...", "completed_at":"..."}`. A
+`provider_message_id` is the proof: the box reported a real accepted send, and the Brain never invents
+one.
+
+> **The three shapes above are each a mistake made while walking this doc verbatim** on a clean slate
+> (2026-07-29), when this step said only "run one real campaign through `quote` → `run` → `report`"
+> with no bodies and — unlike Step 9 — no link to the contract. `quote` rejected `user_id` as an
+> **unknown field** (the admin surface and the platform surface both decode strictly), `run` was
+> guessed as `{campaign_id, job_item_ids[]}`, and `report` was tried as a path segment. All three are
+> `400`/`404` with correct, spec-compliant envelopes — the product was right; the doc was silent.
+
+> **`UID=` is a readonly variable in bash** — `UID=<uuid>` fails with `bash: UID: readonly variable`
+> and the assignment silently does not happen, so `run` then posts an empty `user_id`. This snippet
+> used `UID` until 2026-07-29, when a verbatim re-walk of this step hit exactly that. Hence `OWNER`.
+> (`zsh` allows the assignment, which is why this can survive a review: it depends on the reader's
+> shell.)
+
+**On the local dev stack, the three values above come from `scripts/dev.sh reset`, not from a secret
+store.** It mints both credentials into `.env` and seeds the platform side:
+
+```bash
+PLAT=$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2)   # NOT ADMIN_API_KEY= — different domain
+OWNER=00000000-0000-0000-0000-000000000000              # the reserved system user dev.sh seeds
+
+# public.job_items is EMPTY after a reset — the platform owns that table and the module only
+# reads it, so nothing in this repo creates a row for you. Insert one as the admin role:
+ITEM=$(docker compose exec -T postgres psql -U postgres -d platform -tAc \
+  "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status)
+   VALUES (gen_random_uuid(),'$OWNER','you@example.com','Local smoke test','<p>hello</p>','pending')
+   RETURNING id" | head -1 | tr -d '\r\n')
+```
+
+**Both filters on that capture are load-bearing, and neither is obvious.** `psql -tA` suppresses the
+header and the row count but still prints the **command tag** on its own line, so the raw output of a
+`RETURNING` insert is two lines: `<uuid>\nINSERT 0 1\n`. `head -1` drops the tag; `tr -d '\r\n'` drops
+the newline (and the `\r` Git Bash adds on Windows). Omit either and `$ITEM` becomes
+`e5ca20e2-…-2b385e4271a7INSERT 0 1` or keeps a trailing newline — in both cases the JSON body below is
+malformed, and `run` answers `400 validation_failed` naming **`job_item_id: required`**, which reads
+like a wrong field name and is not one. Confirm with `echo "[$ITEM]"` (expect exactly 36 characters)
+before blaming the body. Both variants were hit while re-walking this step on 2026-07-29.
+
+> **The platform-side seeding above is dev-stack only.** In production the platform inserts
+> `public.job_items` as part of its own campaign flow and passes you the id; the module never writes
+> that table (it holds `SELECT` only — Step 4's grant check). Do not carry this `INSERT` into a
+> production runbook.
 
 > **Before pointing this at a real SMTP provider for the first time**, use
 > [`smoke-test-real-provider.md`](./smoke-test-real-provider.md). Everything up to this point has
