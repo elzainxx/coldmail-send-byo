@@ -1074,12 +1074,93 @@ The most valuable stage.
 
 ### Stage 12 — Content variation
 
+> **READ THIS BEFORE STEP 1 — every step in this stage is vacuous on the default body.** Most
+> variation is **structural**: comment injection fires only after a closing `</tag>`
+> (`body.replace(/(<\/\w+>)/g, …)` in `services/box/src/variation-content.js`), CSS micro-variation
+> only on `padding`/`margin` px declarations, URL params only on `href`/`src`. The default fixture
+> body — `Body for <tag> message 1.` — contains **none** of those, so every one of those toggles is
+> a **no-op** on it. A byte-comparison then "proves" all-toggles-off equals toggles-**on**, and the
+> whole stage passes without testing anything. That is not hypothetical: it is what happened on the
+> first attempt at step 1, and only the negative control caught it. Use an HTML body:
+>
+> ```bash
+> export HTMLBODY='<html><body><div style="padding: 12px; margin: 8px"><p>Hello.</p><p>Visit <a href="https://example.test/landing?ref=abc">our page</a> or see <img src="https://example.test/img/logo.png"></p></div></body></html>'
+> CAMPAIGN_BODY="$HTMLBODY" bash tests/manual/launch-campaign.sh s12off 2
+> ```
+>
+> `CAMPAIGN_BODY` exists in `launch-campaign.sh` for exactly this reason. Before trusting any PASS
+> here, run the negative control: turn **one** toggle on and confirm the bytes now **differ**. If
+> they do not, your harness is blind and the PASS is worthless.
+>
+> **Comparing raw messages needs a binary normalizer.** Mailpit stamps `Return-Path`, `Received`,
+> `Message-ID` and `Date` per delivery, so raw bytes never match on those lines alone — strip them.
+> Do it in **binary** mode (`open(...,'rb')`, `rb''` patterns, `sys.stdout.buffer.write`): Python
+> text mode rewrites `\r\n` and silently corrupts the very bytes under test.
+
 1. All toggles off; capture the raw message
    - **Pass:** byte-identical to the non-variation send path
+   - **Observed: PASS (second attempt — the first was vacuous, see the box above).** Two ways of
+     saying "off" must agree, and they do. `variation_enabled=false` (master kill-switch — the Brain
+     sends **no** variation block at all: `variationSnapshot` returns `nil`, `variation.go`) produced
+     a message byte-identical after normalization to the one sent with `variation_enabled=true` and
+     **all sub-toggles at `default_value`** — 454 bytes, sha256 `9db8dbd593c8…`, on the HTML body.
+     That the two paths converge is the point: the stack's shipped default **already is**
+     all-toggles-off, so "off" is not a special mode an operator has to find.
+   - **Negative control (the whole reason this PASS means anything).** With
+     `variation_comment_injection=true` + `variation_comment_intensity=high` on the **same** body, the
+     message went to 499 bytes, sha256 `bbc7439d0ab9…`, differing in exactly three places — an
+     HTML comment after `</p>`, after `</a>`, and after `</html>`:
+     ```
+     > <!--49e3923c-->
+     > <p>Visit <a href="…">our page</a>
+     > <!--f7ced431--> or see <img src="…">
+     > </html>
+     > <!--91dd5ab0-->
+     ```
+     On the **default** body the same toggle produced a byte-identical message. Same config change,
+     same assertion, opposite verdicts — which is precisely why the first PASS was thrown out.
 2. Enable variation; send identical content twice
    - **Pass:** different bytes, identical rendering
+   - **Observed: PASS.** Three toggles on (`variation_comment_injection`, `variation_css_micro`,
+     `variation_unique_url_params`), two recipients, and — deliberately — a body with **no `%d`**, so
+     the two rendered bodies are literally the same string and any difference is variation alone.
+     475 vs 466 bytes, different hashes. Every delta is variation-attributable and
+     rendering-neutral:
+     ```
+     < <div style="padding: 11px; margin: 7px">      > <div style="padding: 13px; margin: 8px">
+     < …/landing?ref=abc&_ref=388aba64               > …/landing?ref=abc&_ref=166f7362
+     < …/logo.png?_v=f52dfa                          > …/logo.png?_v=0e67d5
+     ```
+     ±1px on padding/margin (`variation_css_magnitude_px` = 1) is invisible to a reader; the added
+     params are inert (step 6). **Trap:** the diff also showed different `From:`/`To:` — that is
+     **not** variation. The two jobs routed to different accounts (`step7@` vs `s7b@`), which is
+     correct pool behaviour. Read a variation diff with the routing in hand or you will chase a
+     phantom.
 3. Send the same `job_id` twice
    - **Pass:** byte-identical (deterministic seeding)
+   - **Observed: PASS.** Re-queued the **same** `sender.jobs` row (id preserved ⇒ same variation
+     seed: `prngFor(jobId, "comments")`), let it dispatch again, and compared the two Mailpit copies:
+     475 bytes each, sha256 `ff52b48ed290…` both — **byte-identical**, under two different
+     `provider_message_id`s (`0BAlDhnw…`, then `0NCrGb64…`).
+   - **Why this is not vacuous:** step 2 already proved a *different* `job_id` on the *same* body
+     yields *different* variation bytes. So the seed demonstrably depends on the id, and identical
+     output for an identical id is determinism rather than an inert code path.
+   - **Trap — the schema fights a hand-rolled re-send, correctly.** Forcing a second send by
+     `UPDATE`ing a `sent` job back to `queued` trips three guards in a row, and each is a feature:
+     `attempt_token` is `NOT NULL` (do not null it — the dispatcher mints a fresh one on claim);
+     `jobs_completed_at_valid_check` requires `completed_at IS NULL` for any non-terminal state; and
+     the state-change trigger aborts with `sender.actor GUC not set: cannot record state transition`.
+     So the update must be wrapped:
+     ```sql
+     BEGIN;
+     SELECT set_config('sender.actor', 'admin', true);
+     UPDATE sender.jobs SET state='queued', lease_expires_at=NULL,
+            provider_message_id=NULL, completed_at=NULL WHERE id='<job>';
+     COMMIT;
+     ```
+     `sender.event_actor` is `dispatcher | box | reclaim_loop | admin | system` — there is **no**
+     `operator` value; a manual edit is `admin`. This is a test-only manoeuvre: nothing in the
+     product ever re-queues a `sent` job (§4.2 leave-in-place exists precisely so it cannot).
 4. Confirm zero-width insertion is **off** by default; enable and verify the rate
 5. Confirm Thread-Index emits nothing
 6. Inspect a link/image URL parameter

@@ -27,6 +27,18 @@ SEED_ONLY="${3:-}"
 DC="${COMPOSE_INVOCATION:-docker compose}"
 PSQL="$DC exec -T postgres psql -U postgres -d platform -tAc"
 
+# CAMPAIGN_BODY overrides the default one-line body. Needed by Stage 12 (content variation): the
+# default body carries NO HTML, and most variation toggles are structural — comment injection only
+# fires after a closing `</tag>`, CSS micro-variation only on `padding`/`margin` px declarations, URL
+# params only on href/src. Against a tagless body every one of them is a NO-OP, so a
+# byte-comparison "proves" all-toggles-off is identical to toggles-ON and the whole stage passes
+# vacuously. That is not a hypothetical: it is what happened on the first attempt at Stage 12 step 1,
+# and the negative control is what caught it.
+#
+# The literal `%d` in the value is replaced with the message number so each recipient still gets
+# distinguishable content. Single quotes are doubled for SQL safety.
+CAMPAIGN_BODY="${CAMPAIGN_BODY:-Body for $TAG message %d.}"
+
 # The dev service token. Domain A only — never the admin key (CLAUDE.md Rule 6: the two auth domains
 # never share a credential, so a driver that needs /v1/run must not hold the admin bearer).
 PLATFORM_TOKEN="$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2)"
@@ -52,7 +64,7 @@ INSERT INTO public.job_items
 SELECT '$CAMPAIGN_ID', '$USER_ID',
        's9-' || g || '@example.test',
        '[$TAG] message ' || g,
-       'Body for $TAG message ' || g || '.',
+       replace('$(printf '%s' "$CAMPAIGN_BODY" | sed "s/'/''/g")', '%d', g::text),
        'reply@ourdomain.com',
        'pending'
 FROM generate_series(1, $COUNT) g;
