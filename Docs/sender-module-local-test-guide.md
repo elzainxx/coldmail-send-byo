@@ -133,6 +133,43 @@ From a fresh reset, before creating anything, look at the system as a new operat
 
 **Pass:** the system tells you clearly what is missing. Jobs sit queued in a clean *not configured* state — no crash, no cryptic error, no silence, no event churn.
 
+**Observed (2026-07-29, both steps PASS).** Precondition asserted first, not assumed: `pools=0`, `accounts=0`, `jobs=0`, and `default_shared_pool_id` = `{"v": null}` (a real JSON `null`, checked as `value->>'v' IS NULL` — an empty string would be a different state).
+
+*Step 1 — health on a virgin system.* `200`, every counter zero, `pools: []`, `accounts` all-zero, `boxes.active: 2`. Nothing invented, nothing crashed.
+
+*Step 2 — run a campaign into the void.* `POST /v1/run` → **`202 {"state":"queued"}`**, which is correct per the contract (async kickoff, never blocks on the send). Then the load-bearing assertion, checked at ~12 s and again at ~60 s:
+
+| What | Observed | Why it matters |
+|---|---|---|
+| `sender.jobs.state` | `queued` (unchanged) | not failed, not stuck |
+| `attempt_count` | `0` | dispatch never burned an attempt on an unservable job |
+| `job_events` rows | **exactly 1** (`system`, `→ queued`, no error class) | **no event churn** — the genesis row and nothing else |
+| `/v1/report` (tenant) | `{"state":"queued","attempt_count":0}` | reads as clean pending; no internal reason leaks |
+| `/readyz` | `200 ready`, `db: true`, `singleton_lock: true` | no crash |
+
+Zero churn is the half of this stage that could plausibly have failed and didn't: a 1-second polling dispatcher facing an unservable job is exactly the shape that spins `queued→assigned→queued` forever, inflating `job_events` and `attempt_count`. It doesn't — the pool chain is resolved *before* a claim.
+
+*What the operator is told.* Three signals, in increasing usefulness:
+- `queue.waiting_for_capacity: 1` in `/v1/admin/health` — the machine-readable "something is waiting".
+- The Brain log names the condition, the exact key, and the fix: `dispatch: shared_pool_not_configured — default_shared_pool_id is unset or does not resolve to an enabled shared pool; affected base/fallback campaigns stay queued cleanly until an operator sets it (§4.3)`. **Rate-limited across the process:** 3 lines in ~4 minutes, not one per tick.
+- `operator-runbook.md`'s triage table routes the observed symptom (`waiting_for_capacity > 0`) to a section that names this exact case in words: *"A chain that is merely empty — for example `default_shared_pool_id` unset — is treated as a configuration gap and **waits**; it never fails jobs. So a config mistake costs you delay, not data."* The runbook path was walked from the symptom, not assumed to exist.
+
+> **`active_conditions[]` stays `[]` here, and that is BY DESIGN — do not read it as the empty-state signal.**
+> It carries exactly three conditions (`pool_exhausted`, `account_quarantined`, `box_death`, `health_alerts.go`),
+> and `pool_exhausted` iterates the pools in the snapshot — with **zero pools** there is nothing to
+> report as exhausted. A brand-new never-configured system is deliberately not an *alert*; it is a
+> *setup* state, and the runbook's own triage table has a separate row for it
+> (`waiting_for_capacity > 0`). Alerting on it would page an operator during install.
+>
+> **Two traps for whoever repeats this stage.** `POST /v1/run` takes `{job_item_id, user_id}` —
+> **singular**, and there is no `campaign_id` field (that lives on the `job_items` row). Second: my
+> first attempt returned `400 validation_failed` and the field names were NOT the cause — the log
+> showed `reason=malformed_json: invalid character '\n' in string literal`, i.e. a captured psql id
+> had carried a trailing newline into the JSON, so the body never parsed and validation was never
+> reached. Incidentally a clean live check of Rule 5: the client got only
+> `{code, message, request_id}` while the internal reason went to the log **keyed by the same
+> `request_id`** — correlatable by an operator, invisible to the caller.
+
 ---
 
 ### Stage 4 — Admin surface walkthrough
@@ -1315,7 +1352,7 @@ Do not deploy until every line is true.
 - [x] All 6 CI gates green *(Stage 1; `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `drain_grace` all PASS. `migration_lint` gained the wantChain-coupling check in this pass, with paired positive/negative controls — its first version passed with `wantChain` reverted, because a bare `grep '"0022"'` matched the version named in the gate's own failure message; now scoped to the `wantChain` literal. `architecture-overview.md` said "all five CI gates" and is corrected — CI has run six for a while)*
 - [x] All Go and Node suites green; `gofmt`/`vet` clean *(Stage 1; `go test ./...` green on all four modules (brain: adminapi/boxlink/boxproto/credential/dispatch/platformapi, harness, sender-migrate, plus the box's Node suite at **78/78, 0 skipped**), `gofmt -l` empty, `go vet` clean. **No `t.Skip` fired anywhere** — the 8 `?` lines are packages with no test files of their own (`config`, `configordering`, `db`, `httpapi`, `kms`, `singleton`, `tlsutil`, `cmd/brain`), and each was checked to be covered behaviorally at the process level by the harness instead of taken on faith: singleton by SUITE 4 (a real second Brain exits, `readyz singleton_lock=true`), kms by SUITE 5 (the box container cannot read the key, and the control that the box FS is mounted at all), tlsutil/httpapi/boxlink by SUITE 3 (register/heartbeat over real mTLS + the wrong-token 401), configordering by the load-path rejection tests. That is Rule 3's preference, not a coverage gap — but note the state of it: for these seven packages a unit-level regression is caught only if it changes process behavior)*
 - [ ] Clean-slate reproduction completed from the docs alone, without deviation
-- [ ] Empty state tells an operator what is missing
+- [x] Empty state tells an operator what is missing *(Stage 3, both steps; from a fresh reset with `pools=0`/`accounts=0`/`default_shared_pool_id={"v": null}` asserted as the precondition. A campaign run into that void returns `202 queued` and the job then sits `queued` with `attempt_count=0` and **exactly one** `job_events` row at both 12 s and 60 s — no churn, which is the half that could plausibly have failed, since a 1-second polling dispatcher facing an unservable job is exactly the shape that spins `queued→assigned→queued` forever. The operator is told three ways: `waiting_for_capacity: 1`, a Brain log line naming the condition + the exact config key + the fix (rate-limited: 3 lines in ~4 min, not one per tick), and a runbook triage path walked from the observed symptom to a section that names this case in words. `active_conditions[]` stays `[]` BY DESIGN — a never-configured system is a setup state, not an alert, and alerting would page during install)*
 - [x] Every admin lifecycle transition works and is audited *(Stage 4; refusals also made diagnosable — `12dade8`, `6004cd7`)*
 - [x] Credential never appears in any read, list, or log — plaintext **or base64** *(Stage 5; verified AFTER a real authenticated send so AUTH had actually run, across all 21 `/v1/admin/*` routes, and for the ciphertext + `credential_key_id` too. The shipped scans grepped plaintext only — fixed in `9daa622`)*
 - [x] Tenant isolation holds *(Stage 5; cross-tenant `report` is byte-identical to a nonexistent id — `b290953`)*
