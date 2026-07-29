@@ -36,15 +36,31 @@ BOX_HASH="$(grep -E '^DEV_BOX_TOKEN_HASH=' .env | cut -d= -f2- | sed 's/\$\$/$/g
 PSQL "INSERT INTO public.users (id,email,is_active) VALUES ('00000000-0000-0000-0000-000000000000','sys@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
 PSQL "INSERT INTO sender.boxes (id,user_id,token_hash,status) VALUES ('${BOX_UUID}','00000000-0000-0000-0000-000000000000','${BOX_HASH}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" >/dev/null
 # Make sure the box process is up (it may have exited before the row existed on a fresh stack).
-$DC up -d box >/dev/null 2>&1 || true
+# --no-deps is LOAD-BEARING, not tidiness. Without it compose evaluates box's `depends_on:
+# postgres` and, if the running postgres differs at all from the merged spec, RECREATES it —
+# and under tests/harness/compose.test.yml postgres' data directory is a tmpfs, so the recreate
+# WIPES the database out from under the live Brain, mid-suite. Observed: this line dropped the
+# rows seeded two lines above, and suites 9+10 then produced 21 cascading failures from unset
+# variables (POOL empty -> account create fails -> PUT default_shared_pool_id 400 -> every
+# downstream assertion interpolates ""). `up -d box` must only ever start the box.
+$DC up -d --no-deps box >/dev/null 2>&1 || true
 
 # Wait until the box is registered on the send stream (bounded).
+# Asserted on the box's LIVE DB ROW, not on a `logs brain` grep. The log grep was unfalsifiable
+# across runs: `$DC logs brain` replays the WHOLE retained log, so a "box registered" line from
+# an EARLIER run satisfied it even when the box in THIS run had exited (observed: the box exited
+# "register rejected: unauthenticated" after its token_hash row was wiped, and this check still
+# reported PASS — a green that proved nothing, CLAUDE.md Rule 10). Registration sets
+# status='active' AND last_heartbeat_at=NOW() (boxlink/stream.go §3.1), so requiring a heartbeat
+# NEWER than this fixture's own start makes the check a fresh observed post-state.
+GATE_T0="$(PSQL1 "SELECT NOW()")"
 registered=0
 for _ in $(seq 1 30); do
-  if $DC logs brain 2>&1 | grep -q "box registered id=\"${BOX_UUID}\""; then registered=1; break; fi
+  live="$(PSQL "SELECT status='active' AND last_heartbeat_at >= '${GATE_T0}'::timestamptz FROM sender.boxes WHERE id='${BOX_UUID}'" || true)"
+  if [[ "$live" == "t" ]]; then registered=1; break; fi
   sleep 1
 done
-[[ "$registered" == "1" ]] && ok "P3: box registered on the mTLS send stream" || bad "P3: box did not register on the send stream"
+[[ "$registered" == "1" ]] && ok "P3: box registered on the mTLS send stream (live row: active + heartbeat newer than this run)" || bad "P3: box did not register on the send stream"
 
 # --- fixtures: a shared pool + one eligible account targeting the sink, via the ADMIN API ---
 POOL="$(curl -s -X POST http://localhost:8080/v1/admin/pools -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"kind":"shared","name":"p3-suite"}' | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
@@ -160,7 +176,7 @@ if [[ "$T3STATE" == "sending" && "$T3PMID" == "t" && "$T3TERM" == "0" ]]; then
 else
   bad "T3: state=$T3STATE pmid_null=$T3PMID terminal_events=$T3TERM (a job must never be sent without a reported provider_message_id)"
 fi
-$DC up -d box >/dev/null 2>&1 || true   # bring the box back
+$DC up -d --no-deps box >/dev/null 2>&1 || true   # bring the box back (--no-deps: see line 39)
 
 # --- S1: the credential never appears anywhere — in PLAINTEXT **or BASE64** ---
 # --profile multibox so box2's logs are scanned too when it is running: box 2 receives pushed

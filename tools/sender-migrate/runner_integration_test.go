@@ -98,7 +98,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020", "0021"}
+		"0020", "0021", "0022"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -178,6 +178,24 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatalf("after Up: sender.config missing %q (sender_0021 Phase 9.5 seed not applied)", key)
 		}
 	}
+	// sender_0022's shared error-transition predicate — the single definition both job_events
+	// triggers gate their error context on. Anti-vacuity that the migration ran: it is a
+	// CREATE OR REPLACE of two existing function BODIES, so no column/index/config check can see
+	// it; the one NEW object it adds is this function.
+	if !functionExists(t, admin, "fn_job_event_is_error_transition") {
+		t.Fatal("after Up: sender.fn_job_event_is_error_transition missing (sender_0022 not applied)")
+	}
+	// ...and that the replaced bodies actually GATE on it, which is the behavior 0022 exists for.
+	// The predicate is IMMUTABLE SQL, so it can be evaluated directly: a success transition
+	// (sending -> sent) is not an error, a requeue (assigned -> queued) is. Checking the predicate
+	// rather than driving a job keeps this a migration test; the end-to-end "a SENT row carries no
+	// error_class" assertion lives in the behavioral harness.
+	if isErrorTransition(t, admin, "sending", "sent") {
+		t.Fatal("after Up: fn_job_event_is_error_transition('sending','sent') is TRUE — a success would be tagged as an error (sender_0022 predicate wrong)")
+	}
+	if !isErrorTransition(t, admin, "assigned", "queued") {
+		t.Fatal("after Up: fn_job_event_is_error_transition('assigned','queued') is FALSE — a requeue would lose its error context (sender_0022 predicate wrong)")
+	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -222,6 +240,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0021" && configKeyExists(t, admin, "dispatch_enabled") {
 			t.Fatal("after Down 0021: a Phase 9.5 operability config seed is still present (down did not delete it)")
+		}
+		if v == "0022" && functionExists(t, admin, "fn_job_event_is_error_transition") {
+			t.Fatal("after Down 0022: sender.fn_job_event_is_error_transition is still present (down did not drop it)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -304,6 +325,33 @@ func indexExists(t *testing.T, c *pgx.Conn, name string) bool {
 	if err := c.QueryRow(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='sender' AND indexname=$1)`, name).Scan(&ok); err != nil {
 		t.Fatalf("index exists lookup %q: %v", name, err)
+	}
+	return ok
+}
+
+// functionExists reports whether a function of the given name exists in the sender schema (for
+// sender_0022, whose only NEW object is a function — its other two changes are CREATE OR REPLACE
+// of bodies that already existed).
+func functionExists(t *testing.T, c *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+		   WHERE n.nspname='sender' AND p.proname=$1)`, name).Scan(&ok); err != nil {
+		t.Fatalf("function exists lookup %q: %v", name, err)
+	}
+	return ok
+}
+
+// isErrorTransition evaluates sender_0022's predicate directly. It is IMMUTABLE SQL over the
+// job_state enum, so the migration's actual decision can be asserted without driving a job.
+func isErrorTransition(t *testing.T, c *pgx.Conn, from, to string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT sender.fn_job_event_is_error_transition($1::sender.job_state, $2::sender.job_state)`,
+		from, to).Scan(&ok); err != nil {
+		t.Fatalf("is_error_transition(%q,%q): %v", from, to, err)
 	}
 	return ok
 }

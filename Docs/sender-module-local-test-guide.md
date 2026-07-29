@@ -66,7 +66,42 @@ Read these first; they will each cost you an hour otherwise.
 
 ### Stage 1 — Automated suite
 
-1. `scripts/dev.sh test` — the full harness (**53** checks)
+> **READ THIS BEFORE STEP 1 — run the harness from a clean slate, and read the failure COUNT sceptically.**
+>
+> Two traps, both hit on the real walkthrough of this stage, both now fixed in the harness itself —
+> but the reading habit they teach is still yours to keep.
+>
+> **1. A large failure count is usually ONE root cause.** The first run here reported
+> `HARNESS RESULT: 35 passed, 23 failed`. It was not 23 defects; it was **two**. Suites 9 and 10
+> contributed 21 cascading failures from a single empty variable: `POOL` came back empty, so the
+> account create failed, so `PUT default_shared_pool_id` returned 400, and every downstream
+> assertion interpolated `""`. The tell is in the output — `job never reached sent (last state: )`
+> and `send_logs count=, want 1` have nothing between the `:`/`=` and the next token. Two more
+> tells: **self-contradicting pairs** (`FAIL: S1: plaintext canary found in credential_ciphertext`
+> printed right beside a PASS of the same property). When you see either, stop counting and find
+> the first failure in file order; fix that and re-run before triaging anything below it.
+>
+> **2. Starting one container can destroy the database.** The root cause above was
+> `$DC up -d box` **without `--no-deps`** in `tests/harness/phase3_send.sh`. Compose then evaluates
+> box's `depends_on: postgres`, and if the running postgres differs at all from the merged spec it
+> **recreates** it — and under `tests/harness/compose.test.yml` postgres' data directory is a
+> **tmpfs**, so the recreate wipes the DB out from under the live Brain, mid-suite. It dropped the
+> fixture rows the script had seeded two lines earlier. Any `up`/`run` against the harness compose
+> files needs `--no-deps` unless you actually intend to touch the stack.
+>
+> That wipe was survivable for a long time because of trap 2b: the "box registered" gate greped
+> `$DC logs brain`, which replays the **whole retained log**, so a registration line from an
+> *earlier* run satisfied it while the box in *this* run had already exited
+> `register rejected: unauthenticated` (its `token_hash` row having just been wiped). It reported
+> **PASS while the box was dead** — a green that could not go red (Rule 10). The gate now asserts a
+> live DB post-state: `status='active' AND last_heartbeat_at >=` the fixture's own start time.
+>
+> **Start from `scripts/dev.sh reset`**, and confirm postgres' age (`docker ps`) afterwards. A
+> postgres container younger than the harness run means something recreated it mid-run.
+
+1. `scripts/dev.sh test` — the full harness (**58** checks; the count is `ok()`+`bad()` in
+   `tests/harness/run.sh`, printed as the `HARNESS RESULT` line. This said 53 until 2026-07-29 —
+   don't take the number on faith, read the line the run prints)
 2. Run the Go suites directly. `cd services/brain && go test ./...` covers all of them at once — dispatch, adminapi, platformapi, credential, boxlink, boxproto — which is safer than naming them, since a named list silently misses a new package.
 3. Run the box Node suite (`cd services/box && node --test "test/*.test.mjs"` — **78** tests)
 4. Run all 6 CI gates locally: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `drain_grace`

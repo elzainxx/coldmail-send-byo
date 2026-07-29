@@ -51,5 +51,34 @@ for up in $ups; do
   fi
 done
 
-[[ "$fail" -eq 0 ]] && echo "migration_lint OK: chain contiguous, paired, self-tracking."
+# The lifecycle test's EXPECTED chain must include the newest migration. TestRunnerLifecycle
+# hardcodes wantChain (deliberately: it is the executable expectation of the chain, and a test that
+# derives its expectation from the same directory it is checking cannot catch a missing file). The
+# cost is that adding a migration without extending wantChain breaks it — which is exactly what
+# sender_0022 did, and nothing here caught it: the chain on disk was perfectly contiguous, so this
+# gate passed while the suite failed. Assert the coupling the two files have rather than leaving it
+# to whoever remembers.
+#
+# Scoped to the wantChain LITERAL, not the whole file. A bare `grep '"0022"'` passes on any
+# mention anywhere — including the version named in this gate's own failure message, in a comment,
+# or in the `if v == "0022"` down-check — so the first version of this check reported OK with
+# wantChain reverted to its pre-fix state. Caught by its own negative control; the extraction below
+# reads only the bracketed wantChain value.
+LIFECYCLE_TEST="tools/sender-migrate/runner_integration_test.go"
+if [[ -n "$prev" && -f "$LIFECYCLE_TEST" ]]; then
+  want_literal="$(sed -n '/wantChain := \[\]string{/,/}/p' "$LIFECYCLE_TEST")"
+  if [[ -z "$want_literal" ]]; then
+    echo "migration_lint FAIL: could not find the wantChain literal in $LIFECYCLE_TEST"
+    echo "  -> this gate reads 'wantChain := []string{...}'; if that declaration moved or was"
+    echo "     renamed, update this check rather than deleting it."
+    fail=1
+  elif ! grep -Eq "\"${prev}\"" <<<"$want_literal"; then
+    echo "migration_lint FAIL: newest migration '$prev' is absent from wantChain in $LIFECYCLE_TEST"
+    echo "  -> add \"$prev\" to wantChain, plus an anti-vacuity assertion that sender_${prev}'s"
+    echo "     object/seed/behavior landed (and the paired check that its DOWN removed it)."
+    fail=1
+  fi
+fi
+
+[[ "$fail" -eq 0 ]] && echo "migration_lint OK: chain contiguous, paired, self-tracking; lifecycle test covers $prev."
 exit "$fail"

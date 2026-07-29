@@ -104,9 +104,15 @@ which.
 
 **The build is complete and sealed.** All eleven phases are implemented, tested against real
 infrastructure, and closed; the verdict is **GO** for a pilot. The full behavioral harness is green
-and all five CI gates pass. `history/open-decisions.md`'s needs-user list is empty, with one
-deliberate non-blocking exception (R2-5, a stale example inside a locked spec). Deferred work is
-registered in `future-work.md` rather than left implicit. The evidence this verdict rests on — which
+and all **six** CI gates pass (`config_drift`, `contract_drift`, `migration_lint`,
+`config_consumption`, `drain_grace`, `no_secret_leak` — this said "five" until 2026-07-29; the sixth
+has been in `.github/workflows/real-infra.yml` since it was added). Deferred work is registered in
+`future-work.md` rather than left implicit.
+
+**Open Decisions are NOT all discharged.** `history/open-decisions.md` carries a needs-user list
+again: the pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced **G11-OD-1**
+and **G12-OD-1**, both awaiting the user's ruling, plus the standing non-blocking exception (R2-5, a
+stale example inside a locked spec). Read that file, not this paragraph, for the live list. The evidence this verdict rests on — which
 phase verified what, and what each review gate found — is in `history/phase-build-record.md`'s
 "BUILD COMPLETE" section; it is provenance, not something you need in order to run the system.
 
