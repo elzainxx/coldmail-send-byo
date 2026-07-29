@@ -85,6 +85,15 @@ services:
       interval: 3s
       timeout: 3s
       retries: 30
+    # MUST stay above the seeded shutdown_drain_timeout_sec (30s). On SIGTERM the Brain stops
+    # claiming and holds the box stream up so in-flight sends can still REPORT (Phase 7 §4). Docker's
+    # DEFAULT grace is 10s, which SIGKILLs a Brain that is draining correctly — so the drain could
+    # never complete on this stack and `docker compose stop brain` exited 137 instead of 0. Same
+    # constraint the systemd unit encodes as TimeoutStopSec=120 (install-and-deploy.md). A SIGKILL is
+    # still SAFE (leave-in-place: nothing requeued or marked, next boot's rescan recovers), but it
+    # converts a clean drain into avoidable reclaim work. If you raise
+    # shutdown_drain_timeout_sec, raise this too.
+    stop_grace_period: 90s
 
   box:
     build: { context: ., dockerfile: services/box/Dockerfile }

@@ -602,6 +602,12 @@ providers on 587/465.
 >   directory into both.
 > - **Remove the box's host port mapping** (there is none in the dev file either — keep it that way)
 >   and keep the Brain's ports bound to interfaces your firewall covers.
+> - **Keep the Brain's `stop_grace_period` above `shutdown_drain_timeout_sec`** (the dev file sets
+>   `90s` for a 30 s drain). Docker's default is **10 s**, which SIGKILLs a Brain that is draining
+>   correctly — the dev stack shipped without this and every in-flight drain exited 137 until Stage 11
+>   step 5 caught it. Note this is a *second* place the same bound must hold: `TimeoutStopSec` below
+>   governs systemd, `stop_grace_period` governs Docker, and **both** have to clear the key. Setting
+>   only one leaves the shorter of the two in charge.
 >
 > Adjust the unit file paths to whatever you name yours.
 

@@ -69,7 +69,7 @@ Read these first; they will each cost you an hour otherwise.
 1. `scripts/dev.sh test` — the full harness (**53** checks)
 2. Run the Go suites directly. `cd services/brain && go test ./...` covers all of them at once — dispatch, adminapi, platformapi, credential, boxlink, boxproto — which is safer than naming them, since a named list silently misses a new package.
 3. Run the box Node suite (`cd services/box && node --test "test/*.test.mjs"` — **78** tests)
-4. Run all 5 CI gates locally: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`
+4. Run all 6 CI gates locally: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `drain_grace`
 5. `gofmt` / `go vet` clean
 
 **Pass:** every suite green, every gate green, **zero skipped tests**. A skip here is a test you think you have and don't.
@@ -920,6 +920,53 @@ The most valuable stage.
      precisely so this check is one query).
 5. **Graceful shutdown** — `SIGTERM` the Brain mid-campaign
    - **Pass:** stops claiming, drains, leaves in-flight work recoverable; next boot recovers everything; no job stranded
+   - **This step has TWO branches and only one of them is reachable by accident.** With nothing in
+     flight the drain finishes in **1 ms** and logs `nothing in flight — drain complete` — honest, but
+     it proves nothing about draining. Force the in-flight branch with the blackhole listener from
+     step 4 (a job genuinely `sending`, Mailpit `count: 0`) or the step is half-tested. Keep some work
+     `queued` too, or stop-claim has nothing to prove either.
+   - **Observed (live, 2026-07-29). PASS — and forcing the second branch found a real dev-stack
+     defect, fixed in the same change (see below).**
+     - **Stop-claim (16 jobs, 7 still `queued` at the signal).** The log sequence is exactly §4.1:
+       `shutdown signal received` → `DRAINING — dispatch stops claiming … the box link and outcome
+       handler stay up` → `drain complete` → `shutdown complete (no job was requeued or marked on the
+       way out — §4.2 leave-in-place)`. With the Brain down the queued remainder **stayed `queued`**;
+       nothing was `assigned` or `sending` anywhere. The boxes logged
+       `connect attempt N not ready (getaddrinfo ENOTFOUND brain); retrying` — they wait, they do not
+       invent. On restart **all 16** reached `sent`, with **16** Mailpit copies and **16** `send_logs`
+       rows for 16 distinct jobs. Nothing stranded, nothing duplicated.
+     - **Leave-in-place with real in-flight work, and it holds even under SIGKILL.** With one job
+       `sending` on the blackhole, the shutdown reached
+       `draining 1 in-flight job(s), waiting up to 30s` and was then killed mid-drain. The job was left
+       **exactly as stored** — still `sending`, `attempt_token` unchanged, original `lease_expires_at`,
+       `provider_message_id` NULL, and its `job_events` trail ending at `assigned→sending` with **no
+       terminal event**. §4.2 is real: a job that may already have hit `250` is never eagerly requeued.
+     - **The next boot recovers it, and the reconnect window beats reclaim to it.** The restart logged
+       `startup rescan: extended 1 orphaned in-flight lease(s)` — exactly one, matching what was left.
+       Recovery then came from the **box replaying its own buffered outcome** (`sending→queued`
+       attributed to actor **`box`**, `error_class` `timeout`), not from `reclaim_loop` — which is the
+       better path of the two §4.3 offers, and the reason the rescan extends leases instead of
+       reclaiming immediately. That job later went `sent` with **exactly one** Mailpit copy.
+     - **Final state:** every job across all three campaigns terminal, the cluster-wide
+       `state NOT IN ('sent','failed','bounced')` sweep **empty**, and one Mailpit copy per job.
+   - **DEFECT FOUND AND FIXED — `docker-compose.yml` could never complete a drain.**
+     `shutdown_drain_timeout_sec` is seeded at **30 s**, but Docker's default stop grace is **10 s** and
+     the dev compose file declared no `stop_grace_period`. So `docker compose stop brain` with work in
+     flight exited **137** (SIGKILL) after ~11 s, truncating a drain that was proceeding correctly. The
+     invariant was already documented in three places — `config-reference.md` ("Keep below deploy
+     SIGTERM→SIGKILL grace"), the `install-and-deploy.md` systemd unit (`TimeoutStopSec=120`), and the
+     `operator-runbook.md` row that names this exact failure — the dev stack simply contradicted all
+     three. Fixed by adding `stop_grace_period: 90s` to the `brain` service (the box exits promptly, so
+     10 s is fine there). **Proven by a paired control, per Rule 10:** the identical in-flight scenario
+     went from `exitcode=137`, drain truncated, to `exit 0` with
+     `drain complete in 18.076s — every in-flight job reported and resolved normally; NOTHING was
+     requeued or invented` — and the resolving event was written by actor **`box`** during the drain,
+     proving the outcome handler really does stay up. Confirm the setting landed with
+     `docker inspect … Config.StopTimeout` (expect `90`); `docker inspect -f '{{.HostConfig.StopTimeout}}'`
+     errors with `map has no entry for key`, which is a template mistake, not an unset value.
+   - **A truncated drain was never *unsafe*, only wasteful** — leave-in-place meant nothing was
+     requeued or marked, and the next boot recovered it. That is precisely why the gap survived: the
+     symptom is exit code 137 and some avoidable reclaim work, not lost or duplicated mail.
 6. **Singleton guard** — start a second Brain against the same database
    - **Pass:** it exits cleanly; the first keeps running; no double-dispatch
    - > **Do this step FIRST if the stack has been through Stage 9 step 8, and check the incumbent
@@ -1010,7 +1057,7 @@ Do not deploy until every line is true.
 
 - [ ] Full harness green from a clean slate, zero skips
 - [ ] Both boxes `active` after a reset, each registered exactly once (no eviction churn)
-- [ ] All 5 CI gates green
+- [ ] All 6 CI gates green
 - [ ] All Go and Node suites green; `gofmt`/`vet` clean
 - [ ] Clean-slate reproduction completed from the docs alone, without deviation
 - [ ] Empty state tells an operator what is missing
@@ -1036,7 +1083,7 @@ Do not deploy until every line is true.
 - [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
 - [x] Credential rotation completed without interruption *(Stage 11 step 2, by the documented `disaster-recovery.md` §3 route, and "without interruption" proven non-vacuously — **4 real jobs were parked in the freeze and spanned the entire rotation**, since a drained queue would prove nothing. New key gpg-backed-up BEFORE use; `dispatch_paused: true` confirmed before the cutover. In the unreadable window the error is the **explicit** `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2")` — `credential.go:57` checks the label before touching AES, so a rotation mistake is never a silent wrong-key attempt, provably distinct from the generic auth failure. Jobs requeued, Mailpit `count: 0`, nothing invented. Re-entry × 6 → `200`; §3's own verification queries returned `cred-dek-v2|6` and **empty** for rows off the new label, with **6 distinct nonces and 6 distinct ciphertexts** from 6 identical plaintexts. The same 4 parked job ids then went `sent` with **one `send_logs` row each despite `attempt_count = 3`** — no duplicate from the failed attempts — and all six accounts decrypted under v2 with zero failures, 6 audited writes under 6 distinct `request_id`s, and a clean leak grep. Both halves fail closed by **different** errors: right label + wrong key gives generic GCM auth failure (47 of them, Mailpit 0). §3's abandon path was exercised too and is symmetric as documented — rolled back to v1, which is the correct dev-stack end state since `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`)*
 - [x] Adding a box requires no Brain reconfiguration *(Stage 11 steps 3–4. **Add:** a third identity provisioned, its `token_hash` seeded, container started reusing the dev cert — registered, health `active: 3`, and it received real work (15 jobs split 4/9/2, its sends carrying a `provider_message_id` and `sending→sent` written by actor `box`). The claim is proven by what did **not** change: the Brain's `StartedAt` and `restarts=0` were **identical before and after**, and its env held only box-1 material, so the token gate is DB-driven. Box-3's security envelope re-verified independently: no DB/KMS env, only `box.crt`/`box.key`/`ca.crt`, no `/secrets/kms/`, no `brain.key`/`ca.key`, 0 credential matches in its log. **Remove:** stopped cleanly (exit 0) with a job genuinely `sending` — held there by a blackhole listener, because polling cannot catch a fast send. The job stayed `sending` with `attempt_token` unchanged (nothing invented for an absent box), was requeued 5 s after its lease by **`reclaim_loop`** with `timeout`/"lease expired" — never by `box` — then sent on a surviving box with **one** Mailpit copy. All 13 box-3 jobs ended `sent`; the cluster-wide non-terminal sweep was empty. A fresh 12-job campaign then went 12/12 `sent` split 10/2 with **0** to the removed box. Box 3 aged `active`→`stale` with no operator action)*
-- [ ] Graceful shutdown strands no job; second Brain exits cleanly
+- [x] Graceful shutdown strands no job; second Brain exits cleanly *(Stage 11 steps 5 and 6. **Shutdown:** the §4.1 sequence observed in order (stop-claim → drain → leave-in-place); 7 jobs still `queued` at the signal **stayed `queued`** with the Brain down, boxes waited (`ENOTFOUND brain; retrying`) rather than inventing, and all 16 reached `sent` on restart with 16 Mailpit copies / 16 `send_logs` rows. The in-flight branch was **forced** with a blackhole, because an empty drain finishes in 1 ms and proves nothing: the in-flight job was left exactly as stored — `sending`, `attempt_token` and lease unchanged, no terminal event — even when SIGKILLed mid-drain, then recovered by the next boot's rescan (`extended 1 orphaned in-flight lease(s)`) with the **box replaying its own buffered outcome** (actor `box`, not `reclaim_loop`) and sent with exactly one copy. Cluster-wide non-terminal sweep empty. Forcing that branch also **found and fixed a real defect**: `shutdown_drain_timeout_sec` is 30 s but `docker-compose.yml` declared no `stop_grace_period`, so Docker's 10 s default SIGKILLed every drain (`exitcode=137`) — an invariant already documented in `config-reference.md`, the systemd unit, and the runbook, contradicted only by the dev file. `stop_grace_period: 90s` added and proven by a paired control: 137/truncated → **exit 0** with `drain complete in 18.076s — every in-flight job reported and resolved normally`. **Second Brain:** waited the bounded `1m0s` and exited **code 3** with the incumbent still `ready`; note the separate mid-life lock-loss defect filed as `G11-OD-1` / ADR-0011, which this checklist item does NOT cover)*
 - [ ] All-toggles-off is byte-identical; security holds with all toggles on
 - [ ] Auto-quarantine returned to **shadow** before you finish
 

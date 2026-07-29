@@ -288,8 +288,14 @@ then a small real batch. It is written to be small, to addresses you control, an
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 5 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
-      `config_consumption`, `no_secret_leak`.
+- [ ] All 6 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+      `config_consumption`, `no_secret_leak`, `drain_grace`.
+- [ ] The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
+      you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
+      wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev
+      file and the documented unit; it cannot see YOUR prod file, so confirm this one by hand.
+      Getting it wrong is not unsafe — leave-in-place invents nothing — but it turns every clean
+      shutdown into reclaim work and exits 137.
 - [ ] `GET /readyz` reports `db:true, singleton_lock:true`.
 - [ ] `GET /v1/admin/health` shows the expected pool(s) with non-`exhausted` headroom and
       `dispatch_paused:false`.
