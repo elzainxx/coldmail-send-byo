@@ -36,5 +36,11 @@ npm-debug.log*
 /tmp/
 coverage/
 
+# Scratch output from tests/manual/launch-campaign.sh — the job_item/job id lists it writes so a
+# follow-up assertion can name the exact rows it expects. Per-run and disposable; the SCRIPT is
+# tracked, its output is not.
+*.ids
+*.items
+
 # Reference codebase (has its own nested .git; inspiration only, not part of this repo)
 Docs/history/mailflow-worker (Sender Inspiration)/

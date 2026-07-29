@@ -317,6 +317,42 @@ The most valuable stage.
      while they were waiting — waiting must not burn retry budget.
 6. **Box death** — `docker kill` a box container mid-send (abrupt, not a graceful stop)
    - **Pass:** the reclaim loop recovers the job, it re-dispatches to the surviving box, and Mailpit shows **exactly one** copy
+   - **You cannot win this race by polling.** Against a local Mailpit the SMTP hop is sub-100ms, so
+     the `sending` window is shorter than any practical poll — a 50ms in-database polling loop over
+     60s never observed a single `sending` row across 10 jobs. `send_delay_{min,max}_sec` will not
+     help: that delay is **inter-send** pacing, not intra-send. Raising it to 20–25s changed nothing
+     about the window.
+   - **Use `docker pause`, not timing luck** (Rule 10 applies to hand-run tests too — a test that
+     cannot fail is not a test). A paused box keeps its mTLS socket open but never processes the
+     pushed job, so the job pins in `sending` indefinitely and you can act deliberately:
+     ```bash
+     docker compose pause box2                    # freeze it
+     tests/manual/launch-campaign.sh s9dead 10    # peers drain; one job pins on the frozen box
+     docker kill --signal=SIGKILL sender-module-box2-1   # kill it WHILE STILL FROZEN
+     ```
+   - **Kill it while frozen, and check Mailpit *before* the kill.** Unpausing first invalidates the
+     run: the first attempt here did that, box2 completed the SMTP hop and reported `sent` before
+     SIGKILL landed, and the test proved nothing about reclaim. Assert **0 copies pre-kill** so you
+     know the send genuinely never happened and no outcome can ever arrive.
+   - **Mailpit's search is fuzzy — count per exact subject.** `?query=...message 1` also matches
+     "message 10", which reads as a phantom duplicate. Group by exact `Subject` and assert 1 each:
+     ```bash
+     curl -sS "http://localhost:8025/api/v1/search?query=s9dead" | python -c "
+     import json,sys,collections
+     c=collections.Counter(m['Subject'] for m in json.load(sys.stdin)['messages'])
+     print('dupes:', [s for s,n in c.items() if n>1] or 'NONE')"
+     ```
+   - **Observed (live, 2026-07-29).** Job pinned on frozen box2 with `attempt_token=1`, 0 Mailpit
+     copies, SIGKILL while frozen. The lease (`job_max_processing_time_sec`=120) expired and
+     `reclaim_loop` requeued it with `error_class='timeout'`; the surviving box re-sent it. Final row:
+     `sent`, `assigned_box_id` = the *other* box, `attempt_token=2`, `attempt_count=1`. Event chain
+     was exactly 7 rows, `sending→queued` attributed to `reclaim_loop` (not `box` — the box reported
+     nothing, and the system did not invent an outcome for it). **Exactly one** Mailpit copy and
+     **exactly one** `send_logs` row — one real SMTP attempt for one reclaimed job.
+   - This run also confirmed [`sender_0022`](../db/migrations/sender_0022_job_events_error_context.up.sql)
+     in the wild: `sender.jobs.last_error_class` correctly *retained* `timeout` on the now-`sent` row
+     (a running fact about a mutable row), while the `sending→sent` **event** carried no error class.
+     Pre-0022 that success would have been tagged `timeout` and counted as a failure.
 7. **Brain restart** — restart the Brain mid-campaign
    - **Pass:** orphans recover, the campaign resumes, nothing lost or duplicated; a box that was mid-send reconnects and replays its buffered outcome
 8. **Database outage** — `docker stop` Postgres for a few minutes, then start it
@@ -326,6 +362,13 @@ The most valuable stage.
    - **Pass:** jobs **wait** (not failed) with a clean waiting-for-capacity status; re-enable one and the same jobs complete
 10. **Attempt token** — inspect `attempt_token` across a re-dispatch
     - **Pass:** a distinct token per dispatch
+    - **Verified by step 6's run — no separate setup needed.** A re-dispatch is exactly what a reclaim
+      produces, so read the token on the job step 6 killed a box under: it went `1` (first dispatch,
+      event seq 909) → `2` (post-reclaim dispatch, seq 956), with `attempt_count` `0` → `1`.
+    - The teeth are the pairing: a distinct token **and** exactly one `send_logs` row and one Mailpit
+      copy. A token that advanced while two sends happened would be a duplicate-send bug wearing a
+      correct-looking token; a single send under a *reused* token would mean a stale outcome from the
+      dead box could still be accepted for the new attempt. Assert both halves.
 
 ---
 
@@ -421,9 +464,9 @@ Do not deploy until every line is true.
 - [x] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput *(Stage 8; at delay 4–5s: 1 lane → 11.17 sends/min vs the ~13.3 ideal, the ~0.87s/send gap being real SMTP round-trip overhead; 2 lanes → 24.69/min (2.21×); 4 lanes → 50.47/min (2.04×). Near-linear across a 4× range, which is the per-lane-pacing proof — a global rate would be flat. All three config keys driven through `PUT /v1/admin/config/{key}` so the write serializer and validation ran, then restored to seeded defaults)*
 - [x] Dedicated-pool fallback fires only on genuine exhaustion *(Stage 8, both halves. "Only on exhaustion": dedicated account at `daily_limit=4` with 8 jobs → jobs 1–4 dedicated, 5–8 shared, in that order. "Not before": limit raised + `daily_reset_day` aged → all 5 of 5 jobs stayed dedicated, ZERO on shared. Plus the P4-3 kind policy — `fallback_pool_id` pointed at ANOTHER tenant's dedicated pool was ignored and routing fell through to `default_shared_pool_id` (3/3 on shared, zero on the other tenant's accounts), so one tenant's overflow never lands on another tenant's identities)*
 - [x] Second concurrent campaign per user rejected *(Stage 8; campaign B attempted 3× while A had 3 non-terminal jobs → `409 conflict` each time and `campB_job_rows=0` — rejected outright, not queued. Envelope carried only `{code, message, request_id}`; the internal reason `user_campaign_active` did not leak (Rule 5). Both controls green: a repeat `run` within the SAME campaign is still accepted while that campaign is in flight (all 6 of A's items went through with 3 already non-terminal), and B was accepted 3×202 once A drained — so this is not a blanket reject)*
-- [ ] Every error class produces the correct job **and** account outcome
-- [ ] Hard bounce does not penalise the account
-- [ ] Box death produces exactly one delivered copy
+- [x] Every error class produces the correct job **and** account outcome *(Stage 9 steps 1–4; verified by the real-Postgres suites named in the step→test table, NOT on the live stack — the compose sink is Mailpit and cannot emit a 535/550/4xx/throttle, and the "controllable Go sink (`tests/harness`)" its comment promised was never built. That comment is corrected and the gap is registered in `future-work.md`. This box is ticked because the behaviour is genuinely proven; it is not ticked from a live-stack demonstration)*
+- [x] Hard bounce does not penalise the account *(Stage 9 step 2; `TestScore_BounceNeverPenalizes` — a 550 leaves score, `consecutive_failures`, and `last_failure_at` byte-unchanged and writes zero `account_events`, with a paired `transport_4xx` positive control proving the scorer is not simply inert)*
+- [x] Box death produces exactly one delivered copy *(Stage 9 step 6; `docker pause` then SIGKILL **while frozen** — 0 Mailpit copies pre-kill so no outcome could ever arrive, which the first attempt got wrong by unpausing first and proved nothing. The lease expired, `reclaim_loop` requeued with `error_class='timeout'`, the surviving box re-sent: exactly one Mailpit copy and one `send_logs` row, `sending→queued` attributed to `reclaim_loop` not `box`. Also confirmed `sender_0022` live — the `sending→sent` event carried no error class while the row correctly retained `timeout`)*
 - [ ] Brain restart loses and duplicates nothing
 - [ ] **Database outage invents no outcomes**
 - [ ] Pool exhaustion waits rather than fails
