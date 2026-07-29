@@ -612,6 +612,45 @@ The most valuable stage.
      the fallback pool, leaving zero non-terminal work).
 5. **Kill switches** — disable auto-pause, then content variation
    - **Pass:** each disables only its own behaviour
+   - **The two halves are not equally testable live, and the asymmetry is worth knowing before you
+     start.** `variation_enabled` closes fully on the live stack (below). `autopause_enabled` does not:
+     it has exactly ONE call site (`account_effect.go:99`, `cfg.AutopauseEnabled && pauseDecision(...)`)
+     and `pauseDecision` returns false for every class except `throttle` — which requires a 4xx
+     carrying a rate signal, the one thing Mailpit cannot emit. The dead-port trick that closes steps
+     3–4 yields `timeout`, never `throttle`. So this half is the same missing-controllable-sink gap as
+     Stage 9 steps 1–4, and it is covered by
+     `shadowmode_test.go::TestKillSwitch_AutopauseDisablesOnlyAutopause` — which is a genuine
+     scoped-switch test, not just an off-switch test: with the switch off a 450 rate-limit reply leaves
+     the account unpaused *and* confirms it did not quarantine either (a different subsystem,
+     unaffected), then a **paired positive control** on a fresh account with the switch back on DOES
+     pause with `reason='throttle'`. Re-run green here (1.89s, real Postgres).
+   - **For the variation half, first turn some toggles ON — otherwise the test is vacuous.** Every
+     `variation_*` sub-toggle ships `false` by default, so on a stock stack "variation off" and
+     "variation on" produce identical output and flipping the master switch proves nothing (Rule 10).
+     Enable a few *observable* ones first: `variation_comment_injection`,
+     `variation_mime_boundary_rotation`, `variation_dynamic_preheader`, plus
+     `variation_comment_intensity=high` and `variation_header_style=thunderbird`.
+   - **Observed (live, 2026-07-29).** With those five on, 4 messages came out **1160/1160/1148/1159
+     bytes** — variable, and each carrying all three artifacts visibly in the raw source: a rotated
+     `_NextPart_17822414ddfd9798383a_` MIME boundary, a hidden preheader
+     `<span style="display:none;…">A brief note for you…</span>`, and an injected `<!--35066c06-->`
+     comment. Then `variation_enabled=false` **alone**, leaving all five sub-toggles at `true`: the
+     next 4 messages were **614 bytes each, all four identical**, with **zero** `_NextPart_`, zero
+     `display:none`, zero `<!--…-->` across all four. The header *order* also reverted to baseline even
+     though `variation_header_style` was still `"thunderbird"` — which is the real claim: the master
+     switch acts at the snapshot level (`variationSnapshot` returns `nil`, so the box's own
+     identity-function default applies), it does not walk around flipping sub-toggles.
+   - **And "only its own behaviour":** those 4 jobs went `sent` with `attempt_count=0` and
+     `last_error_class` NULL — disabling variation does not touch dispatch, routing, or the send path.
+     Diffed pairwise, the only remaining differences between the four are `Message-ID`, the timestamp,
+     and the body's own message number. Every *structural* difference was variation, and it is gone.
+   - **Restore all of it, and verify rather than assume** — one query catches any key left drifted:
+     ```bash
+     docker compose exec -T postgres psql -U postgres -d platform -c \
+       "SELECT key, value, default_value FROM sender.config
+         WHERE key LIKE 'variation%' AND value <> default_value"   # must return 0 rows
+     ```
+     Returned 0 rows after restoring, so all 21 `variation_*` keys are back at their defaults.
 6. **Health endpoint** — seed a known state and read it
    - **Pass:** the numbers match reality, not just a 200
 7. **Alerts** — trigger pool exhaustion, an account quarantine, and a box death
