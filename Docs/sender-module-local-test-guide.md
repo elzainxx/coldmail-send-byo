@@ -653,8 +653,86 @@ The most valuable stage.
      Returned 0 rows after restoring, so all 21 `variation_*` keys are back at their defaults.
 6. **Health endpoint** — seed a known state and read it
    - **Pass:** the numbers match reality, not just a 200
+   - **"Matches reality" is not enough on its own — PERTURB the state and confirm the numbers move.**
+     A snapshot that agrees with the DB proves the queries run; it does not prove they are wired to
+     anything. Read it once, change something via the admin API, read it again (Rule 10).
+   - **Observed (live, 2026-07-29), every field cross-checked against its own query.** `queue` 328
+     sent / 8 failed, `accounts` 6 healthy / 0 paused / 0 quarantined / 0 disabled, `boxes` 2 active /
+     0 stale, `shadow.would_quarantine_count` 9 with the nine `recent[]` entries carrying the real
+     score/threshold pairs (27 then 15×8), `errors_last_window` `timeout: 18` + `unknown: 15`, and all
+     five pools' `eligible_accounts` (1/1/1/1/2) — every one an exact match.
+   - **Then the perturbation:** `pause` one account and `disable` another → `healthy` 6→**4**,
+     `paused` 0→**1**, `disabled` 0→**1**, and the two affected dedicated pools flipped to
+     `eligible_accounts: 0` with `headroom: "exhausted"`. The endpoint tracks live state, not a cache.
+   - **`sends_last_window` and `send_logs` legitimately DISAGREE — don't file it as a bug.** The
+     snapshot read `sends_last_window: 136` while `SELECT count(*) FROM sender.send_logs` over the same
+     window returned **152**. `queryTerminalCountInWindow` counts *jobs that reached `sent`*
+     (`state='sent' AND completed_at >= …`), whereas `send_logs` gets a row **per attempt**. Reconciled
+     exactly: `count(DISTINCT job_id)` over those 152 rows is **136** — the 16 extra rows are the
+     failed dead-port attempts from steps 3–4. Two correct numbers measuring different things.
+   - **`accounts.quarantined: 0` alongside an `account_quarantined` active condition is also correct.**
+     `queryAccountQuarantinedConditions` is **window-scoped by design** (`health_alerts.go`): a
+     quarantine is a point-in-time `account_events` row, not a re-derivable current row state, so
+     "active" means "fired within `health_metrics_window_sec`". An account quarantined and then
+     un-quarantined inside the window still shows the condition while the counter reads 0. The other
+     two conditions *are* live-state derived (`pool_exhausted` from the snapshot, `box_death` from
+     `boxes.status='stale'`), so only this one behaves that way.
 7. **Alerts** — trigger pool exhaustion, an account quarantine, and a box death
    - **Pass:** each appears in the endpoint's active conditions and fires the webhook; with no webhook configured, conditions still surface and nothing errors
+   - **You need an HTTP receiver ON THE COMPOSE NETWORK.** `localhost` from the host is not reachable
+     from inside the Brain container, so a host-side listener never sees a delivery.
+     [`tests/manual/webhook-receiver.py`](../tests/manual/webhook-receiver.py) exists for this — it
+     logs each POST body **verbatim**, which is the point: the payload crosses an untrusted egress
+     boundary (Rule 5 names `alert_webhook_url` explicitly), so the test has to read exactly what went
+     out. Run it and point the config at it:
+     ```bash
+     docker run -d --name s10hook --network sender-module_default \
+       -v "$(pwd -W)/tests/manual:/rcv:ro" python:3.12-alpine python /rcv/webhook-receiver.py
+     # then: PUT /v1/admin/config/alert_webhook_url  {"value":"http://s10hook:9099/hook"}
+     docker logs s10hook
+     ```
+     *(On Windows/Git Bash use `$(pwd -W)` and prefix `MSYS_NO_PATHCONV=1`, or the container-side mount
+     path gets rewritten into a Windows path and the script "isn't found". A `/tmp` file also mounts as
+     an empty directory under Docker Desktop — mount from the project directory, which is shared.)*
+   - **The webhook fires on each `/v1/admin/health` poll, on RISING EDGES only** (`health_handler.go`
+     calls `go fireWebhooks(...)`). So nothing is delivered until you read the endpoint — and reading
+     it four times still delivers once per subject.
+   - **Observed (live, 2026-07-29) — all three conditions, all three webhooks.**
+     - **`account_quarantined`** — already true from step 4's enforce run. One delivery; then **4 polls
+       total produced still exactly 1 delivery**, proving the `(condition, subject_id)` dedup.
+     - **`pool_exhausted`** — this one takes real setup, and the first attempt FAILED to trigger it.
+       Two dedicated pools were already `headroom: "exhausted"` from step 6's perturbation, yet no
+       condition fired: `queryPoolExhaustedConditions` requires **≥1 job waiting on the pool**, so a
+       newly-exhausted pool nobody has routed to correctly stays silent. Launching a campaign didn't
+       help either — the shared fallback still had capacity, so the jobs just sent. Then pausing the
+       shared accounts *manually* was also wrong: a manual pause is `terminal_blocked` (Stage 9 step
+       9), so the 3 jobs went **`failed`**, not `queued`, and again nothing waited. What works is a
+       **self_recovering** block — drive every account to its daily limit (`daily_limit =
+       daily_sent_count`; note the `accounts_daily_limit_check` floor of 1). Then: `waiting_for_capacity: 3`,
+       and **two** `pool_exhausted` conditions — one per pool in that job's resolved chain — each
+       carrying `waiting_jobs: 3`, and **two separate deliveries** keyed by their own `pool_id`.
+     - **`box_death`** — `docker compose stop box2`, then wait `heartbeat_interval_sec` ×
+       `heartbeat_missed_threshold` = 120 × 3 = **6 minutes**. Flipped to `status='stale'` at 6m51s;
+       `boxes` read `active: 1, stale: 1`, and the condition carried `box_id` + `last_heartbeat_at`.
+       **It auto-cleared on restart** — box2 reconnected and the condition vanished on the very next
+       poll, because that query reads live `boxes.status`, not an event log.
+   - **Every payload is two-vocabulary clean, which is the security half of this step.** Verbatim:
+     `{"condition":"box_death","severity":"critical","subject":{"type":"box","id":"2222…"},
+     "detail":{"box_id":"2222…","last_heartbeat_at":"…"},"fired_at":"…","module":"sender"}` — condition
+     code, subject id, timestamps. No credential, no ciphertext, no SQL, no SQLSTATE, no internal
+     hostname, no internal reason string.
+   - **The no-webhook half needs a FRESH rising edge, or it proves nothing.** Clearing
+     `alert_webhook_url` does not reset the dedup set, so re-polling an already-fired condition would
+     be skipped by dedup rather than by the empty URL — a vacuous pass. Do it properly: box2 had
+     reconnected (so `clearStale` dropped its `box_death` key), so stopping it again produced a genuine
+     new edge with the URL unset. Result: **HTTP 200**, all four conditions present in
+     `active_conditions[]` including the fresh `box_death`, the receiver's delivery count **still 4**
+     (no attempt made — `fireWebhooks` returns before any HTTP on a blank URL), and **zero** webhook
+     errors in the Brain log. Conditions stay visible; alerting is simply off.
+   - **Restore:** clear `alert_webhook_url`, `docker rm -f s10hook`, restart box2, put `daily_limit`
+     back to 500, and re-enable/unpause the fixture accounts. Verified after: queue fully drained (the
+     3 waiting jobs completed), 6 healthy accounts, 2 active boxes, and `value <> default_value` showing
+     only the 3 deliberate dev-stack keys.
 
 ---
 
@@ -739,7 +817,7 @@ Do not deploy until every line is true.
 - [x] Pool exhaustion waits rather than fails *(Stage 9 step 9, **both** verdicts, and walking it found the step itself was wrong — it said to disable every account and expect a WAIT, which correctly produces `failed` + `pool_exhausted: all eligible accounts terminal_blocked (§5.1)`. Per the locked §5.1 three-way verdict, quarantined/disabled/manually-paused is `terminal_blocked` → FAIL (needs a human; queueing forever behind a block nothing will lift would be dishonest), while daily-limit / at-limit / in-window-throttle is `self_recovering` → WAIT. Verified the WAIT path properly: 6 jobs `queued`, `attempt_count=0`, zero writes, `waiting_for_capacity: 6`. Re-opening ONE account via the automatic daily reset — `unpause` correctly refuses a non-manual pause with 422 — completed the **byte-identical six ids** on that account with `attempt_count` still 0 for four, so waiting burns no retry budget. Guide corrected; code untouched)*
 - [x] Panic switch halts and resumes losslessly *(Stage 10 steps 1–2, both directions and both the mid-flight flip and the stronger "launch a campaign INTO the halt" case, since a local campaign drains fast enough that the flip alone can pass vacuously. Halt proven by the event log — last `job_events` row 3s before the flip, zero after — not by a state snapshot, which can read a pre-flip commit and look like a violation. 10 jobs launched into the halt stayed `queued`/unassigned/`attempt_count=0` with nothing failed; `report` read clean `queued` with no internal reason; health showed `dispatch_paused: true` with `waiting_for_capacity: 0`, distinguishing an intentional halt from a capacity fault. Re-enabled: **byte-identical** 10 ids all `sent`, `attempt_count` still 0, exactly 4 events each — **40 rows, zero requeues, zero reclaims**. Also confirmed a halt does not block outcome persistence for work already in flight, which is correct: refusing it would strand a real send)*
 - [x] Shadow mode logs without acting; enforce acts on the same condition *(Stage 10 steps 3–4, **live on the stack, not deferred to the unit suites** — a dead `smtp_port` (2599) makes the box report `connect_refused` → class `timeout`, which despite classify.go's "no penalty" comment (that means no *flag* action) is genuinely penalizing and drives the score. Needs a **never-succeeded** account: the formula `100 − 60·min(1,cf/5) − 15·prox − 25·recency` bottoms out near 40 for an account with a recent success, above the threshold of 30, so a warm account never trips. Shadow: score 100→27→15, `cf` to 10, **seven** `shadow_would_quarantine` rows all with `from_flags = to_flags`, `quarantined` false throughout, jobs requeuing normally. Third leg proven separately rather than assumed — a low score is only an ORDER BY term in `eligibility.go`, never a filter — and after restoring the port all 6 jobs `sent`, 1 Mailpit copy each, with **4 of 6 attributed to the score-15 account itself** (checked via `assigned_account_id`, because `default_shared_pool_id` puts a shared pool in every tenant's chain, so a job count alone does not say which account sent it). Enforce, second fresh account, identical condition: `quarantined=true` at `cf=4`/score 27 with a real `action='quarantine'`, `reason='score_below_threshold'`, `from_flags ≠ to_flags`, **exactly one** row — and the flag changed ROUTING, not just a boolean: all 6 of that tenant's jobs completed on the fallback accounts, **zero** on the quarantined one, which re-routed rather than failed. Enforce stopped at `cf=4` where shadow ran to `cf=10` — which is the point of the ladder)*
-- [ ] Health endpoint reflects true state; all three alerts fire
+- [x] Health endpoint reflects true state; all three alerts fire *(Stage 10 steps 6–7. Health: every field cross-checked against its own query (queue, accounts, boxes, all 5 pools' eligible counts, `errors_last_window` timeout:18/unknown:15, shadow count 9 with real score/threshold pairs), then **perturbed** — pause + disable moved `healthy` 6→4, `paused` 0→1, `disabled` 0→1 and flipped two pools to `headroom: "exhausted"`, so the numbers are live, not cached. Two apparent discrepancies checked before filing and both correct: `sends_last_window` 136 vs 152 `send_logs` rows reconciles exactly at `count(DISTINCT job_id)`=136 (per-job vs per-attempt), and `quarantined: 0` beside an `account_quarantined` condition is by design — that condition is window-scoped over `account_events` since a quarantine has no "still true" row state. Alerts: all three fired with deliveries to a receiver on the compose network, dedup proven (4 polls → 1 delivery), `pool_exhausted` needing a genuinely **waiting** job (a manual pause is terminal_blocked → `failed`, not queued; the daily limit is the self_recovering block that works) and firing once per pool in the chain, `box_death` at 6m51s and **auto-clearing** on reconnect. Payloads two-vocabulary clean: condition code, subject id, timestamps, nothing else. No-webhook half done on a FRESH edge, not a deduped repeat: HTTP 200, all conditions surfaced, delivery count unchanged, zero errors)*
 - [ ] **KMS key restore drill passed**
 - [ ] Credential rotation completed without interruption
 - [ ] Adding a box requires no Brain reconfiguration
