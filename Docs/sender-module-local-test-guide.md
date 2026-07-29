@@ -841,8 +841,83 @@ The most valuable stage.
 3. **Add a box** — provision a third identity (`tools/provision-box/bin/provision-box new --id dev-box-3`), seed its row into `sender.boxes`, and start a container with that `BOX_ID` + `BOX_TOKEN`. It can reuse the dev cert: the cert is transport, the token is the authority.
    - **Pass:** it registers, appears in health, and receives work with **no Brain reconfiguration**. This is your scaling path — confirm it is genuinely this simple.
    - A box needs its **own identity**, not just another container. Adding a replica that reuses an existing `BOX_ID` does not add capacity — the two connections evict each other.
+   - **"No Brain reconfiguration" is the whole claim, so pin the Brain before you start.** Record its
+     `StartedAt` and `RestartCount` and re-check both at the end; if the Brain never restarted, the
+     token gate is provably DB-driven and not env-driven. Confirmed live: `StartedAt`
+     `2026-07-29T05:09:30`, `restarts=0`, **unchanged across the entire step**, while its env held only
+     box-1 material — so box 3 working is not explained by anything the Brain was told.
+   - **Observed (live, 2026-07-29). PASS.** `provision-box new --id 33333333-3333-3333-3333-333333333333`
+     printed `BOX_ID` / `BOX_TOKEN` (once) / `DEV_BOX_TOKEN_HASH`; the hash was seeded into
+     `sender.boxes`; the container started with the dev cert **reused**. It registered, health went to
+     `active: 3`, and it received real work — 15 jobs split 4/9/2 across the three boxes, box 3's sends
+     genuine (`provider_message_id` present, one `send_logs` row each, `sending→sent` written by actor
+     **`box`**, not by the dispatcher).
+   - **Re-verify the box's security envelope on the NEW box, not just the original** — a hand-started
+     container is exactly where a mount slips in. Confirmed: no DB or KMS variable in its env, only
+     `box.crt` / `box.key` / `ca.crt` mounted, **no `/secrets/kms/`**, no `brain.key` or `ca.key`, and
+     **0** credential matches in its log (Rule 6).
+   - **Trap — the duplicate-`BOX_ID` eviction loop is loud but easy to misread as capacity.** A replica
+     reusing box 1's id drove **410 registrations in ~40 s** while health stayed at `active: 3`, and it
+     returned to 0/s the moment the replica was removed. Watch the registration *rate*, not the count.
+   - **Traps (Windows / Git Bash):** `MSYS_NO_PATHCONV=1` is needed on `docker exec <container> ls /path`
+     too, not only on `docker run -v` — without it Git Bash rewrites the **container-side** path and you
+     get `C:/Program Files/Git/secrets/mtls/: No such file or directory`, which reads like a missing
+     mount. And `grep -P` is unavailable in this locale (`-P supports only unibyte and UTF-8 locales`),
+     so parse the provisioner output with `sed`/`awk`.
 4. **Remove a box** — stop it cleanly
    - **Pass:** in-flight work recovers; the others absorb the load
+   - **You cannot catch in-flight work by polling — force the hold.** Three attempts failed vacuously
+     before this was accepted: 30 jobs at `send_delay` 0–1 s all completed before the first poll; at 6–8 s
+     jobs wait `queued` *between* sends rather than sitting in-flight; and even with the other two boxes
+     stopped, a `docker compose exec` poll is a ~1 s round-trip and still lost the race. Per Rule 10 a
+     test that never observes the state it claims to test is not a test. What works is a **blackhole
+     listener** — accepts TCP, never speaks SMTP — pointed at from the account:
+     ```bash
+     MSYS_NO_PATHCONV=1 docker run -d --name s11hole --network sender-module_default \
+       alpine sh -c 'while true; do nc -l -p 2525 -e sleep 300; done'
+     # then: UPDATE sender.accounts SET smtp_host='s11hole', smtp_port=2525 WHERE …
+     ```
+     A **dead** port or the Brain's own mTLS port both fail *fast* instead (class `timeout`) and hold
+     nothing. Assert the hold before stopping anything: state `sending`, a future `lease_expires_at`,
+     and Mailpit `count: 0` so no outcome could already have arrived.
+   - **Observed (live, 2026-07-29). PASS, both halves.** Precondition captured immediately before the
+     stop: job `347281de…` `sending` on box 3, `attempt_count=1`, `attempt_token=2`,
+     `lease_expires_at 05:33:42+00`, Mailpit `count: 0`.
+     - **Clean stop.** `docker compose stop` → **exit 0**, `oomkilled=false`. Immediately after, the job
+       was still `sending` with `attempt_token` unchanged — the vanished box's work was **not** resolved
+       either way. Rule 5 held: no outcome was invented for a box that is no longer there to report one.
+     - **Recovery is by lease expiry, attributed honestly.** The `job_events` trail is the evidence, and
+       the actor column is the point:
+       ```
+       05:31:42  assigned→sending  dispatcher  box=3333…
+       05:33:47  sending→queued    reclaim_loop box=3333…  timeout  "lease expired"
+       05:35:47  queued→assigned   dispatcher
+       05:35:47  assigned→sending  dispatcher  box=1111…
+       05:35:47  sending→sent      box         box=1111…
+       ```
+       The requeue is written by **`reclaim_loop`**, never by `box`, and it lands 5 s after the lease it
+       was waiting on. The job then re-dispatched to a **surviving** box and sent.
+     - **Exactly-once, and the row count that looks wrong but is not.** The reclaimed job has **2
+       `send_logs` rows** — that is per-**attempt** logging by design (`outcome.go` writes one from each
+       of the accepted / bounced / failed paths), and the two rows are distinguishable: the blackhole
+       attempt has a **NULL `smtp_response`**, the successful one carries `250 2.0.0 Ok: queued as …`.
+       The exactly-once evidence is elsewhere and is unambiguous: **one** Mailpit copy and **one**
+       `provider_message_id`. Do not assert `count(send_logs)=1` on a retried job.
+     - **Nothing stranded.** Every one of the 13 jobs box 3 had touched ended `sent` — 12 on box 3 before
+       the stop, the one in-flight job on box 1 — and a cluster-wide sweep for non-terminal jobs
+       (`state NOT IN ('sent','failed','bounced')`) returned **empty**.
+     - **The others absorb the load.** With box 3 gone, a fresh 12-job campaign went **12/12 `sent`**,
+       split 10/2 across boxes 1 and 2, **0** assigned to the removed box, every job with a
+       `provider_message_id`, **12** Mailpit copies and **12** `send_logs` rows for 12 distinct jobs — no
+       duplicate, no shortfall.
+     - **Deregistration needs no admin action.** Box 3 aged from `active` to **`stale`** on its own
+       (`heartbeat_interval_sec` 120 × `heartbeat_missed_threshold` 3) with no operator step, and while
+       it was still nominally registered the dispatcher simply never picked it.
+   - **Restoring the stack:** point the accounts back at `smtp-sink:1025`, remove the blackhole and the
+     box-3 container, `docker compose start box box2`, and return any `send_delay_*` /
+     `smtp_operation_timeout_sec` you widened to their `default_value` (compare `value = default_value`
+     in `sender.config` rather than trusting memory — Rule 1 keeps the default alongside the live value
+     precisely so this check is one query).
 5. **Graceful shutdown** — `SIGTERM` the Brain mid-campaign
    - **Pass:** stops claiming, drains, leaves in-flight work recoverable; next boot recovers everything; no job stranded
 6. **Singleton guard** — start a second Brain against the same database
@@ -960,7 +1035,7 @@ Do not deploy until every line is true.
 - [x] Health endpoint reflects true state; all three alerts fire *(Stage 10 steps 6–7. Health: every field cross-checked against its own query (queue, accounts, boxes, all 5 pools' eligible counts, `errors_last_window` timeout:18/unknown:15, shadow count 9 with real score/threshold pairs), then **perturbed** — pause + disable moved `healthy` 6→4, `paused` 0→1, `disabled` 0→1 and flipped two pools to `headroom: "exhausted"`, so the numbers are live, not cached. Two apparent discrepancies checked before filing and both correct: `sends_last_window` 136 vs 152 `send_logs` rows reconciles exactly at `count(DISTINCT job_id)`=136 (per-job vs per-attempt), and `quarantined: 0` beside an `account_quarantined` condition is by design — that condition is window-scoped over `account_events` since a quarantine has no "still true" row state. Alerts: all three fired with deliveries to a receiver on the compose network, dedup proven (4 polls → 1 delivery), `pool_exhausted` needing a genuinely **waiting** job (a manual pause is terminal_blocked → `failed`, not queued; the daily limit is the self_recovering block that works) and firing once per pool in the chain, `box_death` at 6m51s and **auto-clearing** on reconnect. Payloads two-vocabulary clean: condition code, subject id, timestamps, nothing else. No-webhook half done on a FRESH edge, not a deduped repeat: HTTP 200, all conditions surfaced, delivery count unchanged, zero errors)*
 - [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
 - [x] Credential rotation completed without interruption *(Stage 11 step 2, by the documented `disaster-recovery.md` §3 route, and "without interruption" proven non-vacuously — **4 real jobs were parked in the freeze and spanned the entire rotation**, since a drained queue would prove nothing. New key gpg-backed-up BEFORE use; `dispatch_paused: true` confirmed before the cutover. In the unreadable window the error is the **explicit** `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2")` — `credential.go:57` checks the label before touching AES, so a rotation mistake is never a silent wrong-key attempt, provably distinct from the generic auth failure. Jobs requeued, Mailpit `count: 0`, nothing invented. Re-entry × 6 → `200`; §3's own verification queries returned `cred-dek-v2|6` and **empty** for rows off the new label, with **6 distinct nonces and 6 distinct ciphertexts** from 6 identical plaintexts. The same 4 parked job ids then went `sent` with **one `send_logs` row each despite `attempt_count = 3`** — no duplicate from the failed attempts — and all six accounts decrypted under v2 with zero failures, 6 audited writes under 6 distinct `request_id`s, and a clean leak grep. Both halves fail closed by **different** errors: right label + wrong key gives generic GCM auth failure (47 of them, Mailpit 0). §3's abandon path was exercised too and is symmetric as documented — rolled back to v1, which is the correct dev-stack end state since `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`)*
-- [ ] Adding a box requires no Brain reconfiguration
+- [x] Adding a box requires no Brain reconfiguration *(Stage 11 steps 3–4. **Add:** a third identity provisioned, its `token_hash` seeded, container started reusing the dev cert — registered, health `active: 3`, and it received real work (15 jobs split 4/9/2, its sends carrying a `provider_message_id` and `sending→sent` written by actor `box`). The claim is proven by what did **not** change: the Brain's `StartedAt` and `restarts=0` were **identical before and after**, and its env held only box-1 material, so the token gate is DB-driven. Box-3's security envelope re-verified independently: no DB/KMS env, only `box.crt`/`box.key`/`ca.crt`, no `/secrets/kms/`, no `brain.key`/`ca.key`, 0 credential matches in its log. **Remove:** stopped cleanly (exit 0) with a job genuinely `sending` — held there by a blackhole listener, because polling cannot catch a fast send. The job stayed `sending` with `attempt_token` unchanged (nothing invented for an absent box), was requeued 5 s after its lease by **`reclaim_loop`** with `timeout`/"lease expired" — never by `box` — then sent on a surviving box with **one** Mailpit copy. All 13 box-3 jobs ended `sent`; the cluster-wide non-terminal sweep was empty. A fresh 12-job campaign then went 12/12 `sent` split 10/2 with **0** to the removed box. Box 3 aged `active`→`stale` with no operator action)*
 - [ ] Graceful shutdown strands no job; second Brain exits cleanly
 - [ ] All-toggles-off is byte-identical; security holds with all toggles on
 - [ ] Auto-quarantine returned to **shadow** before you finish
