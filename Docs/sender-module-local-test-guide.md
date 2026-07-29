@@ -752,6 +752,51 @@ The most valuable stage.
    - **Pass:** stops claiming, drains, leaves in-flight work recoverable; next boot recovers everything; no job stranded
 6. **Singleton guard** — start a second Brain against the same database
    - **Pass:** it exits cleanly; the first keeps running; no double-dispatch
+   - > **Do this step FIRST if the stack has been through Stage 9 step 8, and check the incumbent
+     > before you start anything.** Walking Stage 11 in order found the dev stack *already* in a
+     > split-brain-capable state, left there by the outage drill 56 minutes earlier — and the evidence
+     > is destroyed by the Brain restart that Stage 11 step 1 requires. Before starting a second Brain,
+     > read the incumbent's `readyz` and the lock itself:
+     > ```bash
+     > B1=$(docker compose ps -q brain | head -1)
+     > docker exec $B1 curl -s http://127.0.0.1:8080/readyz     # singleton_lock must be true
+     > docker compose exec -T postgres psql -U postgres -d platform -At \
+     >   -c "SELECT count(*) FROM pg_locks WHERE locktype='advisory'
+     >        AND ((classid::bigint<<32)|objid::bigint)=9200000001;"   # expect 1
+     > ```
+   - **Trap that produces a false PASS:** `docker compose exec brain …` also matches a
+     `docker compose run` container of the same service, and it selects the **newcomer** — whose
+     `readyz` says `singleton_lock: true`. The split-brain then hides behind the healthy one. Address
+     the incumbent by container **id** (`docker compose ps -q brain`), never by service name, once two
+     containers share the label. Likewise `docker … | tail -3; echo $?` reports **tail's** exit code:
+     redirect to a file and read `$?` off the `docker` command itself, or the clean `exit 3` is
+     invisible.
+   - **Observed (live, 2026-07-29) — the step PASSES on its own terms.** Against a healthy incumbent,
+     a second Brain (`docker compose run --no-deps --rm brain`) waited the full bounded `1m0s`, logged
+     `singleton lock not acquired within 1m0s: another Brain is active; exiting cleanly`, and exited
+     **code 3**. The incumbent stayed `{"db":true,"singleton_lock":true,"status":"ready"}` and
+     `healthy` throughout. Zero double-dispatch.
+   - **But this step as written does not cover the failure that matters, and walking it found a real
+     HIGH defect.** A startup **contention** is not a mid-life lock **loss**, and only the former was
+     ever tested. `internal/singleton/singleton.go`'s keeper correctly notices a dead lock connection,
+     logs `marking not-held`, and exits without re-acquiring — but that flag is read by **`readyz`
+     only** (`cmd/brain/main.go:205` hands `guard` to the health server and nothing else; no
+     dispatch/reclaim/retention path consults `guard.Healthy()`). So: Stage 9 step 8's outage dropped
+     the lock at 00:46:55 (`57P01`), `pg_locks` then held **zero** advisory locks on key `9200000001`,
+     and that same process — `RestartCount` **0**, one continuous Brain — **kept dispatching for 56
+     minutes** (`dispatch: tick pushed 1 job(s)` 01:26:33, `pushed 3 job(s)` 01:43:03). Driven to its
+     consequence rather than argued: a second Brain started against that database **acquired the lock
+     instantly** and came fully up to `brain ready`, so two Brains were live on one database with the
+     *newcomer* holding the lock — exactly the second dispatch path Rule 7 forbids. Nothing was
+     corrupted only because the compose alias `brain` still resolved to the incumbent, so both boxes
+     stayed on it — luck about DNS, not a property of the design. **Filed as `G11-OD-1` + ADR-0011
+     (needs-user: exit / pause-dispatch / re-acquire all differ operationally, so per Rule 2 the
+     ruling is the user's).** The state was *visible* the whole time — `readyz` 503, container
+     `unhealthy`, `FailingStreak` 1189 — just not acted on; an orchestrator whose liveness probe is
+     wired to `readyz` would already have restarted into safety.
+   - **Restoring the stack:** stop and remove the second Brain, confirm `pg_locks` shows **0**, then
+     `docker compose restart brain` and re-check `readyz` is `ready` and both boxes re-register. A
+     lockless Brain does not recover on its own — it needs the restart.
 7. **Migration down/up** — roll the latest migration down and back up
    - **Pass:** reversible, no data loss on the down path
 

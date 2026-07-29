@@ -1183,3 +1183,20 @@ the documented behavior rather than reading it.
 
 **Tracking closes here.** Any future item opens a new dated section in this file with an ADR
 (CLAUDE.md Rule 2); it does not reopen a closed one.
+
+---
+
+## Pre-deploy gate, Stage 11 (2026-07-29) — one item, NEEDS-USER
+
+Opened per the rule directly above: a new dated section with an ADR, not a reopened item. Found while
+walking Stage 11 of `Docs/sender-module-local-test-guide.md`.
+
+| Id | Item | Severity | Disposition |
+|---|---|---|---|
+| G11-OD-1 | **A Brain that LOSES the singleton advisory lock mid-life keeps dispatching, so two Brains can dispatch against one database.** `internal/singleton/singleton.go`'s keeper correctly notices a dead lock connection, logs `marking not-held`, and exits without re-acquiring — but `held=false` is read by **`readyz` only**. `cmd/brain/main.go:205` passes `guard` to the health server and to nothing else; no dispatch/reclaim/retention path consults `guard.Healthy()`. Observed live, from an ordinary documented drill rather than a contrived setup: Stage 9 step 8's outage dropped the lock at 00:46:55 (`57P01`), `pg_locks` then held **zero** advisory locks on key `9200000001`, and that same process (`RestartCount` 0) **kept dispatching for 56 minutes** — `dispatch: tick pushed …` at 01:26:33 and 01:43:03. Driven to its consequence: a second Brain started against the same DB **acquired the lock instantly** and came fully up (`brain ready`), so two Brains were live with the newcomer holding the lock — the "second dispatch path" Rule 7 exists to prevent. Nothing was corrupted here only because the compose DNS alias `brain` still resolved to the incumbent, so both boxes stayed on it — luck about DNS, not a property of the design. | **HIGH** (Rule 7 is a load-bearing locked invariant, and its guarantee is conditional in the current tree: it holds from startup and degrades silently on any DB restart, failover, connection reaper, or `pg_terminate_backend`) | **FLAGGED — NEEDS-USER, not fixed.** Three remediations differ in operational behavior, so the choice is a locked-invariant ruling (Rule 2), not an implementation detail: **(A)** exit on loss — most Rule-7-consistent, but converts a transient DB blip into a restart and discards the graceful-drain guarantees Phase 7 built and Stage 9 step 8 just proved (0 restarts, nothing invented); **(B)** pause dispatch while not-held and keep the process up, reusing the DB-outage pause that already exists and is already tested, with bounded re-acquisition; **(C)** re-acquire in the keeper alone — narrowest, but unsafe without (B), since resuming after a successor came and went would dispatch from stale in-memory state (box registrations, fairness cursor, leases). **Recommendation: (B) with bounded re-acquire** — the only option that closes the window while keeping every property the drills have proven. Full analysis, the live evidence, and the required anti-vacuous test shape in **ADR-0011**. |
+
+**Not part of this item, and recorded so it is not conflated:** Stage 11 step 6 **passes on its own
+terms**. Against a *healthy* incumbent, a second Brain waited the full bounded `1m0s`, logged
+`singleton lock not acquired within 1m0s: another Brain is active; exiting cleanly`, and exited **code
+3**, with the incumbent still `ready`/`healthy`. The startup guard works; the untested half was a
+mid-life lock **loss**, which is a different event from a startup **contention**.
