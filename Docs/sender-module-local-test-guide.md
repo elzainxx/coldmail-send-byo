@@ -785,6 +785,59 @@ The most valuable stage.
      *before* the restart.
 2. **Credential rotation** — rotate the key and re-encrypt existing credentials
    - **Pass:** sending continues; `credential_key_id` reflects the new key; old ciphertexts migrate
+   - The procedure is `Docs/disaster-recovery.md` §3 ("Rotating the master key"), and its **ordering is
+     load-bearing, not stylistic**: freeze dispatch BEFORE cutting the key over, because a Brain
+     resolves exactly one `credential_key_id` — there is no keyring, so between the cutover and the last
+     re-entry **every** existing row is unreadable. "Re-encrypt" is **re-entry**, not a server-side
+     transform: the admin surface is Encrypt-only (Rule 6), so you must have every plaintext password.
+   - **"Sending continues" cannot mean an empty queue.** Park real jobs in the freeze first, or the
+     step passes vacuously — a drained queue proves nothing about jobs that span the rotation. Queue
+     them *after* setting `dispatch_enabled=false` and assert they are still `queued` at each stage.
+   - **Observed (live, 2026-07-29). PASS, both directions.** New 32-byte key generated and gpg-backed-up
+     **before** use (§3 step 1 — a key you rotate to and then lose is the §1 disaster with extra steps).
+     `dispatch_enabled=false` → `dispatch_paused: true` confirmed before continuing; **4 jobs launched
+     into the freeze** and held `queued`.
+     - **Cutover.** v2 key installed, `CREDENTIAL_KEY_ID=cred-dek-v2`, Brain recreated. It came up
+       `ready`/`healthy` with all 6 rows still labelled `cred-dek-v1` — the "everything is unreadable"
+       window, entered deliberately.
+     - **The DR doc's claim about the error is exact, and this is the sharper of the two failure
+       modes.** Briefly unfreezing produced
+       `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2") — requeued`
+       — an **explicit rotation error naming both labels**, provably distinct from the generic
+       `credential decrypt failed (authentication)` that a wrong key of the *right* label gives (step 1's
+       negative control). `credential.go:57` short-circuits on the label before it ever touches AES, so a
+       rotation mistake is never a silent wrong-key attempt. Jobs **requeued**, all 4 still `queued`,
+       **Mailpit `count: 0`** — nothing failed, nothing sent, nothing invented.
+     - **Re-entry.** `PATCH /v1/admin/accounts/{id}` with `smtp_secret` × 6 → all `200`. §3 step 4's
+       tracking query showed `cred-dek-v2|6`; §3 step 5's "rows not on the new label" query returned
+       **empty**. Fresh nonce per write confirmed: **6 distinct nonces and 6 distinct ciphertexts** for 6
+       accounts, even though every plaintext was identical.
+     - **The proof (§3 step 6).** Unfrozen, the **same 4 job ids** parked since before the new key
+       existed went `sent` — 4 Mailpit copies and **exactly one `send_logs` row each** despite
+       `attempt_count = 3`, so the failed pre-rotation attempts left no duplicate. Then all six accounts
+       were exercised under v2 (the 2 shared from the parked jobs + one job per dedicated tenant via
+       `CAMPAIGN_USER_ID`) — all `sent`, **zero** decrypt failures. Audit trail: **6** `account_events`
+       `updated`/`admin` rows with **6 distinct `request_id`s**. Leak grep for the plaintext and both key
+       hashes: **0 matches**.
+     - **Negative control that the retired key is genuinely dead (§3 step 7).** Restoring the **v1** key
+       while leaving the **v2** label gave `credential decrypt failed (authentication)` — the *generic*
+       GCM failure this time, since the label matched and only the key was wrong. 47 failures, jobs
+       requeued, **Mailpit `count: 0`**. Both halves of "label vs key" therefore fail closed, and by
+       *different* errors.
+     - **Rollback (§3's abandon path) exercised, and it is symmetric to step 4 as documented.** Froze,
+       restored the v1 key + label, re-entered all 6 credentials (now the v2 rows are the unreadable
+       ones), unfroze → a fresh campaign `sent`. This is also the correct END STATE for the dev stack:
+       `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`, so leaving the stack on v2 would silently
+       strand every credential the next time that script runs.
+   - **Trap:** `chmod 0400` from step 1 makes the key file read-only, so step 2's `cp` of the new key
+     fails `Permission denied` — and if you chain it with `&&` the whole rotation silently does not
+     happen (the `sed` on `.env` never runs either, so the label stays v1 and nothing looks wrong).
+     `chmod 0600` first, and verify with `sha256sum` that the file you think you installed is installed.
+   - **Trap:** `docker compose restart brain` does **not** pick up a changed `.env` — env vars are fixed
+     at container creation. `CREDENTIAL_KEY_ID` needs
+     `docker compose up -d --no-deps --force-recreate brain`, then confirm with
+     `docker exec <brain> printenv CREDENTIAL_KEY_ID`. A `restart` leaves the old label live and the
+     rotation appears to do nothing.
 3. **Add a box** — provision a third identity (`tools/provision-box/bin/provision-box new --id dev-box-3`), seed its row into `sender.boxes`, and start a container with that `BOX_ID` + `BOX_TOKEN`. It can reuse the dev cert: the cert is transport, the token is the authority.
    - **Pass:** it registers, appears in health, and receives work with **no Brain reconfiguration**. This is your scaling path — confirm it is genuinely this simple.
    - A box needs its **own identity**, not just another container. Adding a replica that reuses an existing `BOX_ID` does not add capacity — the two connections evict each other.
@@ -906,7 +959,7 @@ Do not deploy until every line is true.
 - [x] Shadow mode logs without acting; enforce acts on the same condition *(Stage 10 steps 3–4, **live on the stack, not deferred to the unit suites** — a dead `smtp_port` (2599) makes the box report `connect_refused` → class `timeout`, which despite classify.go's "no penalty" comment (that means no *flag* action) is genuinely penalizing and drives the score. Needs a **never-succeeded** account: the formula `100 − 60·min(1,cf/5) − 15·prox − 25·recency` bottoms out near 40 for an account with a recent success, above the threshold of 30, so a warm account never trips. Shadow: score 100→27→15, `cf` to 10, **seven** `shadow_would_quarantine` rows all with `from_flags = to_flags`, `quarantined` false throughout, jobs requeuing normally. Third leg proven separately rather than assumed — a low score is only an ORDER BY term in `eligibility.go`, never a filter — and after restoring the port all 6 jobs `sent`, 1 Mailpit copy each, with **4 of 6 attributed to the score-15 account itself** (checked via `assigned_account_id`, because `default_shared_pool_id` puts a shared pool in every tenant's chain, so a job count alone does not say which account sent it). Enforce, second fresh account, identical condition: `quarantined=true` at `cf=4`/score 27 with a real `action='quarantine'`, `reason='score_below_threshold'`, `from_flags ≠ to_flags`, **exactly one** row — and the flag changed ROUTING, not just a boolean: all 6 of that tenant's jobs completed on the fallback accounts, **zero** on the quarantined one, which re-routed rather than failed. Enforce stopped at `cf=4` where shadow ran to `cf=10` — which is the point of the ladder)*
 - [x] Health endpoint reflects true state; all three alerts fire *(Stage 10 steps 6–7. Health: every field cross-checked against its own query (queue, accounts, boxes, all 5 pools' eligible counts, `errors_last_window` timeout:18/unknown:15, shadow count 9 with real score/threshold pairs), then **perturbed** — pause + disable moved `healthy` 6→4, `paused` 0→1, `disabled` 0→1 and flipped two pools to `headroom: "exhausted"`, so the numbers are live, not cached. Two apparent discrepancies checked before filing and both correct: `sends_last_window` 136 vs 152 `send_logs` rows reconciles exactly at `count(DISTINCT job_id)`=136 (per-job vs per-attempt), and `quarantined: 0` beside an `account_quarantined` condition is by design — that condition is window-scoped over `account_events` since a quarantine has no "still true" row state. Alerts: all three fired with deliveries to a receiver on the compose network, dedup proven (4 polls → 1 delivery), `pool_exhausted` needing a genuinely **waiting** job (a manual pause is terminal_blocked → `failed`, not queued; the daily limit is the self_recovering block that works) and firing once per pool in the chain, `box_death` at 6m51s and **auto-clearing** on reconnect. Payloads two-vocabulary clean: condition code, subject id, timestamps, nothing else. No-webhook half done on a FRESH edge, not a deduped repeat: HTTP 200, all conditions surfaced, delivery count unchanged, zero errors)*
 - [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
-- [ ] Credential rotation completed without interruption
+- [x] Credential rotation completed without interruption *(Stage 11 step 2, by the documented `disaster-recovery.md` §3 route, and "without interruption" proven non-vacuously — **4 real jobs were parked in the freeze and spanned the entire rotation**, since a drained queue would prove nothing. New key gpg-backed-up BEFORE use; `dispatch_paused: true` confirmed before the cutover. In the unreadable window the error is the **explicit** `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2")` — `credential.go:57` checks the label before touching AES, so a rotation mistake is never a silent wrong-key attempt, provably distinct from the generic auth failure. Jobs requeued, Mailpit `count: 0`, nothing invented. Re-entry × 6 → `200`; §3's own verification queries returned `cred-dek-v2|6` and **empty** for rows off the new label, with **6 distinct nonces and 6 distinct ciphertexts** from 6 identical plaintexts. The same 4 parked job ids then went `sent` with **one `send_logs` row each despite `attempt_count = 3`** — no duplicate from the failed attempts — and all six accounts decrypted under v2 with zero failures, 6 audited writes under 6 distinct `request_id`s, and a clean leak grep. Both halves fail closed by **different** errors: right label + wrong key gives generic GCM auth failure (47 of them, Mailpit 0). §3's abandon path was exercised too and is symmetric as documented — rolled back to v1, which is the correct dev-stack end state since `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`)*
 - [ ] Adding a box requires no Brain reconfiguration
 - [ ] Graceful shutdown strands no job; second Brain exits cleanly
 - [ ] All-toggles-off is byte-identical; security holds with all toggles on
