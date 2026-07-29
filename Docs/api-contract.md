@@ -109,7 +109,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | GET | `/v1/admin/accounts` | list (cursor paginated; filters `pool_id`/`paused`/`quarantined`/`disabled`/`user_id`) |
 | GET | `/v1/admin/accounts/{id}` | read one |
 | PATCH | `/v1/admin/accounts/{id}` | update (omit `smtp_secret` = unchanged, structural) |
-| DELETE | `/v1/admin/accounts/{id}` | hard delete (audit row survives) |
+| DELETE | `/v1/admin/accounts/{id}` | hard delete (audit row survives). **KNOWN DEFECT (2026-07-29, G12-OD-1 / ADR-0012 — NEEDS-USER, unfixed):** this returns `500 internal_error` for any account that has ever been **assigned a job**. `sender.job_events`' two `ON DELETE SET NULL` FKs are blocked by its unconditional append-only `BEFORE UPDATE` trigger, so the delete aborts atomically (nothing is dropped or corrupted — the operation is wedged, not lossy). An account with no job history still deletes `204`, which is why the split is easy to miss. Do not treat a `500` here as a transient error or retry it; it is deterministic |
 | GET | `/v1/admin/accounts/{id}/events` | read the account audit trail (cursor paginated) |
 
 ### `POST /v1/admin/accounts` request body

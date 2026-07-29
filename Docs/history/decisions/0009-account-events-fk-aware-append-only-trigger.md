@@ -108,6 +108,14 @@ can be deleted.
 trigger are:
 - `sender.job_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `CASCADE DELETE`,
   handled by the no-`BEFORE-DELETE` approach (correct as-is).
+  > **CORRECTION (2026-07-29) — this bullet is WRONG about the schema as built; see ADR-0012.**
+  > `job_events`' inbound cleanup is *both* kinds. `job_events_job_fk`/`job_events_user_fk` are
+  > `ON DELETE CASCADE` as stated, but `job_events_account_fk` and `job_events_box_fk` are
+  > **`ON DELETE SET NULL`** — the same shape as the `account_events` FK this ADR was written to
+  > fix — and were not enumerated here. The unconditional UPDATE-reject therefore *does* collide
+  > with a referential action, wedging `DELETE /v1/admin/accounts/{id}` (and box deletes) for any
+  > account/box with job history. The generalized rule below is correct and would have caught
+  > this; it simply was not applied to `job_events`. Tracked as G12-OD-1, NEEDS-USER.
 - `sender.account_events` — append-only (`INSERT, SELECT`); inbound FK cleanup is `SET NULL`,
   handled by the FK-aware `BEFORE UPDATE` trigger (this ADR).
 - `sender.send_logs` — write-once (`INSERT, SELECT, DELETE`; `REVOKE UPDATE` + `BEFORE UPDATE`
