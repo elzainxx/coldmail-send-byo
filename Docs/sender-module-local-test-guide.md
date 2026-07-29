@@ -355,6 +355,38 @@ The most valuable stage.
      Pre-0022 that success would have been tagged `timeout` and counted as a failure.
 7. **Brain restart** — restart the Brain mid-campaign
    - **Pass:** orphans recover, the campaign resumes, nothing lost or duplicated; a box that was mid-send reconnects and replays its buffered outcome
+   - **Use the same `docker pause` trick as step 6** to have a job genuinely in-flight when the Brain
+     dies — otherwise there is no orphan and no buffered outcome, so the interesting half is untested.
+     Freeze `box2`, launch, let the peers drain, then `docker compose restart brain` while one job sits
+     `sending` on the frozen box. **Do not unpause until after the Brain is back** — the replay is the
+     point.
+   - **Read the shutdown log, not just the restart.** Three distinct lines each prove a different
+     property, and all three should appear:
+     ```
+     shutdown: DRAINING — dispatch stops claiming ... the box link and outcome handler stay up
+     shutdown: draining 1 in-flight job(s), waiting up to 30s for their boxes to report (§4.1)
+     startup rescan: extended 1 orphaned in-flight lease(s) + refreshed box heartbeats
+     ```
+     The third is the load-bearing one: the rescan **extends** the orphan's lease, it does not reclaim
+     it. That is what opens `startup_reconnect_window_sec` for the box to come back and report the
+     send it really did, instead of the Brain assuming the worst and re-sending.
+   - **Assert the orphan is still `sending` immediately after the restart.** This is the honesty check
+     and it is easy to skip: `state='sending'`, `attempt_token` **unchanged**, `attempt_count` still
+     `0`, `last_error_class` NULL, `lease_expires_at` pushed further out. A Brain that marked it
+     `failed` (or `sent`) on the way down would be inventing an outcome no box reported (Rule 5).
+   - **Observed (live, 2026-07-29).** 14 jobs; 13 sent by `box`, 1 pinned `sending` on frozen `box2`
+     with 0 Mailpit copies. Restart: drained gracefully (waited its 30s for the frozen box, which by
+     construction could not answer), came back, rescan extended that one lease. Orphan still
+     `sending`/token 1/attempts 0 — **nothing invented**. Then unpausing `box2` produced
+     `control stream closed; reconnecting (outcome buffer retained)` → re-register → the buffered
+     outcome replayed and the job went `sent` **on the original `attempt_token=1`**, with a
+     `provider_message_id`. Event chain exactly 4 rows (`→queued`, `queued→assigned`,
+     `assigned→sending`, `sending→sent` by **`box`**) — no requeue, no reclaim, no second dispatch.
+     One `send_logs` row; Mailpit 14/14 subjects, **zero** duplicates.
+   - Note the contrast with step 6, which is what makes both meaningful: same starting position, but
+     there the box never came back so `reclaim_loop` requeued it (token 1→2, one re-send); here the box
+     *did* come back inside its window so the original attempt was honoured. Exactly one delivery
+     either way.
 8. **Database outage** — `docker stop` Postgres for a few minutes, then start it
    - **Pass:** the Brain halts cleanly, does not crash-loop, and **invents nothing** — no job is marked sent or failed during the outage. On recovery it resumes with no double-processing.
    - *This is the single most important assertion in the guide.*
@@ -467,7 +499,7 @@ Do not deploy until every line is true.
 - [x] Every error class produces the correct job **and** account outcome *(Stage 9 steps 1–4; verified by the real-Postgres suites named in the step→test table, NOT on the live stack — the compose sink is Mailpit and cannot emit a 535/550/4xx/throttle, and the "controllable Go sink (`tests/harness`)" its comment promised was never built. That comment is corrected and the gap is registered in `future-work.md`. This box is ticked because the behaviour is genuinely proven; it is not ticked from a live-stack demonstration)*
 - [x] Hard bounce does not penalise the account *(Stage 9 step 2; `TestScore_BounceNeverPenalizes` — a 550 leaves score, `consecutive_failures`, and `last_failure_at` byte-unchanged and writes zero `account_events`, with a paired `transport_4xx` positive control proving the scorer is not simply inert)*
 - [x] Box death produces exactly one delivered copy *(Stage 9 step 6; `docker pause` then SIGKILL **while frozen** — 0 Mailpit copies pre-kill so no outcome could ever arrive, which the first attempt got wrong by unpausing first and proved nothing. The lease expired, `reclaim_loop` requeued with `error_class='timeout'`, the surviving box re-sent: exactly one Mailpit copy and one `send_logs` row, `sending→queued` attributed to `reclaim_loop` not `box`. Also confirmed `sender_0022` live — the `sending→sent` event carried no error class while the row correctly retained `timeout`)*
-- [ ] Brain restart loses and duplicates nothing
+- [x] Brain restart loses and duplicates nothing *(Stage 9 step 7; restarted with 1 job genuinely in-flight on a frozen box. Drained gracefully, and the startup rescan **extended** the orphan's lease rather than reclaiming it — orphan still `sending`/token 1/attempts 0/no error, so nothing was invented on the way down. The box then reconnected inside its window and **replayed its buffered outcome** onto the ORIGINAL `attempt_token=1`: 4-row event chain with `sending→sent` by `box`, no requeue, no second dispatch, one `send_logs` row, 14/14 Mailpit subjects, zero duplicates)*
 - [ ] **Database outage invents no outcomes**
 - [ ] Pool exhaustion waits rather than fails
 - [ ] Panic switch halts and resumes losslessly
