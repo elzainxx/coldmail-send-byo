@@ -286,6 +286,16 @@ The most valuable stage.
 > enforce behaviour and the shadow-ladder behaviour are separate tests, and the guide's own wording
 > ("in shadow … the flag is *not* set") is the `shadowmode_test.go` half.
 >
+> **One live failure mechanism DOES exist, and it is worth knowing about even though it cannot close
+> steps 1–4.** Setting an account's `smtp_port` to a dead port (e.g. 2599, nothing listening) makes the
+> box report `connect_refused`, which classifies as `timeout` — a genuine box-reported penalizing
+> failure on the live stack, no hand-written rows. It drives the score, `consecutive_failures`,
+> `last_failure_at`, the backoff ladder, and the auto-quarantine ladder (this is how Stage 10 steps 3–4
+> are closed live). What it **cannot** do is choose a *class*: a dead port is always `timeout`, never
+> `auth_failure`, `bounce_permanent`, `transport_4xx`, or `throttle` — which is exactly what steps 1–4
+> each name. So the gap above is narrower than "no failure injection at all": it is specifically the
+> inability to control the SMTP *reply*, which is what the missing controllable sink would give.
+>
 > **So:** treat steps 1–4 as *verified by those suites*, and steps 5–10 as live-stack work. Do not
 > mark 1–4 green by hand-writing a `job_events` row or hand-setting a `last_error_class` — that
 > proves the column is writable, not that the classifier and policy work. Closing this properly means
@@ -528,8 +538,78 @@ The most valuable stage.
      subjects, 1 copy each.
 3. **Shadow mode** — drive an account's score below the quarantine threshold
    - **Pass:** a would-quarantine decision is logged; the flag stays unset; the account keeps sending
+   - **This one DOES have a live mechanism, unlike Stage 9 steps 1–4 — point an account at a dead
+     port.** The score only moves on a *penalizing* failure reported by a box, and Mailpit cannot be
+     made to reject anything. But `smtp_port: 2599` (nothing listening) makes the box report
+     `connect_refused`, which classifies as `timeout` — and `timeout` **is** penalizing. Read
+     `classify.go` carefully here: its row-6 comment says "no penalty", which means no *flag* action
+     (no quarantine, no pause). It still routes through `applyClassifiedFailure` →
+     `applyAccountEffect`, so `consecutive_failures` climbs and the score is recomputed. Those two
+     senses of "penalty" are easy to conflate and cost a detour.
+   - **Use a FRESH account on its OWN tenant, or the score will not go low enough.** The formula
+     (`account_score.go`) is
+     `100 − 60·min(1, cf/5) − 15·daily_prox − 25·recency`. An account with a recent success carries a
+     recency penalty near 0, so even a saturated `cf=5` bottoms out around 40 — above the threshold of
+     30, and the decision never fires. An account that has **never succeeded** takes the full 25
+     recency penalty, so `cf=4` → **27** and it trips. A fresh isolated tenant (own user, own
+     dedicated pool, one account) also keeps every earlier stage's fixture accounts untouched, and
+     sidesteps the one-campaign-per-user guard. `CAMPAIGN_USER_ID=<uuid> tests/manual/launch-campaign.sh`
+     targets it.
+   - **The marker to look for** (`account_effect.go`, deliberately schema-neutral — no new column, no
+     new `action` enum value): `account_events` with `actor='system'`, `action='updated'`,
+     `from_flags = to_flags` (the equality IS the "nothing was mutated" signal), and
+     `reason = 'shadow_would_quarantine: score=<X> threshold=<T> trigger=score|auth_failure'`.
+   - **Observed (live, 2026-07-29).** Fresh tenant + fresh account on port 2599, mode at its seeded
+     `shadow`. Score fell **100 → 27 → 15** and stayed at 15; `consecutive_failures` reached **10**.
+     Seven `shadow_would_quarantine` rows, every one with `from_flags = to_flags`
+     (`score=27 threshold=30 trigger=score`, then `score=15 …`), and `quarantined` **false** the whole
+     time — decided, never acted. Jobs requeued normally (`queued`, `attempt_count=2`,
+     `last_error_class='timeout'`), so the *job* policy is untouched by the account-effect mode.
+   - **Then prove the third leg — "the account keeps sending" — don't just assert the flag is unset.**
+     A score of 15 is only an *ordering* term in `eligibility.go`
+     (`ORDER BY account_status_score DESC, id ASC`), never a filter, so a low score must not block a
+     claim. Restored the port to 1025: all **6 jobs reached `sent`, 1 Mailpit copy each by exact
+     subject**, and **4 of the 6 went out on the score-15 account itself** (the other 2 landed on the
+     shared-fallback pool — see the caveat below). So the low-score account did keep sending, by
+     attribution and not by inference. Its score then recovered to 100 and `cf` to 0 on those
+     successes, which is why step 4 needs a *second* fresh account rather than reusing this one.
+   - **Check `assigned_account_id`, not just the job count — `default_shared_pool_id` is set on this
+     stack.** `resolvePoolChain` appends the config default shared pool after the tenant's dedicated
+     pool, so an "isolated" tenant is only isolated for the *dedicated* hop; once its own account is
+     the low-scoring one, `ORDER BY account_status_score DESC` prefers the shared pool's score-100
+     accounts. That is correct routing, but it means "6 jobs sent" alone does not tell you *which*
+     account sent them:
+     ```bash
+     docker compose exec -T postgres psql -U postgres -d platform -c \
+       "SELECT a.smtp_username, j.state, count(*) FROM sender.jobs j
+          LEFT JOIN sender.accounts a ON a.id = j.assigned_account_id
+         WHERE j.user_id = '<tenant>' GROUP BY 1,2"
+     ```
+     It also explains a side effect worth expecting: the Stage 7 shared accounts (`step7@`, `s7b@`)
+     pick up traffic from these runs, so their `daily_sent_count` moves even though the campaign
+     belongs to a different tenant.
 4. Set `enforce` and repeat
    - **Pass:** the flag *is* set on the identical condition. **Return to `shadow` afterwards.**
+   - **Observed (live, 2026-07-29).** `PUT /v1/admin/config/autoquarantine_mode` → `enforce` (the
+     response confirms `default_value` still `shadow` — Rule 1: defaults are never mutated). A second
+     fresh tenant + fresh never-succeeded account on port 2599 — the *identical* condition — reached
+     score **27** at `cf=4` and this time `quarantined` **= true**, with a **real** event:
+     `action='quarantine'` (not `'updated'`), `reason='score_below_threshold'`, and
+     `from_flags ≠ to_flags`. **Exactly one** such row, not one per failing outcome — the decision is
+     idempotent once the flag is set.
+   - **The two runs also differ in a way worth noticing:** enforce stopped the bleeding at `cf=4`,
+     where shadow let the identical account run on to `cf=10`. That gap is precisely what the shadow
+     ladder is for — you see the decision you *would* have taken before granting it the power to act.
+   - **And the quarantine actually took effect on routing, which is the half a flag check misses.**
+     All **6** of the enforce tenant's jobs completed on the *shared fallback* accounts (`step7@`,
+     `s7b@`, 3 each) and **zero** on the quarantined account — its `daily_sent_count` stayed at 4, the
+     four attempts from before the flag was set. Enforce did not merely write a boolean; the
+     eligibility predicate stopped selecting the account, and the jobs re-routed instead of failing.
+     (This is the same live-stack behaviour `exitcriteria_test.go::TestExit_AuthFailureThenSendsViaDifferentAccount`
+     pins for the auth-failure class.)
+   - **Returned to `shadow` and verified it** (`value` = `{"v": "shadow"}` = `default_value`), then
+     restored the fixture account (port 1025, `unquarantine` → 200; its jobs had already drained via
+     the fallback pool, leaving zero non-terminal work).
 5. **Kill switches** — disable auto-pause, then content variation
    - **Pass:** each disables only its own behaviour
 6. **Health endpoint** — seed a known state and read it
@@ -619,7 +699,7 @@ Do not deploy until every line is true.
 - [x] **Database outage invents no outcomes** *(Stage 9 step 8, the guide's most important assertion. Postgres stopped 1m48s with a job genuinely in-flight. Brain stayed `running (healthy)`, **0 restarts**, backoff to a 30s re-probe cap, every line `loops remain PAUSED, no state invented`, singleton lock correctly marked not-held on `57P01`. `health` and `run` failed **closed** with only `{code, message, request_id}` while the internal reasons went to the log under the matching `request_id` (Rule 5, both directions, leak grep clean). Decisive: `jobs_total` 266→266, `send_logs` 265→**266** (exactly one new send, for the one job that needed it), and the 4 new `job_events` are seq **1089–1092** — the next four after the snapshot, so **zero rows were written during the outage**. Mailpit 16/16, zero duplicates)*
 - [x] Pool exhaustion waits rather than fails *(Stage 9 step 9, **both** verdicts, and walking it found the step itself was wrong — it said to disable every account and expect a WAIT, which correctly produces `failed` + `pool_exhausted: all eligible accounts terminal_blocked (§5.1)`. Per the locked §5.1 three-way verdict, quarantined/disabled/manually-paused is `terminal_blocked` → FAIL (needs a human; queueing forever behind a block nothing will lift would be dishonest), while daily-limit / at-limit / in-window-throttle is `self_recovering` → WAIT. Verified the WAIT path properly: 6 jobs `queued`, `attempt_count=0`, zero writes, `waiting_for_capacity: 6`. Re-opening ONE account via the automatic daily reset — `unpause` correctly refuses a non-manual pause with 422 — completed the **byte-identical six ids** on that account with `attempt_count` still 0 for four, so waiting burns no retry budget. Guide corrected; code untouched)*
 - [x] Panic switch halts and resumes losslessly *(Stage 10 steps 1–2, both directions and both the mid-flight flip and the stronger "launch a campaign INTO the halt" case, since a local campaign drains fast enough that the flip alone can pass vacuously. Halt proven by the event log — last `job_events` row 3s before the flip, zero after — not by a state snapshot, which can read a pre-flip commit and look like a violation. 10 jobs launched into the halt stayed `queued`/unassigned/`attempt_count=0` with nothing failed; `report` read clean `queued` with no internal reason; health showed `dispatch_paused: true` with `waiting_for_capacity: 0`, distinguishing an intentional halt from a capacity fault. Re-enabled: **byte-identical** 10 ids all `sent`, `attempt_count` still 0, exactly 4 events each — **40 rows, zero requeues, zero reclaims**. Also confirmed a halt does not block outcome persistence for work already in flight, which is correct: refusing it would strand a real send)*
-- [ ] Shadow mode logs without acting; enforce acts on the same condition
+- [x] Shadow mode logs without acting; enforce acts on the same condition *(Stage 10 steps 3–4, **live on the stack, not deferred to the unit suites** — a dead `smtp_port` (2599) makes the box report `connect_refused` → class `timeout`, which despite classify.go's "no penalty" comment (that means no *flag* action) is genuinely penalizing and drives the score. Needs a **never-succeeded** account: the formula `100 − 60·min(1,cf/5) − 15·prox − 25·recency` bottoms out near 40 for an account with a recent success, above the threshold of 30, so a warm account never trips. Shadow: score 100→27→15, `cf` to 10, **seven** `shadow_would_quarantine` rows all with `from_flags = to_flags`, `quarantined` false throughout, jobs requeuing normally. Third leg proven separately rather than assumed — a low score is only an ORDER BY term in `eligibility.go`, never a filter — and after restoring the port all 6 jobs `sent`, 1 Mailpit copy each, with **4 of 6 attributed to the score-15 account itself** (checked via `assigned_account_id`, because `default_shared_pool_id` puts a shared pool in every tenant's chain, so a job count alone does not say which account sent it). Enforce, second fresh account, identical condition: `quarantined=true` at `cf=4`/score 27 with a real `action='quarantine'`, `reason='score_below_threshold'`, `from_flags ≠ to_flags`, **exactly one** row — and the flag changed ROUTING, not just a boolean: all 6 of that tenant's jobs completed on the fallback accounts, **zero** on the quarantined one, which re-routed rather than failed. Enforce stopped at `cf=4` where shadow ran to `cf=10` — which is the point of the ladder)*
 - [ ] Health endpoint reflects true state; all three alerts fire
 - [ ] **KMS key restore drill passed**
 - [ ] Credential rotation completed without interruption

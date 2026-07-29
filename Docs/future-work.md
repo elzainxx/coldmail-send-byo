@@ -123,6 +123,15 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 > the sink would let an operator *see* a 550 become a `bounced` job end-to-end rather than trust a Go
 > suite. Not a deploy blocker; it is why Stage 9 steps 1–4 are marked "covered by suite" rather than
 > hand-ticked.
+>
+> **Scope correction (2026-07-29, Stage 10 steps 3–4).** The gap is narrower than "no live failure
+> injection." Pointing an account's `smtp_port` at a dead port makes the box report `connect_refused`
+> → class `timeout` — a real box-reported penalizing failure that exercises the score model,
+> `consecutive_failures`, the backoff ladder, and the whole auto-quarantine shadow/enforce ladder on
+> the live stack, with no hand-written rows. Stage 10 steps 3–4 are closed that way. What a dead port
+> cannot do is select a *class*: it is always `timeout`. So the missing capability is specifically
+> **controlling the SMTP reply code** — which is what still blocks Stage 9 steps 1–4 (`auth_failure`,
+> `bounce_permanent`, `transport_4xx`, `throttle`), and only those.
 
 | Defect | Evidence | Why not fixed here |
 |---|---|---|
