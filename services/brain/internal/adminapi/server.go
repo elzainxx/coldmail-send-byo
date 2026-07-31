@@ -9,11 +9,12 @@ import (
 )
 
 // SystemUserID is the reserved platform/system user_id (§0.1, ruling 2): the all-zero UUID.
-// It is the user_id of shared pools and of accounts assigned to shared pools ("owned by the
-// platform/module, not by any end user"). gen_random_uuid() (UUID v4) can never produce it, so
-// it never collides with a real public.users(id). The module has SELECT-only on public.users and
-// CANNOT seed it — the platform must (a coordination item); a pre-flight check gates shared-pool
-// creates until the row exists (§0.1).
+// gen_random_uuid() (UUID v4) can never produce it, so it never collides with a real
+// public.users(id). The module has SELECT-only on public.users and CANNOT seed it — the platform
+// must (a coordination item). Pre-G2 this was also the owning user_id of shared pools and
+// accounts assigned to them; that use died with byosmtp.pools (M3-P2-OD-6/§2.1.1) — it survives
+// today only as the fixed id test fixtures and dev seeding use for "the platform/module's own
+// account," not any end user's.
 const SystemUserID = "00000000-0000-0000-0000-000000000000"
 
 // Server is the operator admin API. It holds the DB pool (as byosmtp_module), the Encrypt-only
