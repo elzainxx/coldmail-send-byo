@@ -35,8 +35,7 @@ func TestLeadershipGate_NoDispatchWhileLockUnheld(t *testing.T) {
 	env := newDispatchEnv(t, "leadergate")
 	ctx := context.Background()
 
-	poolID := env.seedPool(t)
-	env.seedAccount(t, poolID, "s3cret")
+	env.seedAccount(t, "s3cret")
 	env.addBox(t)
 
 	// --- NEGATIVE CONTROL FIRST (leadership held == false) -----------------------------------
@@ -89,14 +88,14 @@ func TestLeadershipGate_NoDispatchWhileLockUnheld(t *testing.T) {
 
 	// --- PAIRED POSITIVE CONTROL (leadership held == true) -----------------------------------
 	// Without this, "nothing dispatched" above proves nothing: a broken fixture (no account, no box,
-	// unroutable pool) would produce identical assertions. Flip ONLY leadership — same job, same
-	// dispatcher, same config, same gate function; one bool changes.
+	// unroutable account set) would produce identical assertions. Flip ONLY leadership — same job,
+	// same dispatcher, same config, same gate function; one bool changes.
 	leader = true
 	r.tick(ctx)
 
 	state, _, _, _, attempt = env.jobState(t, jobID)
 	if state == "queued" {
-		t.Fatal("POSITIVE CONTROL FAILED: the very same job did not dispatch even as leader, so the negative control above proves nothing about the leadership gate — fixture is broken (check pool/account/box seeding)")
+		t.Fatal("POSITIVE CONTROL FAILED: the very same job did not dispatch even as leader, so the negative control above proves nothing about the leadership gate — fixture is broken (check account/box seeding)")
 	}
 	if got := env.px.pushCount(); got != pushesBefore+1 {
 		t.Fatalf("POSITIVE CONTROL FAILED: pusher saw %d push(es) as leader, want exactly 1 — the negative control is not attributable to the gate", got-pushesBefore)
@@ -121,8 +120,7 @@ func TestLeadershipGate_LowLevelTickIsDeliberatelyUngated(t *testing.T) {
 	env := newDispatchEnv(t, "leadergateboundary")
 	ctx := context.Background()
 
-	poolID := env.seedPool(t)
-	env.seedAccount(t, poolID, "s3cret")
+	env.seedAccount(t, "s3cret")
 	env.addBox(t)
 
 	env.d.SetLeadership(func(context.Context) bool { return false })
@@ -215,8 +213,7 @@ func TestSingletonRealLockLossPausesDispatch(t *testing.T) {
 	env := newDispatchEnv(t, "leaderreallock")
 	ctx := context.Background()
 
-	poolID := env.seedPool(t)
-	env.seedAccount(t, poolID, "s3cret")
+	env.seedAccount(t, "s3cret")
 	env.addBox(t)
 
 	// A real Guard holding a real session-level advisory lock on this clone.
@@ -295,8 +292,7 @@ func TestSingletonReacquireResumesDispatch(t *testing.T) {
 	env := newDispatchEnv(t, "leaderreacquire")
 	ctx := context.Background()
 
-	poolID := env.seedPool(t)
-	env.seedAccount(t, poolID, "s3cret")
+	env.seedAccount(t, "s3cret")
 	env.addBox(t)
 
 	guard, err := singleton.Acquire(ctx, env.moduleDSN, 5*time.Second)

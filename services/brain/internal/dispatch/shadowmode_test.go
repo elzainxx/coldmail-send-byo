@@ -23,8 +23,7 @@ import (
 func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 	e := newDispatchEnv(t, "shadowauth")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acctShadow := e.seedAccount(t, pool, "sec-shadow")
+	acctShadow := e.seedAccount(t, "sec-shadow")
 	jobShadow := e.seedQueuedJob(t, "shadow@example.com")
 
 	e.setConfigStr(t, "autoquarantine_mode", "shadow")
@@ -87,7 +86,7 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 	// PAIRED POSITIVE CONTROL: promote to enforce and drive the IDENTICAL condition on a fresh
 	// account. This time quarantined=true and a REAL 'quarantine' event is written.
 	e.setConfigStr(t, "autoquarantine_mode", "enforce")
-	acctEnforce := e.seedAccount(t, pool, "sec-enforce")
+	acctEnforce := e.seedAccount(t, "sec-enforce")
 	jobEnforce := e.seedQueuedJob(t, "enforce@example.com")
 	e.dispatchToSending(t, jobEnforce)
 	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: jobEnforce, Outcome: boxproto.OutcomeError,
@@ -114,8 +113,7 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 	e := newDispatchEnv(t, "quaroff")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec-off")
+	acct := e.seedAccount(t, "sec-off")
 	job := e.seedQueuedJob(t, "off@example.com")
 	e.setConfigStr(t, "autoquarantine_mode", "off")
 
@@ -150,8 +148,7 @@ func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 // this switch) still fires normally — proving the kill-switch is scoped to its own subsystem.
 func TestKillSwitch_AutopauseDisablesOnlyAutopause(t *testing.T) {
 	e := newDispatchEnv(t, "autopauseoff")
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec-throttle")
+	acct := e.seedAccount(t, "sec-throttle")
 	job := e.seedQueuedJob(t, "throttle@example.com")
 
 	e.setConfigBool(t, "autopause_enabled", false)
@@ -170,7 +167,7 @@ func TestKillSwitch_AutopauseDisablesOnlyAutopause(t *testing.T) {
 	// Positive control: the SAME throttle condition on a fresh account WITH the switch on DOES pause.
 	e.px.freeAllBoxes() // the single test box is still marked in-flight from the first dispatch
 	e.setConfigBool(t, "autopause_enabled", true)
-	acct2 := e.seedAccount(t, pool, "sec-throttle2")
+	acct2 := e.seedAccount(t, "sec-throttle2")
 	job2 := e.seedQueuedJob(t, "throttle2@example.com")
 	e.dispatchToSending(t, job2)
 	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job2, Outcome: boxproto.OutcomeError,
@@ -188,8 +185,7 @@ func TestKillSwitch_AutopauseDisablesOnlyAutopause(t *testing.T) {
 func TestKillSwitch_VariationDisablesEntireLayer(t *testing.T) {
 	e := newDispatchEnv(t, "variationoff")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	e.seedQueuedJob(t, "varoff@example.com")
 
 	// Turn ON an individual toggle so a naive "each toggle already defaults off" implementation

@@ -19,8 +19,7 @@ import (
 func TestDrain_StopsClaimingThenLeavesInFlightInPlace(t *testing.T) {
 	e := newDispatchEnv(t, "drainleave")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	e.addBox(t) // a second box so two jobs can be in flight at once
 
 	// Two jobs driven into flight the real way (claim → resolve → push → sending).
@@ -157,8 +156,7 @@ func (e *dispatchEnv) leaseOf(t *testing.T, jobID string) *time.Time {
 func TestDrain_ReturnsEarlyWhenEverythingReports(t *testing.T) {
 	e := newDispatchEnv(t, "drainearly")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "prompt-report@example.com")
 	e.dispatchToSending(t, job)
@@ -203,8 +201,7 @@ func TestDrain_ReturnsEarlyWhenEverythingReports(t *testing.T) {
 func TestDrain_SigkillAndGracefulConvergeOnTheSameRecoveredState(t *testing.T) {
 	e := newDispatchEnv(t, "drainkill")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	e.addBox(t)
 
 	graceful := e.seedQueuedJob(t, "graceful-arm@example.com")
@@ -296,8 +293,7 @@ func TestDrain_UsesSeededTimeoutAndNeverBlocksOnASickDB(t *testing.T) {
 		t.Fatalf("seeded shutdown_drain_timeout_sec is %d, want 30 (sender_0019 seed drifted; main.go's drain window comes from this key, not a constant)", cfg.ShutdownDrainTimeoutSec)
 	}
 
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "sickdb-drain@example.com")
 	e.dispatchToSending(t, job)
 

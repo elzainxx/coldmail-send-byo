@@ -102,14 +102,13 @@ func (e *dispatchEnv) oneEventIDWithBothFKs(t *testing.T, jobID string) string {
 	return id
 }
 
-// dispatchAndSettle seeds a pool + one eligible account, then drives one job all the way to a
+// dispatchAndSettle seeds one eligible account, then drives one job all the way to a
 // terminal state through the REAL dispatch and outcome paths, so its job_events rows carry genuinely
 // trigger-written account_id and box_id rather than values a test INSERTed. That matters: the defect
 // is in what the FK maintenance update does to rows the system itself wrote.
 func (e *dispatchEnv) dispatchAndSettle(t *testing.T, recipient string) string {
 	t.Helper()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "s3cret-carveout")
+	e.seedAccount(t, "s3cret-carveout")
 	job := e.seedQueuedJob(t, recipient)
 	e.dispatchToSending(t, job)
 	e.settleAllSending(t)
@@ -343,8 +342,7 @@ func TestFKCarveout_NegativeControls(t *testing.T) {
 		`SELECT assigned_account_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
-	pool := e.seedPool(t)
-	other := e.seedAccount(t, pool, "s3cret-other")
+	other := e.seedAccount(t, "s3cret-other")
 	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("legitimate account delete (setup for case d): %v", err)
 	}
@@ -368,8 +366,7 @@ func TestFKCarveout_NoHistoryAccountStillDeletes(t *testing.T) {
 	e := newDispatchEnv(t, "fkcarve5")
 	ctx := context.Background()
 
-	pool := e.seedPool(t)
-	fresh := e.seedAccount(t, pool, "s3cret-fresh")
+	fresh := e.seedAccount(t, "s3cret-fresh")
 
 	var n int
 	if err := e.admin.QueryRow(ctx,

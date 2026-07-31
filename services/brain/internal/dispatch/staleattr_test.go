@@ -29,8 +29,7 @@ import (
 func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	e := newDispatchEnv(t, "staleattr")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	// A SECOND real box row, so the re-dispatch genuinely lands on a different box.
 	box2 := seedBox(t, e.admin)

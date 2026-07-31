@@ -53,8 +53,7 @@ import (
 func TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome(t *testing.T) {
 	e := newDispatchEnv(t, "rescanfi_jobfirst")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
@@ -146,8 +145,7 @@ func TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome(t *testing.T) {
 func TestRescan_ForcedInterleave_AccountHeldThenRescan(t *testing.T) {
 	e := newDispatchEnv(t, "rescanfi_acctfirst")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
 
 	job := e.seedQueuedJob(t, "fi2@example.com")

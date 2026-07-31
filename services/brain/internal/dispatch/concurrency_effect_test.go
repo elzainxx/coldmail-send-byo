@@ -19,8 +19,7 @@ import (
 func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 	e := newDispatchEnv(t, "concurfx")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	// Give a recent success so the score stays high — we want the quarantine to come ONLY from the
 	// auth_failure trigger (§4.2a), not from a score dip, so the test isolates the flag race.
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {

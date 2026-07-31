@@ -1,5 +1,5 @@
 // loop.go — the Phase-4 polling dispatch loop (§1.2): one tick snapshots ground truth, computes
-// per-user lanes, applies the pre-claim pool-eligibility gate (§1.2/§6, P4-5), visits active
+// per-user lanes, applies the pre-claim account-eligibility gate (§1.2/§6, P4-5), visits active
 // campaigns in fairness-cursor order (§5), claims per active user (§1.1), and turns each claimed
 // job into a push_job handoff. This is the PRODUCTION driver; TryDispatch (dispatch.go) is the
 // Phase-3 single-shot primitive kept for its own behavioral tests.
@@ -79,12 +79,12 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		return cfg, 0, err
 	}
 
-	// Phase B: available lanes (the ceiling) + the pre-claim pool-eligibility gate (§1.2/§6, P4-5).
-	// lanes[U] = max(0, ceiling - in_flight[U]); a user already at ceiling is skipped (frees no
-	// churn). A user whose resolved pool chain has ZERO eligible accounts — including an empty
-	// chain from an unset/invalid default_shared_pool_id, §4.3 — is likewise skipped: their jobs
-	// stay queued, untouched, no claim/requeue churn, no job_events flooding under sustained
-	// exhaustion (the rare-race requeue in resolveAndPush remains the only backstop).
+	// Phase B: available lanes (the ceiling) + the pre-claim account-eligibility gate (§1.2/§6,
+	// P4-5). lanes[U] = max(0, ceiling - in_flight[U]); a user already at ceiling is skipped (frees
+	// no churn). A user with ZERO eligible accounts — including zero accounts at all — is likewise
+	// skipped: their jobs stay queued, untouched, no claim/requeue churn, no job_events flooding
+	// under sustained exhaustion (the rare-race requeue in resolveAndPush remains the only
+	// backstop).
 	// A per-user gate-check error must not abort the whole tick either (same no-starvation
 	// reasoning as the claim loop below): log and skip that ONE user for this tick, leave every
 	// other active user's gate evaluation unaffected.

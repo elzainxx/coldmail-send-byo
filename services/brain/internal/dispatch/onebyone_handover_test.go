@@ -41,11 +41,10 @@ func TestOneByOne_HandsOverBeforeExhaustion_WithEqualLimitControl(t *testing.T) 
 	// --- HALF 1: UNEQUAL limits → the small-limit leader hands over while still eligible. ---
 	t.Run("unequal_limits_hand_over_before_exhaustion", func(t *testing.T) {
 		e := newDispatchEnv(t, "obohandover")
-		pool := e.seedPoolWithStrategy(t, "one_by_one")
 		cfg := e.mustLoadConfig(t)
 
-		a1 := e.seedAccount(t, pool, "s1")
-		a2 := e.seedAccount(t, pool, "s2")
+		a1 := e.seedAccount(t, "s1")
+		a2 := e.seedAccount(t, "s2")
 
 		// The SMALL limit must land on the account that will actually LEAD, or this test proves nothing:
 		// both start tied at score 100, so `defaultAccountOrderBy`'s `a.id ASC` tiebreak decides the
@@ -133,11 +132,10 @@ func TestOneByOne_HandsOverBeforeExhaustion_WithEqualLimitControl(t *testing.T) 
 	// spread, this half fails — so the two halves cannot both be satisfied by a regression.
 	t.Run("equal_limits_are_fully_sticky", func(t *testing.T) {
 		e := newDispatchEnv(t, "obosticky")
-		pool := e.seedPoolWithStrategy(t, "one_by_one")
 		cfg := e.mustLoadConfig(t)
 
-		a1 := e.seedAccount(t, pool, "s1")
-		a2 := e.seedAccount(t, pool, "s2")
+		a1 := e.seedAccount(t, "s1")
+		a2 := e.seedAccount(t, "s2")
 		// IDENTICAL limits: dailyProx moves in lockstep, so the scores stay equal and `a.id ASC`
 		// keeps the same leader for the whole run.
 		e.setAccountDailyState(t, a1, 1000, 0, todayUTC(), false, nil)

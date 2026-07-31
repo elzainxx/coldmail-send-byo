@@ -2,13 +2,16 @@ package adminapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"regexp"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const maxBodyBytes = 1 << 20 // 1 MiB — an admin JSON body is small; cap defensively.
@@ -86,4 +89,21 @@ const (
 	sqlstateForeignKeyViolation = "23503"
 	sqlstateCheckViolation      = "23514"
 	sqlstateInsufficientPriv    = "42501"
+)
+
+// pgxDB is the subset of pgxpool.Pool / pgx.Tx used by the stores, so a store function works
+// against both a pool (single-statement reads) and a transaction (the audited write paths).
+// Relocated verbatim from pool_store.go (M3-P2-OD-5) — account_store.go, config_store.go, and
+// config_ordering_write.go all depend on it, so it moved to this shared file rather than dying
+// with the pool files.
+type pgxDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// Compile-time proof both a pool and a tx satisfy pgxDB.
+var (
+	_ pgxDB = (*pgxpool.Pool)(nil)
+	_ pgxDB = (pgx.Tx)(nil)
 )

@@ -1,12 +1,14 @@
 package adminapi
 
-// health_alerts.go — Phase 9.5 B4 (§4): the three critical alert conditions surfaced in the B3
-// health endpoint's active_conditions[] block, plus the optional outbound webhook. Additive,
-// read-mostly (the webhook POST is the only outbound effect anywhere in this file — no job/account
-// state is ever written here): buildActiveConditions issues a few small read-only queries beyond
-// the already-computed B3 snapshot (§4.1's "fires when" column needs data — waiting jobs per
-// exhausted pool, recent enforce-mode quarantines, currently-stale boxes — that healthSnapshot does
-// not carry verbatim); it never claims, locks, or mutates byosmtp.jobs/accounts/boxes.
+// health_alerts.go — Phase 9.5 B4 (§4): the critical alert conditions surfaced in the B3 health
+// endpoint's active_conditions[] block, plus the optional outbound webhook. Additive, read-mostly
+// (the webhook POST is the only outbound effect anywhere in this file — no job/account state is
+// ever written here): buildActiveConditions issues a few small read-only queries beyond the
+// already-computed B3 snapshot; it never claims, locks, or mutates byosmtp.jobs/accounts/boxes.
+//
+// pool_exhausted (originally §4.1 row 1) was REMOVED at G2 (M3-P2-OD-12), not merely its query —
+// the condition disappears along with byosmtp.pools. M3-P1-OD-9 already named
+// no_eligible_accounts as its Phase-7-owned replacement.
 
 import (
 	"bytes"
@@ -34,25 +36,18 @@ type activeConditionJSON struct {
 // per-condition table, since there is nothing yet to vary it by.
 const severityCritical = "critical"
 
-// buildActiveConditions evaluates the §4.1 conditions. It takes the ALREADY-COMPUTED B3 snapshot so
-// it never re-derives queue/box/account counts, but each condition's DETAIL (which pool, how many
-// waiting jobs, which account, which box, since when) needs data the snapshot does not carry
-// per-row, so this issues its own small read-only queries scoped to exactly what §4.2's jsonc
-// example shows. windowSec (from snap) bounds the account_quarantined lookup to the SAME
-// health_metrics_window_sec the rest of the endpoint uses (§6) — a condition that fired long before
-// the window but has not yet cleared is still caught by the two live-state conditions
-// (pool_exhausted from the live snapshot, box_death from the box's CURRENT status='stale'); only
-// account_quarantined has no persistent "still true" flag to re-derive from (a quarantine is a past
-// event, not a current row state), so it is inherently window-scoped — an enforce quarantine seen
-// once inside the window surfaces once, ages out, and does not recur unless a new one lands.
+// buildActiveConditions evaluates the surviving §4.1 conditions. It takes the ALREADY-COMPUTED B3
+// snapshot so it never re-derives queue/box/account counts, but each condition's DETAIL (which
+// account, which box, since when) needs data the snapshot does not carry per-row, so this issues
+// its own small read-only queries. windowSec (from snap) bounds the account_quarantined lookup to
+// the SAME health_metrics_window_sec the rest of the endpoint uses (§6) — a condition that fired
+// long before the window but has not yet cleared is still caught by the live-state condition
+// (box_death from the box's CURRENT status='stale'); account_quarantined has no persistent "still
+// true" flag to re-derive from (a quarantine is a past event, not a current row state), so it is
+// inherently window-scoped — an enforce quarantine seen once inside the window surfaces once, ages
+// out, and does not recur unless a new one lands.
 func buildActiveConditions(ctx context.Context, db *pgxpool.Pool, snap healthSnapshot) ([]activeConditionJSON, error) {
 	conditions := []activeConditionJSON{}
-
-	pe, err := queryPoolExhaustedConditions(ctx, db, snap)
-	if err != nil {
-		return nil, err
-	}
-	conditions = append(conditions, pe...)
 
 	aq, err := queryAccountQuarantinedConditions(ctx, db, snap.WindowSec)
 	if err != nil {
@@ -67,58 +62,6 @@ func buildActiveConditions(ctx context.Context, db *pgxpool.Pool, snap healthSna
 	conditions = append(conditions, bd...)
 
 	return conditions, nil
-}
-
-// queryPoolExhaustedConditions implements §4.1 row 1: an eligible pool (snap.Pools already computed
-// this — headroom=="exhausted") fires ONLY while >=1 job is waiting on it (a newly-created, never-
-// used pool with zero accounts must not alarm an operator who hasn't routed anything to it yet).
-// "waiting on it" is scoped to jobs whose owning user's resolved chain includes this pool (the SAME
-// visibility rule queryWaitingForCapacity/queryPoolHeadroom already use) — reusing that exact
-// predicate per-pool rather than a second, potentially-drifting definition of "waiting".
-func queryPoolExhaustedConditions(ctx context.Context, db *pgxpool.Pool, snap healthSnapshot) ([]activeConditionJSON, error) {
-	var exhausted []poolHeadroom
-	for _, p := range snap.Pools {
-		if p.Headroom == "exhausted" {
-			exhausted = append(exhausted, p)
-		}
-	}
-	if len(exhausted) == 0 {
-		return nil, nil
-	}
-
-	var out []activeConditionJSON
-	for _, p := range exhausted {
-		var waiting int
-		var since *time.Time
-		const q = `
-WITH pool_users AS (
-    SELECT qu.user_id
-    FROM (SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state = 'queued') qu
-    JOIN byosmtp.pools pl ON pl.id = $1
-    WHERE pl.enabled = TRUE AND (pl.owner_user_id = qu.user_id OR pl.kind = 'shared')
-)
-SELECT COUNT(*), MIN(j.created_at)
-  FROM byosmtp.jobs j
-  JOIN pool_users pu ON pu.user_id = j.user_id
- WHERE j.state = 'queued'`
-		if err := db.QueryRow(ctx, q, p.PoolID).Scan(&waiting, &since); err != nil {
-			return nil, err
-		}
-		if waiting == 0 {
-			continue // exhausted but nothing is actually waiting on it — §4.1 does not fire
-		}
-		sinceStr := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-		if since != nil {
-			sinceStr = since.UTC().Format("2006-01-02T15:04:05Z")
-		}
-		out = append(out, activeConditionJSON{
-			Condition: "pool_exhausted",
-			Severity:  severityCritical,
-			Detail:    map[string]any{"pool_id": p.PoolID, "waiting_jobs": waiting},
-			Since:     sinceStr,
-		})
-	}
-	return out, nil
 }
 
 // queryAccountQuarantinedConditions implements §4.1 row 2: a REAL enforce-mode quarantine only —
@@ -257,11 +200,11 @@ func (a *alertDedup) clearStale(currentKeys map[string]bool) {
 var defaultAlertDedup = newAlertDedup()
 
 // dedupKey identifies a condition's subject for the rising-edge tracker. subject_id is whichever
-// detail field names the condition's subject (pool_id / account_id / box_id, per §4.1); a condition
-// this file adds later without one of those three keys degrades to the empty string, which still
-// dedups correctly (one key per condition type in that case) rather than failing to build a key.
+// detail field names the condition's subject (account_id / box_id, per §4.1); a condition this
+// file adds later without one of those keys degrades to the empty string, which still dedups
+// correctly (one key per condition type in that case) rather than failing to build a key.
 func dedupKey(c activeConditionJSON) string {
-	for _, k := range []string{"pool_id", "account_id", "box_id"} {
+	for _, k := range []string{"account_id", "box_id"} {
 		if v, ok := c.Detail[k]; ok {
 			return c.Condition + ":" + fmt.Sprint(v)
 		}
@@ -342,8 +285,6 @@ func postWebhookWithRetry(webhookURL string, c activeConditionJSON) {
 // webhookSubjectFrom maps a condition's detail to the §4.3 {type, id} subject shape.
 func webhookSubjectFrom(c activeConditionJSON) (subjectType, subjectID string) {
 	switch c.Condition {
-	case "pool_exhausted":
-		return "pool", fmt.Sprint(c.Detail["pool_id"])
 	case "account_quarantined":
 		return "account", fmt.Sprint(c.Detail["account_id"])
 	case "box_death":

@@ -37,13 +37,12 @@ func skipNearUTCHourBoundary(t *testing.T) {
 	}
 }
 
-// TestDailyResetHour_ShiftsTheEligibilityBoundary — poolHasEligible flips for an IDENTICAL account
+// TestDailyResetHour_ShiftsTheEligibilityBoundary — userHasEligible flips for an IDENTICAL account
 // row when only daily_reset_hour changes.
 func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 	skipNearUTCHourBoundary(t)
 	e := newDispatchEnv(t, "resethour")
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	dayAtHour23 := todayInTZForHour(23)
 	e.setAccountDailyState(t, acct, 10, 10, dayAtHour23, false, nil)
@@ -51,7 +50,7 @@ func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 	// hour=23: daily_reset_day == today_in_tz(23) -> current cycle, at-limit -> INELIGIBLE.
 	has23, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 23, 900)
 	if err != nil {
-		t.Fatalf("poolHasEligible(hour=23): %v", err)
+		t.Fatalf("userHasEligible(hour=23): %v", err)
 	}
 	if has23 {
 		t.Fatalf("account reported eligible at hour=23 despite being at-limit for that hour's current cycle (daily_reset_day=%s)", dayAtHour23)
@@ -62,31 +61,30 @@ func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 	// now STALE (< today_in_tz) -> stale-reset branch admits an unpaused account -> ELIGIBLE.
 	has0, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 0, 900)
 	if err != nil {
-		t.Fatalf("poolHasEligible(hour=0): %v", err)
+		t.Fatalf("userHasEligible(hour=0): %v", err)
 	}
 	if !has0 {
 		t.Fatalf("account still reported ineligible at hour=0 (daily_reset_day=%s, today_in_tz(0)=%s) — daily_reset_hour is not genuinely shifting the boundary", dayAtHour23, todayInTZForHour(0))
 	}
 
-	// Anti-vacuity: re-checking hour=23 again is still ineligible (poolHasEligible is read-only and
+	// Anti-vacuity: re-checking hour=23 again is still ineligible (userHasEligible is read-only and
 	// idempotent — the earlier flip was caused by the hour PARAMETER, not a side effect of the call).
 	has23Again, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 23, 900)
 	if err != nil {
-		t.Fatalf("poolHasEligible(hour=23, recheck): %v", err)
+		t.Fatalf("userHasEligible(hour=23, recheck): %v", err)
 	}
 	if has23Again {
-		t.Fatal("account became eligible at hour=23 on the SECOND check — poolHasEligible must be read-only and idempotent")
+		t.Fatal("account became eligible at hour=23 on the SECOND check — userHasEligible must be read-only and idempotent")
 	}
 }
 
 // TestDailyResetHour_ReachesAccountConsumeAndScoreRecompute — the SAME dial reaches the two other
 // call sites this closeout wired (accountConsume's atomic consume, and the lazy-reset counter
-// zeroing), not just the read-only poolHasEligible predicate. Uses the identical construction.
+// zeroing), not just the read-only userHasEligible predicate. Uses the identical construction.
 func TestDailyResetHour_ReachesAccountConsumeAndScoreRecompute(t *testing.T) {
 	skipNearUTCHourBoundary(t)
 	e := newDispatchEnv(t, "resethourconsume")
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	dayAtHour23 := todayInTZForHour(23)
 	e.setAccountDailyState(t, acct, 10, 10, dayAtHour23, false, nil)

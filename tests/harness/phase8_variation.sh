@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # phase8_variation.sh — the Phase-8 content-variation LIVE behavioral suite. Drives the running
 # compose stack (real Brain, real box over real mTLS, real Mailpit) end to end, sourced by run.sh
-# AFTER phase3_send.sh (reuses its pool/account fixtures + $ADMKEY/$PLTOK/$SYSUSER/$DC/$PSQL/
+# AFTER phase3_send.sh (reuses its account fixture + $ADMKEY/$PLTOK/$SYSUSER/$DC/$PSQL/
 # $PSQL1). NEVER mocks (CLAUDE.md Rule 3).
 #
 # Covers what only the whole real pipe can prove:

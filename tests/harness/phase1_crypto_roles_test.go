@@ -50,7 +50,6 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 
 	c := Connect(t, cloneDSN)
 	uid := SeedUser(t, c, "t4@example.com")
-	poolID := SeedSharedPool(t, c, uid, "t4-pool")
 
 	// 32-byte AES-256 key held ONLY here (never in the DB).
 	key := make([]byte, 32)
@@ -62,7 +61,7 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 
 	// Insert an account row with a placeholder, then read back its id to build the AAD, then
 	// UPDATE with the correctly-bound ciphertext (AAD needs the real account.id).
-	accID := insertAccount(t, c, uid, poolID, []byte("placeholder-ct-16b"), keyID, make([]byte, 12))
+	accID := insertAccount(t, c, uid, []byte("placeholder-ct-16b"), keyID, make([]byte, 12))
 
 	accUUID := uuidBytes(t, accID)
 	nonce := make([]byte, 12)
@@ -123,7 +122,7 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 	// account.id ‖ credential_key_id binds ciphertext to its row: transplant this ciphertext+
 	// nonce into a DIFFERENT account row and decrypt with THAT row's AAD => fails closed. This
 	// is the locked encode contract Phase 2 carries forward (its test T2b). ---
-	accID2 := insertAccount(t, c, uid, poolID, gotCT, keyID, gotNonce) // same ct/nonce, new row/id
+	accID2 := insertAccount(t, c, uid, gotCT, keyID, gotNonce) // same ct/nonce, new row/id
 	acc2UUID := uuidBytes(t, accID2)
 	if _, err := aesGCMDecrypt(key, gotCT, gotNonce, aadFor(acc2UUID, keyID)); err == nil {
 		t.Fatal("D: transplanted ciphertext decrypted under a different account's AAD (row-binding broken)")
@@ -147,7 +146,7 @@ func TestT5_ModuleRoleDeniedPlatformWrite(t *testing.T) {
 	cloneDSN, cleanup := CloneDB(t, adminDSN, template, "t5role")
 	defer cleanup()
 
-	// Seed a platform row + pool as admin (privileged).
+	// Seed a platform row as admin (privileged).
 	admin := Connect(t, cloneDSN)
 	uid := SeedUser(t, admin, "t5@example.com")
 	itemID := SeedJobItem(t, admin, uid, uid, "rcpt-t5@example.com")
@@ -324,9 +323,8 @@ func TestT3e_RLSDefaultDenyBackstopsMisgrant(t *testing.T) {
 
 	admin := Connect(t, cloneDSN)
 	uid := SeedUser(t, admin, "t3e@example.com")
-	poolID := SeedSharedPool(t, admin, uid, "t3e-pool")
 	// Seed one accounts row (real committed) so the table is non-empty.
-	insertAccount(t, admin, uid, poolID, []byte("0123456789abcdef0"), "test-key-v1", make([]byte, 12))
+	insertAccount(t, admin, uid, []byte("0123456789abcdef0"), "test-key-v1", make([]byte, 12))
 
 	// Anti-vacuity: byosmtp_module sees the row (permissive policy admits it).
 	m := moduleConn(t, cloneDSN)
@@ -386,7 +384,6 @@ func TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext(t *testing.T) {
 	// The admin/superuser-class connection (dev superuser) — the strongest DB-plane actor.
 	su := Connect(t, cloneDSN)
 	uid := SeedUser(t, su, "t3f@example.com")
-	poolID := SeedSharedPool(t, su, uid, "t3f-pool")
 
 	// Encrypt a known secret with a key held ONLY in this harness process (never the DB).
 	key := make([]byte, 32)
@@ -395,7 +392,7 @@ func TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext(t *testing.T) {
 	}
 	const keyID = "test-key-v1"
 	secret := []byte("t3f-super-secret-smtp-pw")
-	accID := insertAccount(t, su, uid, poolID, []byte("placeholder-ct-16b"), keyID, make([]byte, 12))
+	accID := insertAccount(t, su, uid, []byte("placeholder-ct-16b"), keyID, make([]byte, 12))
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatalf("rand nonce: %v", err)
@@ -437,10 +434,14 @@ func TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext(t *testing.T) {
 
 // TestT7_CheckConstraintsRejectInvalid — DB-level guard test for the hand-written Phase 1 CHECK
 // constraints that are testable against the schema alone (no dispatcher logic): the pause_reason
-// invariant, the 2000-char error-message cap, and the pool self-fallback ban. Each invalid value
-// must be rejected with 23514 check_violation; each is PAIRED with a valid positive control that
-// succeeds (anti-vacuity — proves the constraint is the thing rejecting, not some unrelated
-// error). This is the DB-level verification proposed in phase1-drafts/07-test-plan.md §6.
+// invariant and the 2000-char error-message cap. Each invalid value must be rejected with 23514
+// check_violation; each is PAIRED with a valid positive control that succeeds (anti-vacuity —
+// proves the constraint is the thing rejecting, not some unrelated error). This is the DB-level
+// verification proposed in phase1-drafts/07-test-plan.md §6.
+//
+// Sub-case (3), pools_fallback_not_self_check, is DELETED at G2 (Docs/phase-2-strip-shared-pool.md
+// §4.1's DELETE bucket): its subject, byosmtp.pools.fallback_pool_id, no longer exists — the
+// fallback-chain concept and the whole table go with it.
 func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 	adminDSN := AdminDSN(t)
 	template := requireTemplate(t)
@@ -451,7 +452,6 @@ func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 
 	c := Connect(t, cloneDSN)
 	uid := SeedUser(t, c, "t7@example.com")
-	poolID := SeedSharedPool(t, c, uid, "t7-pool")
 
 	isCheckViolation := func(err error) bool {
 		if err == nil {
@@ -463,16 +463,16 @@ func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 
 	// (1) accounts_pause_reason_check: paused=TRUE with NULL pause_reason is INVALID.
 	acctBad := `INSERT INTO byosmtp.accounts
-	  (user_id,pool_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
-	  VALUES ($1,$2,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,NULL)`
-	if _, err := c.Exec(ctx, acctBad, uid, poolID); !isCheckViolation(err) {
+	  (user_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
+	  VALUES ($1,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,NULL)`
+	if _, err := c.Exec(ctx, acctBad, uid); !isCheckViolation(err) {
 		t.Fatalf("pause_reason: paused=TRUE, reason=NULL should be 23514, got: %v", err)
 	}
 	// positive control: paused=TRUE with a reason succeeds.
 	acctOK := `INSERT INTO byosmtp.accounts
-	  (user_id,pool_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
-	  VALUES ($1,$2,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,'daily_limit')`
-	if _, err := c.Exec(ctx, acctOK, uid, poolID); err != nil {
+	  (user_id,smtp_host,smtp_port,smtp_username,credential_ciphertext,credential_key_id,credential_nonce,from_address,paused,pause_reason)
+	  VALUES ($1,'h',587,'u','\x00','k','\x00','a@b.co',TRUE,'daily_limit')`
+	if _, err := c.Exec(ctx, acctOK, uid); err != nil {
 		t.Fatalf("pause_reason positive control (paused=TRUE, reason=daily_limit) failed: %v", err)
 	}
 
@@ -495,28 +495,13 @@ func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 	if _, err := c.Exec(ctx, jobOver, item2, uid, atCap); err != nil {
 		t.Fatalf("last_error_message 2000-char positive control failed: %v", err)
 	}
-
-	// (3) pools_fallback_not_self_check: a pool cannot be its own fallback.
-	// Insert a pool, then UPDATE it to point fallback at itself => 23514.
-	var p2 string
-	if err := c.QueryRow(ctx,
-		"INSERT INTO byosmtp.pools (user_id,kind,name) VALUES ($1,'shared','t7-fb') RETURNING id", uid).Scan(&p2); err != nil {
-		t.Fatalf("seed pool2: %v", err)
-	}
-	if _, err := c.Exec(ctx, "UPDATE byosmtp.pools SET fallback_pool_id=id WHERE id=$1", p2); !isCheckViolation(err) {
-		t.Fatalf("self-fallback should be 23514, got: %v", err)
-	}
-	// positive control: pointing fallback at a DIFFERENT pool succeeds.
-	if _, err := c.Exec(ctx, "UPDATE byosmtp.pools SET fallback_pool_id=$2 WHERE id=$1", p2, poolID); err != nil {
-		t.Fatalf("cross-pool fallback positive control failed: %v", err)
-	}
 }
 
 // --- helpers (crypto/roles) ---
 
-func insertAccount(t *testing.T, c *pgx.Conn, userID, poolID string, ct []byte, keyID string, nonce []byte) string {
+func insertAccount(t *testing.T, c *pgx.Conn, userID string, ct []byte, keyID string, nonce []byte) string {
 	t.Helper()
-	return insertAccountRow(t, c, userID, poolID, ct, keyID, nonce)
+	return insertAccountRow(t, c, userID, ct, keyID, nonce)
 }
 
 func updateCredential(t *testing.T, c *pgx.Conn, accID string, ct []byte, keyID string, nonce []byte) {

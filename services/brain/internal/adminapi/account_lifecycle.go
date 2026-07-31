@@ -47,8 +47,11 @@ func transitionRefusal(reason, message, flag string) *apiError {
 
 var (
 	specQuarantine = transitionSpec{
-		action:    "quarantine",
-		setClause: "quarantined = TRUE",
+		action: "quarantine",
+		// quarantine_reason is required whenever quarantined=TRUE (accounts_quarantine_reason_check,
+		// Phase 1 §3.2, landing in this same commit's 0026) — 'manual' is the enum value for an
+		// operator/user-triggered transition, mirroring specPause's pause_reason='manual' pattern.
+		setClause: "quarantined = TRUE, quarantine_reason = 'manual'",
 		precondition: func(f accountFlags) *apiError {
 			if f.Quarantined {
 				return transitionRefusal("already_in_state:quarantined",
@@ -60,7 +63,7 @@ var (
 	}
 	specUnquarantine = transitionSpec{
 		action:    "unquarantine",
-		setClause: "quarantined = FALSE",
+		setClause: "quarantined = FALSE, quarantine_reason = NULL",
 		precondition: func(f accountFlags) *apiError {
 			if !f.Quarantined {
 				return transitionRefusal("not_in_state:quarantined",

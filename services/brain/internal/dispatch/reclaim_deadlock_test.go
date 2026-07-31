@@ -22,8 +22,7 @@ import (
 func TestReclaimRace_DetectorAVsClassifiedFailure(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimdeadlock")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	// Keep the score high via a recent success so the classified failure doesn't quarantine mid-loop
 	// (we're testing the LOCK ORDER, not the account effect).
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {

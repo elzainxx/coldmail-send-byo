@@ -16,9 +16,8 @@ import (
 func TestExit_AuthFailureThenSendsViaDifferentAccount(t *testing.T) {
 	e := newDispatchEnv(t, "authreroute")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	accBad := e.seedAccount(t, pool, "bad-cred")
-	accGood := e.seedAccount(t, pool, "good-cred")
+	accBad := e.seedAccount(t, "bad-cred")
+	accGood := e.seedAccount(t, "good-cred")
 	// Force the first claim onto AccBad by making AccGood momentarily ineligible via a HIGHER id is
 	// not reliable; instead drive the outcome for whichever account was actually used, then assert
 	// the SECOND send used a DIFFERENT account. Determine which account got the first push.
@@ -96,8 +95,7 @@ func accountIDFromUsername(t *testing.T, username string, candidates ...string) 
 func TestExit_RetryNeverDoubleSends(t *testing.T) {
 	e := newDispatchEnv(t, "noresend")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "once@example.com")
 	e.dispatchToSending(t, job)
 
@@ -143,8 +141,7 @@ func TestExit_RetryNeverDoubleSends(t *testing.T) {
 func TestExit_ActorVocabulariesNeverMix(t *testing.T) {
 	e := newDispatchEnv(t, "actors")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "act@example.com")
 	e.dispatchToSending(t, job)
 
@@ -180,7 +177,7 @@ func TestExit_ActorVocabulariesNeverMix(t *testing.T) {
 		 FROM byosmtp.accounts WHERE id=$1`, acct); err != nil {
 		t.Fatalf("admin event: %v", err)
 	}
-	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=FALSE WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=FALSE, quarantine_reason=NULL WHERE id=$1`, acct); err != nil {
 		t.Fatalf("unquarantine: %v", err)
 	}
 	if _, err := e.admin.Exec(ctx, `COMMIT`); err != nil {

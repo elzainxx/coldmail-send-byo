@@ -114,9 +114,10 @@ go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/cryp
 
 # --- Phase 2 admin API behavioral suite (real Server over httptest against real PG clones) -----
 # These tests live in the brain module (internal/adminapi) and drive the ACTUAL admin handlers
-# against clones of a template migrated 0000..0014. Build a dedicated template so the clones have
-# byosmtp.account_events (0014) + byosmtp_module's password. Never touches the live `platform` DB.
-echo "== preparing Phase 2 admin template (byosmtp_template_p2, migrated 0000..0014) =="
+# against clones of a template migrated to head (up-and-set-password always applies the FULL
+# chain — there is no version-capped mode). Build a dedicated template so the clones have
+# byosmtp_module's password. Never touches the live `platform` DB.
+echo "== preparing Phase 2 admin template (byosmtp_template_p2, migrated to head) =="
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS byosmtp_template_p2" \
   -c "CREATE DATABASE byosmtp_template_p2" >/dev/null 2>&1 || true
@@ -126,13 +127,13 @@ $DC exec -T postgres psql -U postgres -d byosmtp_template_p2 -v ON_ERROR_STOP=1 
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 if MIGRATE_DATABASE_URL="$P2_DSN" BYOSMTP_MODULE_PASSWORD="${BYOSMTP_MODULE_PASSWORD:-devmodulepass}" \
      tools/byosmtp-migrate/bin/byosmtp-migrate up-and-set-password >/dev/null 2>&1; then
-  export TEST_TEMPLATE_DB="byosmtp_template_p2"; echo "  Phase 2 template ready (migrated 0000..0014 + app password)"
+  export TEST_TEMPLATE_DB="byosmtp_template_p2"; echo "  Phase 2 template ready (migrated to head + app password)"
 else
   export TEST_TEMPLATE_DB=""; echo "  Phase 2 template create failed"
 fi
 # The adminapi tests share the same admin DSN + module password + template env as the harness.
 ( cd services/brain && GOTOOLCHAIN=local go build -o /dev/null ./... ) >/dev/null 2>&1 || true
-go_suite services/brain/internal/adminapi "Phase 2 admin API (credential intake/omit/AAD, pools/owner/cycle/RESTRICT, lifecycle+audit, config, auth 401)"
+go_suite services/brain/internal/adminapi "Phase 2 admin API (credential intake/omit/AAD, per-user uniqueness/accounts_user_fk RESTRICT, lifecycle+audit, config, auth 401)"
 # Restore the Phase 1 isolation template env for any later suite that expects it.
 export TEST_TEMPLATE_DB="byosmtp_template"
 
@@ -234,10 +235,11 @@ else
 fi
 
 hr; echo "SUITE 8: Phase 3 dispatch + credential Go tests (real Postgres clones)"; hr
-# Build a template migrated 0000..0014 (same shape as the Phase 2 template) and run the real
-# Dispatcher + OutcomeHandler + credential.Decryptor against clones. Reuses the Phase 2 template
-# if present, else builds byosmtp_template_p3.
-echo "== preparing Phase 3 dispatch template (byosmtp_template_p3, migrated 0000..0014) =="
+# Build a template migrated to head (same shape as the Phase 2 template — up-and-set-password
+# always applies the FULL chain) and run the real Dispatcher + OutcomeHandler +
+# credential.Decryptor against clones. Reuses the Phase 2 template if present, else builds
+# byosmtp_template_p3.
+echo "== preparing Phase 3 dispatch template (byosmtp_template_p3, migrated to head) =="
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS byosmtp_template_p3" -c "CREATE DATABASE byosmtp_template_p3" >/dev/null 2>&1 || true
 P3_DSN="postgres://postgres:${SUPER}@localhost:6432/byosmtp_template_p3"
@@ -264,7 +266,7 @@ source tests/harness/phase3_send.sh
 hr; echo "SUITE 10: Phase 8 content variation — LIVE end-to-end (real box + real Mailpit)"; hr
 # T1 all-toggles-off delivered bytes match the Phase 3 shape; T3/T7 variation-on delivered bytes
 # differ, still parse, and the unique-URL-param toggle introduces no tracking surface; S1 re-checked
-# with variation ON. Reuses phase3_send.sh's pool/account/$SYSUSER fixtures + $CANARY + $DC/$PSQL.
+# with variation ON. Reuses phase3_send.sh's account/$SYSUSER fixtures + $CANARY + $DC/$PSQL.
 # shellcheck disable=SC1091
 source tests/harness/phase8_variation.sh
 

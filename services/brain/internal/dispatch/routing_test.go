@@ -1,6 +1,6 @@
 package dispatch
 
-// Chunk 3 behavioral tests: routing strategies (§3) distribute across a REAL multi-account pool
+// Chunk 3 behavioral tests: routing strategies (§3) distribute across a REAL multi-account set
 // as specified. All three strategies choose only among eligible accounts (proven in Chunk 2); this
 // file proves the ORDER BY each strategy contributes actually produces its documented distribution
 // shape. High per-account limits (never binding) isolate "does the strategy pick the right
@@ -50,10 +50,9 @@ func (e *dispatchEnv) userConsumeRoundRobin(ctx context.Context, userID string) 
 // cycle (consecutive picks are never the same account back-to-back beyond the wrap).
 func TestRouting_RoundRobin(t *testing.T) {
 	e := newDispatchEnv(t, "rrstrat")
-	pool := e.seedPoolWithStrategy(t, "round_robin")
 	accts := make([]string, 4)
 	for i := range accts {
-		accts[i] = e.seedAccount(t, pool, "sec")
+		accts[i] = e.seedAccount(t, "sec")
 		e.setAccountDailyState(t, accts[i], 1000, 0, todayUTC(), false, nil)
 	}
 
@@ -90,15 +89,13 @@ func TestRouting_RoundRobin(t *testing.T) {
 // must not perturb the other).
 func TestRouting_RoundRobin_CursorSurvivesAcrossUsers(t *testing.T) {
 	e := newDispatchEnv(t, "rrusers")
-	poolA := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
-	poolB := e.seedPool(t)
 	userA := "11111111-1111-1111-1111-111111111111"
 	userB := "22222222-2222-2222-2222-222222222222"
-	a1 := e.seedAccountForUser(t, userA, poolA, "sec")
+	a1 := e.seedAccountForUser(t, userA, "sec")
 	e.setAccountDailyState(t, a1, 1000, 0, todayUTC(), false, nil)
-	a2 := e.seedAccountForUser(t, userA, poolA, "sec")
+	a2 := e.seedAccountForUser(t, userA, "sec")
 	e.setAccountDailyState(t, a2, 1000, 0, todayUTC(), false, nil)
-	b1 := e.seedAccountForUser(t, userB, poolB, "sec")
+	b1 := e.seedAccountForUser(t, userB, "sec")
 	e.setAccountDailyState(t, b1, 1000, 0, todayUTC(), false, nil)
 
 	// Consume from A twice (cycles a1,a2) then from B once — B must still see b1 (its own cursor is
@@ -126,10 +123,9 @@ func TestRouting_RoundRobin_CursorSurvivesAcrossUsers(t *testing.T) {
 // on THAT identity, never assuming creation order == id order.
 func TestRouting_OneByOne(t *testing.T) {
 	e := newDispatchEnv(t, "obo")
-	pool := e.seedPoolWithStrategy(t, "one_by_one")
-	x := e.seedAccount(t, pool, "sec")
+	x := e.seedAccount(t, "sec")
 	e.setAccountDailyState(t, x, 15, 0, todayUTC(), false, nil)
-	y := e.seedAccount(t, pool, "sec")
+	y := e.seedAccount(t, "sec")
 	e.setAccountDailyState(t, y, 15, 0, todayUTC(), false, nil)
 
 	var sequence []string
@@ -187,10 +183,9 @@ func TestRouting_OneByOne(t *testing.T) {
 // account (the un-shuffled "just always pick account #1" failure mode).
 func TestRouting_Random(t *testing.T) {
 	e := newDispatchEnv(t, "randstrat")
-	pool := e.seedPoolWithStrategy(t, "random")
 	accts := make([]string, 5)
 	for i := range accts {
-		accts[i] = e.seedAccount(t, pool, "sec")
+		accts[i] = e.seedAccount(t, "sec")
 		e.setAccountDailyState(t, accts[i], 100000, 0, todayUTC(), false, nil)
 	}
 

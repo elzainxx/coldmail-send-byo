@@ -57,21 +57,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
 	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
 
-	// Pools — MOUNTED THROUGH G1 (flagged, not resolved unilaterally, per Rule 2): the gate spec's
-	// own §1 table says pool routes unmount at G1, but §4.3 makes ~150 HTTP-level fixture sites
-	// (most of adminapi's account tests) depend on POST /v1/admin/pools existing, and explicitly
-	// conditions that bucket on M3-P2-OD-6's account-write-path rewrite, which the ruling places at
-	// G2. Unmounting now breaks ~21 tests unrelated to pools (credential handling, quarantine
-	// audit, lifecycle diagnosability) before their actual dependency (deriveUserID reading
-	// pool_id) is removed. User-ruled 2026-07-31: keep pool routes mounted through G1; unmount +
-	// delete these three files in G2, bundled with the account write-path rewrite in the same
-	// commit — the point where the fixtures stop needing pools at all. G1's contract_drift route
-	// count (16) and the DELETE-bucket pool-route tests (§4.1) move to G2 accordingly.
-	s.mux.HandleFunc("POST /v1/admin/pools", s.requireAuth(s.handlePoolCreate))
-	s.mux.HandleFunc("GET /v1/admin/pools", s.requireAuth(s.handlePoolList))
-	s.mux.HandleFunc("GET /v1/admin/pools/{id}", s.requireAuth(s.handlePoolGet))
-	s.mux.HandleFunc("PATCH /v1/admin/pools/{id}", s.requireAuth(s.handlePoolUpdate))
-	s.mux.HandleFunc("DELETE /v1/admin/pools/{id}", s.requireAuth(s.handlePoolDelete))
+	// Pools — UNMOUNTED AT G2 (Docs/phase-2-strip-shared-pool.md §2.4, per the user's ruling on
+	// M3-P2-OD-10: kept mounted through G1 only because ~150 HTTP-level fixture sites depended on
+	// POST /v1/admin/pools until the account write-path rewrite landed. That rewrite is this
+	// commit, so the fixture dependency is gone and the five routes are removed together with
+	// pool_handlers.go/pool_store.go/pool_list_update.go (deleted in this same commit).
 
 	// Config
 	s.mux.HandleFunc("GET /v1/admin/config", s.requireAuth(s.handleConfigList))

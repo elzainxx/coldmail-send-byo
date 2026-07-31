@@ -2,9 +2,14 @@ package adminapi
 
 // health_test.go — Phase 9.5 Chunk 3 (B3, §3). Real Postgres, real HTTP against the actual
 // production Server (httptest) — no mocks (CLAUDE.md Rule 3). Proves O4: with a KNOWN seeded mix
-// (queued/sending/sent/failed/bounced jobs, a stale box, paused/quarantined accounts, an exhausted
-// pool), every GET /v1/admin/health count matches a DIRECT DB COUNT — not merely "the endpoint
-// returns 200" — and dispatch_paused mirrors the live dispatch_enabled config value.
+// (queued/sending/sent/failed/bounced jobs, a stale box, paused/quarantined accounts), every
+// GET /v1/admin/health count matches a DIRECT DB COUNT — not merely "the endpoint returns 200" —
+// and dispatch_paused mirrors the live dispatch_enabled config value.
+//
+// The pools[] headroom assertions this file carried through Phase 10 died at G2 (M3-P2-OD-12):
+// queryPoolHeadroom is stubbed to always return an empty array once byosmtp.pools is dropped, and
+// the real account-set-aware headroom replacement is G3 scope, alongside userRoutingStrategy's
+// real user_settings read.
 
 import (
 	"context"
@@ -14,7 +19,7 @@ import (
 const sysUserHealth = "00000000-0000-0000-0000-000000000000"
 
 // seedHealthUser ensures the system user exists (mirrors the dispatch package's own fixture
-// convention — byosmtp.jobs/accounts/pools/boxes all FK to public.users).
+// convention — byosmtp.jobs/accounts/boxes all FK to public.users).
 func (e *testEnv) seedHealthUser(t *testing.T) {
 	t.Helper()
 	if _, err := e.admin.Exec(bgCtx(),
@@ -24,32 +29,23 @@ func (e *testEnv) seedHealthUser(t *testing.T) {
 	}
 }
 
-// seedHealthPool seeds a real shared pool and returns its id.
-func (e *testEnv) seedHealthPool(t *testing.T, name string) string {
+// seedHealthAccount seeds a real account owned by the system user with the given flags/counters
+// and returns its id.
+func (e *testEnv) seedHealthAccount(t *testing.T, paused, quarantined, disabled bool, dailySent, dailyLimit int) string {
 	t.Helper()
 	e.seedHealthUser(t)
 	var id string
 	if err := e.admin.QueryRow(bgCtx(),
-		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared',$2) RETURNING id`,
-		sysUserHealth, name).Scan(&id); err != nil {
-		t.Fatalf("seed pool: %v", err)
-	}
-	return id
-}
-
-// seedHealthAccount seeds a real account in poolID with the given flags/counters and returns its id.
-func (e *testEnv) seedHealthAccount(t *testing.T, poolID string, paused, quarantined, disabled bool, dailySent, dailyLimit int) string {
-	t.Helper()
-	var id string
-	if err := e.admin.QueryRow(bgCtx(),
 		`INSERT INTO byosmtp.accounts
-		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
+		   (user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address,
-		    paused, pause_reason, quarantined, disabled, daily_sent_count, daily_limit, daily_reset_day)
-		 VALUES ($1,$2,'smtp-sink',587,$3,'\x00','k','\x00','u@ourdomain.com',
-		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::byosmtp.pause_reason, $5, $6, $7, $8, CURRENT_DATE)
+		    paused, pause_reason, quarantined, quarantine_reason, disabled, daily_sent_count, daily_limit, daily_reset_day)
+		 VALUES ($1,'smtp-sink',587,$2,'\x00','k','\x00','u@ourdomain.com',
+		         $3, (CASE WHEN $3 THEN 'manual' ELSE NULL END)::byosmtp.pause_reason,
+		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::byosmtp.quarantine_reason,
+		         $5, $6, $7, CURRENT_DATE)
 		 RETURNING id`,
-		sysUserHealth, poolID, "u-"+randHex(6)+"@ourdomain.com", paused, quarantined, disabled, dailySent, dailyLimit).Scan(&id); err != nil {
+		sysUserHealth, "u-"+randHex(6)+"@ourdomain.com", paused, quarantined, disabled, dailySent, dailyLimit).Scan(&id); err != nil {
 		t.Fatalf("seed account: %v", err)
 	}
 	return id
@@ -182,16 +178,12 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 	e.seedHealthBox(t, "stale", 600)
 	e.seedHealthBox(t, "disabled", 0)
 
-	// --- Pools + accounts: one healthy pool, one FULLY EXHAUSTED pool (all accounts blocked). ---
-	healthyPool := e.seedHealthPool(t, "health-pool-ok")
-	e.seedHealthAccount(t, healthyPool, false, false, false, 0, 100)   // healthy
-	e.seedHealthAccount(t, healthyPool, true, false, false, 0, 100)    // paused (manual)
-	e.seedHealthAccount(t, healthyPool, false, true, false, 0, 100)    // quarantined
-	e.seedHealthAccount(t, healthyPool, false, false, true, 0, 100)    // disabled
-	e.seedHealthAccount(t, healthyPool, false, false, false, 100, 100) // at daily limit
-
-	exhaustedPool := e.seedHealthPool(t, "health-pool-exhausted")
-	e.seedHealthAccount(t, exhaustedPool, true, false, false, 0, 50) // the ONLY account, paused -> pool has zero eligible
+	// --- Accounts: a mix of healthy/paused/quarantined/disabled/at-limit. ---
+	e.seedHealthAccount(t, false, false, false, 0, 100)   // healthy
+	e.seedHealthAccount(t, true, false, false, 0, 100)    // paused (manual)
+	e.seedHealthAccount(t, false, true, false, 0, 100)    // quarantined
+	e.seedHealthAccount(t, false, false, true, 0, 100)    // disabled
+	e.seedHealthAccount(t, false, false, false, 100, 100) // at daily limit
 
 	// --- dispatch_enabled: assert BOTH states mirror correctly. ---
 	e.setHealthConfigBool(t, "dispatch_enabled", false)
@@ -275,40 +267,14 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 		t.Fatalf("accounts.at_daily_limit=%d, want %d", got, wantAtLimit)
 	}
 
-	// Pools headroom: the exhausted pool must report eligible_accounts=0/headroom="exhausted"; the
-	// healthy pool must report >=1/"ok" — proving the SAME predicate distinguishes real exhaustion,
-	// not just "some pool exists."
+	// pools[] is a G2 stub (M3-P2-OD-12): always an empty array once byosmtp.pools is dropped. The
+	// real account-set-aware headroom replacement is G3 scope.
 	pools, ok := resp.body["pools"].([]any)
 	if !ok {
 		t.Fatalf("response missing pools array: %s", resp.raw)
 	}
-	foundHealthy, foundExhausted := false, false
-	for _, p := range pools {
-		pm, ok := p.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch pm["pool_id"] {
-		case healthyPool:
-			foundHealthy = true
-			if pm["headroom"] != "ok" {
-				t.Fatalf("healthy pool headroom=%v, want ok: %+v", pm["headroom"], pm)
-			}
-			if n := intField(t, pm, "eligible_accounts"); n < 1 {
-				t.Fatalf("healthy pool eligible_accounts=%d, want >=1", n)
-			}
-		case exhaustedPool:
-			foundExhausted = true
-			if pm["headroom"] != "exhausted" {
-				t.Fatalf("exhausted pool headroom=%v, want exhausted: %+v", pm["headroom"], pm)
-			}
-			if n := intField(t, pm, "eligible_accounts"); n != 0 {
-				t.Fatalf("exhausted pool eligible_accounts=%d, want 0", n)
-			}
-		}
-	}
-	if !foundHealthy || !foundExhausted {
-		t.Fatalf("pools array missing one of the seeded pools: found healthy=%v exhausted=%v, pools=%+v", foundHealthy, foundExhausted, pools)
+	if len(pools) != 0 {
+		t.Fatalf("pools array = %+v, want empty (G2 stub)", pools)
 	}
 
 	// dispatch_paused mirrors dispatch_enabled=false.

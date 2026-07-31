@@ -47,9 +47,8 @@ func TestPacing_T2_ThroughputScalesWithLanes(t *testing.T) {
 	run := func(lanes int) int {
 		e := newDispatchEnv(t, "pacet2l"+string(rune('0'+lanes)))
 		ctx := context.Background()
-		pool := e.seedPool(t)
 		// Over-provision accounts + boxes so NEITHER is the bottleneck — the delay must set the pace.
-		acct := e.seedAccount(t, pool, "sec")
+		acct := e.seedAccount(t, "sec")
 		e.setAccountDailyState(t, acct, 100000, 0, todayUTC(), false, nil)
 		for i := 0; i < lanes+2; i++ {
 			e.addBox(t)
@@ -95,8 +94,7 @@ func TestPacing_T2_ThroughputScalesWithLanes(t *testing.T) {
 func TestPacing_T1_DelayBoundNotCapacityBound(t *testing.T) {
 	setup := func(suffix string, delaySec int) (*dispatchEnv, *time.Time) {
 		e := newDispatchEnv(t, suffix)
-		pool := e.seedPool(t)
-		acct := e.seedAccount(t, pool, "sec")
+		acct := e.seedAccount(t, "sec")
 		e.setAccountDailyState(t, acct, 100000, 0, todayUTC(), false, nil)
 		for i := 0; i < 5; i++ {
 			e.addBox(t)

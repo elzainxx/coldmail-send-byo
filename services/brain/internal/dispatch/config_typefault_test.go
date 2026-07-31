@@ -54,8 +54,7 @@ func (e *dispatchEnv) setConfigRaw(t *testing.T, key, rawJSON string) {
 func TestConfigTypeFault_IsNotADBOutage(t *testing.T) {
 	e := newDispatchEnv(t, "cfgtypefault")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	queued := e.seedQueuedJob(t, "typefault@example.com")
 
 	// A REAL type-invalid value on an integer key, written the way it would really arrive.
@@ -198,7 +197,6 @@ func TestConfigFaultMarker_CoversEveryTypedReader(t *testing.T) {
 		{"variation_zero_width_rate", `{"v":"half"}`, `{"v":0.5}`, "readFloatKey"},
 		{"rollup_granularity", `{"v":7}`, `{"v":"day"}`, "readStringKey"},
 		{"variation_preheader_templates", `{"v":"not-an-array"}`, `{"v":[]}`, "readStringArrayKey"},
-		{"default_shared_pool_id", `{"v":42}`, `{"v":null}`, "readNullableStringKey"},
 		// A missing "v" wrapper is the other real corruption shape (a hand-written UPDATE that forgot it).
 		{"job_max_processing_time_sec", `{"seconds":120}`, `{"v":120}`, "readIntKey (absent \"v\")"},
 	}

@@ -84,8 +84,7 @@ func (e *dispatchEnv) eventFingerprint(t *testing.T) (int, string) {
 func TestRetention_SweepDropsExpiredRawInBoundedBatchesAndKeepsOutcomes(t *testing.T) {
 	e := newDispatchEnv(t, "retdrop")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "s3cr3t")
+	e.seedAccount(t, "s3cr3t")
 
 	// A real job driven to a real terminal outcome, so job_events holds real transitions
 	// (queued→assigned→sending→sent) and send_logs holds the real raw row the send path wrote.

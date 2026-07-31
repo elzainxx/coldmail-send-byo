@@ -11,16 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// acctSeq gives each inserted account a distinct smtp_username so multiple accounts can live in
-// the SAME pool without colliding on the Phase 2 per-pool uniqueness index (sender_0013:
-// UNIQUE(pool_id, smtp_host, smtp_username)). The AAD/transplant tests only need distinct rows,
-// not distinct credentials, so a unique username per insert satisfies the constraint without
-// changing what those tests exercise.
+// acctSeq gives each inserted account a distinct smtp_username so multiple accounts can live under
+// the SAME user without colliding on the Phase 1 §3.1 per-user uniqueness index
+// (accounts_user_host_username_unique, 0027: UNIQUE(user_id, smtp_host, smtp_username) WHERE
+// deleted_at IS NULL — re-keyed at G2 from sender_0013's UNIQUE(pool_id, smtp_host, smtp_username)).
+// The AAD/transplant tests only need distinct rows, not distinct credentials, so a unique username
+// per insert satisfies the constraint without changing what those tests exercise.
 var acctSeq atomic.Int64
 
 // Typed factories that insert REAL committed rows into a cloned DB (CLAUDE.md Rule 3 — never
-// mocks). They satisfy the real FKs (public.users, public.job_items, byosmtp.pools) so Phase 1
-// behavioral tests exercise the actual schema, constraints, and triggers.
+// mocks). They satisfy the real FKs (public.users, public.job_items) so Phase 1 behavioral tests
+// exercise the actual schema, constraints, and triggers.
 
 // SeedUser inserts a real public.users row and returns its id.
 func SeedUser(t *testing.T, c *pgx.Conn, email string) string {
@@ -49,19 +50,6 @@ func SeedJobItem(t *testing.T, c *pgx.Conn, campaignID, userID, recipient string
 	return id
 }
 
-// SeedSharedPool inserts a real shared byosmtp.pools row (owner_user_id NULL) and returns its id.
-func SeedSharedPool(t *testing.T, c *pgx.Conn, userID, name string) string {
-	t.Helper()
-	var id string
-	err := c.QueryRow(context.Background(),
-		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1, 'shared', $2) RETURNING id`,
-		userID, name).Scan(&id)
-	if err != nil {
-		t.Fatalf("seed pool: %v", err)
-	}
-	return id
-}
-
 // SeedBox inserts a real byosmtp.boxes row (client-supplied UUID) and returns its id.
 func SeedBox(t *testing.T, c *pgx.Conn, userID string) string {
 	t.Helper()
@@ -75,28 +63,30 @@ func SeedBox(t *testing.T, c *pgx.Conn, userID string) string {
 	return id
 }
 
-// SeedAccount inserts a minimal real byosmtp.accounts row (placeholder credential) and returns
-// its id. For tests that only need a valid assigned_account_id FK target.
-func SeedAccount(t *testing.T, c *pgx.Conn, userID, poolID string) string {
+// SeedAccount inserts a minimal real byosmtp.accounts row (placeholder credential) owned by
+// userID and returns its id. For tests that only need a valid assigned_account_id FK target.
+// Re-signatured at G2 (poolID dropped — accounts.pool_id no longer exists, 0027).
+func SeedAccount(t *testing.T, c *pgx.Conn, userID string) string {
 	t.Helper()
-	return insertAccountRow(t, c, userID, poolID, []byte("\x00"), "k", []byte("\x00"))
+	return insertAccountRow(t, c, userID, []byte("\x00"), "k", []byte("\x00"))
 }
 
 // insertAccountRow is the shared minimal-account insert used by SeedAccount and the crypto
 // tests' insertAccount helper.
-func insertAccountRow(t *testing.T, c *pgx.Conn, userID, poolID string, ct []byte, keyID string, nonce []byte) string {
+func insertAccountRow(t *testing.T, c *pgx.Conn, userID string, ct []byte, keyID string, nonce []byte) string {
 	t.Helper()
-	// Unique username per insert so two accounts can share a pool without tripping the Phase 2
-	// per-pool uniqueness index (sender_0013). AAD binding is proven by distinct row ids, not by
-	// distinct credentials, so this does not weaken any Phase 1 assertion.
+	// Unique username per insert so two accounts can share a user without tripping the Phase 1 §3.1
+	// per-user uniqueness index (accounts_user_host_username_unique, 0027). AAD binding is proven
+	// by distinct row ids, not by distinct credentials, so this does not weaken any Phase 1
+	// assertion.
 	username := fmt.Sprintf("user%d@example.com", acctSeq.Add(1))
 	var id string
 	err := c.QueryRow(context.Background(),
 		`INSERT INTO byosmtp.accounts
-		   (user_id, pool_id, smtp_host, smtp_port, smtp_username, credential_ciphertext, credential_key_id, credential_nonce, from_address)
-		 VALUES ($1,$2,'smtp.example.com',587,$6,$3,$4,$5,'sender@example.com')
+		   (user_id, smtp_host, smtp_port, smtp_username, credential_ciphertext, credential_key_id, credential_nonce, from_address)
+		 VALUES ($1,'smtp.example.com',587,$5,$2,$3,$4,'sender@example.com')
 		 RETURNING id`,
-		userID, poolID, ct, keyID, nonce, username).Scan(&id)
+		userID, ct, keyID, nonce, username).Scan(&id)
 	if err != nil {
 		t.Fatalf("insert account: %v", err)
 	}

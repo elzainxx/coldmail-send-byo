@@ -106,7 +106,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/v1/admin/accounts` | create an account (encrypt-on-write credential intake) |
-| GET | `/v1/admin/accounts` | list (cursor paginated; filters `pool_id`/`paused`/`quarantined`/`disabled`/`user_id`) |
+| GET | `/v1/admin/accounts` | list (cursor paginated; filters `paused`/`quarantined`/`disabled`/`user_id`) |
 | GET | `/v1/admin/accounts/{id}` | read one |
 | PATCH | `/v1/admin/accounts/{id}` | update (omit `smtp_secret` = unchanged, structural) |
 | DELETE | `/v1/admin/accounts/{id}` | hard delete → `204`. The audit row survives: `byosmtp.job_events` and `byosmtp.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`sender_0024`, ADR-0012). Deleting a **box** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `sender_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
@@ -119,7 +119,7 @@ field name is a hard `400 validation_failed`, not a silently ignored key. So the
 
 | Field | Required | Type | Notes |
 |---|---|---|---|
-| `pool_id` | **yes** | uuid | The account's pool. `user_id` is *derived* from the pool — never sent |
+| `user_id` | **yes** | uuid | Must name an existing `public.users` row |
 | `smtp_host` | **yes** | string | |
 | `smtp_username` | **yes** | string | |
 | `smtp_secret` | **yes** | string | **Write-only.** Encrypted on write; never returned by any read. Reads expose `has_credential` only |
@@ -131,10 +131,6 @@ field name is a hard `400 validation_failed`, not a silently ignored key. So the
 `PATCH /v1/admin/accounts/{id}` takes the same fields, all optional — and **omitting `smtp_secret`
 leaves the stored credential unchanged**, which is structural rather than a convenience: there is no
 way to read a credential back, so a partial update cannot round-trip one.
-
-`POST /v1/admin/pools` takes `kind` (**required**, `shared`\|`dedicated`) and `name` (**required**),
-plus optional `owner_user_id`, `routing_strategy`, `fallback_pool_id`, `enabled`. `kind` and
-`owner_user_id` are immutable after creation.
 
 **Account lifecycle transitions** (manual, audited — one `account_events` row each; `actor='admin'`):
 
@@ -155,16 +151,6 @@ pause exists but is not `manual`) with `issue: "conflict"`. The seven refusals a
 distinct — asserted behaviorally, not by convention. Flag names are already public in the account
 read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
 the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
-
-**Pools** (`byosmtp.pools`; `user_id` derived from `kind`, never a request field):
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/admin/pools` | create (shared/dedicated; owner rules; fallback cycle check) |
-| GET | `/v1/admin/pools` | list (cursor paginated; filters `kind`/`owner_user_id`/`enabled`/`user_id`) |
-| GET | `/v1/admin/pools/{id}` | read one |
-| PATCH | `/v1/admin/pools/{id}` | update (`kind`/`owner_user_id` immutable) |
-| DELETE | `/v1/admin/pools/{id}` | delete (RESTRICT if it still has accounts → clean 409) |
 
 **Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
 
@@ -206,11 +192,11 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
 | `dispatch.send_rate_per_min` | float | derived from the two above |
 | `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `byosmtp.jobs` — one field per `job_state` |
-| `queue.waiting_for_capacity` | int | queued jobs whose resolved pool chain has ZERO eligible accounts. **Not an error state** |
+| `queue.waiting_for_capacity` | int | **G2 interim (M3-P2-OD-12):** queued jobs whose owning user has NO account at all. The full eligible-account-set semantics land at G3. **Not an error state** |
 | `boxes.{active,stale,disabled}` | int | counts by `box_status` |
 | `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
 | `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
-| `pools[]` | array | `{pool_id, kind, eligible_accounts, headroom}` — `headroom` is a word, not a number |
+| `pools[]` | array | **G2 stub (M3-P2-OD-12): always empty.** Pre-G2 shape was `{pool_id, kind, eligible_accounts, headroom}`; the byosmtp.pools table this fed on is dropped by G2's own migrations. A G3 account-set-aware replacement is expected, at which point this row will change again |
 | `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys. Counts **error transitions only** — see the note below |
 | `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
 | `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
@@ -245,9 +231,9 @@ a receiver depends on. Fires on the **rising edge** of a condition, deduped by
 
 | Field | Type | Notes |
 |---|---|---|
-| `condition` | string | `pool_exhausted` \| `account_quarantined` \| `box_death` |
+| `condition` | string | `account_quarantined` \| `box_death`. `pool_exhausted` was removed at G2 (M3-P2-OD-12); its Phase-7-owned replacement is `no_eligible_accounts` (M3-P1-OD-9) |
 | `severity` | string | `critical` |
-| `subject` | object | `{type, id}` — the id of the pool / account / box the condition is about |
+| `subject` | object | `{type, id}` — the id of the account / box the condition is about |
 | `detail` | object | condition-specific counts and ids only |
 | `fired_at` | string (RFC 3339 UTC) | rising-edge timestamp |
 | `module` | string | constant module identifier, so a shared receiver can route |

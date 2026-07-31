@@ -178,8 +178,7 @@ func proxiedPool(t *testing.T, dsn string) *pgxpool.Pool {
 func TestOutage_LoopsPauseAndInventNothing(t *testing.T) {
 	e := newDispatchEnv(t, "outagepause")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// One job in-flight when the outage begins (the job whose fate must NOT be invented).
 	inflight := e.seedQueuedJob(t, "inflight@example.com")
@@ -314,8 +313,7 @@ func TestOutage_LoopsPauseAndInventNothing(t *testing.T) {
 func TestOutage_ReportDuringOutageNotAckedThenReplaysOnce(t *testing.T) {
 	e := newDispatchEnv(t, "outagereport")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "outage-send@example.com")
 	e.dispatchToSending(t, job)
@@ -413,8 +411,7 @@ func TestOutage_ReportDuringOutageNotAckedThenReplaysOnce(t *testing.T) {
 func TestOutage_RunnersSurviveSustainedOutageAndResume(t *testing.T) {
 	e := newDispatchEnv(t, "outageloops")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	// Fast ticks so the outage window covers many loop iterations (config-not-code: the real seeded
 	// key, set for the test — exactly how the Phase 4/6 loop tests drive the cadence).
 	e.setConfigInt(t, "dispatch_tick_interval_ms", 50)
@@ -559,8 +556,7 @@ func captureLogs(t *testing.T) *logCapture {
 func TestConfigOrdering_IsNotADBOutage(t *testing.T) {
 	e := newDispatchEnv(t, "cfgnotoutage")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	queued := e.seedQueuedJob(t, "cfgfault@example.com")
 
 	// A REAL violating pair (buffer TTL 900 < window 901) → a real *configOrderingError from LoadConfig.

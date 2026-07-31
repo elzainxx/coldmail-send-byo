@@ -20,7 +20,6 @@ type accountStatus struct {
 type accountResource struct {
 	ID                 string        `json:"id"`
 	UserID             string        `json:"user_id"`
-	PoolID             string        `json:"pool_id"`
 	SMTPHost           string        `json:"smtp_host"`
 	SMTPPort           int           `json:"smtp_port"`
 	SMTPUsername       string        `json:"smtp_username"`
@@ -41,7 +40,7 @@ type accountResource struct {
 // accountSelectCols projects ONLY safe columns. The credential_* columns are deliberately absent
 // from every projection (never read into a response) — has_credential is computed as "ciphertext
 // is present and non-empty". octet_length keeps the actual bytes out of the query result.
-const accountSelectCols = `a.id, a.user_id, a.pool_id, a.smtp_host, a.smtp_port, a.smtp_username,
+const accountSelectCols = `a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username,
 	a.from_address, a.from_name,
 	(octet_length(a.credential_ciphertext) > 0) AS has_credential,
 	a.paused, a.pause_reason, a.quarantined, a.disabled,
@@ -57,7 +56,7 @@ var errAccountNotFound = errors.New("account not found")
 
 func scanAccount(row pgx.Row) (*accountResource, error) {
 	var a accountResource
-	if err := row.Scan(&a.ID, &a.UserID, &a.PoolID, &a.SMTPHost, &a.SMTPPort, &a.SMTPUsername,
+	if err := row.Scan(&a.ID, &a.UserID, &a.SMTPHost, &a.SMTPPort, &a.SMTPUsername,
 		&a.FromAddress, &a.FromName, &a.HasCredential,
 		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.Disabled,
 		&a.DailyLimit, &a.DailySentCount, &a.DailyResetDay, &a.AccountStatusScore,
@@ -99,31 +98,12 @@ func readFlags(ctx context.Context, db pgxDB, id string) (accountFlags, error) {
 	return f, err
 }
 
-// poolTenancy returns a pool's (kind, owner_user_id) for deriving an account's user_id (§2.2.1).
-func poolTenancy(ctx context.Context, db pgxDB, poolID string) (kind string, ownerUserID *string, err error) {
-	err = db.QueryRow(ctx, "SELECT kind, owner_user_id FROM byosmtp.pools WHERE id=$1", poolID).
-		Scan(&kind, &ownerUserID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, errPoolNotFound
-	}
-	return kind, ownerUserID, err
-}
-
-// deriveUserID resolves an account's user_id from its target pool (§2.2.1): dedicated → the
-// pool's owner_user_id (real user); shared → SystemUserID. Returns errPoolNotFound if absent, or
-// a system-user-unprovisioned signal via the returned needSystemUser flag for the caller to
-// pre-flight (shared pools).
-func deriveUserID(ctx context.Context, db pgxDB, poolID string) (userID string, shared bool, err error) {
-	kind, owner, err := poolTenancy(ctx, db, poolID)
-	if err != nil {
-		return "", false, err
-	}
-	if kind == "shared" {
-		return SystemUserID, true, nil
-	}
-	if owner == nil {
-		// Should not happen (Phase 1 CHECK guarantees dedicated has an owner), but fail safe.
-		return "", false, errors.New("dedicated pool has null owner_user_id")
-	}
-	return *owner, false, nil
+// userExists reports whether a real public.users row exists. Relocated verbatim from
+// pool_store.go (M3-P2-OD-5) — the account-create path needs this exact existence probe once
+// deriveUserID/poolTenancy die with the pool files (Phase 1 §3.1 makes user_id a client-supplied
+// field, G2 minimum slice per M3-P2-OD-6).
+func userExists(ctx context.Context, db pgxDB, userID string) (bool, error) {
+	var exists bool
+	err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM public.users WHERE id=$1)", userID).Scan(&exists)
+	return exists, err
 }

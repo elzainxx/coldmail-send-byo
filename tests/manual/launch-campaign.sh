@@ -45,12 +45,12 @@ PLATFORM_TOKEN="$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2)"
 [ -n "$PLATFORM_TOKEN" ] || { echo "no PLATFORM_TOKEN in .env" >&2; exit 1; }
 
 # Reuse the existing dev user rather than inventing one — byosmtp.accounts rows are already scoped to
-# it, and a fresh user_id would have no pool and every job would correctly fail routing.
+# it, and a fresh user_id would have no accounts and every job would correctly fail routing.
 #
-# CAMPAIGN_USER_ID overrides it. Needed from Stage 10 on: an isolated tenant (own dedicated pool, own
-# accounts) is the only way to drive an account-level outcome without contaminating the accounts every
-# earlier stage's assertions still name. It is also what keeps the one-campaign-per-user guard out of
-# the way — that guard is per user, so a dedicated tenant can run while another campaign is parked.
+# CAMPAIGN_USER_ID overrides it. Needed from Stage 10 on: an isolated tenant (own accounts) is the
+# only way to drive an account-level outcome without contaminating the accounts every earlier
+# stage's assertions still name. It is also what keeps the one-campaign-per-user guard out of the
+# way — that guard is per user, so a dedicated tenant can run while another campaign is parked.
 USER_ID="${CAMPAIGN_USER_ID:-$($PSQL "SELECT id FROM public.users ORDER BY created_at LIMIT 1")}"
 [ -n "$USER_ID" ] || { echo "no rows in public.users — run scripts/dev.sh seed first" >&2; exit 1; }
 

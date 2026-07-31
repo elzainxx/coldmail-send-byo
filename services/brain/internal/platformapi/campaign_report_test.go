@@ -7,39 +7,18 @@ import (
 	"testing"
 )
 
-// systemUserID is the reserved platform/system user_id (Phase 1 §0.1) that owns shared pools.
-const systemUserID = "00000000-0000-0000-0000-000000000000"
-
-// seedPool inserts a real, enabled shared pool (no accounts yet), seeding the reserved system
-// user row first (required by pools_user_fk; SELECT-only from this package's own connection, so
-// the seed goes through the admin connection exactly like the dispatch harness's own seedPool).
-func (e *testEnv) seedPool(t *testing.T) string {
-	t.Helper()
-	if _, err := e.admin.Exec(bgctx(),
-		`INSERT INTO public.users (id, email, is_active) VALUES ($1,'sys@sender.local',true) ON CONFLICT (id) DO NOTHING`,
-		systemUserID); err != nil {
-		t.Fatalf("seed system user: %v", err)
-	}
-	var poolID string
-	if err := e.admin.QueryRow(bgctx(),
-		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared','p9-campaign-pool') RETURNING id`,
-		systemUserID).Scan(&poolID); err != nil {
-		t.Fatalf("seed pool: %v", err)
-	}
-	return poolID
-}
-
-// seedEligibleAccount inserts a real account in poolID with full headroom (eligible right now).
-func (e *testEnv) seedEligibleAccount(t *testing.T, poolID string) string {
+// seedEligibleAccount inserts a real account owned by userID (full headroom, eligible right now).
+// G2 re-key (M3-P2-OD-12 extension): accounts are user-owned directly, no pool indirection.
+func (e *testEnv) seedEligibleAccount(t *testing.T, userID string) string {
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(bgctx(),
 		`INSERT INTO byosmtp.accounts
-		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
+		   (user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
-		 VALUES ($2,$1,'smtp-sink',587,'u@ourdomain.com',
+		 VALUES ($1,'smtp-sink',587,'u@ourdomain.com',
 		         '\x00','test-key','\x00','u@ourdomain.com','Tester')
-		 RETURNING id`, poolID, systemUserID).Scan(&id); err != nil {
+		 RETURNING id`, userID).Scan(&id); err != nil {
 		t.Fatalf("seed eligible account: %v", err)
 	}
 	return id
@@ -117,7 +96,7 @@ func TestCampaignReport_TotalsAndProgress(t *testing.T) {
 	e.campaignJobRow(t, campaignID, userU, "bounced")
 	e.campaignJobRow(t, campaignID, userU, "failed")
 	e.campaignJobRow(t, campaignID, userU, "assigned")
-	e.campaignJobRow(t, campaignID, userU, "queued") // no pool at all for userU -> waiting_for_capacity
+	e.campaignJobRow(t, campaignID, userU, "queued") // no account at all for userU -> waiting_for_capacity
 
 	resp := e.do(t, "GET", "/v1/report?campaign_id="+campaignID+"&user_id="+userU, nil).requireStatus(t, 200)
 	if resp.body["campaign_id"] != campaignID {
@@ -159,48 +138,44 @@ func TestCampaignReport_TotalsAndProgress(t *testing.T) {
 }
 
 // TestCampaignReport_WaitingForCapacityDistinctFromFailed — the §2.3 headline distinction: a
-// queued job with NO eligible account (no pool at all resolvable for the tenant) counts as
-// waiting_for_capacity, NEVER as failed; a queued job WITH an eligible account counts as plain
-// pending, not waiting_for_capacity. Only a job that reached the terminal 'failed' state (true
-// pool exhaustion, decided upstream by the dispatcher/outcome handler — not by this endpoint)
-// counts as failed.
+// queued job with NO account at all for its owning user counts as waiting_for_capacity, NEVER as
+// failed; a queued job for a user WHO HAS an account counts as plain pending, not waiting. Only a
+// job that reached the terminal 'failed' state (decided upstream by the dispatcher/outcome
+// handler — not by this endpoint) counts as failed.
+//
+// G2 re-key (M3-P2-OD-12 extension): waiting_for_capacity is currently the G2 stub's "has any
+// account" interim, not the full eligible-account-set semantics (G3 scope, M3-P2-OD-3) — so this
+// test's fixtures are user-owned accounts directly, no pool indirection.
 func TestCampaignReport_WaitingForCapacityDistinctFromFailed(t *testing.T) {
 	e := newTestEnv(t, "campwaiting")
-	userNoPool := e.seedUser(t, "nopool@example.com")
-	userWithPool := e.seedUser(t, "withpool@example.com")
-	campaignNoPool := e.newCampaignID(t)
-	campaignWithPool := e.newCampaignID(t)
+	userNoAccount := e.seedUser(t, "noaccount@example.com")
+	userWithAccount := e.seedUser(t, "withaccount@example.com")
+	campaignNoAccount := e.newCampaignID(t)
+	campaignWithAccount := e.newCampaignID(t)
 
-	// userNoPool has no dedicated pool and no shared pool is configured for them either — a
-	// queued job is stuck waiting_for_capacity, never failed.
-	e.campaignJobRow(t, campaignNoPool, userNoPool, "queued")
+	// userNoAccount has no account at all — a queued job is stuck waiting_for_capacity, never failed.
+	e.campaignJobRow(t, campaignNoAccount, userNoAccount, "queued")
 
-	// userWithPool has a real, eligible shared... no — dedicated pool with a fresh eligible
-	// account, so their queued job is plain pending, not waiting.
-	pool := e.seedPool(t)
-	e.seedEligibleAccount(t, pool)
-	if _, err := e.admin.Exec(bgctx(),
-		`UPDATE byosmtp.pools SET owner_user_id=$1, kind='dedicated' WHERE id=$2`, userWithPool, pool); err != nil {
-		t.Fatalf("make pool dedicated to userWithPool: %v", err)
+	// userWithAccount has a real account, so their queued job is plain pending, not waiting.
+	e.seedEligibleAccount(t, userWithAccount)
+	e.campaignJobRow(t, campaignWithAccount, userWithAccount, "queued")
+
+	respNoAccount := e.do(t, "GET", "/v1/report?campaign_id="+campaignNoAccount+"&user_id="+userNoAccount, nil).requireStatus(t, 200)
+	totalsNoAccount := respNoAccount.body["totals"].(map[string]any)
+	if w, ok := totalsNoAccount["waiting_for_capacity"].(float64); !ok || w != 1 {
+		t.Errorf("no-account campaign waiting_for_capacity=%v, want 1: %s", totalsNoAccount["waiting_for_capacity"], respNoAccount.raw)
 	}
-	e.campaignJobRow(t, campaignWithPool, userWithPool, "queued")
-
-	respNoPool := e.do(t, "GET", "/v1/report?campaign_id="+campaignNoPool+"&user_id="+userNoPool, nil).requireStatus(t, 200)
-	totalsNoPool := respNoPool.body["totals"].(map[string]any)
-	if w, ok := totalsNoPool["waiting_for_capacity"].(float64); !ok || w != 1 {
-		t.Errorf("no-pool campaign waiting_for_capacity=%v, want 1: %s", totalsNoPool["waiting_for_capacity"], respNoPool.raw)
-	}
-	if f, ok := totalsNoPool["failed"].(float64); !ok || f != 0 {
-		t.Errorf("no-pool campaign failed=%v, want 0 (waiting is never failed): %s", totalsNoPool["failed"], respNoPool.raw)
+	if f, ok := totalsNoAccount["failed"].(float64); !ok || f != 0 {
+		t.Errorf("no-account campaign failed=%v, want 0 (waiting is never failed): %s", totalsNoAccount["failed"], respNoAccount.raw)
 	}
 
-	respWithPool := e.do(t, "GET", "/v1/report?campaign_id="+campaignWithPool+"&user_id="+userWithPool, nil).requireStatus(t, 200)
-	totalsWithPool := respWithPool.body["totals"].(map[string]any)
-	if w, ok := totalsWithPool["waiting_for_capacity"].(float64); !ok || w != 0 {
-		t.Errorf("with-pool campaign waiting_for_capacity=%v, want 0 (has an eligible account): %s", totalsWithPool["waiting_for_capacity"], respWithPool.raw)
+	respWithAccount := e.do(t, "GET", "/v1/report?campaign_id="+campaignWithAccount+"&user_id="+userWithAccount, nil).requireStatus(t, 200)
+	totalsWithAccount := respWithAccount.body["totals"].(map[string]any)
+	if w, ok := totalsWithAccount["waiting_for_capacity"].(float64); !ok || w != 0 {
+		t.Errorf("with-account campaign waiting_for_capacity=%v, want 0 (has an account): %s", totalsWithAccount["waiting_for_capacity"], respWithAccount.raw)
 	}
-	if p, ok := totalsWithPool["pending"].(float64); !ok || p != 1 {
-		t.Errorf("with-pool campaign pending=%v, want 1: %s", totalsWithPool["pending"], respWithPool.raw)
+	if p, ok := totalsWithAccount["pending"].(float64); !ok || p != 1 {
+		t.Errorf("with-account campaign pending=%v, want 1: %s", totalsWithAccount["pending"], respWithAccount.raw)
 	}
 }
 

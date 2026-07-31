@@ -60,8 +60,7 @@ func (e *dispatchEnv) systemAccountEvents(t *testing.T, acctID string) [][2]stri
 func TestPolicy_AuthFailureQuarantines(t *testing.T) {
 	e := newDispatchEnv(t, "authfail")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "a@example.com")
 	e.dispatchToSending(t, job)
 
@@ -110,8 +109,7 @@ func TestPolicy_AuthFailureQuarantines(t *testing.T) {
 func TestPolicy_ThrottlePauses(t *testing.T) {
 	e := newDispatchEnv(t, "throttle")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "b@example.com")
 	e.dispatchToSending(t, job)
 
@@ -160,8 +158,7 @@ func TestPolicy_ThrottlePauses(t *testing.T) {
 func TestPolicy_AttemptCountSaturates(t *testing.T) {
 	e := newDispatchEnv(t, "saturate")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	// Give the account a RECENT success so the recency penalty stays ~0 and its score floors at
 	// ~40 (100 - w_fail) even when consecutive_failures saturates — keeping it ABOVE the
 	// quarantine_threshold (30). This isolates the property under test (attempt_count saturation)

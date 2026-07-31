@@ -8,7 +8,6 @@ import (
 )
 
 type accountUpdateReq struct {
-	PoolID       *string `json:"pool_id"`
 	SMTPHost     *string `json:"smtp_host"`
 	SMTPPort     *int    `json:"smtp_port"`
 	SMTPUsername *string `json:"smtp_username"`
@@ -22,7 +21,8 @@ type accountUpdateReq struct {
 // STRUCTURALLY for the secret: when smtp_secret is ABSENT, the three credential columns are NOT
 // in the SET list at all (byte-identical, not re-encrypted to the same value). Not patchable
 // here: paused/quarantined/disabled/pause_reason (§7 only), account_status_score (Phase 5),
-// user_id (derived from pool). A successful PATCH writes one 'updated' audit row.
+// user_id (no move/re-tenancy path — G2 minimum slice, M3-P2-OD-6; Phase 3 scope). A successful
+// PATCH writes one 'updated' audit row.
 func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !isUUID(id) {
@@ -37,11 +37,11 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fields that are NOT patchable through this endpoint — paused / quarantined / disabled /
 	// pause_reason (move only through the audited §7 lifecycle), account_status_score (Phase 5),
-	// user_id / id (tenancy derived from the pool, not directly settable) — are deliberately
-	// ABSENT from accountUpdateReq. decodeStrict's DisallowUnknownFields therefore rejects any of
-	// them with a clean 400 validation_failed BEFORE this point (no silent ignore, no partial
-	// write). That is the structural guard; there is intentionally no per-field 422 branch here,
-	// since the field can never decode into the request struct in the first place.
+	// user_id / id (no move/re-tenancy path) — are deliberately ABSENT from accountUpdateReq.
+	// decodeStrict's DisallowUnknownFields therefore rejects any of them with a clean 400
+	// validation_failed BEFORE this point (no silent ignore, no partial write). That is the
+	// structural guard; there is intentionally no per-field 422 branch here, since the field can
+	// never decode into the request struct in the first place.
 
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
@@ -117,60 +117,10 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine effective pool + re-derive user_id if pool_id changes (§2.4/§2.2.1).
+	// user_id is not patchable through this endpoint (G2 minimum slice, M3-P2-OD-6: no move/re-tenancy
+	// path — that is Phase 3 scope). newUserID is fixed to the existing row's tenancy for the audit
+	// snapshot below.
 	newUserID := cur.UserID
-	effectivePool := cur.PoolID
-	if hasField(present, "pool_id") {
-		if req.PoolID == nil || !isUUID(*req.PoolID) {
-			s.fail(w, r, newErr(codeValidationFailed, "pool_id_malformed").
-				withDetails(fieldDetail{Field: "pool_id", Issue: issueMalformed}))
-			return
-		}
-		uid, shared, derr := deriveUserID(ctx, s.db, *req.PoolID)
-		if derr == errPoolNotFound {
-			s.fail(w, r, newErr(codeNotFound, "pool_not_found:"+*req.PoolID))
-			return
-		}
-		if derr != nil {
-			s.fail(w, r, newErr(codeInternalError, "derive_user_id_error: "+derr.Error()))
-			return
-		}
-		if shared {
-			ok, perr := systemUserProvisioned(ctx, s.db)
-			if perr != nil {
-				s.fail(w, r, newErr(codeInternalError, "system_user_preflight_error: "+perr.Error()))
-				return
-			}
-			if !ok {
-				s.fail(w, r, newErr(codeConflict, "system_user_not_provisioned"))
-				return
-			}
-		}
-		newUserID = uid
-		effectivePool = *req.PoolID
-	}
-
-	// Per-pool uniqueness pre-check on the RESULTING (pool, host, username) (§2.7 move case).
-	effHost := cur.SMTPHost
-	if hasField(present, "smtp_host") && req.SMTPHost != nil {
-		effHost = *req.SMTPHost
-	}
-	effUser := cur.SMTPUsername
-	if hasField(present, "smtp_username") && req.SMTPUsername != nil {
-		effUser = *req.SMTPUsername
-	}
-	if hasField(present, "pool_id") || hasField(present, "smtp_host") || hasField(present, "smtp_username") {
-		dup, uerr := s.duplicateInPool(ctx, effectivePool, effHost, effUser, id)
-		if uerr != nil {
-			s.fail(w, r, uerr)
-			return
-		}
-		if dup {
-			s.fail(w, r, newErr(codeConflict, "duplicate_account_in_pool").
-				withDetails(fieldDetail{Field: "smtp_username", Issue: issueConflict}))
-			return
-		}
-	}
 
 	// Build the SET list. The credential columns are added ONLY when smtp_secret is present —
 	// this is the structural omit=unchanged guarantee (§2.4).
@@ -179,10 +129,6 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	set := func(expr string, val any) {
 		args = append(args, val)
 		sets = append(sets, strings.Replace(expr, "?", "$"+strconv.Itoa(len(args)), 1))
-	}
-	if hasField(present, "pool_id") {
-		set("pool_id = ?", effectivePool)
-		set("user_id = ?", newUserID) // re-derived tenancy
 	}
 	if hasField(present, "smtp_host") {
 		set("smtp_host = ?", *req.SMTPHost)

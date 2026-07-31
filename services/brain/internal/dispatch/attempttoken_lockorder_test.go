@@ -85,8 +85,7 @@ func (e *dispatchEnv) adminExecAsActor(t *testing.T, actor, sql string, args ...
 func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	e := newDispatchEnv(t, "attoktrace")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
@@ -267,8 +266,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	e := newDispatchEnv(t, "attoktlock")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}

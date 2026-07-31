@@ -19,8 +19,7 @@ import (
 func TestHang_BoxReportedTimeoutQuarantinesBounded(t *testing.T) {
 	e := newDispatchEnv(t, "hangquar")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	accHang := e.seedAccount(t, pool, "sec-hang")
+	accHang := e.seedAccount(t, "sec-hang")
 
 	// Drive box-reported timeouts on the hanging account until it auto-quarantines. Each iteration:
 	// dispatch the one job → it lands on accHang (the only eligible account) → the box "operation
@@ -85,9 +84,9 @@ func TestHang_BoxReportedTimeoutQuarantinesBounded(t *testing.T) {
 		t.Fatalf("no system quarantine account_event on accHang, got %v", evs)
 	}
 
-	// Now a healthy account joins the pool; the job routes to it and sends (accHang is out of
-	// eligibility). Proves the campaign is NOT stuck — it fails over to good capacity.
-	accGood := e.seedAccount(t, pool, "sec-good")
+	// Now a healthy account joins the user's account set; the job routes to it and sends (accHang is
+	// out of eligibility). Proves the campaign is NOT stuck — it fails over to good capacity.
+	accGood := e.seedAccount(t, "sec-good")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset next_attempt_at: %v", err)
 	}

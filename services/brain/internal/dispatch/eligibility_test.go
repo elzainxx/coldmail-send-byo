@@ -36,7 +36,9 @@ func (e *dispatchEnv) setAccountDailyState(t *testing.T, acctID string, limit, s
 func (e *dispatchEnv) setAccountFlags(t *testing.T, acctID string, quarantined, disabled bool) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE byosmtp.accounts SET quarantined=$2, disabled=$3 WHERE id=$1`, acctID, quarantined, disabled); err != nil {
+		`UPDATE byosmtp.accounts
+		   SET quarantined=$2, quarantine_reason=(CASE WHEN $2 THEN 'manual' ELSE NULL END)::byosmtp.quarantine_reason, disabled=$3
+		 WHERE id=$1`, acctID, quarantined, disabled); err != nil {
 		t.Fatalf("setAccountFlags: %v", err)
 	}
 }
@@ -85,8 +87,7 @@ func strPtr(s string) *string { return &s }
 //     enough to fill 50.
 func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 	e := newDispatchEnv(t, "nolimit")
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	const limit = 50
 	e.setAccountDailyState(t, acct, limit, 0, todayUTC(), false, nil)
 
@@ -291,10 +292,9 @@ func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
 // both healthy accounts get real selections and no ineligible one ever does.
 func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 	e := newDispatchEnv(t, "skip")
-	pool := e.seedPool(t)
 
-	healthy := e.seedAccount(t, pool, "ok")
-	healthy2 := e.seedAccount(t, pool, "ok2")
+	healthy := e.seedAccount(t, "ok")
+	healthy2 := e.seedAccount(t, "ok2")
 	// account ids are random UUIDs, so determine which sorts FIRST (the deterministic id-ASC
 	// tiebreak, P4-OD-1, always picks it first) and give THAT one the small limit so it exhausts
 	// within the run and the second one takes over — never assume creation order == id order.
@@ -304,13 +304,13 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 	}
 	e.setAccountDailyState(t, first, 25, 0, todayUTC(), false, nil) // exhausts within 40 draws
 	e.setAccountDailyState(t, second, 1000, 0, todayUTC(), false, nil)
-	pausedManual := e.seedAccount(t, pool, "pm")
+	pausedManual := e.seedAccount(t, "pm")
 	e.setAccountDailyState(t, pausedManual, 100, 0, todayUTC(), true, strPtr("manual"))
-	quarantined := e.seedAccount(t, pool, "q")
+	quarantined := e.seedAccount(t, "q")
 	e.setAccountFlags(t, quarantined, true, false)
-	disabled := e.seedAccount(t, pool, "d")
+	disabled := e.seedAccount(t, "d")
 	e.setAccountFlags(t, disabled, false, true)
-	atLimit := e.seedAccount(t, pool, "al")
+	atLimit := e.seedAccount(t, "al")
 	e.setAccountDailyState(t, atLimit, 30, 30, todayUTC(), true, strPtr("daily_limit"))
 
 	seen := map[string]int{}
@@ -344,11 +344,10 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 // pauses never self-clear).
 func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 	e := newDispatchEnv(t, "lazyreset")
-	pool := e.seedPool(t)
 
-	stale := e.seedAccount(t, pool, "stale")
+	stale := e.seedAccount(t, "stale")
 	e.setAccountDailyState(t, stale, 50, 50, yesterdayUTC(), true, strPtr("daily_limit"))
-	staleManual := e.seedAccount(t, pool, "stalemanual")
+	staleManual := e.seedAccount(t, "stalemanual")
 	e.setAccountDailyState(t, staleManual, 50, 10, yesterdayUTC(), true, strPtr("manual"))
 
 	acct, ok, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
@@ -397,13 +396,14 @@ func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 	}
 }
 
-// TestAccountConsume_ExhaustedPoolReturnsNotFound — a pool where every account is ineligible
-// returns (false, nil), never an error, and poolHasEligible reports false for the SAME pool (§4.1:
-// exhaustion is defined identically for both).
-func TestAccountConsume_ExhaustedPoolReturnsNotFound(t *testing.T) {
+// TestAccountConsume_ExhaustedUserAccountSetReturnsNotFound — renamed from
+// TestAccountConsume_ExhaustedPoolReturnsNotFound (Docs/phase-2-strip-shared-pool.md §4.2: "exhausted
+// pool" -> "exhausted user account set"). A user whose every account is ineligible gets (false, nil),
+// never an error, and userHasEligible reports false for the SAME user (§4.1: exhaustion is defined
+// identically for both).
+func TestAccountConsume_ExhaustedUserAccountSetReturnsNotFound(t *testing.T) {
 	e := newDispatchEnv(t, "exhausted")
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	e.setAccountDailyState(t, acct, 10, 10, todayUTC(), true, strPtr("daily_limit"))
 
 	_, ok, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
@@ -411,24 +411,24 @@ func TestAccountConsume_ExhaustedPoolReturnsNotFound(t *testing.T) {
 		t.Fatalf("accountConsume: %v", err)
 	}
 	if ok {
-		t.Fatal("consumed an account from a fully-exhausted pool")
+		t.Fatal("consumed an account from a fully-exhausted user account set")
 	}
 	has, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 0, 900)
 	if err != nil {
-		t.Fatalf("poolHasEligible: %v", err)
+		t.Fatalf("userHasEligible: %v", err)
 	}
 	if has {
-		t.Fatal("poolHasEligible=true for a pool the consume just found exhausted — predicates disagree")
+		t.Fatal("userHasEligible=true for a user the consume just found exhausted — predicates disagree")
 	}
 
-	// Positive control: add ONE healthy account to the SAME pool; now both report eligible.
-	e.seedAccount(t, pool, "healthy")
+	// Positive control: add ONE healthy account for the SAME user; now both report eligible.
+	e.seedAccount(t, "healthy")
 	has2, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 0, 900)
 	if err != nil {
-		t.Fatalf("poolHasEligible: %v", err)
+		t.Fatalf("userHasEligible: %v", err)
 	}
 	if !has2 {
-		t.Fatal("poolHasEligible=false after adding a healthy account — predicate over-rejects")
+		t.Fatal("userHasEligible=false after adding a healthy account — predicate over-rejects")
 	}
 	_, ok2, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
 	if err != nil {
@@ -445,8 +445,7 @@ func TestAccountConsume_ExhaustedPoolReturnsNotFound(t *testing.T) {
 func TestDispatch_IncrementsAtConsumeNotAtAccept(t *testing.T) {
 	e := newDispatchEnv(t, "incratconsume")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "inc@example.com")
 
 	if _, err := e.d.TryDispatch(ctx); err != nil {

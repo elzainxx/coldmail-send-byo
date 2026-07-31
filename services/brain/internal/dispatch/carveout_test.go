@@ -29,8 +29,7 @@ func (e *dispatchEnv) accountScoreState(t *testing.T, acctID string) (score, cf 
 func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 	e := newDispatchEnv(t, "carveout")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// --- The carve-out: a reclaimed job must not move its account's score. ---
 	job := e.seedQueuedJob(t, "reclaim@example.com")
@@ -73,9 +72,9 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 	// A fresh account seeded identically (score 100, cf 0). Park the first account so routing lands
 	// the control job on the fresh one. Drive a box-reported timeout (error_reason=timeout) through
 	// the real outcome handler — Phase 5 §3.3 recomputes on a reported outcome.
-	ctlAcct := e.seedAccount(t, pool, "sec-ctl")
+	ctlAcct := e.seedAccount(t, "sec-ctl")
 	ctlScore0, ctlCf0, _ := e.accountScoreState(t, ctlAcct)
-	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, acctID); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE, quarantine_reason='manual' WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("park first account: %v", err)
 	}
 	e.px.freeAllBoxes()
@@ -107,12 +106,10 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 func TestCarveout_NoCascadeQuarantine(t *testing.T) {
 	e := newDispatchEnv(t, "nocascade")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-
 	// Three distinct accounts, one job each, all in flight on the one box.
 	var accts, jobs []string
 	for i := 0; i < 3; i++ {
-		accts = append(accts, e.seedAccount(t, pool, "sec"))
+		accts = append(accts, e.seedAccount(t, "sec"))
 	}
 	for i := 0; i < 3; i++ {
 		j := e.seedQueuedJob(t, "cascade@example.com")

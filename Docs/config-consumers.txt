@@ -40,7 +40,6 @@ heartbeat_interval_sec|HeartbeatIntervalSec
 heartbeat_missed_threshold|HeartbeatMissedThreshold
 job_max_processing_time_sec|JobMaxProcessingTimeSec
 debug_log_retention_days|DebugLogRetentionDays
-default_shared_pool_id|RESERVED|G2
 status_score_weights|ScoreWeights
 retry_backoff_schedule|Backoff\.
 throttle_pause_seconds|ThrottlePauseSeconds

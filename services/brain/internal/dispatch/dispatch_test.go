@@ -15,8 +15,7 @@ import (
 func TestDispatch_HappyPath(t *testing.T) {
 	e := newDispatchEnv(t, "happy")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "the-real-secret-A1")
+	e.seedAccount(t, "the-real-secret-A1")
 	job := e.seedQueuedJob(t, "alice@example.com")
 
 	pushed, err := e.d.TryDispatch(ctx)
@@ -74,8 +73,7 @@ func TestDispatch_HappyPath(t *testing.T) {
 func TestOutcome_AcceptedPersistsAndIdempotent(t *testing.T) {
 	e := newDispatchEnv(t, "accept")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "b@example.com")
 	if _, err := e.d.TryDispatch(ctx); err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -93,7 +91,7 @@ func TestOutcome_AcceptedPersistsAndIdempotent(t *testing.T) {
 		t.Fatalf("send_log count=%d, want 1", n)
 	}
 	var dailyCount int
-	if err := e.admin.QueryRow(ctx, `SELECT daily_sent_count FROM byosmtp.accounts WHERE pool_id=$1`, pool).Scan(&dailyCount); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT daily_sent_count FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&dailyCount); err != nil {
 		t.Fatalf("daily count: %v", err)
 	}
 	if dailyCount != 1 {
@@ -125,8 +123,7 @@ func TestOutcome_AcceptedPersistsAndIdempotent(t *testing.T) {
 func TestOutcome_NeverInventsSent(t *testing.T) {
 	e := newDispatchEnv(t, "noinvent")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// (a) accepted-with-empty-id on an in-flight job → NOT sent (requeued), never null-id sent.
 	jobA := e.seedQueuedJob(t, "a@example.com")
@@ -157,8 +154,7 @@ func TestOutcome_NeverInventsSent(t *testing.T) {
 func TestOutcome_ErrorRequeues(t *testing.T) {
 	e := newDispatchEnv(t, "requeue")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "c@example.com")
 	if _, err := e.d.TryDispatch(ctx); err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -235,8 +231,7 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 func TestDispatch_HeaderInjectionRequeued(t *testing.T) {
 	e := newDispatchEnv(t, "crlf")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// A poisoned job: subject contains CRLF + an injected Bcc header.
 	job := e.seedQueuedJobSubject(t, "inj@example.com", "Hello\r\nBcc: victim@evil.com")
@@ -276,8 +271,7 @@ func TestDispatch_HeaderInjectionRequeued(t *testing.T) {
 func TestOutcome_BouncedTerminal(t *testing.T) {
 	e := newDispatchEnv(t, "bounce")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "d@example.com")
 	if _, err := e.d.TryDispatch(ctx); err != nil {
 		t.Fatalf("dispatch: %v", err)

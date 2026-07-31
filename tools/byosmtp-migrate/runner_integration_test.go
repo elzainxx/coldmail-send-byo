@@ -95,11 +95,15 @@ func TestRunnerLifecycle(t *testing.T) {
 
 	// The full feature chain: bootstrap 0000, the locked Phase-1 data model sender_0001..0012,
 	// then Phase 2's additive migrations sender_0013 (per-pool account uniqueness index) and
-	// sender_0014 (the byosmtp.account_events audit sink). This is the executable expectation of
-	// the migration chain — it grows as later phases add 0015+.
+	// sender_0014 (the byosmtp.account_events audit sink), through module 2's close at 0024, then
+	// module 3's own additions from 0025 (Docs/phase-1-schema-delta.md §6): 0025 new enum types +
+	// event_actor ADD VALUE 'user', 0026 accounts' Phase-1 columns, 0027 accounts become
+	// user_id-owned (drops pool_id), 0028 drops byosmtp.pools/pool_kind/default_shared_pool_id.
+	// This is the executable expectation of the migration chain — it grows as later phases add
+	// 0029+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020", "0021", "0022", "0023", "0024"}
+		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -119,8 +123,9 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertPlatformGrant(t, admin, "users")
 	assertPlatformGrant(t, admin, "job_items")
 	// Prove the Phase-1 feature objects exist and are owned by byosmtp_owner (so FORCE RLS on
-	// byosmtp.accounts genuinely enforces — ADR-0004).
-	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
+	// byosmtp.accounts genuinely enforces — ADR-0004). "pools" removed at G2 — 0028 drops the
+	// table, so by the time Up() reaches head it no longer exists to own-check.
+	for _, tbl := range []string{"accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
 		assertTableOwner(t, admin, "byosmtp", tbl, "byosmtp_owner")
 	}
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
@@ -130,11 +135,12 @@ func TestRunnerLifecycle(t *testing.T) {
 	// (sender_0020, appended to the SAME version file as Chunk 1's attempt_token column — flagged
 	// migration-filename deviation, Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
 	// P8-OD-1 RULED-WIDEN) + Phase 9.5's 11 (sender_0021: B1-B5 operability controls + S10/S11
-	// completeness dials) + G11-OD-1's 1 (sender_0023: brain_singleton_reacquire_interval_sec) = 54.
-	// Phase 4 added NO config key (§0); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral
-	// (config seeds only, no table).
-	if n := configKeyCount(t, admin); n != 54 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 54 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023)", n)
+	// completeness dials) + G11-OD-1's 1 (sender_0023: brain_singleton_reacquire_interval_sec) = 54,
+	// MINUS 1 at G2 (default_shared_pool_id deleted by 0028, M3-P2-OD-1) = 53. Phase 4 added NO
+	// config key (§0); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral (config seeds
+	// only, no table); module 3's 0025-0027 add no config key either.
+	if n := configKeyCount(t, admin); n != 53 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 53 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -220,6 +226,51 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !jobEventsContentUpdateRejected(t, admin) {
 		t.Fatal("after Up: a CONTENT update on byosmtp.job_events (actor -> 'admin') was PERMITTED — sender_0024's carve-out is too wide, or the append-only trigger is gone entirely; the audit log is mutable")
 	}
+
+	// --- Module 3's own migrations, 0025-0028 (Docs/phase-1-schema-delta.md §6) ---
+	// 0025: six new enum types + event_actor ADD VALUE 'user'.
+	for _, typ := range []string{"quarantine_reason", "from_verification_state", "dmarc_policy",
+		"suspend_reason", "notification_severity", "notification_state"} {
+		if !enumTypeExists(t, admin, typ) {
+			t.Fatalf("after Up: byosmtp.%s enum type missing (0025 not applied)", typ)
+		}
+	}
+	if !enumValueExists(t, admin, "event_actor", "user") {
+		t.Fatal("after Up: byosmtp.event_actor is missing value 'user' (0025 ADD VALUE not applied)")
+	}
+	// 0026: the Phase 1 §3.2/§4.4/§4.7 additive columns on accounts.
+	for _, col := range []string{"quarantine_reason", "quarantined_at", "unquarantine_count_day",
+		"unquarantine_reset_day", "from_verification_state", "from_dmarc_policy", "from_spf_aligned",
+		"from_dmarc_aligned", "from_checked_at", "from_last_attempt_at", "from_last_attempt_error",
+		"from_check_detail", "deleted_at", "deleted_by", "purge_after"} {
+		if !columnExists(t, admin, "accounts", col) {
+			t.Fatalf("after Up: byosmtp.accounts.%s missing (0026 not applied)", col)
+		}
+	}
+	// 0027: pool_id gone, accounts_user_fk is RESTRICT (M3-P1-OD-12), the new indexes exist.
+	if columnExists(t, admin, "accounts", "pool_id") {
+		t.Fatal("after Up: byosmtp.accounts.pool_id still present (0027 did not drop it)")
+	}
+	if got := fkDeleteAction(t, admin, "accounts_user_fk"); got != "r" {
+		t.Fatalf("after Up: accounts_user_fk ON DELETE action = %q, want %q (RESTRICT, M3-P1-OD-12 — the deliberately-restored tenant-erasure guard)", got, "r")
+	}
+	if !indexExists(t, admin, "accounts_user_host_username_unique") {
+		t.Fatal("after Up: byosmtp.accounts_user_host_username_unique missing (0027 not applied)")
+	}
+	if !indexExists(t, admin, "accounts_eligibility_idx") {
+		t.Fatal("after Up: byosmtp.accounts_eligibility_idx missing (0027 not applied)")
+	}
+	// 0028: byosmtp.pools and pool_kind are gone; default_shared_pool_id's row is gone.
+	if tableExists(t, admin, "pools") {
+		t.Fatal("after Up: byosmtp.pools still present (0028 did not drop it)")
+	}
+	if enumTypeExists(t, admin, "pool_kind") {
+		t.Fatal("after Up: byosmtp.pool_kind still present (0028 did not drop it)")
+	}
+	if configKeyExists(t, admin, "default_shared_pool_id") {
+		t.Fatal("after Up: byosmtp.config still has default_shared_pool_id (0028 did not delete the row, M3-P2-OD-1)")
+	}
+
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: byosmtp.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -270,6 +321,47 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
+		}
+		if v == "0028" {
+			if !tableExists(t, admin, "pools") {
+				t.Fatal("after Down 0028: byosmtp.pools is missing (down did not re-create it)")
+			}
+			if !enumTypeExists(t, admin, "pool_kind") {
+				t.Fatal("after Down 0028: byosmtp.pool_kind is missing (down did not re-create it)")
+			}
+			if !configKeyExists(t, admin, "default_shared_pool_id") {
+				t.Fatal("after Down 0028: byosmtp.config is missing default_shared_pool_id (down did not re-insert the row)")
+			}
+		}
+		if v == "0027" {
+			if !columnExists(t, admin, "accounts", "pool_id") {
+				t.Fatal("after Down 0027: byosmtp.accounts.pool_id is missing (down did not re-add it)")
+			}
+			if got := fkDeleteAction(t, admin, "accounts_user_fk"); got != "c" {
+				t.Fatalf("after Down 0027: accounts_user_fk ON DELETE action = %q, want %q (CASCADE restored) — the down must reverse the FK action too, or a rollback silently leaves the RESTRICT guard in place (M3-P1-OD-12)", got, "c")
+			}
+		}
+		if v == "0026" {
+			for _, col := range []string{"quarantine_reason", "from_verification_state", "deleted_at"} {
+				if columnExists(t, admin, "accounts", col) {
+					t.Fatalf("after Down 0026: byosmtp.accounts.%s is still present (down did not drop it)", col)
+				}
+			}
+		}
+		// 0025's down is the documented ONE-WAY DOOR (M3-P1-OD-7): Postgres has no
+		// ALTER TYPE ... DROP VALUE, so 'user' must SURVIVE in event_actor even after this down —
+		// asserting a reversal here would be asserting something that cannot happen. The six new
+		// types it CAN drop must actually be gone.
+		if v == "0025" {
+			if !enumValueExists(t, admin, "event_actor", "user") {
+				t.Fatal("after Down 0025: byosmtp.event_actor is missing value 'user' — impossible (Postgres has no DROP VALUE) unless the type itself was dropped/recreated, which 0025's down must not do")
+			}
+			for _, typ := range []string{"quarantine_reason", "from_verification_state", "dmarc_policy",
+				"suspend_reason", "notification_severity", "notification_state"} {
+				if enumTypeExists(t, admin, typ) {
+					t.Fatalf("after Down 0025: byosmtp.%s is still present (down did not drop it)", typ)
+				}
+			}
 		}
 		// 0024's down restores sender_0008's UNCONDITIONAL body, deliberately reinstating the wedge —
 		// that is what "reversible" means here. Driving the probe is the only way to see it, and this
@@ -376,6 +468,61 @@ func indexExists(t *testing.T, c *pgx.Conn, name string) bool {
 	return ok
 }
 
+// tableExists reports whether a base table of the given name exists in the byosmtp schema.
+func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='byosmtp' AND tablename=$1)`, name).Scan(&ok); err != nil {
+		t.Fatalf("table exists lookup %q: %v", name, err)
+	}
+	return ok
+}
+
+// enumTypeExists reports whether an enum (or any) type of the given name exists in the byosmtp
+// schema (module 3's 0025/0028 anti-vacuity — Docs/phase-1-schema-delta.md §6).
+func enumTypeExists(t *testing.T, c *pgx.Conn, name string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_type ty JOIN pg_namespace n ON n.oid=ty.typnamespace
+		   WHERE n.nspname='byosmtp' AND ty.typname=$1)`, name).Scan(&ok); err != nil {
+		t.Fatalf("type exists lookup %q: %v", name, err)
+	}
+	return ok
+}
+
+// enumValueExists reports whether enumType has the given value label (0025's ALTER TYPE
+// event_actor ADD VALUE 'user' anti-vacuity, M3-P1-OD-7).
+func enumValueExists(t *testing.T, c *pgx.Conn, enumType, value string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_enum e
+		   JOIN pg_type ty ON ty.oid = e.enumtypid
+		   JOIN pg_namespace n ON n.oid = ty.typnamespace
+		   WHERE n.nspname='byosmtp' AND ty.typname=$1 AND e.enumlabel=$2)`, enumType, value).Scan(&ok); err != nil {
+		t.Fatalf("enum value exists lookup %s.%s: %v", enumType, value, err)
+	}
+	return ok
+}
+
+// fkDeleteAction returns the confdeltype of the named foreign key constraint ('r'=RESTRICT,
+// 'c'=CASCADE, 'n'=SET NULL, 'a'=NO ACTION) — 0027's M3-P1-OD-12 anti-vacuity: accounts_user_fk
+// must be RESTRICT, not the inherited CASCADE.
+func fkDeleteAction(t *testing.T, c *pgx.Conn, constraintName string) string {
+	t.Helper()
+	var action string
+	// confdeltype is pg_catalog's "char" (single-byte internal type, OID 18) — pgx cannot scan it
+	// into a Go string in binary format, so cast to text explicitly (this file's own ::text
+	// pattern, e.g. configValueAndDefault).
+	if err := c.QueryRow(context.Background(),
+		`SELECT confdeltype::text FROM pg_constraint WHERE conname=$1`, constraintName).Scan(&action); err != nil {
+		t.Fatalf("fk delete-action lookup %q: %v", constraintName, err)
+	}
+	return action
+}
+
 // functionExists reports whether a function of the given name exists in the byosmtp schema (for
 // sender_0022, whose only NEW object is a function — its other two changes are CREATE OR REPLACE
 // of bodies that already existed).
@@ -410,29 +557,45 @@ func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
 	}
 	defer tx.Rollback(ctx)
 
-	// The FK chain job_events requires: a users row, a pool, an account, a job_item and a job. The
-	// probe event row is INSERTed directly (not taken from the genesis trigger) because it needs
+	// The FK chain job_events requires: a users row, an account, a job_item and a job. The probe
+	// event row is INSERTed directly (not taken from the genesis trigger) because it needs
 	// account_id already NON-NULL — the genesis row is born with it NULL, the job not yet being
 	// assigned — and job_events rows cannot be updated into shape, which is the whole point.
+	//
+	// This probe runs BOTH after Up() reaches head (no pool_id column, 0027 dropped it) AND mid
+	// down-reversal at the "0024" checkpoint (by which point 0027's own down has ALREADY restored
+	// pool_id NOT NULL, since downs run in strict reverse order 0028,0027,0026,...). So the INSERT
+	// shape must adapt to whichever schema is live RIGHT NOW rather than assume either one.
 	var userID string
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO public.users (email, is_active) VALUES ('carveout-probe@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
 		t.Fatalf("carve-out probe: seed user: %v", err)
 	}
-	var poolID string
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared','carveout-probe') RETURNING id`,
-		userID).Scan(&poolID); err != nil {
-		t.Fatalf("carve-out probe: seed pool: %v", err)
-	}
 	var acctID string
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO byosmtp.accounts
-		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce, from_address)
-		 VALUES ($1,$2,'probe.invalid',587,'probe@ourdomain.com','\x00','k','\x00','probe@ourdomain.com')
-		 RETURNING id`, userID, poolID).Scan(&acctID); err != nil {
-		t.Fatalf("carve-out probe: seed account: %v", err)
+	if columnExists(t, c, "accounts", "pool_id") {
+		var poolID string
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared','carveout-probe') RETURNING id`,
+			userID).Scan(&poolID); err != nil {
+			t.Fatalf("carve-out probe: seed pool: %v", err)
+		}
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO byosmtp.accounts
+			   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
+			    credential_ciphertext, credential_key_id, credential_nonce, from_address)
+			 VALUES ($1,$2,'probe.invalid',587,'probe@ourdomain.com','\x00','k','\x00','probe@ourdomain.com')
+			 RETURNING id`, userID, poolID).Scan(&acctID); err != nil {
+			t.Fatalf("carve-out probe: seed account (pool_id shape): %v", err)
+		}
+	} else {
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO byosmtp.accounts
+			   (user_id, smtp_host, smtp_port, smtp_username,
+			    credential_ciphertext, credential_key_id, credential_nonce, from_address)
+			 VALUES ($1,'probe.invalid',587,'probe@ourdomain.com','\x00','k','\x00','probe@ourdomain.com')
+			 RETURNING id`, userID).Scan(&acctID); err != nil {
+			t.Fatalf("carve-out probe: seed account (user-owned shape): %v", err)
+		}
 	}
 	var jobItemID string
 	if err := tx.QueryRow(ctx,

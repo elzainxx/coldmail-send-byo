@@ -2,12 +2,11 @@ package adminapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 )
 
 type accountCreateReq struct {
-	PoolID       string  `json:"pool_id"`
+	UserID       string  `json:"user_id"`
 	SMTPHost     string  `json:"smtp_host"`
 	SMTPPort     *int    `json:"smtp_port"`
 	SMTPUsername string  `json:"smtp_username"`
@@ -17,16 +16,16 @@ type accountCreateReq struct {
 	DailyLimit   *int    `json:"daily_limit"`
 }
 
-// warning is a non-blocking advisory returned alongside a 2xx (§3.2 pool_disabled).
-type warning struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-// handleAccountCreate: POST /v1/admin/accounts (§2.2). Validate → resolve daily_limit default →
-// derive user_id from pool → app-side UUID → encrypt secret (AAD = id ‖ key_id) → single INSERT
-// + one account_events 'created' row in one tx → zero the plaintext. The secret is write-only;
-// the 201 body carries has_credential:true and NO credential material.
+// handleAccountCreate: POST /v1/admin/accounts. Validate → resolve daily_limit default → validate
+// user_id exists → app-side UUID → encrypt secret (AAD = id ‖ key_id) → single INSERT + one
+// account_events 'created' row in one tx → zero the plaintext. The secret is write-only; the 201
+// body carries has_credential:true and NO credential material.
+//
+// G2 MINIMUM SLICE (M3-P2-OD-6, hard-bounded by the user's ruling): user_id is now a client-supplied
+// field instead of derived from a pool. Deliberately NOT in scope here: per-user uniqueness
+// pre-check (duplicateInPool deleted outright, not replaced — a duplicate is refused by the DB's
+// accounts_user_host_username_unique 23505 until Phase 3 restores a clean 409), verify-on-add, the
+// test button, bulk add, the account count cap, the retention window, the DNS/From gate. All Phase 3.
 func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	var req accountCreateReq
 	present, derr := decodeStrict(r, &req)
@@ -37,10 +36,10 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 
 	// --- required fields ---
 	var details []fieldDetail
-	if req.PoolID == "" {
-		details = append(details, fieldDetail{Field: "pool_id", Issue: issueRequired})
-	} else if !isUUID(req.PoolID) {
-		details = append(details, fieldDetail{Field: "pool_id", Issue: issueMalformed})
+	if req.UserID == "" {
+		details = append(details, fieldDetail{Field: "user_id", Issue: issueRequired})
+	} else if !isUUID(req.UserID) {
+		details = append(details, fieldDetail{Field: "user_id", Issue: issueMalformed})
 	}
 	if !hasField(present, "smtp_secret") || req.SMTPSecret == "" {
 		details = append(details, fieldDetail{Field: "smtp_secret", Issue: issueMalformed})
@@ -74,39 +73,18 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- derive user_id from pool tenancy (§2.2.1) ---
-	userID, shared, err := deriveUserID(ctx, s.db, req.PoolID)
-	if err == errPoolNotFound {
-		s.fail(w, r, newErr(codeNotFound, "pool_not_found:"+req.PoolID))
+	// --- user_id must name a real public.users row (G2 minimum slice, M3-P2-OD-6) ---
+	exists, uerr := userExists(ctx, s.db, req.UserID)
+	if uerr != nil {
+		s.fail(w, r, newErr(codeInternalError, "user_lookup_error: "+uerr.Error()))
 		return
 	}
-	if err != nil {
-		s.fail(w, r, newErr(codeInternalError, "derive_user_id_error: "+err.Error()))
+	if !exists {
+		s.fail(w, r, newErr(codeValidationFailed, "user_not_found").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueNotFound}))
 		return
 	}
-	if shared {
-		ok, perr := systemUserProvisioned(ctx, s.db)
-		if perr != nil {
-			s.fail(w, r, newErr(codeInternalError, "system_user_preflight_error: "+perr.Error()))
-			return
-		}
-		if !ok {
-			s.fail(w, r, newErr(codeConflict, "system_user_not_provisioned"))
-			return
-		}
-	}
-
-	// --- per-pool uniqueness pre-check (§2.7): (pool_id, host, username) unique within pool ---
-	dup, derr2 := s.duplicateInPool(ctx, req.PoolID, req.SMTPHost, req.SMTPUsername, "")
-	if derr2 != nil {
-		s.fail(w, r, derr2)
-		return
-	}
-	if dup {
-		s.fail(w, r, newErr(codeConflict, "duplicate_account_in_pool").
-			withDetails(fieldDetail{Field: "smtp_username", Issue: issueConflict}))
-		return
-	}
+	userID := req.UserID
 
 	// --- app-side UUID (OD-4) so account.id exists before encryption ---
 	accIDStr, accIDBytes, err := newUUIDv4()
@@ -135,11 +113,11 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO byosmtp.accounts
-		   (id, user_id, pool_id, smtp_host, smtp_port, smtp_username,
+		   (id, user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce,
 		    from_address, from_name, daily_limit)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		accIDStr, userID, req.PoolID, req.SMTPHost, port, req.SMTPUsername,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		accIDStr, userID, req.SMTPHost, port, req.SMTPUsername,
 		ciphertext, keyID, nonce, req.FromAddress, req.FromName, dailyLimit)
 	if err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))
@@ -160,41 +138,8 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Non-blocking warning if the target pool is disabled (§3.2 allow + warn).
-	resp := accountCreateResp{accountResource: acc}
-	if warn := s.poolDisabledWarning(ctx, req.PoolID); warn != nil {
-		resp.Warnings = []warning{*warn}
-	}
 	s.logOK(requestIDFrom(r.Context()), r, "account_created id="+accIDStr)
-	writeJSON(w, http.StatusCreated, resp)
-}
-
-// accountCreateResp embeds the account object and adds an optional warnings array (§3.2).
-type accountCreateResp struct {
-	*accountResource
-	Warnings []warning `json:"warnings,omitempty"`
-}
-
-// MarshalJSON flattens the embedded accountResource with the optional warnings array.
-func (c accountCreateResp) MarshalJSON() ([]byte, error) {
-	base, err := json.Marshal(c.accountResource)
-	if err != nil {
-		return nil, err
-	}
-	if len(c.Warnings) == 0 {
-		return base, nil
-	}
-	// Splice "warnings" into the object.
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(base, &m); err != nil {
-		return nil, err
-	}
-	wj, err := json.Marshal(c.Warnings)
-	if err != nil {
-		return nil, err
-	}
-	m["warnings"] = wj
-	return json.Marshal(m)
+	writeJSON(w, http.StatusCreated, acc)
 }
 
 // resolveDailyLimit returns the request value if present, else the config daily_limit_default.
@@ -213,46 +158,20 @@ func (s *Server) resolveDailyLimit(ctx context.Context, reqVal *int) (int, *apiE
 	return int(n), nil
 }
 
-// duplicateInPool reports whether (pool_id, host, username) already exists, optionally excluding
-// a given account id (for the PATCH move case). App-level pre-check for the clean 409 (§2.7).
-func (s *Server) duplicateInPool(ctx context.Context, poolID, host, username, excludeID string) (bool, *apiError) {
-	var exists bool
-	var err error
-	if excludeID == "" {
-		err = s.db.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3)",
-			poolID, host, username).Scan(&exists)
-	} else {
-		err = s.db.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3 AND id<>$4)",
-			poolID, host, username, excludeID).Scan(&exists)
-	}
-	if err != nil {
-		return false, newErr(codeInternalError, "duplicate_check_error: "+err.Error())
-	}
-	return exists, nil
-}
-
-// poolDisabledWarning returns a pool_disabled warning if the pool is disabled, else nil.
-func (s *Server) poolDisabledWarning(ctx context.Context, poolID string) *warning {
-	var enabled bool
-	if err := s.db.QueryRow(ctx, "SELECT enabled FROM byosmtp.pools WHERE id=$1", poolID).Scan(&enabled); err != nil {
-		return nil
-	}
-	if !enabled {
-		return &warning{Code: "pool_disabled", Message: "Assigned to a disabled pool; it will not route until enabled."}
-	}
-	return nil
-}
-
 // translateAccountWrite maps a raw account INSERT/UPDATE DB error to a clean envelope — the
-// per-pool UNIQUE (23505) → 409 duplicate_account_in_pool; the daily_sent CHECK (23514) → 409
-// (§3.1); FK → validation. A raw SQLSTATE never reaches the client.
+// per-user UNIQUE (23505) → 409 duplicate_account_for_user; the daily_sent CHECK (23514) → 409;
+// FK → validation. A raw SQLSTATE never reaches the client.
+//
+// M3-P2-OD-9, RULED: G2 deletes duplicateInPool's pre-check outright without a duplicateForUser
+// replacement (per-user uniqueness is Phase 3 scope) — but this constraint-name rename stays,
+// because leaving it keyed to the now-nonexistent accounts_pool_host_user_unique would let the
+// DB's real refusal fall through to the generic account_write_error branch below, which is a
+// two-vocabulary concern (an internal constraint name in an internal error string), not a feature.
 func (s *Server) translateAccountWrite(err error) *apiError {
 	switch pgErrCode(err) {
 	case sqlstateUniqueViolation:
-		if pgConstraint(err) == "accounts_pool_host_user_unique" {
-			return newErr(codeConflict, "duplicate_account_in_pool").
+		if pgConstraint(err) == "accounts_user_host_username_unique" {
+			return newErr(codeConflict, "duplicate_account_for_user").
 				withDetails(fieldDetail{Field: "smtp_username", Issue: issueConflict})
 		}
 		return newErr(codeConflict, "unique_violation:"+pgConstraint(err))
@@ -264,7 +183,7 @@ func (s *Server) translateAccountWrite(err error) *apiError {
 		return newErr(codeUnprocessable, "check_violation:"+pgConstraint(err))
 	case sqlstateForeignKeyViolation:
 		return newErr(codeValidationFailed, "fk_violation:"+pgConstraint(err)).
-			withDetails(fieldDetail{Field: "pool_id", Issue: issueNotFound})
+			withDetails(fieldDetail{Field: "user_id", Issue: issueNotFound})
 	default:
 		return newErr(codeInternalError, "account_write_error: "+err.Error())
 	}

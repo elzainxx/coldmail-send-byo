@@ -20,8 +20,7 @@ import (
 func TestLockOrderAudit_ConcurrentAcceptedSameAccount(t *testing.T) {
 	e := newDispatchEnv(t, "lockaudit_acc")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	// Two jobs both in-flight (sending) on the SAME account.
 	jobs := []string{e.seedQueuedJob(t, "a1@example.com"), e.seedQueuedJob(t, "a2@example.com")}
@@ -81,8 +80,7 @@ func TestLockOrderAudit_ConcurrentAcceptedSameAccount(t *testing.T) {
 func TestLockOrderAudit_AcceptedVsClassifiedSameAccount(t *testing.T) {
 	e := newDispatchEnv(t, "lockaudit_mix")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}

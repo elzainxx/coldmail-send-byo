@@ -18,8 +18,7 @@ func TestPanicSwitch_HaltsClaimAndPush_ZeroLoss(t *testing.T) {
 	e := newDispatchEnv(t, "panicswitch")
 	ctx := context.Background()
 	userA := e.seedUser(t, "panicswitch-a@tenant.example")
-	pool := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
-	e.seedAccountForUser(t, userA, pool, "sec")
+	e.seedAccountForUser(t, userA, "sec")
 	job := e.seedQueuedJobFor(t, userA, "ps@example.com")
 
 	e.setConfigBool(t, "dispatch_enabled", false)
@@ -71,8 +70,7 @@ func TestPanicSwitch_HaltsClaimAndPush_ZeroLoss(t *testing.T) {
 func TestPanicSwitch_TryDispatchAlsoHalts(t *testing.T) {
 	e := newDispatchEnv(t, "panicswitch2")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "ps2@example.com")
 
 	e.setConfigBool(t, "dispatch_enabled", false)
@@ -106,8 +104,7 @@ func TestPanicSwitch_TryDispatchAlsoHalts(t *testing.T) {
 func TestPanicSwitch_ReclaimStillRuns(t *testing.T) {
 	e := newDispatchEnv(t, "panicswitch3")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "ps3@example.com")
 
 	// Dispatch it for real (dispatch_enabled=true), then force its lease into the past to simulate

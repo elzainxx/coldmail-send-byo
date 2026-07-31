@@ -2,11 +2,10 @@ package adminapi
 
 // daily_reset_hour_test.go — Config Consumption Sweep closeout (2026-07-27): daily_reset_hour was
 // seeded and write-time-validated since sender_0010 but never read by the health endpoint's own
-// daily-reset-boundary queries (queryWaitingForCapacity/queryAccountCounts/queryPoolHeadroom) —
-// found during the systematic 53-key consumption sweep, alongside the identical gap in
-// internal/dispatch (fixed there too; see dispatch/daily_reset_hour_test.go for the full
-// construction rationale this test mirrors). Real Postgres, real HTTP against the actual
-// production Server — no mocks.
+// daily-reset-boundary queries (queryWaitingForCapacity/queryAccountCounts) — found during the
+// systematic 53-key consumption sweep, alongside the identical gap in internal/dispatch (fixed
+// there too; see dispatch/daily_reset_hour_test.go for the full construction rationale this test
+// mirrors). Real Postgres, real HTTP against the actual production Server — no mocks.
 
 import (
 	"testing"
@@ -25,8 +24,7 @@ func TestDailyResetHour_ShiftsHealthAccountCounts(t *testing.T) {
 		t.Skip("wall-clock UTC hour is 23 — the hour=0 vs hour=23 boundaries coincide this minute; skip rather than flake")
 	}
 	e := newTestEnv(t, "resethourhealth")
-	pool := e.seedHealthPool(t, "reset-hour-pool")
-	acct := e.seedHealthAccount(t, pool, false, false, false, 10, 10) // unpaused, at its daily limit
+	acct := e.seedHealthAccount(t, false, false, false, 10, 10) // unpaused, at its daily limit
 
 	dayAtHour23 := todayInTZForHourAdmin(23)
 	if _, err := e.admin.Exec(bgCtx(),

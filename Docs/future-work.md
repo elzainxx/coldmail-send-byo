@@ -223,3 +223,18 @@ becomes free.
 a *stronger positive* (`verified` on observed evidence) rather than a stronger negative; the ruling's
 design line — *"users control their own assets… make the failure visible and let them choose"* —
 survives, and the acknowledgment path stays for every address that has not been test-sent.
+
+### FW-M3-2 — Disposition of four inherited §2 pool-capability entries, retired/re-scoped by the G2 drop
+
+**Registered:** 2026-07-31, per `Docs/phase-1-schema-delta.md` §2.1's own disposition table, applied
+at G2 (the phase that actually drops `byosmtp.pools`). Module 2's §2 table above is **not edited** —
+it describes module 2's own build and stays as-written, per this document's own top-of-file policy.
+This entry is the module-3-side record of what happened to four of its rows once pools left module
+3's tree.
+
+| §2 row | Disposition |
+|---|---|
+| **Multi-shared-pool campaign binding** (`:53`) | **Retired.** Its entire premise — "V1 has exactly one effective shared pool… what is missing is the binding surface" — dies with pools. Nothing to build; there is no pool to bind a campaign to. |
+| **Dedicated → dedicated fallback** (`:54`) | **Retired.** No fallback ladder exists to extend — `dispatch/pool.go`'s dedicated→shared chain-walk (the whole concept) was deleted at G1. |
+| **Per-pool variation scope** (`:57`) | **Re-scoped to per-user variation scope.** `byosmtp.user_settings` (Phase 1 §4.1, landing at G3) now gives per-user scoping a place to live — a resolution order (user overrides global overrides default) is the open design question this item always named, unchanged by the re-scope. |
+| **A one-call tenant-erasure path** (`:73` in §2's own numbering — actually the ADR-0012 audit-asymmetry entry, not literally under §2, but disposed of by the same drop) | **NOT resolved as a side effect**, contrary to what dropping `pools` alone would have done. **M3-P1-OD-12 ruled the guard restored deliberately**: `0027` (this phase's own migration) changes `accounts_user_fk` from the inherited `CASCADE` to `RESTRICT`, so `DELETE FROM public.users` while any account remains is still refused — by design, not by an accidentally-load-bearing pool FK. The three-step accounts→pools→user erasure sequence does not collapse to one step. The audit-asymmetry warning (deleting an **account** keeps `job_events` rows FK-nulled; deleting the **user** would remove them outright, `job_events_user_fk` being `CASCADE`) stays live precisely because the RESTRICT keeps that path refused. |

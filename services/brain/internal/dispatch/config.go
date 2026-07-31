@@ -22,9 +22,10 @@ import (
 
 // Config holds the seeded byosmtp.config values the dispatcher CONSUMES (config-not-code, §0).
 // Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval, the per-user
-// concurrency ceiling, the daily-reset timezone, and the default shared pool id — ALL ALREADY
-// seeded in Phase 1's sender_0010 (Phase 4 adds NO new key, §0). Every value is read at runtime
-// from byosmtp.config, never hardcoded.
+// concurrency ceiling, and the daily-reset timezone — ALL ALREADY seeded in Phase 1's sender_0010
+// (Phase 4 adds NO new key, §0). Every value is read at runtime from byosmtp.config, never
+// hardcoded. default_shared_pool_id's field/reader died at G2 (Docs/phase-2-strip-shared-pool.md
+// §1.2, M3-P2-OD-1) along with the rest of the pool layer.
 type Config struct {
 	JobMaxProcessingTimeSec   int     // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
 	DebugLogRetentionDays     int     // debug_log_retention_days — send_logs.ttl_expires_at (§7)
@@ -32,7 +33,6 @@ type Config struct {
 	ConcurrencyPerUserDefault int     // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
 	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
 	DailyResetHour            int     // daily_reset_hour — hour-of-day (0-23) the daily boundary falls at within DailyResetTimezone (§11, Phase 1; wired in the Config Consumption Sweep closeout — was seeded/validated since sender_0010 but never read)
-	DefaultSharedPoolID       *string // default_shared_pool_id — the V1 base-routing shared target (§4.2/§4.3, Phase 4); seeded NULL, nil until an operator sets it
 
 	// Phase 6 pacing dials (both ALREADY seeded in Phase 1's sender_0010; Phase 6 consumes them
 	// unchanged — no re-seed, additive-only contract §5). They bound the per-lane random inter-send
@@ -241,9 +241,6 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.DailyResetHour, err = readIntKey(ctx, db, "daily_reset_hour"); err != nil {
-		return c, err
-	}
-	if c.DefaultSharedPoolID, err = readNullableStringKey(ctx, db, "default_shared_pool_id"); err != nil {
 		return c, err
 	}
 	if c.QuarantineThreshold, err = readIntKey(ctx, db, "quarantine_threshold"); err != nil {
@@ -632,21 +629,3 @@ func readStringKey(ctx context.Context, db *pgxpool.Pool, key string) (string, e
 	return *wrap.V, nil
 }
 
-// readNullableStringKey reads a string config key that is LEGITIMATELY seeded NULL
-// (default_shared_pool_id, §4.3 — an operator must set it before base sending works). Unlike
-// readStringKey, a {"v": null} value is not an error here: it returns (nil, nil).
-func readNullableStringKey(ctx context.Context, db *pgxpool.Pool, key string) (*string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
-		return nil, fmt.Errorf("read config %q: %w", key, err)
-	}
-	var wrap struct {
-		V *string `json:"v"`
-	}
-	if err := json.Unmarshal(raw, &wrap); err != nil {
-		return nil, badConfigValue(key, `a nullable string {"v": "..."|null}`)
-	}
-	return wrap.V, nil
-}

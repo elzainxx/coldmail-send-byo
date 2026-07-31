@@ -59,10 +59,9 @@ func (e *dispatchEnv) reclaimEvents(t *testing.T, jobID string) [][3]string {
 func TestReclaim_DeadBoxMassReclaims(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimdead")
 	ctx := context.Background()
-	pool := e.seedPool(t)
 	// Over-provision accounts so several jobs can be in flight on the one box at once.
 	for i := 0; i < 3; i++ {
-		e.seedAccount(t, pool, "sec")
+		e.seedAccount(t, "sec")
 	}
 
 	// Drive THREE jobs to sending on the default box (each freed between pushes so the single-box
@@ -122,8 +121,7 @@ func TestReclaim_DeadBoxMassReclaims(t *testing.T) {
 func TestReclaim_LiveBoxNotReclaimed(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimlive")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "live@example.com")
 	e.dispatchToSending(t, job)
@@ -167,9 +165,8 @@ func (e *dispatchEnv) expireLease(t *testing.T, jobID string) {
 func TestReclaim_HungJobOnLiveBoxReclaimed(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimhung")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
+	e.seedAccount(t, "sec")
 
 	// Two jobs in flight on the one (live) box.
 	hung := e.seedQueuedJob(t, "hung@example.com")
@@ -267,8 +264,7 @@ func TestReclaim_AssignedNeverPushedReclaimed(t *testing.T) {
 func TestReclaim_NotExpiredNotReclaimed(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimfresh")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "fresh@example.com")
 	e.dispatchToSending(t, job) // lease = NOW() + 120s (job_max_processing_time_sec), still valid
@@ -293,8 +289,7 @@ func TestReclaim_NotExpiredNotReclaimed(t *testing.T) {
 func TestReclaim_RedispatchesToDifferentBoxNoDoubleSend(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimredisp")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	e.addBox(t) // a second box so re-dispatch can land elsewhere
 
 	// (T5a) Dispatch, reclaim (dead box), then re-dispatch → sends exactly once.
@@ -356,8 +351,7 @@ func TestReclaim_RedispatchesToDifferentBoxNoDoubleSend(t *testing.T) {
 func TestReclaim_DropReconnectWithinWindowNoThrash(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimblip")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "blip@example.com")
 	e.dispatchToSending(t, job)

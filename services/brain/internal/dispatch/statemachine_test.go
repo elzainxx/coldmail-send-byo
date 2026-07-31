@@ -16,8 +16,7 @@ import (
 func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 	e := newDispatchEnv(t, "scorequar")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "q@example.com")
 
 	// A never-succeeded account (last_success_at NULL → recency penalty 1.0 = -25) crossing the
@@ -93,12 +92,11 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 // TestStateMachine_ThrottleAutoClears (T3) — a throttle-paused account auto-clears at the throttle
 // timer (lazily, at the next consume) once NOW() >= throttle_paused_at + throttle_pause_seconds,
 // un-pausing itself and writing account_events(system, unpause). Negative control: a MANUAL pause
-// in the same pool is NEVER swept up by the throttle auto-clear.
+// on another account owned by the same user is NEVER swept up by the throttle auto-clear.
 func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 	e := newDispatchEnv(t, "throttleclear")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	// Put the account into a throttle pause whose window has ALREADY elapsed: set throttle_paused_at
 	// far in the past (throttle_pause_seconds default 900s; -1h is well past). This is the exact
@@ -108,8 +106,8 @@ func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 		t.Fatalf("seed throttle pause: %v", err)
 	}
 
-	// A second account, MANUALLY paused, in the SAME pool — must NOT be swept by throttle clearing.
-	manualAcct := e.seedAccount(t, pool, "sec2")
+	// A second account for the SAME user, MANUALLY paused — must NOT be swept by throttle clearing.
+	manualAcct := e.seedAccount(t, "sec2")
 	if _, err := e.admin.Exec(ctx,
 		`UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='manual' WHERE id=$1`, manualAcct); err != nil {
 		t.Fatalf("seed manual pause: %v", err)
@@ -156,14 +154,13 @@ func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 func TestStateMachine_InWindowThrottleNotEligible(t *testing.T) {
 	e := newDispatchEnv(t, "throttlelive")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx,
 		`UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed live throttle: %v", err)
 	}
 
-	// The only account is throttle-paused in-window → the pool has no eligible account → the job
+	// The only account is throttle-paused in-window → this user has no eligible account → the job
 	// stays queued (the pre-claim gate leaves it untouched). TryDispatch is a clean no-op.
 	job := e.seedQueuedJob(t, "lw@example.com")
 	pushed, err := e.d.TryDispatch(ctx)

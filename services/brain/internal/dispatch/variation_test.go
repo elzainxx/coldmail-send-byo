@@ -23,8 +23,7 @@ import (
 // value the box's own VARIATION_DEFAULTS expects.
 func TestVariation_DefaultConfigYieldsNeutralSnapshot(t *testing.T) {
 	e := newDispatchEnv(t, "variationdflt")
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "variation-default@example.com")
 	e.dispatchToSending(t, job)
@@ -74,8 +73,7 @@ func TestVariation_DefaultConfigYieldsNeutralSnapshot(t *testing.T) {
 func TestVariation_LiveConfigChangeReachesNextPushJob(t *testing.T) {
 	e := newDispatchEnv(t, "variationlive")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// First job, still at the seeded defaults — the baseline this test's change must differ from.
 	jobBefore := e.seedQueuedJob(t, "before@example.com")
@@ -125,8 +123,7 @@ func TestVariation_LiveConfigChangeReachesNextPushJob(t *testing.T) {
 func TestVariation_RateParametersReachPushJob(t *testing.T) {
 	e := newDispatchEnv(t, "variationrates")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	e.setConfigInt(t, "variation_css_magnitude_px", 7)
 	e.setConfigFloat(t, "variation_zero_width_rate", 0.42)
@@ -164,8 +161,7 @@ func TestVariation_RateParametersReachPushJob(t *testing.T) {
 func TestVariation_S11RatesReachPushJob(t *testing.T) {
 	e := newDispatchEnv(t, "variations11")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	if _, err := e.admin.Exec(ctx,
 		`UPDATE byosmtp.config SET value = jsonb_build_object('v', jsonb_build_object('low',10,'medium',20,'high',40)) WHERE key='variation_comment_intensity_rates'`); err != nil {
@@ -208,8 +204,7 @@ func TestVariation_S11RatesReachPushJob(t *testing.T) {
 func TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip(t *testing.T) {
 	e := newDispatchEnv(t, "variations11zero")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	if _, err := e.admin.Exec(ctx,
 		`UPDATE byosmtp.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',0)) WHERE key='variation_css_micro_params'`); err != nil {
@@ -252,8 +247,7 @@ func TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip(t *testing.T) {
 // seeded default list rather than merging with it.
 func TestVariation_PreheaderTemplatesOverrideReachesPushJob(t *testing.T) {
 	e := newDispatchEnv(t, "variationpreheader")
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	if _, err := e.admin.Exec(context.Background(),
 		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $1::jsonb), updated_at = NOW() WHERE key = 'variation_preheader_templates'`,

@@ -32,12 +32,9 @@ func TestFairness_RoundRobinFairness_NoStarvation(t *testing.T) {
 	// Each user needs their OWN over-provisioned account (re-keyed from one shared-pool account in
 	// G1 — accountConsume now filters on user_id, so an account seeded under the hardcoded system
 	// user is unreachable by these three distinct users' jobs; see seedAccountForUser's comment).
-	poolBig := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
-	poolMed := e.seedPool(t)
-	poolSmall := e.seedPool(t)
-	acctBig := e.seedAccountForUser(t, userBig, poolBig, "secbig")
-	acctMed := e.seedAccountForUser(t, userMed, poolMed, "secmed")
-	acctSmall := e.seedAccountForUser(t, userSmall, poolSmall, "secsmall")
+	acctBig := e.seedAccountForUser(t, userBig, "secbig")
+	acctMed := e.seedAccountForUser(t, userMed, "secmed")
+	acctSmall := e.seedAccountForUser(t, userSmall, "secsmall")
 	for _, a := range []string{acctBig, acctMed, acctSmall} {
 		e.setAccountDailyState(t, a, 100000, 0, todayUTC(), false, nil) // over-provisioned
 	}
@@ -96,8 +93,7 @@ func TestFairness_PreClaimGate_ExhaustedUserNotClaimed(t *testing.T) {
 	// user, so the pre-claim gate is exercising the TERMINAL_BLOCKED branch (§5.1), not the
 	// zero-accounts WAIT branch, which would otherwise produce the same observable "queued, no
 	// churn" outcome for the wrong reason.
-	poolExhausted := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
-	acct := e.seedAccountForUser(t, userExhausted, poolExhausted, "sec")
+	acct := e.seedAccountForUser(t, userExhausted, "sec")
 	e.setAccountDailyState(t, acct, 5, 5, todayUTC(), true, strPtr("manual")) // fully ineligible, never self-heals
 
 	jobExhausted := e.seedQueuedJobFor(t, userExhausted, "ex@example.com")
@@ -123,8 +119,7 @@ func TestFairness_PreClaimGate_ExhaustedUserNotClaimed(t *testing.T) {
 	// test isolates "the gate doesn't block the whole tick," not box supply.
 	e.addBox(t)
 	userHealthy := e.seedUser(t, "healthy@tenant.example")
-	poolHealthy := e.seedPool(t)
-	healthyAcct := e.seedAccountForUser(t, userHealthy, poolHealthy, "sec2")
+	healthyAcct := e.seedAccountForUser(t, userHealthy, "sec2")
 	e.setAccountDailyState(t, healthyAcct, 100, 0, todayUTC(), false, nil)
 	jobHealthy := e.seedQueuedJobFor(t, userHealthy, "hz@example.com")
 	if _, pushed, err := e.d.Tick(ctx); err != nil || pushed == 0 {
@@ -136,15 +131,14 @@ func TestFairness_PreClaimGate_ExhaustedUserNotClaimed(t *testing.T) {
 	}
 }
 
-// TestFairness_PreClaimGate_UnconfiguredSharedPoolNoChurn (T10-style, via the gate) — a base user
-// with ZERO accounts (re-keyed from "default_shared_pool_id UNSET" — that concept is gone with
-// pools, Docs/phase-2-strip-shared-pool.md §2.3) is never claimed for across multiple ticks: no
-// churn, no crash, clean queued state — proving the P4-5 gate treats a user with no accounts at
-// all identically to a fully-exhausted one (both WAIT, never FAIL).
-func TestFairness_PreClaimGate_UnconfiguredSharedPoolNoChurn(t *testing.T) {
+// TestFairness_PreClaimGate_ZeroAccountsNoChurn (T10-style, via the gate; renamed from
+// UnconfiguredSharedPoolNoChurn — re-keyed from "default_shared_pool_id UNSET", a concept gone with
+// pools, Docs/phase-2-strip-shared-pool.md §2.3) — a base user with ZERO accounts is never claimed
+// for across multiple ticks: no churn, no crash, clean queued state — proving the P4-5 gate treats
+// a user with no accounts at all identically to a fully-exhausted one (both WAIT, never FAIL).
+func TestFairness_PreClaimGate_ZeroAccountsNoChurn(t *testing.T) {
 	e := newDispatchEnv(t, "gateunconf")
 	ctx := context.Background()
-	e.clearDefaultSharedPool(t)
 
 	userA := e.seedUser(t, "gateunconf-a@tenant.example")
 	job := e.seedQueuedJobFor(t, userA, "gu@example.com")

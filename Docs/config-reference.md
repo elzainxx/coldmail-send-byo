@@ -29,7 +29,6 @@ hardcoded tuning constant" structurally checkable. `default_value` is never muta
 | `heartbeat_missed_threshold` | `{"v": 3}` | integer | sender_0010 | Missed heartbeats before a box is presumed dead (Phase 6). |
 | `job_max_processing_time_sec` | `{"v": 120}` | integer | sender_0010 | Per-job max processing time (lease). **Invariant §4.6(a).** |
 | `debug_log_retention_days` | `{"v": 7}` | integer | sender_0010 | `send_logs.ttl_expires_at` age before the sweep purges raw content (Phase 7). |
-| `default_shared_pool_id` | `{"v": null}` | uuid | sender_0010 | **RESERVED / NOT-YET-CONSUMED (M3-P2-OD-1, ruled 2026-07-31, expires G2)** — its sole behavioral consumer (`resolveSharedFallback`) was deleted in G1 along with the rest of dispatch-side pool resolution (Docs/phase-2-strip-shared-pool.md §2.4); the seeded row itself is deleted in G2 along with the `pools` table, at which point this row, this ledger line, and this manifest entry all disappear together. Time-boxed, not a design decision to keep pools around in any form. |
 
 ## Phase 5 state (+3 keys, `sender_0017`)
 

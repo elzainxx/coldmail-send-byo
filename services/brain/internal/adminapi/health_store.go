@@ -203,77 +203,26 @@ func queryQueueCounts(ctx context.Context, db *pgxpool.Pool) (queueCounts, error
 	return q, nil
 }
 
-// queryWaitingForCapacity counts QUEUED jobs whose owning user has NO pool with an eligible
-// account right now. This mirrors the Phase 4/5 pre-claim gate's own "is this user's chain
-// exhausted" test at read-only granularity: for each distinct user_id with queued work, resolve
-// their visible pools (dedicated owned + any shared — the same visibility rule
-// selectAccountForJob/resolvePoolChain use) and check eligibility across them.
+// queryWaitingForCapacity counts QUEUED jobs whose owning user has NO account at all.
+//
+// G2 STUB (M3-P2-OD-12): the pre-G2 version resolved each user's visible POOLS (dedicated owned +
+// shared) and checked eligibility across them. byosmtp.pools is dropped by this phase's own
+// migrations, so that query cannot survive unmodified — this is a structurally-correct interim
+// ("does this user have any account at all"), not yet the full eligible-account-set semantics.
+// The real accounts_exhausted rewrite (M3-P2-OD-3) lands at G3, alongside userRoutingStrategy's
+// real user_settings read — mirroring dispatch/exhaustion.go's own userHasAnyAccount stub-then-
+// rewrite split at G1/G3.
 func queryWaitingForCapacity(ctx context.Context, db *pgxpool.Pool) (int, error) {
-	tz, err := readConfigString(ctx, db, "daily_reset_timezone")
-	if err != nil {
-		return 0, err
-	}
-	throttleSec, err := readConfigInt(ctx, db, "throttle_pause_seconds")
-	if err != nil {
-		return 0, err
-	}
-	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
-	if err != nil {
-		return 0, err
-	}
 	const q = `
-WITH queued_users AS (
-    SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state = 'queued'
-),
-user_pools AS (
-    SELECT qu.user_id, p.id AS pool_id
-    FROM queued_users qu
-    JOIN byosmtp.pools p
-      ON p.enabled = TRUE
-     AND (p.owner_user_id = qu.user_id OR p.kind = 'shared')
-)
-SELECT COUNT(*) FROM (
-    SELECT j.id
-    FROM byosmtp.jobs j
-    WHERE j.state = 'queued'
-      AND NOT EXISTS (
-          SELECT 1 FROM user_pools up
-          WHERE up.user_id = j.user_id
-            AND EXISTS (` + eligibleAccountsSubqueryUsingCTEPoolID + `)
-      )
-) waiting`
+SELECT COUNT(*) FROM byosmtp.jobs j
+ WHERE j.state = 'queued'
+   AND NOT EXISTS (SELECT 1 FROM byosmtp.accounts a WHERE a.user_id = j.user_id)`
 	var n int
-	if err := db.QueryRow(ctx, q, tz, throttleSec, hour).Scan(&n); err != nil {
+	if err := db.QueryRow(ctx, q).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
 }
-
-// eligibleAccountsSubqueryUsingCTEPoolID is the §2.1 eligibility predicate (including the P5-13
-// expired-throttle admission and the daily_reset_hour boundary offset), referencing up.pool_id
-// (the enclosing CTE's column) since it is nested inside queryWaitingForCapacity's own query
-// rather than invoked as a standalone statement. $1/$2/$3 bind to that OUTER query's parameters
-// ($1=daily_reset_timezone, $2=throttle_pause_seconds, $3=daily_reset_hour) — see the call site
-// above (db.QueryRow(ctx, q, tz, throttleSec, hour)).
-const eligibleAccountsSubqueryUsingCTEPoolID = `
-    SELECT 1
-    FROM byosmtp.accounts a
-    WHERE a.pool_id = up.pool_id
-      AND a.quarantined = FALSE
-      AND a.disabled = FALSE
-      AND (
-            (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
-                AND (a.paused = FALSE
-                     OR a.pause_reason = 'daily_limit'
-                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2)))
-            OR
-            (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
-                AND (a.paused = FALSE
-                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2))
-                AND a.daily_sent_count < a.daily_limit)
-          )`
 
 // queryTerminalCountInWindow counts jobs.completed_at within the trailing windowSec that reached
 // the given terminal state (used for sends_last_window: state='sent').
@@ -370,70 +319,13 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 	return a, err
 }
 
-// queryPoolHeadroom returns, per pool, the count of currently-eligible accounts and a clean
-// ok/exhausted headroom label (§3.2 "pools"). Uses the SAME predicate as queryWaitingForCapacity's
-// inner EXISTS, applied per-pool as a COUNT instead of an EXISTS, so "eligible_accounts" and
-// "waiting_for_capacity" can never disagree about what "eligible" means.
+// queryPoolHeadroom is a G2 STUB (M3-P2-OD-12): always an empty array. Its subject, byosmtp.pools,
+// is dropped by this phase's own migrations — the per-pool headroom concept has no replacement at
+// G2 (unlike queryWaitingForCapacity, which gets a structurally-correct interim). §3.2's "an empty
+// array, never a null field" contract is preserved so healthResponse.Pools stays well-shaped.
+// The account-set-aware replacement is G3 scope.
 func queryPoolHeadroom(ctx context.Context, db *pgxpool.Pool) ([]poolHeadroom, error) {
-	tz, err := readConfigString(ctx, db, "daily_reset_timezone")
-	if err != nil {
-		return nil, err
-	}
-	throttleSec, err := readConfigInt(ctx, db, "throttle_pause_seconds")
-	if err != nil {
-		return nil, err
-	}
-	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
-	if err != nil {
-		return nil, err
-	}
-	const q = `
-SELECT p.id::text, p.kind::text,
-       COUNT(a.id) FILTER (WHERE
-            a.quarantined = FALSE AND a.disabled = FALSE AND (
-              (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
-                  AND (a.paused = FALSE
-                       OR a.pause_reason = 'daily_limit'
-                       OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                           AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2)))
-              OR
-              (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $3) AT TIME ZONE $1)::date
-                  AND (a.paused = FALSE
-                       OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                           AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $2))
-                  AND a.daily_sent_count < a.daily_limit)
-            )
-       ) AS eligible
-FROM byosmtp.pools p
-LEFT JOIN byosmtp.accounts a ON a.pool_id = p.id
-WHERE p.enabled = TRUE
-GROUP BY p.id, p.kind
-ORDER BY p.created_at`
-	rows, err := db.Query(ctx, q, tz, throttleSec, hour)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []poolHeadroom
-	for rows.Next() {
-		var ph poolHeadroom
-		if err := rows.Scan(&ph.PoolID, &ph.Kind, &ph.EligibleAccounts); err != nil {
-			return nil, err
-		}
-		if ph.EligibleAccounts > 0 {
-			ph.Headroom = "ok"
-		} else {
-			ph.Headroom = "exhausted"
-		}
-		out = append(out, ph)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if out == nil {
-		out = []poolHeadroom{} // §3.2: an empty array, never a null field
-	}
-	return out, nil
+	return []poolHeadroom{}, nil
 }
 
 // queryErrorsInWindow is COUNT job_events GROUP BY error_class within the trailing window (§3.2

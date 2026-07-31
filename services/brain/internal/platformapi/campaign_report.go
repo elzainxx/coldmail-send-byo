@@ -107,38 +107,20 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 	})
 }
 
-// campaignTotals computes §2.2's totals object in ONE query, tenant-scoped. waiting_for_capacity
-// reuses the IDENTICAL eligibility predicate internal/adminapi's health endpoint already uses for
-// its own global waiting_for_capacity count (mirrored here rather than imported — platformapi does
-// not depend on adminapi, and adminapi does not depend on internal/dispatch; each surface keeps its
-// own minimal read-only copy of the §2.1 eligibility predicate, the established package-isolation
-// precedent, OD-7) so "waiting" can never mean two different things across the two admin/platform
-// surfaces.
+// campaignTotals computes §2.2's totals object in ONE query, tenant-scoped.
+//
+// G2 STUB (M3-P2-OD-12, extending the health-endpoint ruling to platformapi): waiting_for_capacity
+// pre-G2 resolved the user's visible POOLS (dedicated owned + shared) and checked eligibility
+// across them. byosmtp.pools is dropped by this phase's own migrations, so that query cannot
+// survive unmodified — this is a structurally-correct interim ("does this user have any account at
+// all"), matching internal/adminapi/health_store.go's queryWaitingForCapacity stub exactly (same
+// reasoning, same phase split: G2 stub, G3 real accounts_exhausted rewrite per M3-P2-OD-3).
 func (s *Server) campaignTotals(ctx context.Context, campaignID, userID string) (campaignTotals, error) {
-	tz, err := s.readConfigStringLocal(ctx, "daily_reset_timezone", "UTC")
-	if err != nil {
-		return campaignTotals{}, err
-	}
-	throttleSec, err := s.readConfigIntLocal(ctx, "throttle_pause_seconds", 900)
-	if err != nil {
-		return campaignTotals{}, err
-	}
-	hour, err := s.readConfigIntLocal(ctx, "daily_reset_hour", 0)
-	if err != nil {
-		return campaignTotals{}, err
-	}
-
 	const q = `
 WITH scoped AS (
     SELECT j.id, j.state, j.user_id
     FROM byosmtp.jobs j
     WHERE j.campaign_id = $1 AND j.user_id = $2
-),
-user_pools AS (
-    SELECT p.id AS pool_id
-    FROM byosmtp.pools p
-    WHERE p.enabled = TRUE
-      AND (p.owner_user_id = $2::uuid OR p.kind = 'shared')
 )
 SELECT
     COUNT(*) AS total,
@@ -148,14 +130,13 @@ SELECT
     COUNT(*) FILTER (WHERE state IN ('assigned', 'sending')) AS in_flight,
     COUNT(*) FILTER (WHERE state = 'queued') AS pending_total,
     COUNT(*) FILTER (WHERE state = 'queued' AND NOT EXISTS (
-        SELECT 1 FROM user_pools up
-        WHERE EXISTS (` + campaignEligibleAccountsSubquery + `)
+        SELECT 1 FROM byosmtp.accounts a WHERE a.user_id = $2::uuid
     )) AS waiting_for_capacity
 FROM scoped`
 
 	var totals campaignTotals
 	var pendingTotal int
-	if err := s.db.QueryRow(ctx, q, campaignID, userID, tz, throttleSec, hour).Scan(
+	if err := s.db.QueryRow(ctx, q, campaignID, userID).Scan(
 		&totals.Total, &totals.Sent, &totals.Bounced, &totals.Failed, &totals.InFlight,
 		&pendingTotal, &totals.WaitingForCapacity); err != nil {
 		return campaignTotals{}, err
@@ -164,32 +145,6 @@ FROM scoped`
 	totals.Pending = pendingTotal - totals.WaitingForCapacity
 	return totals, nil
 }
-
-// campaignEligibleAccountsSubquery is the §2.1 eligibility predicate (P5-13 expired-throttle
-// admission + daily_reset_hour boundary offset), byte-identical in substance to
-// internal/adminapi/health_store.go's eligibleAccountsSubqueryUsingCTEPoolID — the two surfaces
-// each hold their own minimal copy (package isolation, OD-7's precedent) rather than sharing Go
-// code across internal/adminapi and internal/platformapi. Binds $3=tz, $4=throttleSec, $5=hour
-// (this query's parameter numbering, distinct from health_store.go's).
-const campaignEligibleAccountsSubquery = `
-    SELECT 1
-    FROM byosmtp.accounts a
-    WHERE a.pool_id = up.pool_id
-      AND a.quarantined = FALSE
-      AND a.disabled = FALSE
-      AND (
-            (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $5) AT TIME ZONE $3)::date
-                AND (a.paused = FALSE
-                     OR a.pause_reason = 'daily_limit'
-                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4)))
-            OR
-            (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $5) AT TIME ZONE $3)::date
-                AND (a.paused = FALSE
-                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
-                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4))
-                AND a.daily_sent_count < a.daily_limit)
-          )`
 
 // campaignItems returns one page of per-job detail (§2.2 "items"), cursor-paginated on
 // (created_at, id) — the same keyset pattern the admin surface uses (§5.1 pagination
@@ -259,38 +214,6 @@ func (s *Server) readDispatchPaused(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	return !*wrap.V, nil
-}
-
-// readConfigStringLocal/readConfigIntLocal are minimal local byosmtp.config readers (mirroring
-// readUnitPriceCredits's own pattern) scoped to exactly the keys campaignTotals needs, falling back
-// to the seeded default on any read/parse failure — report is a read-mostly endpoint and a
-// transient config blip must not 500 every poll in flight.
-func (s *Server) readConfigStringLocal(ctx context.Context, key, fallback string) (string, error) {
-	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
-		return fallback, nil
-	}
-	var wrap struct {
-		V *string `json:"v"`
-	}
-	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return fallback, nil
-	}
-	return *wrap.V, nil
-}
-
-func (s *Server) readConfigIntLocal(ctx context.Context, key string, fallback int) (int, error) {
-	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
-		return fallback, nil
-	}
-	var wrap struct {
-		V *int `json:"v"`
-	}
-	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
-		return fallback, nil
-	}
-	return *wrap.V, nil
 }
 
 // --- cursor helpers (campaign-report-local; mirror internal/adminapi/pagination.go's shape) ---

@@ -27,9 +27,9 @@ func (s *Server) handleAccountGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a)
 }
 
-// handleAccountList: GET /v1/admin/accounts (§2.3). Filters ?pool_id=, ?paused=, ?quarantined=,
-// ?disabled=, ?user_id=. Operator sees ALL accounts. Cursor pagination on (created_at, id). Every
-// item is the §2.1 object — no secret.
+// handleAccountList: GET /v1/admin/accounts (§2.3). Filters ?paused=, ?quarantined=, ?disabled=,
+// ?user_id=. Operator sees ALL accounts. Cursor pagination on (created_at, id). Every item is the
+// §2.1 object — no secret.
 func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r)
 	cur, cerr := parseCursor(r)
@@ -45,14 +45,6 @@ func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 		conds = append(conds, strings.Replace(cond, "?", "$"+strconv.Itoa(len(args)), 1))
 	}
 	q := r.URL.Query()
-	if v := q.Get("pool_id"); v != "" {
-		if !isUUID(v) {
-			s.fail(w, r, newErr(codeValidationFailed, "pool_id_filter_malformed").
-				withDetails(fieldDetail{Field: "pool_id", Issue: issueMalformed}))
-			return
-		}
-		add("a.pool_id = ?", v)
-	}
 	if v := q.Get("user_id"); v != "" {
 		if !isUUID(v) {
 			s.fail(w, r, newErr(codeValidationFailed, "user_id_filter_malformed").

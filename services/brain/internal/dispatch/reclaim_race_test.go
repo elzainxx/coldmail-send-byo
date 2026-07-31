@@ -19,8 +19,7 @@ import (
 func TestReclaimRace_OutcomeVsReclaim(t *testing.T) {
 	e := newDispatchEnv(t, "reclaimrace")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// Genuinely independent pools for the two racers (Rule 3 / ADR-0010 — never one shared conn).
 	p1, err := pgxpool.New(ctx, e.moduleDSN)

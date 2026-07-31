@@ -36,9 +36,6 @@ hr; echo "E11: provisioning $N_BOXES real box processes (distinct identities, OD
 
 PSQL "INSERT INTO public.users (id,email,is_active) VALUES ('$SYSUSER','sys@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
 
-POOL="$(curl -s -X POST http://localhost:8080/v1/admin/pools -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"kind":"shared","name":"e11-load-pool"}' | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4)"
-if [[ -z "$POOL" ]]; then echo "E11 ABORT: failed to create the load-test pool"; exit 1; fi
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/default_shared_pool_id" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"value\":\"$POOL\"}"
 
 # Shrink health_metrics_window_sec to match this run's per-step measurement window (MEASURE_SEC
 # below) — the seeded default (3600s) is right for a real operator dashboard but would dilute a
@@ -82,7 +79,7 @@ N_ACCOUNTS=$((MAX_LANES * 2))
 echo "E11: seeding $N_ACCOUNTS over-provisioned accounts targeting the sink..."
 for i in $(seq 1 "$N_ACCOUNTS"); do
   curl -s -o /dev/null -X POST http://localhost:8080/v1/admin/accounts -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' \
-    -d "{\"pool_id\":\"$POOL\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"e11-$i@ourdomain.com\",\"smtp_secret\":\"e11-secret\",\"from_address\":\"e11-$i@ourdomain.com\",\"from_name\":\"E11 Load\",\"daily_limit\":100000}" &
+    -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"e11-$i@ourdomain.com\",\"smtp_secret\":\"e11-secret\",\"from_address\":\"e11-$i@ourdomain.com\",\"from_name\":\"E11 Load\",\"daily_limit\":100000}" &
   # Bound concurrency of the seeding calls themselves (not a product dial — a fixture-setup
   # throttle so we don't open N_ACCOUNTS simultaneous admin-API connections).
   if (( i % 8 == 0 )); then wait; fi

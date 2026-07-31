@@ -91,7 +91,6 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 			after.Quarantined = true
 		}
 	}
-
 	// (Chunk 4 seam #2, wrapped by Phase 9.5 B2 §2.2) auto-pause — the SINGLE place that answers
 	// "should I pause (throttle)?", now gated by the autopause_enabled kill-switch. false = the
 	// decision is never evaluated at all (no ladder, no shadow row — auto-pause is self-reversing,
@@ -107,15 +106,27 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 	if after != before {
 		newThrottlePause := after.Paused && after.PauseReason != nil && *after.PauseReason == "throttle" &&
 			!(before.Paused && before.PauseReason != nil && *before.PauseReason == "throttle")
+		// quarantine_reason is required whenever quarantined=TRUE (accounts_quarantine_reason_check,
+		// Phase 1 §3.2, landing in this same G2 commit's 0026). $6/$7 let the UPDATE itself decide
+		// the reason without a second read: NULL if un-quarantining, the EXISTING column value if
+		// already quarantined before this call (never overwrite a manual/earlier reason on a call
+		// that only changes the pause state), else the freshly computed transition reason.
+		quarantineReason := quarantineReasonFor(class)
 		if _, err := tx.Exec(ctx,
 			`UPDATE byosmtp.accounts
 			   SET quarantined = $2,
 			       paused = $3,
 			       pause_reason = $4,
+			       quarantine_reason = CASE
+			           WHEN NOT $2 THEN NULL
+			           WHEN $6 THEN quarantine_reason
+			           ELSE $7::byosmtp.quarantine_reason
+			       END,
 			       throttle_paused_at = CASE WHEN $5 THEN NOW() ELSE throttle_paused_at END,
 			       updated_at = NOW()
 			 WHERE id = $1`,
-			accountID, after.Quarantined, after.Paused, after.PauseReason, newThrottlePause); err != nil {
+			accountID, after.Quarantined, after.Paused, after.PauseReason, newThrottlePause,
+			before.Quarantined, quarantineReason); err != nil {
 			return err
 		}
 		if err := h.writeSystemAccountEvent(ctx, tx, accountID, uid, class, before, after, newScore); err != nil {
@@ -132,6 +143,19 @@ func quarantineTrigger(class string) string {
 		return "auth_failure"
 	}
 	return "score"
+}
+
+// quarantineReasonFor maps a penalizing failure's class to the byosmtp.quarantine_reason enum
+// value stamped on a false->true auto-quarantine transition (accounts_quarantine_reason_check,
+// Phase 1 §3.2). A G2 stopgap, ruled 2026-07-31: quarantineDecision's score-below-threshold branch
+// does not compute either of the two finer-grained values (consecutive_failures / failure_rate) —
+// module 3's own Phase 5 is where that streak-vs-rate distinction gets built. consecutive_failures
+// is the closer of the two to what the score decision actually measures today.
+func quarantineReasonFor(class string) string {
+	if class == classAuthFailure {
+		return "auth_failure"
+	}
+	return "consecutive_failures"
 }
 
 // quarantineDecision is the SINGLE auto-quarantine predicate (Chunk 4, §4.2). It answers

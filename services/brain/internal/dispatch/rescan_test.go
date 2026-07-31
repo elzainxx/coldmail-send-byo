@@ -41,9 +41,8 @@ func (e *dispatchEnv) boxHeartbeat(t *testing.T, boxID string) time.Time {
 func TestRescan_ExtendsLeasesAndRefreshesHeartbeats(t *testing.T) {
 	e := newDispatchEnv(t, "rescanextend")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
+	e.seedAccount(t, "sec")
 
 	// Two orphaned in-flight jobs (crash left them 'sending' with a near-expired lease), one control
 	// 'queued' job that the rescan must not touch.
@@ -117,8 +116,7 @@ func TestRescan_ExtendsLeasesAndRefreshesHeartbeats(t *testing.T) {
 func TestRescan_LeaseExtensionIsEventFree(t *testing.T) {
 	e := newDispatchEnv(t, "rescaneventfree")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "eventfree@example.com")
 	e.dispatchToSending(t, job)
@@ -171,8 +169,7 @@ func TestRescan_LeaseExtensionIsEventFree(t *testing.T) {
 func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 	e := newDispatchEnv(t, "rescandeadlock")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
 	// Keep the account high-scored (recent success) so the classified failures across many rounds
 	// don't quarantine it and stall dispatchToSending — we're testing the LOCK ORDER, not scoring.
@@ -239,8 +236,7 @@ func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 func TestRescan_Idempotent(t *testing.T) {
 	e := newDispatchEnv(t, "rescanidem")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
 
 	job := e.seedQueuedJob(t, "idem@example.com")

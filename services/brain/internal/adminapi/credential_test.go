@@ -7,23 +7,21 @@ import (
 	"testing"
 )
 
-// createSharedPoolAndAccount is a helper: seed the system user, create a shared pool, create an
-// account with the given secret. Returns (poolID, accountID).
-func (e *testEnv) createSharedPoolAndAccount(t *testing.T, secret string) (string, string) {
+// createUserAndAccount is a helper: seed a real user, create an account owned by them with the
+// given secret. Returns accountID. Renamed from createSharedPoolAndAccount at G2 (Docs/phase-2-
+// strip-shared-pool.md §4.4) — its pool indirection is gone; the account write path now takes
+// user_id directly (M3-P2-OD-6).
+func (e *testEnv) createUserAndAccount(t *testing.T, secret string) string {
 	t.Helper()
-	e.seedSystemUser(t)
-	pr := e.do(t, "POST", "/v1/admin/pools", map[string]any{
-		"kind": "shared", "name": "pool-" + randHex(4),
-	}).requireStatus(t, 201)
-	poolID := pr.str("id")
+	userID := e.seedUser(t, "cred-"+randHex(4)+"@example.com")
 	ar := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id":       poolID,
+		"user_id":       userID,
 		"smtp_host":     "smtp.example.com",
 		"smtp_username": "mailer-" + randHex(3) + "@example.com",
 		"smtp_secret":   secret,
 		"from_address":  "sender@example.com",
 	}).requireStatus(t, 201)
-	return poolID, ar.str("id")
+	return ar.str("id")
 }
 
 // TestT1_CredentialRoundTripNeverLeaks — the credential round-trips (decryptable with the test
@@ -32,7 +30,7 @@ func (e *testEnv) createSharedPoolAndAccount(t *testing.T, secret string) (strin
 func TestT1_CredentialRoundTripNeverLeaks(t *testing.T) {
 	e := newTestEnv(t, "t1")
 	const secret = "hunter2-smtp-secret"
-	_, accID := e.createSharedPoolAndAccount(t, secret)
+	accID := e.createUserAndAccount(t, secret)
 
 	// 1) Round-trip: read raw row, decrypt with the harness key + AAD (id ‖ key_id) => secret.
 	ct, nonce, keyID := e.rawCredential(t, accID)
@@ -52,9 +50,9 @@ func TestT1_CredentialRoundTripNeverLeaks(t *testing.T) {
 	}
 
 	// 2) Never in the create response: re-create and inspect the body.
-	cr := e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": "p2-" + randHex(4)}).requireStatus(t, 201)
+	userID2 := e.seedUser(t, "cred2-"+randHex(4)+"@example.com")
 	createResp := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": cr.str("id"), "smtp_host": "smtp.example.com",
+		"user_id": userID2, "smtp_host": "smtp.example.com",
 		"smtp_username": "u2@example.com", "smtp_secret": secret, "from_address": "s@example.com",
 	}).requireStatus(t, 201)
 	assertNoCredentialFields(t, createResp.raw)
@@ -90,7 +88,7 @@ func TestT1_CredentialRoundTripNeverLeaks(t *testing.T) {
 // it (fresh nonce); null/empty rejected.
 func TestT2_UpdateSecretOmitVsReplace(t *testing.T) {
 	e := newTestEnv(t, "t2")
-	_, accID := e.createSharedPoolAndAccount(t, "orig-secret")
+	accID := e.createUserAndAccount(t, "orig-secret")
 	ct0, nonce0, kid0 := e.rawCredential(t, accID)
 
 	// A) PATCH changing only from_name (NO smtp_secret) => credential bytes byte-identical.
@@ -136,17 +134,10 @@ func TestT2_UpdateSecretOmitVsReplace(t *testing.T) {
 // (direct DB write), then decrypt with B's AAD => fails closed (OD-3 adopted).
 func TestT2b_AADRowBindingRejectsTransplant(t *testing.T) {
 	e := newTestEnv(t, "t2b")
-	_, accA := e.createSharedPoolAndAccount(t, "secret-A")
+	accA := e.createUserAndAccount(t, "secret-A")
 
-	// Create B in the same pool with a distinct username.
-	prA, _, _ := e.rawCredential(t, accA)
-	_ = prA
-	poolID := e.do(t, "GET", "/v1/admin/accounts/"+accA, nil).requireStatus(t, 200).str("pool_id")
-	brA := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": poolID, "smtp_host": "smtp.example.com",
-		"smtp_username": "B-" + randHex(3) + "@example.com", "smtp_secret": "secret-B", "from_address": "s@example.com",
-	}).requireStatus(t, 201)
-	accB := brA.str("id")
+	// Create B for its own user with a distinct username.
+	accB := e.createUserAndAccount(t, "secret-B")
 
 	ctA, nonceA, kidA := e.rawCredential(t, accA)
 
@@ -172,12 +163,11 @@ func TestT2b_AADRowBindingRejectsTransplant(t *testing.T) {
 // from_address) while carrying a real secret leaves NO occurrence of the secret in logs.
 func TestT3_SecretNeverLoggedOnFailure(t *testing.T) {
 	e := newTestEnv(t, "t3")
-	e.seedSystemUser(t)
-	poolID := e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": "p-" + randHex(4)}).requireStatus(t, 201).str("id")
+	userID := e.seedUser(t, "t3-"+randHex(4)+"@example.com")
 
 	const secret = "leak-me-if-you-can-9987"
 	r := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": poolID, "smtp_host": "smtp.example.com", "smtp_username": "u@example.com",
+		"user_id": userID, "smtp_host": "smtp.example.com", "smtp_username": "u@example.com",
 		"smtp_secret": secret, "from_address": "NOT-AN-EMAIL",
 	}).requireStatus(t, 400)
 	if r.errorDetailIssue("from_address") != issueMalformed {

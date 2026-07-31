@@ -1,10 +1,15 @@
 package adminapi
 
 // health_alerts_test.go — Phase 9.5 Chunk 4 (B4, §4), O5. Real Postgres, real HTTP against the
-// actual production Server (httptest) — no mocks (CLAUDE.md Rule 3). Proves each of the three §4.1
-// conditions genuinely fires and surfaces in active_conditions[], that the §4.3 webhook fires
+// actual production Server (httptest) — no mocks (CLAUDE.md Rule 3). Proves the surviving §4.1
+// conditions genuinely fire and surface in active_conditions[], that the §4.3 webhook fires
 // exactly once per rising edge (dedup holds across repeated polls), that it stays silent when
 // alert_webhook_url is unset, and that a failing webhook endpoint never blocks the health response.
+//
+// pool_exhausted (the original §4.1 row 1) and its two tests (TestAlerts_PoolExhaustedFires,
+// TestAlerts_PoolExhaustedRequiresWaitingJob) DIED at G2 (M3-P2-OD-12): the condition disappears
+// along with byosmtp.pools, not merely its query. M3-P1-OD-9 already named no_eligible_accounts as
+// its Phase-7-owned replacement.
 
 import (
 	"encoding/json"
@@ -34,68 +39,14 @@ func findCondition(t *testing.T, resp map[string]any, name string) (map[string]a
 	return nil, false
 }
 
-// TestAlerts_PoolExhaustedFires (O5, §4.1 row 1) — an eligible pool with zero eligible accounts AND
-// >=1 queued job waiting on it must appear as a pool_exhausted condition; a healthy pool must not.
-func TestAlerts_PoolExhaustedFires(t *testing.T) {
-	e := newTestEnv(t, "alertpool")
-
-	exhaustedPool := e.seedHealthPool(t, "alert-pool-exhausted")
-	e.seedHealthAccount(t, exhaustedPool, true, false, false, 0, 50) // only account, paused -> 0 eligible
-	e.seedHealthJob(t, "queued")                                     // system user's queued job waits on this pool (shared)
-
-	healthyPool := e.seedHealthPool(t, "alert-pool-healthy")
-	e.seedHealthAccount(t, healthyPool, false, false, false, 0, 100)
-
-	resp := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
-
-	cond, found := findCondition(t, resp.body, "pool_exhausted")
-	if !found {
-		t.Fatalf("pool_exhausted did not fire for a truly exhausted pool with a waiting job: %+v", resp.body)
-	}
-	if cond["detail"].(map[string]any)["pool_id"] != exhaustedPool {
-		t.Fatalf("pool_exhausted fired for the wrong pool: %+v", cond)
-	}
-	if waiting := intField(t, cond["detail"].(map[string]any), "waiting_jobs"); waiting < 1 {
-		t.Fatalf("pool_exhausted waiting_jobs=%d, want >=1", waiting)
-	}
-	if cond["since"] == "" || cond["since"] == nil {
-		t.Fatalf("pool_exhausted missing since: %+v", cond)
-	}
-
-	// Anti-vacuity: the healthy pool must NOT also report exhausted (proves the query really
-	// distinguishes real exhaustion, not "any pool exists").
-	arr := resp.body["active_conditions"].([]any)
-	for _, c := range arr {
-		cm := c.(map[string]any)
-		if cm["condition"] == "pool_exhausted" && cm["detail"].(map[string]any)["pool_id"] == healthyPool {
-			t.Fatalf("pool_exhausted incorrectly fired for the healthy pool: %+v", cm)
-		}
-	}
-}
-
-// TestAlerts_PoolExhaustedRequiresWaitingJob — a pool with zero eligible accounts but NO queued job
-// waiting on it must NOT fire (§4.1: "while >=1 job is waiting on it"). A brand-new empty pool must
-// not alarm an operator who has routed nothing to it.
-func TestAlerts_PoolExhaustedRequiresWaitingJob(t *testing.T) {
-	e := newTestEnv(t, "alertpoolnowait")
-	pool := e.seedHealthPool(t, "alert-pool-unused")
-	e.seedHealthAccount(t, pool, true, false, false, 0, 50) // paused -> 0 eligible, but nothing queued
-
-	resp := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
-	if _, found := findCondition(t, resp.body, "pool_exhausted"); found {
-		t.Fatalf("pool_exhausted fired for an exhausted-but-unused pool (no waiting job): %+v", resp.body)
-	}
-}
-
 // TestAlerts_AccountQuarantinedFires (O5, §4.1 row 2) — a REAL enforce-mode quarantine
 // (account_events action='quarantine', actor='system') fires; a SHADOW would-quarantine observation
 // (action='updated', reason shadow_would_quarantine:...) on a DIFFERENT account must NOT — proving
 // the condition distinguishes the two exactly as §4.1 specifies.
 func TestAlerts_AccountQuarantinedFires(t *testing.T) {
 	e := newTestEnv(t, "alertquarantine")
-	pool := e.seedHealthPool(t, "alert-quarantine-pool")
-	enforced := e.seedHealthAccount(t, pool, false, false, false, 0, 100)
-	shadowed := e.seedHealthAccount(t, pool, false, false, false, 0, 100)
+	enforced := e.seedHealthAccount(t, false, false, false, 0, 100)
+	shadowed := e.seedHealthAccount(t, false, false, false, 0, 100)
 
 	if _, err := e.admin.Exec(bgCtx(),
 		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, reason)

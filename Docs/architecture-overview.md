@@ -47,9 +47,8 @@ The full threat model, what each boundary actually protects, and the honest resi
    advisory lock enforcing one active campaign per user.
 2. **The dispatcher tick** (Brain, `internal/dispatch`) claims queued jobs with a
    `FOR UPDATE SKIP LOCKED` CTE against a partial index — exactly-once pickup under real
-   concurrency. It resolves the sending pool (dedicated if the campaign has one, else
-   `default_shared_pool_id`), picks an eligible account (not paused/quarantined/disabled, under
-   its daily limit, respecting pacing), and reserves a concurrency lane.
+   concurrency. It picks an eligible account from the job's user (not paused/quarantined/disabled,
+   under its daily limit, respecting pacing), and reserves a concurrency lane.
 3. **Brain decrypts** that account's SMTP secret (AES-256-GCM; key held outside the DB, AAD binds
    ciphertext to `account.id ‖ credential_key_id`) and pushes the job + credential to a connected
    box over the mTLS stream, with a lease and an attempt token.
@@ -147,8 +146,6 @@ Stated here because each one is a property of the architecture, not a bug:
   `sent` and nothing downstream is observed. Synchronous SMTP-time bounces *are* classified; what is
   absent is everything a provider says after accepting the message. `describe` reports this honestly
   in its own capabilities block. See `future-work.md` §1 — it is the largest single gap.
-- **One effective shared pool.** Dedicated pools exist and route correctly; campaign-to-pool binding
-  beyond `default_shared_pool_id` is future work.
 - **Auto-quarantine starts in `shadow`.** It decides and logs but does not act until an operator
   promotes it — see `go-live-checklist.md` for what to watch first.
 

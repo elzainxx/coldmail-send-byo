@@ -5,58 +5,59 @@ import (
 	"testing"
 )
 
-// mkPool creates a shared pool (system user seeded) and returns its id.
-func (e *testEnv) mkSharedPool(t *testing.T, name string) string {
-	t.Helper()
-	e.seedSystemUser(t)
-	return e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": name}).requireStatus(t, 201).str("id")
-}
-
-// mkAccount creates an account in poolID with the given host/username and returns its id.
-func (e *testEnv) mkAccount(t *testing.T, poolID, host, user string) string {
+// mkAccount creates an account owned by userID with the given host/username and returns its id.
+func (e *testEnv) mkAccount(t *testing.T, userID, host, user string) string {
 	t.Helper()
 	return e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": poolID, "smtp_host": host, "smtp_username": user,
+		"user_id": userID, "smtp_host": host, "smtp_username": user,
 		"smtp_secret": "s-" + randHex(3), "from_address": "s@example.com",
 	}).requireStatus(t, 201).str("id")
 }
 
-// TestT7_PerPoolUniqueness — duplicate (host,user) within a pool => 409; same pair in a different
-// pool => 201; a move that would collide => 409.
-func TestT7_PerPoolUniqueness(t *testing.T) {
+// TestT7_PerUserUniqueness — renamed from TestT7_PerPoolUniqueness (Docs/phase-2-strip-shared-pool.md
+// §4.2): subject re-keyed from accounts_pool_host_user_unique (sender_0013, dropped at G2's 0027)
+// to accounts_user_host_username_unique (Phase 1 §3.1, created by the same migration). Duplicate
+// (host,user) for the SAME user => 409; same pair for a DIFFERENT user => 201; a PATCH that would
+// collide within one user's own set => 409. The partial-index (soft-delete) case is G3 scope
+// (Docs/phase-2-strip-shared-pool.md §8.1 criterion 16) — deleted_at does not have a delete API
+// surface until Phase 3.
+func TestT7_PerUserUniqueness(t *testing.T) {
 	e := newTestEnv(t, "t7")
-	p1 := e.mkSharedPool(t, "P1")
-	p2 := e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": "P2"}).requireStatus(t, 201).str("id")
-	p3 := e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": "P3"}).requireStatus(t, 201).str("id")
+	u1 := e.seedUser(t, "t7-u1@example.com")
+	u2 := e.seedUser(t, "t7-u2@example.com")
 
-	// (host=h, user=u) in P1 => 201.
-	e.mkAccount(t, p1, "h.example.com", "u@example.com")
+	// (host=h, user=u) for u1 => 201.
+	e.mkAccount(t, u1, "h.example.com", "u@example.com")
 
-	// Second (h,u) in P1 => 409 duplicate.
+	// Second (h,u) for the SAME u1 => 409 duplicate.
 	r := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": p1, "smtp_host": "h.example.com", "smtp_username": "u@example.com",
+		"user_id": u1, "smtp_host": "h.example.com", "smtp_username": "u@example.com",
 		"smtp_secret": "x", "from_address": "s@example.com",
 	}).requireStatus(t, 409)
 	if r.errorCode() != codeConflict {
-		t.Fatalf("dup in pool: code=%s, want conflict", r.errorCode())
+		t.Fatalf("dup for same user: code=%s, want conflict", r.errorCode())
 	}
 	assertNoRawDBLeak(t, r.raw)
 
-	// (h,u) in P2 => 201 (allowed across pools).
-	a2 := e.mkAccount(t, p2, "h.example.com", "u@example.com")
+	// (h,u) for u2 => 201 (allowed across users).
+	a2 := e.mkAccount(t, u2, "h.example.com", "u@example.com")
 
-	// Move P2's account to P1 (would collide) => 409; move to empty P3 => 200.
-	rm := e.do(t, "PATCH", "/v1/admin/accounts/"+a2, map[string]any{"pool_id": p1}).requireStatus(t, 409)
+	// Add a second, distinct account for u1, then PATCH it to collide with u1's existing (h,u) => 409.
+	a3 := e.mkAccount(t, u1, "other.example.com", "other@example.com")
+	rm := e.do(t, "PATCH", "/v1/admin/accounts/"+a3, map[string]any{
+		"smtp_host": "h.example.com", "smtp_username": "u@example.com",
+	}).requireStatus(t, 409)
 	assertNoRawDBLeak(t, rm.raw)
-	e.do(t, "PATCH", "/v1/admin/accounts/"+a2, map[string]any{"pool_id": p3}).requireStatus(t, 200)
+	// u2's account is untouched by u1's collision.
+	e.do(t, "GET", "/v1/admin/accounts/"+a2, nil).requireStatus(t, 200)
 }
 
 // TestT8_QuarantineRoundTripAudit — quarantine → 200 + exactly one 'quarantine' event; repeat →
 // 422 + no new event; unquarantine → 200 + one event; repeat → 422; quarantine leaves other flags.
 func TestT8_QuarantineRoundTripAudit(t *testing.T) {
 	e := newTestEnv(t, "t8")
-	p := e.mkSharedPool(t, "P")
-	acc := e.mkAccount(t, p, "h.example.com", "u@example.com")
+	u := e.seedUser(t, "t8@example.com")
+	acc := e.mkAccount(t, u, "h.example.com", "u@example.com")
 	base := e.eventCount(t, acc) // includes the 'created' event
 
 	// quarantine => 200, quarantined=true, +1 event.
@@ -109,8 +110,8 @@ func TestT8_QuarantineRoundTripAudit(t *testing.T) {
 // daily_limit pause (422 not_manual_pause, no event, pause unchanged).
 func TestT8b_ManualPauseUnpauseGuard(t *testing.T) {
 	e := newTestEnv(t, "t8b")
-	p := e.mkSharedPool(t, "P")
-	acc := e.mkAccount(t, p, "h.example.com", "u@example.com")
+	u := e.seedUser(t, "t8b@example.com")
+	acc := e.mkAccount(t, u, "h.example.com", "u@example.com")
 
 	// pause => 200, paused=true, reason=manual.
 	pr := e.do(t, "POST", "/v1/admin/accounts/"+acc+"/pause", nil).requireStatus(t, 200)
@@ -145,8 +146,8 @@ func TestT8b_ManualPauseUnpauseGuard(t *testing.T) {
 // account_id is nulled by the FK, and earlier lifecycle events also survive with nulled account_id.
 func TestT9_AccountEventsAppendOnly(t *testing.T) {
 	e := newTestEnv(t, "t9")
-	p := e.mkSharedPool(t, "P")
-	acc := e.mkAccount(t, p, "h.example.com", "u@example.com")
+	u := e.seedUser(t, "t9@example.com")
+	acc := e.mkAccount(t, u, "h.example.com", "u@example.com")
 	// Produce one lifecycle event.
 	e.do(t, "POST", "/v1/admin/accounts/"+acc+"/quarantine", nil).requireStatus(t, 200)
 
@@ -207,9 +208,9 @@ func TestT9_AccountEventsAppendOnly(t *testing.T) {
 // (no raw 23514); stored limit unchanged; a valid lower value >= counter succeeds.
 func TestT11_LowerDailyLimitBelowCounter(t *testing.T) {
 	e := newTestEnv(t, "t11")
-	p := e.mkSharedPool(t, "P")
+	u := e.seedUser(t, "t11@example.com")
 	acc := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"pool_id": p, "smtp_host": "h.example.com", "smtp_username": "u@example.com",
+		"user_id": u, "smtp_host": "h.example.com", "smtp_username": "u@example.com",
 		"smtp_secret": "s", "from_address": "s@example.com", "daily_limit": 500,
 	}).requireStatus(t, 201).str("id")
 	e.setDailySentCount(t, acc, 300)
@@ -228,14 +229,16 @@ func TestT11_LowerDailyLimitBelowCounter(t *testing.T) {
 	e.do(t, "PATCH", "/v1/admin/accounts/"+acc, map[string]any{"daily_limit": 400}).requireStatus(t, 200)
 }
 
-// TestT12_CrossPoolDuplicateIndependentCounters — same (host,user) in two pools => two rows with
-// independent daily_sent_count.
-func TestT12_CrossPoolDuplicateIndependentCounters(t *testing.T) {
+// TestT12_CrossUserDuplicateIndependentCounters — renamed from
+// TestT12_CrossPoolDuplicateIndependentCounters (Docs/phase-2-strip-shared-pool.md §4.2): "same
+// mailbox in two pools" becomes "same mailbox under two users." Same (host,user) for two DIFFERENT
+// users => two rows with independent daily_sent_count.
+func TestT12_CrossUserDuplicateIndependentCounters(t *testing.T) {
 	e := newTestEnv(t, "t12")
-	p1 := e.mkSharedPool(t, "P1")
-	p2 := e.do(t, "POST", "/v1/admin/pools", map[string]any{"kind": "shared", "name": "P2"}).requireStatus(t, 201).str("id")
-	a1 := e.mkAccount(t, p1, "same.example.com", "same@example.com")
-	a2 := e.mkAccount(t, p2, "same.example.com", "same@example.com")
+	u1 := e.seedUser(t, "t12-u1@example.com")
+	u2 := e.seedUser(t, "t12-u2@example.com")
+	a1 := e.mkAccount(t, u1, "same.example.com", "same@example.com")
+	a2 := e.mkAccount(t, u2, "same.example.com", "same@example.com")
 	if a1 == a2 {
 		t.Fatal("expected two distinct account rows")
 	}
@@ -251,8 +254,8 @@ func TestT12_CrossPoolDuplicateIndependentCounters(t *testing.T) {
 // through the API, each step producing its account_events row.
 func TestT14_EndToEndLifecycle(t *testing.T) {
 	e := newTestEnv(t, "t14")
-	p := e.mkSharedPool(t, "P")
-	acc := e.mkAccount(t, p, "h.example.com", "u@example.com")
+	u := e.seedUser(t, "t14@example.com")
+	acc := e.mkAccount(t, u, "h.example.com", "u@example.com")
 
 	e.do(t, "GET", "/v1/admin/accounts/"+acc, nil).requireStatus(t, 200)
 	e.do(t, "POST", "/v1/admin/accounts/"+acc+"/quarantine", nil).requireStatus(t, 200)

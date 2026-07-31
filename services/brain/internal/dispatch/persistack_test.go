@@ -16,8 +16,7 @@ import (
 func TestPersistAck_ResolvedOnlyAfterCommit(t *testing.T) {
 	e := newDispatchEnv(t, "persistack")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// (1) Accepted report on a real in-flight job → committed 'sent' → resolved=true.
 	job := e.seedQueuedJob(t, "ack@example.com")

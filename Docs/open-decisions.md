@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-07-31): ALL 82 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-07-31): ALL 84 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -12,7 +12,13 @@ because the finding was that "clean-slate reproduction" was not actually clean-s
 Phase 0's own exit criterion. The 82nd,
 [M3-P2-OD-10](#m3-p2-od-10--ruled-2026-07-31-pool-routes-stay-mounted-through-g1-healthalerting-pool-code-deferred-with-them),
 is another build-time finding, raised during G1's execution: a real gap in the gate assignment for
-both the pool admin routes and the health/alerting pool-coupled code, ruled the same day.
+both the pool admin routes and the health/alerting pool-coupled code, ruled the same day. The 83rd,
+[M3-P2-OD-11](#m3-p2-od-11--ruled-2026-07-31-g2-lands-migrations-0025-0028-as-one-commit-11s-drops-only-is-stale-prose-not-a-binding-sub-constraint),
+is a third build-time finding, raised at the start of G2's execution: §1.1's "drops only" claim about
+G2's migration set is false against Phase 1's own table, ruled the same day. The 84th,
+[M3-P2-OD-12](#m3-p2-od-12--ruled-2026-07-31-g2-stubs-the-pool-coupled-healthalerts-queries-rather-than-deferring-them-whole-to-g3),
+extends M3-P2-OD-10's finding: the health/alerts queries M3-P2-OD-10 deferred to G3 read tables G2's
+own migrations drop, so G2 must stub them rather than leave them broken — ruled the same day.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -444,6 +450,89 @@ user's account set" primitive G3 is already building. `pool_exhausted`'s eventua
 `accounts_exhausted` is **already** ruled for G3 by **M3-P2-OD-3** — this item is that same
 re-wording's home, extended to the code that computes the underlying count, not just the string.
 Recorded here rather than discovered mid-G2/G3 as a second surprise dependency.
+
+---
+
+## M3-P2-OD-11 — RULED 2026-07-31: G2 lands migrations 0025–0028 as one commit; §1.1's "drops only" is stale prose, not a binding sub-constraint
+
+Found during G2 execution, before any migration file was written. Phase 2's gate table (§1) assigns
+"Migrations `0025`–`0028` — the drops" to G2 as one row. Its very next subsection, §1.1, states as a
+hard rule: *"G2 must not add a table, column, or index. Phase 1's §5 migration table already
+separates `0027`/`0028` (drops) from `0029`–`0033` (creates); this gate boundary matches that split
+exactly, which is why the ordering is free rather than something to negotiate."*
+
+That factual premise is false against Phase 1's own §6 table, verified directly: `0025`
+(`..._new_enums`) is pure addition — six `CREATE TYPE` statements plus `ALTER TYPE event_actor ADD
+VALUE 'user'` — and `0026` (`..._accounts_m3_state`) is pure addition — 13 new columns and 5 new
+constraints on `accounts`. Neither drops anything. `0027` itself is mixed: it drops `pool_id` and
+two old indexes, but its own excerpt in Phase 1 §3.1 also *creates* two new indexes
+(`accounts_user_host_username_unique`, the re-keyed `accounts_eligibility_idx`). So three of the
+four migrations §1's row assigns to G2 (`0025`, `0026`, `0027`) contain additions, directly
+contradicting §1.1's literal "must not add a table, column, or index."
+
+**RULED: G2 = migrations `0025`–`0028` as one commit (the gate table's row, as written).** §1.1's
+"drops only" sentence is superseded prose — it does not describe a separate sub-constraint that
+`0025`/`0026` must additionally satisfy. `0025` and `0026` are inert additions with zero consumers
+until `0027`/`0028` exist to need them (no code reads the six new enum types or the 13 new columns
+before G3), so bundling them into G2 does not reintroduce the ambiguous-red problem G1/G2/G3 exists
+to prevent: a G2 red still has exactly one candidate cause (the schema-drop-plus-write-path-rewrite
+commit), the same as if `0025`/`0026` had landed separately. Rejected alternative — splitting into
+G2a (`0025`+`0026`) and G2b (`0027`+`0028`+write-path) — adds a fourth internal gate the user's
+original ruling (M3-P1-OD-1) did not ask for, for a distinction (pure-addition vs. drop) that carries
+no observable risk here, since nothing consumes the additions until the drop half needs them.
+
+---
+
+## M3-P2-OD-12 — RULED 2026-07-31: G2 stubs the pool-coupled health/alerts queries rather than deferring them whole to G3
+
+Found while scoping G2's migrations, extending M3-P2-OD-10's finding. M3-P2-OD-10 deferred
+`health_store.go`'s `queryPoolHeadroom`/`queryWaitingForCapacity` and `health_alerts.go`'s
+`pool_exhausted` condition to *"G2 or G3, most plausibly G3."* But G2's own migrations (`0027`
+drops `accounts.pool_id`, `0028` drops `byosmtp.pools`) remove the exact objects those queries
+read — `queryPoolHeadroom`: `FROM byosmtp.pools p LEFT JOIN byosmtp.accounts a ON a.pool_id =
+p.id`; `queryWaitingForCapacity`'s `user_pools` CTE: `JOIN byosmtp.pools p`. Leaving them
+untouched through G2 does not mean "deferred" — it means `GET /v1/admin/health` hard-errors
+(undefined table/column) the instant the migration commits, which collides directly with G2's own
+exit criteria #8 (*"no pool reference... over `services/`"*) and #11 (*"full suite green with
+pools absent"*). `health_test.go` has genuine pool-headroom assertions (not fixture-only reach)
+that exercise this path, so this is not hypothetical — the suite would fail at G2, not merely look
+untidy.
+
+**RULED: G2 stubs, G3 rewrites for real.** In G2's commit: `queryPoolHeadroom`'s body is replaced
+with a no-op returning an empty `Pools` slice (`[]poolHeadroom{}`, matching the existing
+"empty array, never a null field" contract at `health_store.go:434`); `queryWaitingForCapacity`'s
+`user_pools` CTE is gutted to a user-scoped account-existence check (structurally correct — "does
+this user have any account at all" — but not yet the full eligible-account-set semantics G3
+delivers); `health_alerts.go`'s `pool_exhausted` condition and its `JOIN byosmtp.pools` are removed
+in the same commit (the condition disappears, not merely its query — M3-P1-OD-9 already named
+`no_eligible_accounts` as its Phase-7-owned replacement, so removing it at G2 creates no
+operator-visible gap that isn't already tracked). `health_test.go`'s pool-headroom-specific
+assertions and `seedHealthPool` are deleted at G2 (subject matter gone, Rule 3 — not skipped); the
+four box-death/webhook tests already confirmed pool-free by M3-P2-OD-10 are untouched.
+
+The full `accounts_exhausted` rewrite (M3-P2-OD-3) — real account-set eligibility semantics for
+headroom and the waiting-for-capacity count, plus new tests for both — stays at G3 as M3-P2-OD-10
+originally placed it. G2's stub is deliberately not the final shape; it exists only so the tree
+compiles and the suite is green with the schema gone, per this phase's own "code before schema,
+green at every gate" discipline (M3-P1-OD-1). Rejected alternative — pulling the full rewrite into
+G2 — was rejected because it grows G2 past the bound M3-P2-OD-6 set explicitly (the account
+write-path minimum slice only), and because the account-set-aware health rewrite has its own
+anti-vacuity surface (an empty-vs-exhausted distinction that is easy to get vacuously right) better
+done deliberately at G3 alongside `userRoutingStrategy`'s real `user_settings` read, not squeezed
+into the schema-drop commit.
+
+**Extension found while applying the ruling, same day, not separately re-asked:**
+`platformapi/campaign_report.go`'s `campaignTotals` has the identical shape — its own `user_pools`
+CTE (`FROM byosmtp.pools p WHERE p.enabled = TRUE AND (p.owner_user_id = $2::uuid OR p.kind =
+'shared')`) and `campaignEligibleAccountsSubquery` (`WHERE a.pool_id = up.pool_id`) — and neither
+M3-P2-OD-10 nor this item's own text named `platformapi` at all; both were scoped to `adminapi`'s
+health/alerts files only. `campaign_report_test.go` has genuine assertions on the resulting
+`waiting_for_capacity` field (`TestCampaignReport_WaitingForCapacityDistinctFromFailed`), so this is
+the same live-blocking shape, not a hypothetical gap. Applying this item's own ruling by direct
+extension (same reasoning, same phase split, no new question raised): G2 stubs `campaignTotals`'s
+pool CTE to a user-scoped account-existence check exactly as `queryWaitingForCapacity` is stubbed,
+and the real account-set rewrite (plus `TestCampaignReport_WaitingForCapacityDistinctFromFailed`'s
+update) lands at G3 alongside the rest of the `accounts_exhausted` work.
 
 ---
 

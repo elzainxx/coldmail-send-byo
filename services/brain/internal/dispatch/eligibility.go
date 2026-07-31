@@ -67,9 +67,9 @@ func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor boo
 }
 
 // accountConsumeQueryTmpl is the atomic consume (§3/§7), the locked Phase 1 draft-05 UPDATE reused
-// VERBATIM except for the bound user_id ($2, re-keyed from pool_id in G2 — Docs/phase-2 §3.2 edit
+// VERBATIM except for the bound user_id ($2, re-keyed from pool_id in G1 — Docs/phase-2 §3.2 edit
 // 1; accounts.user_id already exists (sender_0005) and is already correctly populated, so this
-// re-key needs no migration) and the caller-supplied ORDER BY (%s — an internal, code-controlled
+// re-key needed no migration) and the caller-supplied ORDER BY (%s — an internal, code-controlled
 // string, NEVER user input; see accountOrderBy call sites). It performs the LAZY
 // daily-reset self-heal (§2.1): a stale daily_reset_day is treated as 0 and reset in the SAME
 // UPDATE, and a pause_reason='daily_limit' pause self-clears on the stale-day branch ONLY — a

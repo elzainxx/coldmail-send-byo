@@ -41,8 +41,8 @@ PSQL "INSERT INTO byosmtp.boxes (id,user_id,token_hash,status) VALUES ('${BOX_UU
 # and under tests/harness/compose.test.yml postgres' data directory is a tmpfs, so the recreate
 # WIPES the database out from under the live Brain, mid-suite. Observed: this line dropped the
 # rows seeded two lines above, and suites 9+10 then produced 21 cascading failures from unset
-# variables (POOL empty -> account create fails -> PUT default_shared_pool_id 400 -> every
-# downstream assertion interpolates ""). `up -d box` must only ever start the box.
+# variables (ACCT empty -> every downstream assertion interpolates ""). `up -d box` must only
+# ever start the box.
 $DC up -d --no-deps box >/dev/null 2>&1 || true
 
 # Wait until the box is registered on the send stream (bounded).
@@ -62,17 +62,12 @@ for _ in $(seq 1 30); do
 done
 [[ "$registered" == "1" ]] && ok "P3: box registered on the mTLS send stream (live row: active + heartbeat newer than this run)" || bad "P3: box did not register on the send stream"
 
-# --- fixtures: a shared pool + one eligible account targeting the sink, via the ADMIN API ---
-POOL="$(curl -s -X POST http://localhost:9080/v1/admin/pools -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"kind":"shared","name":"p3-suite"}' | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
-[[ -n "$POOL" ]] && ok "P3: created shared pool via admin API" || bad "P3: failed to create pool"
+# --- fixtures: one eligible account owned by the system user, targeting the sink, via the ADMIN
+# API. Re-keyed at G2 (Docs/phase-2-strip-shared-pool.md §6): base routing now reaches an account
+# directly by user_id — no pool, no default_shared_pool_id operator setup step. ---
 # The account's credential is the CANARY secret (S1 scans for it). Sink accepts any AUTH over TLS.
-ACCT="$(curl -s -X POST http://localhost:9080/v1/admin/accounts -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"pool_id\":\"$POOL\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"$CANARY\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"P3 Suite\"}" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+ACCT="$(curl -s -X POST http://localhost:9080/v1/admin/accounts -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"user_id\":\"00000000-0000-0000-0000-000000000000\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"$CANARY\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"P3 Suite\"}" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
 [[ -n "$ACCT" ]] && ok "P3: created account (encrypted canary credential) via admin API" || bad "P3: failed to create account"
-# Phase 4 §4.2/§4.3: base (non-dedicated) routing only reaches a shared pool via
-# default_shared_pool_id — an operator MUST set it (seeded NULL) before base sends dispatch. Do
-# that real setup step here via the Phase 2 admin config endpoint, exactly as an operator would.
-CFG_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://localhost:9080/v1/admin/config/default_shared_pool_id" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"value\":\"$POOL\"}")"
-[[ "$CFG_CODE" == "200" ]] && ok "P3: set default_shared_pool_id to the suite pool (operator setup step, §4.3)" || bad "P3: setting default_shared_pool_id returned $CFG_CODE, want 200"
 
 # --- T2 (part A): run returns 202 immediately with state queued ---
 JI="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,reply_to,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','t1@example.com','Phase 3 T1','<p>hello</p>','reply@ourdomain.com','pending') RETURNING id" || true)"

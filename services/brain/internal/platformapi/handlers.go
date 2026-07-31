@@ -21,23 +21,20 @@ import (
 const defaultQuoteUnitCredits = 1
 
 // defaultQuoteTier is the tier `quote` reports (Phase 9 §1.1's additive `tier` field). `quote`'s
-// request carries only recipient_count — no job_item_id/user_id/pool context — so it cannot
-// resolve which of the two V1 pool-kind tiers (§2.1: shared/dedicated) a campaign will actually
-// route to. This is honest rather than a gap: both tiers charge the IDENTICAL unit_price_credits
-// in V1 (dedicated is isolation, not a price differentiator), so the reported tier never affects
-// the quoted cost either way. "shared" is reported because it is the base-campaign default
-// (Phase 4's default_shared_pool_id routing) that every campaign is eligible for regardless of
-// whether it also has a dedicated pool.
+// request carries only recipient_count — no job_item_id/user_id context — so it cannot resolve
+// which pricing tier a campaign will actually route to. This is honest rather than a gap: both
+// tiers charge the IDENTICAL unit_price_credits in V1, so the reported tier never affects the
+// quoted cost either way. "shared" is reported as the base-campaign default.
 const defaultQuoteTier = "shared"
 
 // describeTiers is the SAME per-tier pricing shape quote's defaultQuoteTier draws from (Phase 9
 // §2.1/§2.2) — the single source of truth describe and quote share so they can never diverge.
 // unit is populated live per-request from readUnitPriceCredits; both tiers price IDENTICALLY in
-// V1 (dedicated is isolation, not a premium — stated honestly rather than inventing one).
+// V1 (stated honestly rather than inventing a price differentiator).
 func describeTiers(unit int) []map[string]any {
 	return []map[string]any{
-		{"id": "shared", "unit_price_credits": unit, "description": "Global shared SMTP pool."},
-		{"id": "dedicated", "unit_price_credits": unit, "description": "User-dedicated pool with shared fallback."},
+		{"id": "shared", "unit_price_credits": unit, "description": "Base SMTP sending."},
+		{"id": "dedicated", "unit_price_credits": unit, "description": "User-owned SMTP account."},
 	}
 }
 
@@ -82,11 +79,10 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 		"cost":            *req.RecipientCount * unit,
 		"currency":        "credits",
 		// Additive (Phase 9 §1.1): unit_price_credits/tier let the platform's preview/confirm-cost
-		// step show the caller WHY the number is what it is. quote has no tenant/pool context in
-		// its request (recipient_count only), and both V1 tiers price identically (§2.1) — tier is
-		// therefore reported as the default base-campaign tier ("shared", Phase 4's
-		// default_shared_pool_id routing), which never affects cost since the two tiers charge the
-		// same unit_price_credits. A dedicated-pool campaign is quoted identically either way.
+		// step show the caller WHY the number is what it is. quote has no tenant context in its
+		// request (recipient_count only), and both V1 tiers price identically (§2.1) — tier is
+		// therefore reported as the default base-campaign tier ("shared"), which never affects cost
+		// since both tiers charge the same unit_price_credits.
 		"unit_price_credits": unit,
 		"tier":               defaultQuoteTier,
 	})
@@ -243,12 +239,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 
 // --- GET /v1/describe — module self-description: capabilities + tiers/pricing (Phase 9 §2, finalized) ---
 
-// handleDescribe reports the module's honest self-description (Phase 9 §2.2): the ONE real V1
-// product axis (pool_kind: shared vs dedicated, Phase 1), flat per-recipient pricing, and the
-// capabilities the module actually implements — no sequences, no open/click tracking, content
-// variation present as operator-tunable behavior (no per-toggle detail, Phase 8 §3). Reads the
-// SAME live unit_price_credits quote (§1) multiplies by, via describeTiers — single source of
-// truth, so describe and quote can never disagree (Phase 9 §2.2, E2).
+// handleDescribe reports the module's honest self-description (Phase 9 §2.2): the tiers/pricing
+// shape, flat per-recipient pricing, and the capabilities the module actually implements — no
+// sequences, no open/click tracking, content variation present as operator-tunable behavior (no
+// per-toggle detail, Phase 8 §3). Reads the SAME live unit_price_credits quote (§1) multiplies by,
+// via describeTiers — single source of truth, so describe and quote can never disagree (Phase 9
+// §2.2, E2).
 func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()

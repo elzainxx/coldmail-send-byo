@@ -94,8 +94,7 @@ func TestComputeScore_Deterministic(t *testing.T) {
 func TestScore_DegradesOnFailureResetsOnSuccess(t *testing.T) {
 	e := newDispatchEnv(t, "scoredeg")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	readScore := func() (int, int) {
 		var score, cf int
@@ -148,8 +147,7 @@ func TestScore_DegradesOnFailureResetsOnSuccess(t *testing.T) {
 func TestScore_BounceNeverPenalizes(t *testing.T) {
 	e := newDispatchEnv(t, "bounceScore")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 
 	// Baseline snapshot (fresh account: score 100, cf 0, last_failure_at NULL).
 	var score0, cf0 int
@@ -197,13 +195,13 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	// identically (score 100, cf 0), MUST move the score down and bump consecutive_failures. This
 	// proves the handler that left the bounce untouched genuinely DOES recompute on a penalizing
 	// failure — so the carve-out is a real exemption, not a dead code path.
-	acct2 := e.seedAccount(t, pool, "sec2")
+	acct2 := e.seedAccount(t, "sec2")
 	var score2Base, cf2Base int
 	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM byosmtp.accounts WHERE id=$1`, acct2).Scan(&score2Base, &cf2Base); err != nil {
 		t.Fatalf("control baseline: %v", err)
 	}
 	// Quarantine the FIRST account so routing lands the next job on acct2 (the control target).
-	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE, quarantine_reason='manual' WHERE id=$1`, acct); err != nil {
 		t.Fatalf("park acct1: %v", err)
 	}
 	e.px.freeAllBoxes() // the bounce report freed the box in reality; free the recordingPusher's marker

@@ -238,9 +238,8 @@ func TestT2_EventPerTransition(t *testing.T) {
 
 	c := Connect(t, cloneDSN)
 	uid := SeedUser(t, c, "t2@example.com")
-	poolID := SeedSharedPool(t, c, uid, "t2-pool")
 	boxID := SeedBox(t, c, uid)                                     // real box for provenance propagation
-	acctID := SeedAccount(t, c, uid, poolID)                        // real account for provenance propagation
+	acctID := SeedAccount(t, c, uid)                                // real account for provenance propagation
 	jobID := InsertQueuedJob(t, c, uid, uid, "rcpt-t2@example.com") // genesis event written
 
 	// Anti-vacuity: exactly 1 event (genesis) right after creation.

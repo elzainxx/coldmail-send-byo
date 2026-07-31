@@ -23,8 +23,8 @@ import "testing"
 // leaks an internal reason, SQL, or SQLSTATE across the client boundary.
 func TestLifecycleRefusalsAreDiagnosable(t *testing.T) {
 	e := newTestEnv(t, "lifecycle_diag")
-	p := e.mkSharedPool(t, "P")
-	acc := e.mkAccount(t, p, "h.example.com", "u@example.com")
+	u := e.seedUser(t, "lifecycle_diag@example.com")
+	acc := e.mkAccount(t, u, "h.example.com", "u@example.com")
 
 	// seen maps each refusal's client-visible message -> the case that produced it, so a duplicated
 	// (i.e. non-diagnosable) message is reported with BOTH colliding case names.
@@ -95,29 +95,10 @@ func TestLifecycleRefusalsAreDiagnosable(t *testing.T) {
 	}
 }
 
-// TestPoolKindRequiredVsInvalid — an OMITTED `kind` reports issue="required"; a BAD `kind` reports
-// issue="forbidden_value". Both are 400 validation_failed, so the status code alone cannot tell an
-// operator whether to add the field or change its value — details[].issue is the only signal, and
-// it must not collapse the two. Mirrors the required-vs-malformed split this same handler already
-// applies to owner_user_id. Found walking the test guide's Stage 4.
-func TestPoolKindRequiredVsInvalid(t *testing.T) {
-	e := newTestEnv(t, "pool_kind_slug")
-
-	omitted := e.do(t, "POST", "/v1/admin/pools", map[string]any{"name": "no-kind"}).requireStatus(t, 400)
-	if got := omitted.errorDetailIssue("kind"); got != issueRequired {
-		t.Fatalf("omitted kind: details[kind].issue = %q, want %q", got, issueRequired)
-	}
-
-	bad := e.do(t, "POST", "/v1/admin/pools", map[string]any{"name": "bad-kind", "kind": "wat"}).requireStatus(t, 400)
-	if got := bad.errorDetailIssue("kind"); got != issueForbiddenValue {
-		t.Fatalf("invalid kind: details[kind].issue = %q, want %q", got, issueForbiddenValue)
-	}
-
-	// Anti-vacuity: the two must actually DIFFER (a handler that returned one slug for both would
-	// satisfy neither check above only by luck of ordering).
-	if omitted.errorDetailIssue("kind") == bad.errorDetailIssue("kind") {
-		t.Fatal("omitted and invalid kind report the SAME issue slug — operator cannot tell them apart")
-	}
-	assertNoRawDBLeak(t, omitted.raw)
-	assertNoRawDBLeak(t, bad.raw)
-}
+// TestPoolKindRequiredVsInvalid is DELETED at G2 (Docs/phase-2-strip-shared-pool.md §4.1's DELETE
+// bucket — moved here from G1 by M3-P2-OD-10 alongside the rest of the pool admin surface): its
+// subject, POST /v1/admin/pools' kind field, no longer exists. §4.1 recommended re-pointing the
+// PATTERN (required-vs-invalid enum-field diagnosability) at a surviving enum field rather than
+// deleting it outright — not done here because none of the new Phase 1 enums
+// (quarantine_reason/from_verification_state/suspend_reason) has a client-writable field yet
+// (Phase 3+ scope). Re-add once one does.

@@ -97,8 +97,7 @@ func (e *dispatchEnv) jobLastErrorClass(t *testing.T, jobID string) string {
 func TestJobEvents_ErrorContextOnlyOnErrorTransitions(t *testing.T) {
 	e := newDispatchEnv(t, "evterrctx")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "errctx@example.com")
 
 	// --- Attempt 1: dispatch, then a REAL box-reported transport_4xx failure. ---

@@ -41,16 +41,14 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 	// seedAccountForUser's own comment). "Which account got consumed" stays unambiguous — with both
 	// under one user, consuming the eligible one would tell us nothing about whether the other was
 	// merely outranked by the id-ASC tiebreak (P4-OD-1) rather than genuinely ineligible.
-	poolA := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
-	poolB := e.seedPool(t)
 	userA := "11111111-1111-1111-1111-111111111111"
 	userB := "22222222-2222-2222-2222-222222222222"
 
 	// Shape A: count == limit, NOT paused.
-	acctA := e.seedAccountForUser(t, userA, poolA, "shapeA")
+	acctA := e.seedAccountForUser(t, userA, "shapeA")
 	e.setAccountDailyState(t, acctA, 5, 5, todayUTC(), false, nil)
 	// Shape B: count == limit AND paused with reason daily_limit — what the capping send leaves behind.
-	acctB := e.seedAccountForUser(t, userB, poolB, "shapeB")
+	acctB := e.seedAccountForUser(t, userB, "shapeB")
 	e.setAccountDailyState(t, acctB, 5, 5, todayUTC(), true, strPtr("daily_limit"))
 
 	// PRECONDITION: at the same limit, BOTH are ineligible. Without this the post-raise result could

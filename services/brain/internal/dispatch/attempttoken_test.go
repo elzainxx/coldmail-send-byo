@@ -42,8 +42,7 @@ func (e *dispatchEnv) jobAttemptToken(t *testing.T, jobID string) int64 {
 func TestAttemptToken_MintedPerDispatchAndPushed(t *testing.T) {
 	e := newDispatchEnv(t, "attoktmint")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	job := e.seedQueuedJob(t, "mint@example.com")
 	if tok := e.jobAttemptToken(t, job); tok != 0 {
@@ -99,8 +98,7 @@ func TestAttemptToken_MintedPerDispatchAndPushed(t *testing.T) {
 func TestAttemptToken_MonotonicAndNonSaturating(t *testing.T) {
 	e := newDispatchEnv(t, "attoktmono")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	// Keep the account healthy across many classified failures so dispatch keeps succeeding — we are
 	// measuring the counters, not scoring.
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
@@ -170,8 +168,7 @@ func TestAttemptToken_MonotonicAndNonSaturating(t *testing.T) {
 func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 	e := newDispatchEnv(t, "attoktstale")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "sec")
+	acct := e.seedAccount(t, "sec")
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
@@ -308,8 +305,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 func TestAttemptToken_AbsentTokenIsNotAMismatch(t *testing.T) {
 	e := newDispatchEnv(t, "attoktcompat")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
+	e.seedAccount(t, "sec")
 
 	// (a) Live attempt, real token stored; the REPORT omits it (old box).
 	jobA := e.seedQueuedJob(t, "compat-a@example.com")

@@ -87,8 +87,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 
 	e.setConfigStr(t, "daily_reset_timezone", zone)
 
-	pool := e.seedPool(t)
-	acct := e.seedAccount(t, pool, "s3cr3t")
+	acct := e.seedAccount(t, "s3cr3t")
 	cfg := e.mustLoadConfig(t)
 	if cfg.DailyResetTimezone != zone {
 		t.Fatalf("config did not take: daily_reset_timezone=%q, want %q", cfg.DailyResetTimezone, zone)
@@ -163,7 +162,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 func TestRollup_ChangingDailyResetTimezoneShiftsBuckets(t *testing.T) {
 	e := newDispatchEnv(t, "rollshift")
 	ctx := context.Background()
-	e.seedAccount(t, e.seedPool(t), "s3cr3t")
+	e.seedAccount(t, "s3cr3t")
 
 	ny, err := time.LoadLocation("America/New_York")
 	if err != nil {

@@ -24,7 +24,7 @@ type Pusher interface {
 }
 
 // Dispatcher runs the send path: claims jobs (TryDispatch for Phase 3, Tick for Phase 4's polling
-// loop), resolves an eligible account per the job's pool chain and routing strategy, decrypts the
+// loop), resolves an eligible account from the job's user per the routing strategy, decrypts the
 // credential in memory, builds the §8 headers, and pushes one push_job to a connected box.
 type Dispatcher struct {
 	db  *pgxpool.Pool
@@ -65,16 +65,14 @@ type Dispatcher struct {
 	// writes no job row at all).
 	draining atomic.Bool
 
-	// diagMu/lastSharedPoolNotConfiguredLog throttles the §4.3 shared_pool_not_configured internal
-	// diagnostic: an operational condition (not a per-job error), logged at most once per
-	// sharedPoolNotConfiguredLogInterval regardless of how many jobs/ticks hit the empty-chain
-	// state, so a sustained misconfiguration never floods the log (spec §4.3, test T10 assertion 5).
-	// lastDispatchPausedLog is the Phase 9.5 B1 analogue for dispatch_enabled=false (§1.2).
-	// lastNotLeaderLog is the same throttle for the G11-OD-1 / ADR-0011 leadership gate below.
-	diagMu                         sync.Mutex
-	lastSharedPoolNotConfiguredLog time.Time
-	lastDispatchPausedLog          time.Time
-	lastNotLeaderLog               time.Time
+	// diagMu guards the throttled internal diagnostics below. lastDispatchPausedLog is the Phase
+	// 9.5 B1 diagnostic for dispatch_enabled=false (§1.2). lastNotLeaderLog is the same throttle for
+	// the G11-OD-1 / ADR-0011 leadership gate below. The pool-chain-empty diagnostic this struct
+	// once also throttled (shared_pool_not_configured) died with pool.go at G1 — its subject,
+	// resolvePoolChain's empty-chain branch, no longer exists.
+	diagMu                sync.Mutex
+	lastDispatchPausedLog time.Time
+	lastNotLeaderLog      time.Time
 
 	// leader is the G11-OD-1 / ADR-0011 (option B, ruled 2026-07-29) LEADERSHIP gate: "do I still
 	// hold the singleton advisory lock?". Wired from main.go to singleton.Guard.Healthy. While it
@@ -130,11 +128,9 @@ func (d *Dispatcher) logNotLeader(loop string) {
 	log.Printf("%s: singleton_lock_not_held — this Brain does not hold the singleton advisory lock, so it claimed/routed/pushed/reclaimed/swept NOTHING this tick; queued and in-flight jobs are untouched and no outcome is invented. Another Brain may be the active dispatcher. The outcome path stays UP so an in-flight send can still report. Resumes automatically on re-acquire (ADR-0011 option B) level=error", loop)
 }
 
-// sharedPoolNotConfiguredLogInterval bounds how often the §4.3 diagnostic repeats. Not a
-// config-not-code violation: it governs an internal LOG line's own noise floor, not send/dispatch
-// behavior — the same category of exemption as maxFallbackHops (§10 P4-19). dispatchPausedLogInterval
-// is the same exemption for the Phase 9.5 B1 panic-switch diagnostic (§1.2).
-const sharedPoolNotConfiguredLogInterval = 1 * time.Minute
+// dispatchPausedLogInterval bounds how often the Phase 9.5 B1 panic-switch diagnostic repeats. Not
+// a config-not-code violation: it governs an internal LOG line's own noise floor, not send/dispatch
+// behavior — the same category of exemption as maxFallbackHops (§10 P4-19).
 const dispatchPausedLogInterval = 1 * time.Minute
 
 // notLeaderLogInterval is the same log-noise-floor exemption for the ADR-0011 leadership gate.
@@ -151,20 +147,6 @@ func NewDispatcher(db *pgxpool.Pool, dec *credential.Decryptor, px Pusher) *Disp
 // Health exposes the Phase 7 §2 outage gate so every loop driven off this Dispatcher (dispatch,
 // reclaim, retention) consults the SAME halt state — one detection pauses all of them (§2.2).
 func (d *Dispatcher) Health() *DBHealth { return d.health }
-
-// logSharedPoolNotConfigured emits the §4.3 internal diagnostic, throttled to at most once per
-// sharedPoolNotConfiguredLogInterval across the WHOLE process (not per-user/per-job) — a sustained
-// misconfiguration affecting many users/jobs across many ticks still produces only one log line
-// per interval, never floods.
-func (d *Dispatcher) logSharedPoolNotConfigured() {
-	d.diagMu.Lock()
-	defer d.diagMu.Unlock()
-	if time.Since(d.lastSharedPoolNotConfiguredLog) < sharedPoolNotConfiguredLogInterval {
-		return
-	}
-	d.lastSharedPoolNotConfiguredLog = time.Now()
-	log.Printf("dispatch: shared_pool_not_configured — default_shared_pool_id is unset or does not resolve to an enabled shared pool; affected base/fallback campaigns stay queued cleanly until an operator sets it (§4.3)")
-}
 
 // logDispatchPausedByOperator emits the Phase 9.5 B1 internal diagnostic (§1.2), throttled to at
 // most once per dispatchPausedLogInterval across the whole process — a sustained operator pause
@@ -210,7 +192,7 @@ type claimedJob struct {
 	replyTo    *string
 }
 
-// selectedAccount is the trivially-selected sending account for a job's pool (§5.1).
+// selectedAccount is the selected sending account for a job's user (§5.1).
 type selectedAccount struct {
 	id          string
 	smtpHost    string
@@ -289,13 +271,12 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 // threaded through to selectAccountForJob so a job-loop of N claimed jobs does not re-read
 // byosmtp.config N times in a single tick.
 func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string, cfg Config) (bool, error) {
-	// 2) Resolve the job's pool chain (Chunk 4 wires dedicated-first/shared-fallback; Chunks 1-3
-	// use the trivial single-pool chain below) and atomically CONSUME an eligible account from the
-	// first pool that has one (§3/§7, THE double-booking core — accountConsume increments
-	// daily_sent_count in the SAME statement that admits the row, before any send is attempted).
-	// On exhaustion of the whole chain, requeue the claim so the job returns to queued in a legal
-	// state (lease cleared) — the rare-race backstop (§7.2); it is not expected in steady state
-	// once the Chunk 5 pre-claim gate lands.
+	// 2) Resolve an eligible account from the job's user and atomically CONSUME it (§3/§7, THE
+	// double-booking core — accountConsume increments daily_sent_count in the SAME statement that
+	// admits the row, before any send is attempted). On exhaustion of the user's account set,
+	// requeue the claim so the job returns to queued in a legal state (lease cleared) — the
+	// rare-race backstop (§7.2); it is not expected in steady state once the Chunk 5 pre-claim gate
+	// lands.
 	acct, ok, err := d.selectAccountForJob(ctx, job, cfg)
 	if err != nil || !ok {
 		d.requeueNoAccount(ctx, job.id)
