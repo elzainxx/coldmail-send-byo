@@ -70,9 +70,9 @@ Two things this table does **not** account for, both of which push the account c
   sustains roughly 6–20 sends/min; a user's ceiling is about `lanes × that`. If your measured rate is
   well below the table's peak-rate column, pacing is the reason, not capacity —
   [`operator-runbook.md`](./operator-runbook.md) covers telling those apart.
-- **A single-account pool has no rotation.** Account selection walks accounts in a deterministic
-  order (exhaust-then-move-on) or round-robin per pool. With one account there is nowhere to move on
-  to: one throttle pauses the whole pool.
+- **A tenant with a single account has no rotation.** Account selection walks a *tenant's own*
+  accounts in a deterministic order (exhaust-then-move-on) or round-robin. With one account there is
+  nowhere to move on to: one throttle pauses that tenant's entire sending until it clears.
 
 ---
 
@@ -84,15 +84,15 @@ ceiling. You will add accounts long, long before you add a second Brain (which y
 the singleton is a locked invariant, and horizontal Brain scaling is
 [future work](./future-work.md)).
 
-The practical consequence: **treat "the pool is exhausted" as the normal scaling signal, and
-"send_rate_per_min has plateaued while boxes sit idle and the queue grows" as the rare one.** The
-first means add accounts. Only the second means you have hit the Brain, and it is the specific
-saturation signature the load test documents.
+The practical consequence: **treat "a tenant's accounts are exhausted for the day" as the normal
+scaling signal, and "send_rate_per_min has plateaued while boxes sit idle and the queue grows" as
+the rare one.** The first means add accounts for that tenant. Only the second means you have hit
+the Brain, and it is the specific saturation signature the load test documents.
 
-There is one important asymmetry: a pool at its daily limit reports `headroom: "exhausted"` and its
-jobs sit in `waiting_for_capacity`, which is **not an error** — those jobs read as clean pending
-`queued` work and resume at the daily reset. Do not size to eliminate `waiting_for_capacity`
-entirely; size so it clears within the same day.
+There is one important asymmetry: a tenant whose accounts are all at their daily limit (or paused/
+quarantined) has its jobs sit in `waiting_for_capacity`, which is **not an error** — those jobs read
+as clean pending `queued` work and resume at the daily reset. Do not size to eliminate
+`waiting_for_capacity` entirely; size so it clears within the same day.
 
 ---
 
@@ -163,6 +163,6 @@ Do not size from this page alone. Two checks first:
 | Doc | For |
 |---|---|
 | [`load-test-results.md`](./load-test-results.md) | The measured ceiling, the method, and how to re-run it. |
-| [`operator-runbook.md`](./operator-runbook.md) | Pool exhausted, `waiting_for_capacity`, and reading the health endpoint. |
+| [`operator-runbook.md`](./operator-runbook.md) | Accounts exhausted, `waiting_for_capacity`, and reading the health endpoint. |
 | [`config-reference.md`](./config-reference.md) | Every key named on this page. |
 | [`future-work.md`](./future-work.md) | Brain horizontal scaling and the rest of what is not built. |

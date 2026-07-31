@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-07-31): ALL 84 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 85 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -18,7 +18,11 @@ is a third build-time finding, raised at the start of G2's execution: §1.1's "d
 G2's migration set is false against Phase 1's own table, ruled the same day. The 84th,
 [M3-P2-OD-12](#m3-p2-od-12--ruled-2026-07-31-g2-stubs-the-pool-coupled-healthalerts-queries-rather-than-deferring-them-whole-to-g3),
 extends M3-P2-OD-10's finding: the health/alerts queries M3-P2-OD-10 deferred to G3 read tables G2's
-own migrations drop, so G2 must stub them rather than leave them broken — ruled the same day.
+own migrations drop, so G2 must stub them rather than leave them broken — ruled the same day. The
+85th, [M3-P2-OD-13](#m3-p2-od-13--ruled-2026-08-01-the-docs-dependents-sweep-names-four-more-docs-phase-1-2-1-missed),
+found four more docs Phase 1 §2.1's own inventory missed (capacity-planning.md, monitoring.md,
+security-posture.md, smoke-test-real-provider.md) — ruled the same day: fix all eight docs in one
+follow-up, not just the four originally named.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -533,6 +537,46 @@ extension (same reasoning, same phase split, no new question raised): G2 stubs `
 pool CTE to a user-scoped account-existence check exactly as `queryWaitingForCapacity` is stubbed,
 and the real account-set rewrite (plus `TestCampaignReport_WaitingForCapacityDistinctFromFailed`'s
 update) lands at G3 alongside the rest of the `accounts_exhausted` work.
+
+---
+
+## M3-P2-OD-13 — RULED 2026-08-01: the docs-dependents sweep names four MORE docs Phase 1 §2.1 missed
+
+Found while doing G2's docs follow-up (the four docs Phase 1 §2.1 actually named —
+`operator-runbook.md`, `install-and-deploy.md`, `go-live-checklist.md`, `disaster-recovery.md` —
+were already in progress). A broader grep for "pool" across all of `Docs/` found four more files
+with real, substantive pool-era content Phase 1's own dependents inventory never listed:
+`capacity-planning.md` (pool-based rotation/scaling advice — "a single-account pool has no
+rotation," "treat the pool being exhausted as the normal scaling signal"), `monitoring.md` (a
+`pool_exhausted` webhook payload example and its no-cleared-webhook asymmetry note),
+`security-posture.md` (two threat-model mentions of "pool" describing blast radius), and
+`smoke-test-real-provider.md` (a live walkthrough with `jq '{pools,...}'` calls and pool-headroom
+assertions at three separate checkpoints in the script).
+
+This is the same class of gap as M3-P1-OD-9/M3-P2-OD-10/M3-P2-OD-12 — an inventory built by grep
+that undercounted its own dependents — just found later, in the docs rather than the code.
+
+**RULED: fix all four now, same follow-up as the originally-named four.** No reason to treat a
+doc Phase 1's inventory happened to miss differently from one it named; both are real pool-era
+content now inconsistent with the shipped schema/code change. Rejected alternative — deferring the
+four newly-found docs to a separate item — was rejected because the user's own reasoning for fixing
+the named four (real prose/examples left inconsistent with a shipped change) applies identically to
+these four; splitting them into two follow-ups would just be bookkeeping, not a scope difference.
+
+**Addendum, same follow-up:** after fixing all eight named docs, a repo-wide `grep -rniE 'pool'
+Docs/*.md` — the literal check G2's own exit criterion #8 (Phase 2 §8.1) requires — turned up stale
+prose in two more living docs the OD-13 sweep's narrower "pool-era content" search had not caught:
+`api-contract.md` (an inherited `pool_id` field name and `pool_exhausted`/"true pool exhaustion"
+wording in the error-code table, the health-route blurb, and the `/v1/report`/campaign-report
+sections) and `config-reference.md` (a stale "pool exhaustion" mention in `daily_reset_hour`'s row,
+plus two hardcoded-bound-table rows for `dispatch/pool.go`'s `maxFallbackHops` and
+`dispatch.go`'s `sharedPoolNotConfiguredLogInterval` — both symbols no longer exist in the tree,
+deleted at G1). Not a separate ruling: same class of gap, same fix, folded into this item rather than
+opened as OD-14 — there was no ambiguity to rule on, only staleness to correct against already-ruled
+facts (M3-P2-OD-3's G3-deferred rename, M3-P2-OD-12's G2 stubs). Fixed in the same commit. Re-verified
+with a repo-wide sweep after the fix: every remaining `pool` hit in `Docs/*.md` is either a
+already-annotated G2-stub/removal note or legitimate historical/planning-doc content — none describe
+pools as a live, current-behavior concept.
 
 ---
 

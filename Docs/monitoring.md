@@ -14,7 +14,7 @@ This page is only about wiring the signals up.
 |---|---|---|
 | `GET /healthz` | **none** | Liveness. "The process is up." |
 | `GET /readyz` | **none** | Readiness. DB reachable **and** singleton lock genuinely held. `200` = ready, `503` = not. |
-| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, box liveness, account/pool summaries, error counts over a rolling window, shadow-mode summary, and active alert conditions. |
+| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, box liveness, account summaries, error counts over a rolling window, shadow-mode summary, and active alert conditions. |
 
 `/healthz` and `/readyz` are deliberately unauthenticated and deliberately thin — they carry no
 operational detail, which is what makes exposing them to a monitoring service safe.
@@ -97,7 +97,7 @@ capability for the receiving system.
 }
 ```
 
-All three conditions today carry `severity: "critical"`. The three conditions and how to triage each
+Both conditions today carry `severity: "critical"`. The two conditions and how to triage each
 are in the runbook's "Alert conditions → triage" section.
 
 ### Delivery semantics — read these before relying on it
@@ -154,7 +154,7 @@ A minimal, complete hookup for a single-Brain deployment:
    dispatch lock".
 2. **Health poll**: the cron entry above, every 5 minutes. This is what makes the webhook work.
 3. **Webhook destination**: set `alert_webhook_url` to your incident channel's inbound URL. You now
-   get a message the first time a pool exhausts, an account is quarantined, or a box dies. Treat this
+   get a message the first time an account is quarantined or a box dies. Treat this
    value as **privileged config**: it is validated for scheme prefix only, so the Brain will POST from
    inside your trust boundary to any address it resolves — including loopback, RFC-1918, and cloud
    link-local metadata. Constrain the Brain's egress at the network layer rather than relying on the
@@ -176,10 +176,11 @@ the prerequisites in [`install-and-deploy.md`](./install-and-deploy.md).
 - **No metrics endpoint, no Prometheus exposition, no tracing exporter.** `GET /v1/admin/health` is
   a JSON snapshot, not a time series. If you want history, poll it and store the response — several
   fields (`send_rate_per_min`, `errors_last_window`) are already windowed and graph cleanly.
-- **No "cleared" webhook** (§3), and one asymmetry worth knowing: `pool_exhausted` and `box_death`
-  derive from live state, while `account_quarantined` is scoped to `health_metrics_window_sec` because
-  a quarantine is a point-in-time event. **That condition clearing does not mean the account
-  recovered** — use the standing `accounts.quarantined` count instead. The runbook covers this.
+- **No "cleared" webhook** (§3), and one asymmetry worth knowing: `box_death` derives from live state
+  (a box that reconnects drops out on its own), while `account_quarantined` is scoped to
+  `health_metrics_window_sec` because a quarantine is a point-in-time event. **That condition aging
+  out of the window does not mean the account recovered** — use the standing `accounts.quarantined`
+  count instead. The runbook covers this.
 - **No bounce or complaint feedback.** There is none in V1: a provider `250` is recorded as `sent` and
   nothing downstream is observed. Deliverability monitoring has to come from the provider side. See
   the runbook's deliverability section and [`future-work.md`](./future-work.md).

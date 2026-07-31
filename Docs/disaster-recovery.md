@@ -29,7 +29,7 @@ losing the key is terminal:
   cannot be moved, re-labelled, or brute-forced across accounts.
 
 If the key is gone, **every SMTP credential in the system is permanently unrecoverable.** The
-accounts, pools, jobs, and history all survive; the secrets do not. Recovery is manual re-entry of
+accounts, jobs, and history all survive; the secrets do not. Recovery is manual re-entry of
 every account's SMTP password via `PATCH /v1/admin/accounts/{id}` with `smtp_secret`. For a hundred
 accounts, that is a hundred password resets at the provider — assume most originals are not written
 down anywhere else.
@@ -144,7 +144,7 @@ Re-run the drill after every rotation, every change of custodian, and at least a
 
 | State | Recoverable from a DB backup? | Notes |
 |---|---|---|
-| Accounts, pools, config, boxes | Yes | Config rows restore to their backed-up values, not to `default_value`. |
+| Accounts, config, boxes | Yes | Config rows restore to their backed-up values, not to `default_value`. |
 | Credential ciphertext | Yes — **but only useful with the master key** | See §1. |
 | Job rows and final states | Yes | |
 | `job_events` / `account_events` audit trail | Yes | Permanent by design, never swept. |
@@ -335,7 +335,7 @@ Not a drill — the case where you believe the master key or a backup copy leake
    invalidates the leaked plaintext regardless of what happens to the key.
 3. `dispatch_enabled=false` while credentials are stale, so the system is not hammering providers
    with passwords that no longer work (which would otherwise drive `auth_failure` quarantines
-   across the pool).
+   across every affected account).
 4. Rotate the master key and re-enter the new passwords in one pass — §3's procedure does both,
    since re-entry is required either way.
 5. Review who could reach the backups (§1's table), and treat the audit trail as evidence:

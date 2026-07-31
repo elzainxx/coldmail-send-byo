@@ -14,23 +14,21 @@ through.
 
 ---
 
-## 1. Set `default_shared_pool_id` (REQUIRED — base sending does not work without it)
+## 1. Provision at least one account per tenant that will send (REQUIRED — sending does not work without it)
 
-**Why it blocks:** Phase 4 §4.2/§4.3 — base (non-dedicated) campaigns resolve their sending pool
-through `default_shared_pool_id`. It is seeded `NULL` (Phase 1 `sender_0010`) and stays `NULL`
-until an operator sets it. Every base-campaign job created before this is set stays cleanly
-`queued` (`shared_pool_not_configured`, logged once per interval, never an error the platform
-sees) — it does not fail loudly, which means it is easy to forget.
+**Why it blocks:** a job routes to an eligible account owned by its own `user_id` — there is no
+shared/pooled fallback layer to route through instead. A tenant with zero accounts stays cleanly
+`queued` forever (an empty account set is a capacity gap, not a fault, so it never fails the job) —
+it does not fail loudly, which means it is easy to forget for a tenant nobody has provisioned yet.
 
 **Action:**
-1. Create at least one enabled shared pool: `POST /v1/admin/pools {"kind":"shared","name":"..."}`.
-2. Add at least one eligible account to it: `POST /v1/admin/accounts {...}`.
-3. `PUT /v1/admin/config/default_shared_pool_id {"value":"<pool-uuid>"}`.
-4. Confirm: `GET /v1/admin/config/default_shared_pool_id` returns the pool id, and
-   `GET /v1/admin/health` shows the pool with `headroom` other than `exhausted`.
+1. Add at least one eligible account for the tenant: `POST /v1/admin/accounts {"user_id": "<uuid>", ...}`.
+2. Confirm: `GET /v1/admin/health` shows `accounts.healthy >= 1` and no unexpected
+   `queue.waiting_for_capacity`.
 
 **Verify before declaring done:** run one real `quote`→`run`→`report` cycle against a throwaway
-`job_item` for the reserved system user (or any base tenant) and confirm it reaches `sent`.
+`job_item` for the reserved system user (or any tenant with a provisioned account) and confirm it
+reaches `sent`.
 
 ---
 
@@ -170,9 +168,9 @@ what happens to a REAL account (it starts getting quarantined), not just what th
 
 **Why it blocks:** the module has NO built-in warm-up/ramp mechanism for a newly-added SMTP
 account — `daily_limit` applies at its full configured value from the account's very first day.
-A brand-new account added to a shared pool inherits `daily_limit_default` and will be routed up to
-that full figure on day one if the pool needs the volume, with no automatic gradual ramp. (What the
-default actually is: [`config-reference.md`](./config-reference.md).)
+A brand-new account inherits `daily_limit_default` and will be routed up to that full figure on
+day one if its owning tenant needs the volume, with no automatic gradual ramp. (What the default
+actually is: [`config-reference.md`](./config-reference.md).)
 
 **Also check while you are looking at the accounts:** no account's `smtp_host` is a private-range or
 link-local address. The API accepts one, but the box **skips TLS certificate verification** for those
@@ -279,7 +277,7 @@ then a small real batch. It is written to be small, to addresses you control, an
 3. **Before the first live send:** item 4 (KMS/IAM sign-off) — the sole-decryptor security
    property must be verified against real infrastructure before any real credential is decrypted.
    Item 10 (monitoring) as well: going live unmonitored means finding out from a customer.
-4. **Before the first live campaign:** items 1 (`default_shared_pool_id`) and 5 (box
+4. **Before the first live campaign:** items 1 (account provisioning) and 5 (box
    provisioning) and 7 (account pre-warming) — the system has no capacity to route a job until
    these are done. Then item 11 (the real-provider smoke test) — the first live send is a
    deliberate, small, watched one, never a campaign.
@@ -299,7 +297,7 @@ then a small real batch. It is written to be small, to addresses you control, an
       Getting it wrong is not unsafe — leave-in-place invents nothing — but it turns every clean
       shutdown into reclaim work and exits 137.
 - [ ] `GET /readyz` reports `db:true, singleton_lock:true`.
-- [ ] `GET /v1/admin/health` shows the expected pool(s) with non-`exhausted` headroom and
+- [ ] `GET /v1/admin/health` shows `accounts.healthy >= 1` for every tenant expected to send and
       `dispatch_paused:false`.
 - [ ] Items 1–5 and 7–11 above are done; item 6 is deliberately deferred to a post-launch
       observation window, per its own section.

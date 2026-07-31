@@ -65,8 +65,8 @@ ahealth() { curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY"; 
 
 # Two captures on purpose: a wide one to read now, and a narrow SORTED one to diff against in §5.
 # The diff baseline must use the SAME filter as the diff itself or it will never come back clean.
-ahealth | jq '{dispatch, accounts, pools, boxes, errors_last_window}' | tee /tmp/smoke-before-full.json
-ahealth | jq -S '{accounts, pools}' > /tmp/smoke-before.json
+ahealth | jq '{dispatch, accounts, boxes, errors_last_window}' | tee /tmp/smoke-before-full.json
+ahealth | jq -S '{accounts}' > /tmp/smoke-before.json
 ```
 
 ---
@@ -75,8 +75,8 @@ ahealth | jq -S '{accounts, pools}' > /tmp/smoke-before.json
 
 ### Step 1 — Create the account with the real credential
 
-`POST /v1/admin/accounts` with the provider's host, port, username, and `smtp_secret`, a low
-`daily_limit`, and the pool you will send from. Exact body:
+`POST /v1/admin/accounts` with the provider's host, port, username, `smtp_secret`, a low
+`daily_limit`, and the `user_id` you are sending as. Exact body:
 [`api-contract.md`](./api-contract.md).
 
 Verify **only** that the response reports `has_credential: true`. That is by design the most you can
@@ -89,12 +89,12 @@ credential is only exercised at send time, so a wrong password looks fine at thi
 ### Step 2 — Confirm eligibility before queueing anything
 
 ```bash
-ahealth | jq '{pools, accounts, boxes}'
+ahealth | jq '{accounts, boxes}'
 ```
 
-**Expected:** the pool present with `headroom` **not** `exhausted`, the account counted as eligible,
-at least one box connected, `dispatch_paused: false`. If any of that is wrong, stop and use the
-runbook — do not queue a job hoping it resolves.
+**Expected:** the account counted as eligible (`accounts.healthy` includes it), at least one box
+connected, `dispatch_paused: false`. If any of that is wrong, stop and use the runbook — do not queue
+a job hoping it resolves.
 
 ### Step 3 — ONE message, to yourself
 
@@ -147,10 +147,10 @@ will actually need at 3am.
    `account_events` row recording reason `auth_failure`. This costs one failed AUTH at the provider —
    acceptable once, deliberately. Then restore the correct secret and unquarantine.
 2. **Daily limit.** Set `daily_limit` to 1, send one message, then queue a second. **Expected:** the
-   second sits in `waiting_for_capacity` and the pool reads `exhausted`. Confirm via `/v1/report` that
-   it reads as clean pending `queued` — **never** `failed` — and that it resumes at the next daily
-   reset. This is the single most misread state in the system; seeing it once here is worth the five
-   minutes.
+   second sits in `queue.waiting_for_capacity` (the account is now at its limit for the day). Confirm
+   via `/v1/report` that it reads as clean pending `queued` — **never** `failed` — and that it resumes
+   at the next daily reset. This is the single most misread state in the system; seeing it once here
+   is worth the five minutes.
 3. **Box death.** Stop a box process mid-run. **Expected:** the job is reclaimed after
    `job_max_processing_time_sec`, `attempt_count` increments (saturating), the job returns to clean
    `queued`, and it goes out on another box. Nothing is marked `sent` that the box did not confirm.
@@ -164,7 +164,7 @@ Only after steps 1–5 pass. Ten to twenty messages to addresses you control, wa
 error counts:
 
 ```bash
-ahealth | jq '{rate: .dispatch, errors: .errors_last_window, accounts, pools}'
+ahealth | jq '{rate: .dispatch, errors: .errors_last_window, accounts}'
 ```
 
 **Expected:** every job terminal as `sent`, `errors_last_window` empty or benign, no unexpected pause
@@ -194,12 +194,12 @@ Using it costs nothing.
 
 - [ ] Restore `daily_limit` to its intended production value.
 - [ ] Confirm the account is not left paused or quarantined from step 5:
-      `ahealth | jq '{accounts, pools}'`.
+      `ahealth | jq '{accounts}'`.
 - [ ] Confirm the correct credential is in place (step 5.1) — re-`PATCH` if there is any doubt, and
       prove it with one more successful send.
 - [ ] Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
-      `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts, pools}')` (expect only the intended
-      new account and its pool).
+      `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts}')` (expect only the intended
+      new account).
 - [ ] Review `byosmtp.account_events` for the account — every lifecycle change during the test is
       recorded there, and it is the honest log of what happened.
 - [ ] Record the result: date, provider, ports used, inbox-vs-spam per receiver, anything surprising.

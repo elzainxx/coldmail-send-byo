@@ -55,7 +55,7 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 | What you see | Go to |
 |---|---|
 | `queue.queued` is large and `dispatch.sends_last_window` is 0 | [Everything is queued and nothing is sending](#everything-is-queued-and-nothing-is-sending) |
-| `queue.waiting_for_capacity` > 0, or a pool with `"headroom":"exhausted"` | [Pool exhausted / waiting for capacity](#pool-exhausted--waiting-for-capacity) |
+| `queue.waiting_for_capacity` > 0 | [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity) |
 | `accounts.quarantined` > 0 | [An account got quarantined](#an-account-got-quarantined) |
 | `boxes.stale` > 0, or `boxes.active` is 0 | [A box died](#a-box-died) |
 | `active_conditions[]` is non-empty | [Alert conditions](#alert-conditions--triage) |
@@ -110,39 +110,21 @@ effect on the very next tick — no redeploy. Queued jobs resume from exactly wh
 Note what stays running while dispatch is paused: the reclaim loop, the outcome handler, and box
 heartbeats. A paused Brain still finishes in-flight work correctly; it just starts nothing new.
 
-### Step 3 — Is `default_shared_pool_id` unset?
+### Step 3 — Does this tenant have any account at all?
 
-**This is the single most common cause on a new install.** The key seeds `null` and stays `null`
-until an operator sets it. Until then, a base-tier campaign has no pool to resolve to, so its jobs
-stay cleanly `queued` forever.
+**This is the single most common cause on a new install.** Accounts are owned directly by
+`user_id` — there is no pool to configure and no derivation step. A tenant that has never had an
+account added stays cleanly `queued` forever.
 
 ```sql
-SELECT value FROM byosmtp.config WHERE key = 'default_shared_pool_id';
+SELECT count(*) FROM byosmtp.accounts WHERE user_id = '<uuid>';
 ```
 
-`{"v": null}` is your cause. The Brain logs it too, rate-limited across the whole process so it
-cannot flood:
+`0` is your cause. The Brain's own exhaustion check (`evaluateChain`) treats "zero accounts at
+all" as a WAIT, never a FAIL — so this shows up as a clean, silent stall, not an error.
 
-```
-dispatch: shared_pool_not_configured — default_shared_pool_id is unset or does not resolve to an
-enabled shared pool; affected base/fallback campaigns stay queued cleanly until an operator sets it
-```
-
-**Fix:** create a shared pool if you have none, then point the key at it (`PUT
-/v1/admin/config/default_shared_pool_id`). See
+**Fix:** create an account for that `user_id` (`POST /v1/admin/accounts`). See
 [`install-and-deploy.md`](./install-and-deploy.md) Step 9.
-
-**The subtle version of this same cause:** the key is set, but to a pool that is `enabled = false`,
-is not `kind = 'shared'`, or no longer exists. The symptom and the log line are identical. Confirm
-the pointer actually resolves:
-
-```sql
-SELECT p.id, p.kind, p.enabled, p.name
-  FROM byosmtp.pools p
- WHERE p.id = (SELECT (value->>'v')::uuid FROM byosmtp.config WHERE key = 'default_shared_pool_id');
-```
-
-Zero rows, `enabled = false`, or `kind <> 'shared'` — same cause, same fix.
 
 ### Step 4 — Are any boxes connected?
 
@@ -163,26 +145,27 @@ throughput below what you expect — never as a stall. If `boxes.active` is heal
 `sends_last_window` is *non-zero but low*, you are throughput-limited, not stalled: see
 [`capacity-planning.md`](./capacity-planning.md).
 
-### Step 5 — Does the pool have an eligible account?
+### Step 5 — Does the user have an eligible account?
 
 This is the deepest of the common causes, because "not eligible" has five different reasons and the
 health endpoint only gives you the aggregate. Start with the aggregate:
 
 ```bash
-ahealth | jq '{accounts, pools}'
+ahealth | jq .accounts
 ```
 
-If `accounts.healthy` is 0, or every pool reads `"headroom":"exhausted"`, then no account can be
-selected and every queued job is waiting. To find out *which* reason applies to *which* account, run
-the per-account breakdown. It reads the two live config keys rather than hardcoding them, so it
-agrees with the Brain's own notion of "today":
+If `accounts.healthy` is 0, no account anywhere can be selected. That is necessary but not
+sufficient to explain one tenant's stall — a different tenant's accounts could be the ones that are
+healthy. To find out *which* reason applies to *which* account for a specific tenant, run the
+per-account breakdown filtered to that `user_id`. It reads the two live config keys rather than
+hardcoding them, so it agrees with the Brain's own notion of "today":
 
 ```sql
 WITH cfg AS (
   SELECT (SELECT value->>'v'         FROM byosmtp.config WHERE key = 'daily_reset_timezone') AS tz,
          (SELECT (value->>'v')::int  FROM byosmtp.config WHERE key = 'daily_reset_hour')     AS hr
 )
-SELECT a.id, a.pool_id, a.smtp_host, a.account_status_score AS score,
+SELECT a.id, a.smtp_host, a.account_status_score AS score,
        CASE
          WHEN a.disabled                             THEN 'disabled — MANUAL recovery only'
          WHEN a.quarantined                          THEN 'quarantined — MANUAL recovery only'
@@ -194,7 +177,8 @@ SELECT a.id, a.pool_id, a.smtp_host, a.account_status_score AS score,
          ELSE 'ELIGIBLE'
        END AS why_not_eligible
   FROM byosmtp.accounts a, cfg
- ORDER BY a.pool_id, why_not_eligible, a.id;
+ WHERE a.user_id = '<user-uuid>'
+ ORDER BY why_not_eligible, a.id;
 ```
 
 Read the right-hand column. It splits into two fundamentally different situations:
@@ -225,8 +209,8 @@ Read the right-hand column. It splits into two fundamentally different situation
 > Phase 2 §837 `not_manual_pause` rule. **If you need that capacity back before the reset, add an
 > account — do not go hand-editing `paused` in the database.**
 
-If a pool has literally zero accounts, that is the case in
-[Pool exhausted / waiting for capacity](#pool-exhausted--waiting-for-capacity).
+If the tenant has literally zero accounts, that is [Step 3](#step-3--does-this-tenant-have-any-account-at-all)
+above, not this step.
 
 ### Step 6 — Are the jobs actually due yet?
 
@@ -445,7 +429,7 @@ Do **not** unquarantine when:
 - **The underlying cause is unfixed.** An `auth_failure` quarantine with an unchanged credential, or
   a `throttle`-driven score collapse with unchanged pacing, will re-quarantine within minutes. You
   will have spent a manual intervention to buy one failed send.
-- **You are unquarantining to relieve pressure.** If a pool is short on capacity, the fix is *more
+- **You are unquarantining to relieve pressure.** If a user is short on capacity, the fix is *more
   capacity*, not reinstating an account the system judged unfit. A bad account degrades the sending
   reputation of the domain it sends from — a cost you do not see in this module (V1 has no bounce or
   complaint feedback) and cannot easily undo.
@@ -478,52 +462,50 @@ how you calibrate `quarantine_threshold` *before* handing the decision real auth
 
 ---
 
-## Pool exhausted / waiting for capacity
+## No eligible account / waiting for capacity
 
-### `waiting_for_capacity` is not an error
+### `waiting_for_capacity` is not an error — and right now it is a simplified signal
 
-`queue.waiting_for_capacity` counts queued jobs whose owning tenant currently has **no pool with an
-eligible account**. It is a *capacity* signal, not a fault, and the distinction matters:
+`queue.waiting_for_capacity` counts queued jobs whose owning user currently has **no account at
+all**. That is a deliberately narrow, interim check: it does **not** distinguish quarantined,
+disabled, paused, or at-daily-limit accounts from a genuinely empty account set. A user with five
+quarantined accounts and zero healthy ones will **not** show up in this counter, even though every
+one of their jobs is stuck. The richer per-account-set eligibility signal is future work — for that
+finer breakdown today, use [Step 5](#step-5--does-the-user-have-an-eligible-account)'s per-account
+query against the specific `user_id` you are chasing.
+
+Whatever the counter shows, treat it as a *capacity* signal, not a fault:
 
 - These jobs are **not failed**. They read to the platform as clean pending `state: "queued"`, and
   they will send as soon as capacity returns — even if that is after tomorrow's daily reset.
 - They are **not lost**, **not stuck**, and require no repair. Nothing needs to be requeued.
-- The internal reason (which pool, which accounts, why) is never surfaced to the platform. That is
-  the two-vocabulary rule, not an oversight — if you need the reason, it is in your hands via the
+- The internal reason (which account, why) is never surfaced to the platform. That is the
+  two-vocabulary rule, not an oversight — if you need the reason, it is in your hands via the
   queries below, not in the tenant's API response.
 
-The system fails a job on exhaustion **only** when the tenant's resolved pool chain is non-empty and
-*every* account in it is blocked in a way that cannot self-recover (quarantined, disabled, or
-manually paused). A chain that is merely *empty* — for example `default_shared_pool_id` unset — is
-treated as a configuration gap and **waits**; it never fails jobs. So a config mistake costs you
-delay, not data.
+Separately from that health counter, the dispatcher's own per-tick exhaustion check **does** apply
+the full eligibility predicate, and it fails a job **only** when the user's account set is non-empty
+and *every* account in it is blocked in a way that cannot self-recover (quarantined, disabled, or
+manually paused). A user with literally zero accounts is never failed this way — that is
+[Step 3](#step-3--does-this-tenant-have-any-account-at-all)'s wait-forever case, not a terminal one.
+So a setup gap (no account yet) costs you delay, not data.
 
 ### What to check
 
 ```bash
-ahealth | jq '{pools, waiting: .queue.waiting_for_capacity}'
-
-# Just the pools that cannot serve right now:
-ahealth | jq -r '.pools[] | select(.headroom == "exhausted") | .pool_id'
+ahealth | jq '{waiting: .queue.waiting_for_capacity}'
 ```
 
-`"headroom": "exhausted"` means that pool has zero eligible accounts *right now*. To see which pool
-a tenant would actually use, resolve the chain the way the Brain does — the tenant's own enabled
-dedicated pools first (oldest first), then the shared fallback:
+To see the account set a given user is actually working with — there is no chain to resolve
+anymore, just the accounts that belong to them:
 
 ```sql
--- The tenant's dedicated pools, in the order the Brain tries them:
-SELECT id, name, enabled, fallback_pool_id, routing_strategy
-  FROM byosmtp.pools
- WHERE kind = 'dedicated' AND owner_user_id = '<user-uuid>' AND enabled = TRUE
- ORDER BY created_at ASC;
--- Then the shared fallback:
-SELECT (SELECT value FROM byosmtp.config WHERE key = 'default_shared_pool_id') AS default_shared;
+SELECT * FROM byosmtp.accounts WHERE user_id = '<uuid>';
 ```
 
 Then run the per-account `why_not_eligible` query from
-[Step 5](#step-5--does-the-pool-have-an-eligible-account) against those pools. That tells you whether
-you are looking at a temporary dip or a real shortage.
+[Step 5](#step-5--does-the-user-have-an-eligible-account) against that `user_id`. That tells you
+whether you are looking at a temporary dip or a real shortage.
 
 ### What to add
 
@@ -532,13 +514,7 @@ you are looking at a temporary dip or a real shortage.
 | Every account **at daily limit** | Genuine capacity shortage. Add accounts, or raise `daily_limit` on existing ones — but only to a level the provider actually tolerates. Raising a limit past what a mailbox can sustain converts a clean wait into `throttle` failures and score damage. [`capacity-planning.md`](./capacity-planning.md) has the sizing table. **Raising the limit only re-opens the account if it is not yet PAUSED** — see the note below; on a `paused: daily_limit` row it changes nothing until the reset. |
 | Accounts **throttle-paused** | You are sending faster than the provider allows. Widen `send_delay_min_sec` / `send_delay_max_sec`, or lower `concurrency_per_user_default`. Adding accounts also helps, because pacing is per-lane. |
 | Accounts **quarantined / disabled / manually paused** | This is the case that can genuinely fail jobs. Resolve each per [An account got quarantined](#an-account-got-quarantined) — and note that this is the *only* configuration in which exhaustion is terminal. |
-| Pool has **zero accounts** | Add one (`POST /v1/admin/accounts`). A brand-new empty pool reads `exhausted` immediately, which is honest but harmless: the alert condition only fires once at least one job is actually waiting on it. |
-| Pool is **disabled** | `PATCH /v1/admin/pools/{id}` to re-enable, or repoint `default_shared_pool_id`. A disabled pool is invisible to chain resolution. |
-
-Watch out for the *dedicated-only* trap: a tenant whose dedicated pool is exhausted falls back to
-the shared pool **only if** a shared fallback resolves. Dedicated→dedicated fallback does not exist
-in V1 (registered in [`future-work.md`](./future-work.md)). If a dedicated tenant is stuck and
-`default_shared_pool_id` is unset, that is your cause.
+| User has **zero accounts** | Add one (`POST /v1/admin/accounts`). This is now the only structural zero-capacity case — there is no pool-level "empty" or "disabled" state to check separately. |
 
 ---
 
@@ -560,7 +536,7 @@ happening on its own:
   outcome to attribute, so it never penalizes the account's score or flags. A box outage does not
   damage your accounts.
 - **No job fails from repeated reclaims.** A job that is reclaimed over and over does not fail by
-  attempt count; it fails only on true pool exhaustion.
+  attempt count; it fails only on true account exhaustion.
 - **Buffered outcome replay.** A box that loses only its *connection* (not its process) keeps its
   unacked outcomes in an in-memory buffer, reconnects, and replays them. The Brain persists each
   one idempotently and only *then* acks, so a replay is never a double-send. `provider_message_id`
@@ -634,9 +610,9 @@ Reclaim handles the *jobs*. It does not bring the box back. Step in when:
 
 ## Alert conditions → triage
 
-`active_conditions[]` in the health snapshot carries the conditions an operator must not miss. All
-three are `critical`, all three **clear automatically** when the underlying state resolves, and each
-names its subject so you can go straight to it.
+`active_conditions[]` in the health snapshot carries the conditions an operator must not miss. Both
+are `critical`, both **clear automatically** when the underlying state resolves, and each names its
+subject so you can go straight to it.
 
 If `alert_webhook_url` is set, each condition also POSTs once on its rising edge — deduplicated per
 `(condition, subject)` until it clears, so a persistent condition does not spam you. The payload
@@ -644,20 +620,9 @@ carries only the condition code, the subject id, and timestamps: no content, no 
 internal reasons. That is a trust-boundary rule, not a feature gap. Wiring it up is in
 [`monitoring.md`](./monitoring.md).
 
-### `pool_exhausted`
-
-```json
-{"condition":"pool_exhausted","severity":"critical",
- "detail":{"pool_id":"...","waiting_jobs":42},"since":"..."}
-```
-
-**Means:** that pool has zero eligible accounts **and** at least one job is actually waiting on it.
-Both halves matter — a brand-new empty pool with nothing routed to it does not fire, so this
-condition is real work, not noise.
-
-**Triage:** go to [Pool exhausted / waiting for capacity](#pool-exhausted--waiting-for-capacity).
-Use `waiting_jobs` for urgency and `since` (the oldest waiting job's creation time) for how long it
-has been backing up. Remember jobs are waiting, not failing.
+> `pool_exhausted` was removed along with pools — it no longer exists as a condition. There is no
+> direct replacement shipping yet; a future `no_eligible_accounts` condition is planned for a later
+> phase but is not implemented today.
 
 ### `account_quarantined`
 
@@ -743,18 +708,24 @@ DMARC aggregate reports, and postmaster tools. Bounce/complaint ingestion is reg
 
 | Lever | How | What it does |
 |---|---|---|
-| **Account rotation** | Add accounts to the pool; set the pool's `routing_strategy` | Spreads volume across identities instead of concentrating it. `round_robin` is the **default** and spreads strictly; `random` draws uniformly; `one_by_one` prefers the highest-scoring account — but see the note below, it does **not** drain that account to its limit first. |
+| **Account rotation** | Add accounts to the user directly (`POST /v1/admin/accounts`) | Spreads volume across identities instead of concentrating it. The dispatcher currently always uses `round_robin`, which spreads strictly; per-user strategy selection (`random`, `one_by_one`) is not yet configurable by any operator-facing control — see the note below. |
 | **Per-account daily limits** | `daily_limit` per account (`daily_limit_default` for new ones) | The hardest cap on per-identity volume, and usually the limit that binds first. Enforced in the database, not in memory. |
 | **Pacing** | `send_delay_min_sec` / `send_delay_max_sec`, `concurrency_per_user_default` | Randomized per-lane inter-send delay. Throughput ≈ lanes ÷ average delay — this is deliberately *not* a single global rate. |
 | **Content variation** | `variation_enabled` plus the per-feature `variation_*` keys | Reduces byte-identical repetition across messages (HTML minification, comment injection, CSS micro-variation, encoding/boundary rotation, preheaders, header style). All default to off/neutral, so the whole set at defaults is byte-identical to no variation at all. |
 | **Sender identity hygiene** | Per-account `from_address` / `from_name` | Must match what the provider has verified. A mismatch is a rejection or a spam signal, not a subtle effect. |
 | **Auto-quarantine** | `autoquarantine_mode`, `quarantine_threshold` | Pulls failing accounts out of rotation before they do more damage. In `shadow` (the default) it only *reports* — promote to `enforce` when you trust the threshold. |
 
-> **`one_by_one` is not "drain one account, then the next."** The name suggests it, and the earlier
-> wording of the rotation row above said so outright, but that is not what it does. The order is
-> `account_status_score DESC, id ASC`, and the score subtracts a **proximity** penalty —
-> `w_prox × (daily_sent_count ÷ daily_limit)`, weight 15 of 100 by default. So an account *loses
-> score as it consumes its own limit*, and it loses that score **faster the smaller its limit is**.
+> **`one_by_one` is not currently selectable by any operator.** Routing strategy is hardcoded to
+> `round_robin` for every user (a temporary interim state — per-user strategy selection is planned
+> for a future phase but does not exist yet). The `one_by_one` strategy below is real code, exercised
+> by tests, but unreachable from any config key or admin route today. It is documented here so the
+> behavior is understood if/when it becomes selectable, not because you can turn it on now.
+>
+> **`one_by_one` is not "drain one account, then the next."** The name suggests it, but that is not
+> what it does. The order is `account_status_score DESC, id ASC`, and the score subtracts a
+> **proximity** penalty — `w_prox × (daily_sent_count ÷ daily_limit)`, weight 15 of 100 by default.
+> So an account *loses score as it consumes its own limit*, and it loses that score **faster the
+> smaller its limit is**.
 >
 > The practical consequence: with **unequal** `daily_limit`s, the leader hands over to a
 > larger-limit peer **long before** it is exhausted — an account with `daily_limit=10` alongside a
@@ -765,11 +736,11 @@ DMARC aggregate reports, and postmaster tools. Bounce/complaint ingestion is reg
 >
 > This is deliberate and it is the safer behavior: steering away from an account that is approaching
 > its cap beats slamming into the cap and then discovering it. But it means **you cannot use
-> `one_by_one` to deliberately concentrate volume on one identity while other accounts in the pool
-> have larger limits** — it will spread anyway. If you want concentration, give the accounts equal
-> limits, or put the identity you want to drain in a pool by itself. Pinned by
-> `services/brain/internal/dispatch/onebyone_handover_test.go` (both directions: early handover on
-> unequal limits, full stickiness on equal ones). Found walking Stage 8 of the local test guide.
+> `one_by_one` to deliberately concentrate volume on one identity while other accounts for the same
+> user have larger limits** — it will spread anyway. If you want concentration, give the accounts
+> equal limits. Pinned by `services/brain/internal/dispatch/onebyone_handover_test.go` (both
+> directions: early handover on unequal limits, full stickiness on equal ones). Found walking Stage 8
+> of the local test guide.
 
 ### What does not exist in V1 — do not go looking for it
 
@@ -802,14 +773,18 @@ job, locks nothing, and mutates nothing — so it is safe to poll. Field-by-fiel
                 "bounced": 11, "waiting_for_capacity": 0 },
   "boxes":    { "active": 6, "stale": 0, "disabled": 0, "oldest_active_heartbeat_age_sec": 12 },
   "accounts": { "healthy": 18, "paused": 4, "quarantined": 0, "disabled": 0, "at_daily_limit": 4 },
-  "pools":    [ { "pool_id": "...", "kind": "shared", "eligible_accounts": 18, "headroom": "ok" } ],
+  "pools":    [],
   "active_conditions": []
 }
 ```
 
+`pools` is present in the response shape but is always an empty array right now — it is a stub for
+future per-account-set headroom reporting that has not been built yet. Do not read anything into it
+either way; it carries no signal today.
+
 The signature of a healthy system: `dispatch_paused` false, `sends_last_window` moving, `queued`
 *draining* rather than merely non-zero, `assigned`+`sending` small and churning, `waiting_for_capacity`
-0, no `stale` boxes, every pool `ok`, `active_conditions` empty.
+0, no `stale` boxes, `active_conditions` empty.
 
 ### What each field is really telling you
 
@@ -817,12 +792,12 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 |---|---|---|
 | `dispatch.dispatch_paused` | `false` | `true` — the panic switch is on. [Step 2](#step-2--is-dispatch-switched-off). |
 | `dispatch.ticks_per_min` | Non-zero while there is work | 0 with a non-empty queue → dispatch is not claiming. Note this is an **observed-throughput approximation** derived from claim events, not a true tick counter: a tick that claims nothing is invisible here, so 0 with an *empty* queue is normal. |
-| `dispatch.sends_last_window` / `send_rate_per_min` | Tracks your expected volume | 0 with a non-empty queue → the flagship tree. Falling steadily → capacity or pacing; check accounts and pools. |
+| `dispatch.sends_last_window` / `send_rate_per_min` | Tracks your expected volume | 0 with a non-empty queue → the flagship tree. Falling steadily → capacity or pacing; check accounts. |
 | `queue.queued` | Non-zero is fine; it should **drain** | Growing monotonically while `sends_last_window` is 0. A large but shrinking queue is a working system with a backlog. |
 | `queue.assigned` + `sending` | Small, always changing | Persistently high and static → jobs in flight that nobody is reporting. Check boxes and the reclaim loop. |
 | `queue.failed` | Small and stable | Rising → look at `errors_last_window` and per-job `last_error_class`. |
 | `queue.bounced` | Proportional to list quality | Rising sharply → list quality. Never an account-health signal (bounces never penalize accounts). |
-| `queue.waiting_for_capacity` | 0 | > 0 → capacity, **not** a fault. [Pool exhausted](#pool-exhausted--waiting-for-capacity). |
+| `queue.waiting_for_capacity` | 0 | > 0 → capacity, **not** a fault. [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity). Remember this is currently the narrow "zero accounts for this user" check, not the full eligibility picture — a 0 here does not rule out a quarantined/paused/at-limit account set. |
 | `boxes.active` | Your expected box count | Below it → degraded capacity. **0 → full outage.** |
 | `boxes.stale` | 0 | > 0 → [A box died](#a-box-died). |
 | `boxes.oldest_active_heartbeat_age_sec` | Well under `heartbeat_interval_sec × heartbeat_missed_threshold` | Creeping toward that product → a box is nearly stale but has not crossed yet. An **early warning**, and the most useful field here. |
@@ -830,16 +805,15 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 | `accounts.paused` / `at_daily_limit` | Some, cyclically | These **overlap deliberately** — a daily-limit pause counts in both, so the buckets do not sum to your account total. Do not read them as disjoint. Both self-clear. |
 | `accounts.quarantined` | 0 | > 0 → the standing count of accounts needing manual attention. Unlike the alert condition, this does **not** age out. |
 | `accounts.disabled` | Whatever you set | Unexpectedly non-zero → someone disabled an account; check `account_events`. |
-| `pools[].eligible_accounts` / `headroom` | `> 0` / `"ok"` | `0` / `"exhausted"` → that pool cannot serve. Harmless on a pool with nothing routed to it. |
+| `pools[]` | always `[]` | Always empty right now — a stub for future per-account-set headroom reporting. Not yet meaningful either way; do not use it to diagnose anything. |
 | `errors_last_window` | Small, spread across classes | Any class spiking. The six classes always appear, `0` included, so the shape is stable — a class at 0 is genuine, not missing data. Counts **failures, not rows**: one failing send contributes exactly 1 even if it is retried and later succeeds, so this is a usable incident size. |
 | `shadow.autoquarantine_mode` | `shadow` before go-live, `enforce` after you have calibrated | `off` means auto-quarantine is fully disabled — deliberate, but know that it is. |
 | `shadow.would_quarantine_count` / `recent[]` | Low | High in `shadow` mode → what `enforce` *would* be doing. This is your calibration data for `quarantine_threshold`. |
 | `active_conditions[]` | `[]` | Non-empty → [Alert conditions](#alert-conditions--triage). |
 
-Two window caveats worth knowing before you draw conclusions: `window_sec` is
+One window caveat worth knowing before you draw conclusions: `window_sec` is
 `health_metrics_window_sec`, and every "last window" number is scoped to it — a shorter window makes
-rates twitchier, a longer one hides spikes. And `pools[]` lists only *enabled* pools, so a pool that
-vanished from the list was disabled, not deleted.
+rates twitchier, a longer one hides spikes.
 
 ---
 

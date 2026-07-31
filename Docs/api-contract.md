@@ -17,7 +17,8 @@ against the Brain's registered routes.
   `PLATFORM_TOKEN_HASHES` is configured, fail-closed.)*
 - **Domain B** — operator (`/v1/admin/*`, incl. `GET /v1/admin/health`): the operator
   `platform_admin` bearer key (Phase 2 §4), env-configured, stored hashed, constant-time compared.
-  *(Built in Phase 2 — accounts/pools/config + lifecycle; see the Phase 2 routes below. The Phase 0
+  *(Built in Phase 2 — accounts/config + lifecycle; see the Phase 2 routes below. The pool admin
+  routes originally built here were removed by module 3's G1/G2. The Phase 0
   health stub (`/healthz`,`/readyz`) remains unauthenticated.)*
 - **Separation invariant (already true, now stated per B7):** the two domains never share a
   credential and never cross-serve — a platform service token cannot reach `/v1/admin/*` and an
@@ -70,7 +71,7 @@ The full, additive-only `error.code` enum:
 | 401 | `unauthenticated` | Missing/invalid API key/token, either domain. |
 | 403 | `forbidden` | Reserved for future scoped roles; unused in V1's single-scope model. |
 | 404 | `not_found` | Resource id / config key does not exist, OR belongs to another tenant (no existence disclosure — never `403`). |
-| 409 | `conflict` | State/RI conflict (delete pool with accounts; duplicate within pool; limit-below-counter; system user unprovisioned; duplicate active campaign for a user). |
+| 409 | `conflict` | State/RI conflict (duplicate account for a user; limit-below-counter; system user unprovisioned; duplicate active campaign for a user). |
 | 422 | `unprocessable` | Well-formed but semantically illegal (illegal state transition, fallback cycle, owner-rule violation). |
 | 429 | `rate_limited` | Admin rate limit — off by default in V1. |
 | 500 | `internal_error` | Unexpected. Generic message only; reason in logs. |
@@ -173,7 +174,7 @@ Same operator admin auth as the routes above (`Authorization: Bearer <admin key>
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/v1/admin/health` | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, per-pool eligibility headroom, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
+| GET | `/v1/admin/health` | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
 
 ### `GET /v1/admin/health` response fields
 
@@ -272,7 +273,7 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 |---|---|---|
 | POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `byosmtp.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count (`cost: 0`), not a rejection |
 | POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `byosmtp.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
-| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
+| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or its user having zero accounts — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire eligible account set is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why — pending a rename to `accounts_exhausted` at G3, M3-P2-OD-3) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true account exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
 derived ENTIRELY from `byosmtp.jobs` state counts + existing per-job fields — no new state, no
@@ -287,7 +288,7 @@ schema change:
     "total": 5000,
     "sent": 4100,
     "bounced": 210,                   // terminal, recipient-fault, billable
-    "failed": 3,                      // terminal, infra/pool-exhaustion, refundable
+    "failed": 3,                      // terminal, infra/account-exhaustion, refundable
     "in_flight": 20,                  // assigned + sending
     "pending": 667,                   // queued and currently dispatchable
     "waiting_for_capacity": 0         // queued but zero eligible account right now
@@ -312,7 +313,7 @@ schema change:
 
 The three-way billing-relevant distinction a UI can render WITHOUT reading internal state-machine
 docs: `waiting_for_capacity` (still pending, no eligible account right now — a job here is
-`state:"queued"` at the per-item level, **never** shown as failed), `failed` (terminal, true pool
+`state:"queued"` at the per-item level, **never** shown as failed), `failed` (terminal, true account
 exhaustion — refundable, the platform's own policy), `bounced` (terminal, recipient-permanent 550
 — billable). `waiting_for_capacity` is an AGGREGATE count distinction on top of the same
 `state:"queued"` per-job value (§6.4's rule that a waiting job renders as clean pending) — never a

@@ -413,10 +413,13 @@ supervisor to restart rather than hammering a Brain that is not ready. A box tha
 first-time setup usually means the Brain was not up yet, or the `byosmtp.boxes` row was not seeded.
 See the runbook.
 
-### Step 9 — Create a pool, add an account, set the default pool
+### Step 9 — Create an account for a known user
 
-Nothing sends until a pool exists, has an eligible account, and is designated the default.
-Request/response shapes are in [`api-contract.md`](./api-contract.md).
+Nothing sends until the tenant has at least one eligible account. Accounts are owned directly by a
+`user_id` — it must be a real `public.users` row; the admin surface validates this with an existence
+check and returns a clean `422`/`400` if not. For a single-tenant install this is likely the reserved
+system user or whichever tenant owns this install. Request/response shapes are in
+[`api-contract.md`](./api-contract.md).
 
 **Two secrets get typed in this step — keep them out of your shell history and out of `ps`.** Both
 the admin key and the mailbox password below would otherwise land in `~/.bash_history`, and an inline
@@ -429,18 +432,14 @@ which exists so a password never becomes a command-line argument.)
 ADMIN=http://localhost:8080
 read -rs -p 'ADMIN_API_KEY: ' KEY; echo    # not an assignment: keeps it out of history
 
-# 1. A shared pool:
-curl -fsS -X POST $ADMIN/v1/admin/pools -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{"kind":"shared","name":"primary"}'
-
-# 2. An SMTP account in it (the credential is encrypted on arrival; the Brain never returns it).
-#    The admin surface decodes STRICTLY — a misspelled field name is a 400, not an ignored key.
-#    Full field table incl. the optional ones: api-contract.md.
-#    Written to a file first so the password never appears in `ps` or in shell history.
+# An SMTP account for a known user (the credential is encrypted on arrival; the Brain never
+# returns it). The admin surface decodes STRICTLY — a misspelled field name is a 400, not an
+# ignored key. Full field table incl. the optional ones: api-contract.md.
+# Written to a file first so the password never appears in `ps` or in shell history.
 umask 077
 cat > /tmp/acct.json <<'JSON'
 {
-  "pool_id":       "<pool-uuid from step 1>",
+  "user_id":       "<the owning tenant's public.users uuid>",
   "smtp_host":     "smtp.example.com",
   "smtp_port":     587,
   "smtp_username": "<mailbox username>",
@@ -453,10 +452,6 @@ $EDITOR /tmp/acct.json    # fill in the real values
 curl -fsS -X POST $ADMIN/v1/admin/accounts -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' --data @/tmp/acct.json
 shred -u /tmp/acct.json
-
-# 3. Designate the default shared pool — base sending does NOT work until this is set:
-curl -fsS -X PUT $ADMIN/v1/admin/config/default_shared_pool_id -H "Authorization: Bearer $KEY" \
-  -H 'Content-Type: application/json' -d '{"value":"<pool-uuid>"}'
 
 unset KEY   # when you are done with this shell session
 ```
@@ -476,19 +471,19 @@ cross an unverified TLS connection. See [`security-posture.md`](./security-postu
 > (2026-07-29) — it was the first hard stop. The public-hostname warning above still applies in
 > production; `smtp-sink` is exactly the "test affordance" it refers to.
 
-`default_shared_pool_id` seeds `NULL` and stays `NULL` until you set it. Until then, base-campaign
-jobs stay cleanly `queued` — they are not lost and not failed, but nothing sends. This is the single
-most common "why is nothing happening" cause; the runbook's flagship tree starts there.
+A tenant (`user_id`) with zero accounts stays cleanly `queued` forever — not lost, not failed, but
+nothing sends. This is the single most common "why is nothing happening" cause; see the runbook's
+flagship [Everything is queued and nothing is sending](./operator-runbook.md#everything-is-queued-and-nothing-is-sending) tree.
 
 ### Step 10 — Verify a real send end to end
 
 ```bash
 curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY" \
-  | jq '{dispatch, pools, boxes, accounts}'
+  | jq '{dispatch, boxes, accounts}'
 ```
 
-Expect: your pool present with headroom that is **not** `exhausted`, `dispatch_paused:false`, and at
-least one connected box. What each field means and what warrants action is in the runbook.
+Expect: at least one account present and eligible, `dispatch_paused:false`, and at least one
+connected box. What each field means and what warrants action is in the runbook.
 
 Then run one real campaign through `quote` → `run` → `report` (Domain A, **platform service token**,
 not the admin key) with a single recipient you control, and confirm the job reaches `sent`. The three

@@ -71,8 +71,9 @@ What bounds the exposure:
 - **Only accounts actually dispatched to that box, only while it is running.** A box holds one job in
   flight; credentials are scoped to a single send and zeroed when that send ends. There is no
   credential cache, no store, and no on-disk copy.
-- **Not the whole pool.** A box cannot enumerate accounts, query the database, or ask the Brain for a
-  credential it was not sent — it has no DB access and no such request exists in the protocol.
+- **Not the tenant's other accounts.** A box cannot enumerate accounts, query the database, or ask
+  the Brain for a credential it was not sent — it has no DB access and no such request exists in
+  the protocol.
 - **Not the master key.** The box holds no key material and cannot decrypt anything.
 - **Eviction needs no certificate revocation:** clear `byosmtp.boxes.token_hash` (or set
   `status='disabled'`) and the box is refused on its **next connect**. No CRL, no OCSP.
@@ -278,7 +279,7 @@ applied as-is:
 - `accepted` marks the job `sent` with an attacker-chosen `provider_message_id`, so mail that was
   never sent is recorded as delivered.
 - `error`/`bounced` feed account scoring, so fabricated `auth_failure`s can drive real accounts —
-  potentially a whole pool — into quarantine.
+  potentially every account a tenant has — into quarantine.
 
 Neither is detectable from this system, because §3.9 means there is no independent delivery feedback
 that could contradict the box. A per-send attestation is what would close it; see §3.1's note that
