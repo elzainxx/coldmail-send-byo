@@ -25,7 +25,7 @@ type migrationFile struct {
 	Concurrently bool // contains CREATE/DROP INDEX CONCURRENTLY -> run outside a txn
 }
 
-var fileRe = regexp.MustCompile(`^sender_(\d{4})_(.+)\.up\.sql$`)
+var fileRe = regexp.MustCompile(`^byosmtp_(\d{4})_(.+)\.up\.sql$`)
 var concurrentlyRe = regexp.MustCompile(`(?i)\b(create|drop)\s+index\s+concurrently\b`)
 
 // Runner applies/rolls back migrations against the DSN.
@@ -124,7 +124,7 @@ func (r *Runner) appliedVersions(ctx context.Context, c *pgx.Conn) (map[string]b
 	return applied, rows.Err()
 }
 
-// discover globs sender_NNNN_*.up.sql, sorted ascending by version.
+// discover globs byosmtp_NNNN_*.up.sql, sorted ascending by version.
 func (r *Runner) discover() ([]migrationFile, error) {
 	entries, err := os.ReadDir(r.Dir)
 	if err != nil {
@@ -437,7 +437,7 @@ func (r *Runner) downPathFor(version string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prefix := "sender_" + version + "_"
+	prefix := "byosmtp_" + version + "_"
 	for _, e := range entries {
 		n := e.Name()
 		if strings.HasPrefix(n, prefix) && strings.HasSuffix(n, ".down.sql") {

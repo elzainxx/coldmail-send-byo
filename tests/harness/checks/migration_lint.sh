@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # migration_lint — BLOCKING CI gate. Enforces the locked migration convention:
-#   - every migration is a sender_NNNN_<desc>.up.sql + matching .down.sql pair
+#   - every migration is a byosmtp_NNNN_<desc>.up.sql + matching .down.sql pair
 #   - versions are contiguous ascending (no gaps, no dupes)
 #   - every UP self-records: INSERT INTO byosmtp.schema_migrations(version) VALUES('NNNN')
 #   - every DOWN self-removes: DELETE ... WHERE version='NNNN' (or documented no-op for
@@ -12,18 +12,18 @@ DIR="db/migrations"
 fail=0
 prev=""
 
-ups=$(ls "$DIR"/sender_*.up.sql 2>/dev/null | sort || true)
+ups=$(ls "$DIR"/byosmtp_*.up.sql 2>/dev/null | sort || true)
 if [[ -z "$ups" ]]; then
   echo "migration_lint: no migration files yet (Phase 0 ships sender_0000_bootstrap)."
 fi
 
 for up in $ups; do
   base="$(basename "$up")"
-  if [[ ! "$base" =~ ^sender_([0-9]{4})_(.+)\.up\.sql$ ]]; then
-    echo "migration_lint FAIL: bad name $base (want sender_NNNN_desc.up.sql)"; fail=1; continue
+  if [[ ! "$base" =~ ^byosmtp_([0-9]{4})_(.+)\.up\.sql$ ]]; then
+    echo "migration_lint FAIL: bad name $base (want byosmtp_NNNN_desc.up.sql)"; fail=1; continue
   fi
   ver="${BASH_REMATCH[1]}"; desc="${BASH_REMATCH[2]}"
-  down="$DIR/sender_${ver}_${desc}.down.sql"
+  down="$DIR/byosmtp_${ver}_${desc}.down.sql"
 
   # paired down
   [[ -f "$down" ]] || { echo "migration_lint FAIL: $base has no matching .down.sql"; fail=1; }
@@ -74,7 +74,7 @@ if [[ -n "$prev" && -f "$LIFECYCLE_TEST" ]]; then
     fail=1
   elif ! grep -Eq "\"${prev}\"" <<<"$want_literal"; then
     echo "migration_lint FAIL: newest migration '$prev' is absent from wantChain in $LIFECYCLE_TEST"
-    echo "  -> add \"$prev\" to wantChain, plus an anti-vacuity assertion that sender_${prev}'s"
+    echo "  -> add \"$prev\" to wantChain, plus an anti-vacuity assertion that byosmtp_${prev}'s"
     echo "     object/seed/behavior landed (and the paired check that its DOWN removed it)."
     fail=1
   fi

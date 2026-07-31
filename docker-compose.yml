@@ -29,7 +29,7 @@ services:
       timeout: 3s
       retries: 30
 
-  # One-shot: preflight (public.users + public.job_items exist?) then apply sender_NNNN in
+  # One-shot: preflight (public.users + public.job_items exist?) then apply byosmtp_NNNN in
   # ascending order (self-recording). Runs as an admin/owner-capable role (OD-1). Exits 0.
   migrate:
     build: { context: ., dockerfile: tools/byosmtp-migrate/Dockerfile }

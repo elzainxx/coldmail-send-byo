@@ -36,10 +36,10 @@ func TestUp_ContiguityGap(t *testing.T) {
 	}
 	// Minimal, side-effect-free migrations: each only self-records its version into a scratch
 	// table we create in 0001, so applying them can't collide with the real byosmtp schema.
-	write("sender_0001_probe.up.sql", "CREATE SCHEMA IF NOT EXISTS migtest_probe; CREATE TABLE IF NOT EXISTS migtest_probe.v(version text); INSERT INTO byosmtp.schema_migrations(version) VALUES('0001');")
-	write("sender_0001_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0001';")
-	write("sender_0003_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0003');")
-	write("sender_0003_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0003';")
+	write("byosmtp_0001_probe.up.sql", "CREATE SCHEMA IF NOT EXISTS migtest_probe; CREATE TABLE IF NOT EXISTS migtest_probe.v(version text); INSERT INTO byosmtp.schema_migrations(version) VALUES('0001');")
+	write("byosmtp_0001_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0001';")
+	write("byosmtp_0003_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0003');")
+	write("byosmtp_0003_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0003';")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -67,8 +67,8 @@ func TestUp_ContiguityGap(t *testing.T) {
 	}
 
 	// Fill the gap: with 0002 present, the contiguity check must pass (guard doesn't over-reject).
-	write("sender_0002_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0002');")
-	write("sender_0002_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0002';")
+	write("byosmtp_0002_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0002');")
+	write("byosmtp_0002_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0002';")
 	// Clean any rows a prior partial run left, so this is deterministic.
 	cleanup := func() {
 		c := mustConnectMig(t, dsn)
