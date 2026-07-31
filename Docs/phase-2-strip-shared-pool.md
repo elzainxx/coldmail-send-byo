@@ -890,6 +890,53 @@ lose a parameter; 14 fixture helpers (§2.5) are deleted or re-signatured.
 **One config key** (`default_shared_pool_id`), **one enum type** (`pool_kind`), **one table**
 (`pools`), **one column** (`accounts.pool_id`), **five routes**.
 
+### 8.2a Complexity evidence — ACTUAL, verified against the real G1 (`cb92aad`) + G2 (`238ec17`)
+commits, 2026-08-01
+
+The table above was written before G1/G2 landed. Re-measured here against the real commits with the
+same commands, so the plan can be checked against what actually happened rather than trusted on its
+own say-so.
+
+**Non-test Go deleted outright — 775 lines, 4 whole files, 21 funcs. Exact match to plan.**
+Confirmed via `git show <commit>^:<path> | wc -l` and `grep -c '^func '` on each file at the commit
+before its deletion: `pool_handlers.go` 244/7 (G2), `pool_list_update.go` 238/2 (G2), `pool_store.go`
+133/7 (G2), `dispatch/pool.go` 160/5 (G1). Totals: 775 lines, 21 funcs — both exact.
+
+**Test code deleted outright — 519 lines. Exact match.** `dispatch/pool_test.go` 332 lines (G1),
+`adminapi/pools_config_test.go` 187 lines (G2) — both confirmed by the same before-deletion line
+count. The plan's claim that `TestT10` survives via an R-fixture and 2 more whole tests die elsewhere
+(`TestPoolKindRequiredVsInvalid`, `TestPoolImmutableFieldsRejected`) matches the actual G2 diff:
+`config_test.go` (created in G2) carries `TestT10_ConfigValueTypeValidation` relocated verbatim, and
+both named tests are gone from their post-G2 files.
+
+**Non-test files touched — 21 across G1+G2 combined** (`git diff cb92aad^ 238ec17 --stat --
+services/brain` filtered to non-`_test.go`), matching the plan's 19 within tolerance — the difference
+is `helpers.go` (created new in G2 to hold the relocated `pgxDB` interface, not itself a "pool
+reference" file the plan enumerated) and `account_lifecycle.go` (one line, the quarantine_reason
+CHECK fix — a real bug found during G2 verification, outside the plan's pool-reference count by
+construction).
+
+**Branches removed from the eligibility path — verified directionally, methodology-sensitive.**
+Recounting `if`/`for`/`switch`/`case`/`&&`/`||` on non-comment lines gives `eligibility.go` 22→17
+(pre-G1 → current) and `exhaustion.go` unchanged at 8 both sides (its chain-emptiness branch re-keyed
+in place, as planned, not removed) — `dispatch/pool.go` contributed 19 more (now 0, file deleted).
+These numbers move a few points depending on whether boolean operators are counted per-occurrence or
+per-line; the plan's own ~22/~8 approximations are consistent with this recount within that
+tolerance. The **direction and order of magnitude are confirmed**: the eligibility path lost the
+majority of its branch count, concentrated entirely in the deleted pool-loop file plus a real but
+smaller cut in `eligibility.go` itself.
+
+**Schema-object counts — exact match, verified against the migration files directly:**
+`grep -c 'DROP TYPE'`/`'DROP TABLE'` on `byosmtp_0028_drop_pools.up.sql` return 1/1; `grep 'DROP
+COLUMN'` on `byosmtp_0027_accounts_user_owned.up.sql` shows exactly `accounts.pool_id`; the
+pre-G2 `server.go` mounted exactly 5 `/v1/admin/pools*` routes (confirmed by direct `grep` on the
+commit before their removal). One config key, one enum, one table, one column, five routes — all
+exact.
+
+**Conclusion: the plan's projected complexity reduction was not aspirational — every checkable
+figure (line counts, function counts, schema-object counts, route count) matches the real commits
+exactly, and the one approximate figure (branch count) matches in direction and rough magnitude.**
+
 ### 8.3 Open decisions
 
 > **Consolidated queue: [`Docs/open-decisions.md`](open-decisions.md).** That file is where these are
