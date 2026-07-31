@@ -43,6 +43,29 @@ func (e *dispatchEnv) setAccountFlags(t *testing.T, acctID string, quarantined, 
 	}
 }
 
+// setAccountDeleted soft-deletes (deleted=true) or un-deletes (deleted=false) an account,
+// mirroring the account_deletion_pairing_check (0026): deleted_at set/cleared together with
+// purge_after and deleted_by. Used to prove the eligibility index/predicate's schema-level
+// deleted_at IS NULL exclusion (Phase 1 §5.4) — and its recovery, which is what makes the test's
+// positive control non-vacuous (Phase 1 §5.4's own anti-vacuity note: soft-deleting an
+// already-ineligible account proves nothing).
+func (e *dispatchEnv) setAccountDeleted(t *testing.T, acctID string, deleted bool) {
+	t.Helper()
+	var err error
+	if deleted {
+		_, err = e.admin.Exec(context.Background(),
+			`UPDATE byosmtp.accounts
+			   SET deleted_at=NOW(), deleted_by=$2::uuid, purge_after=NOW() + INTERVAL '30 days'
+			 WHERE id=$1`, acctID, systemUserID)
+	} else {
+		_, err = e.admin.Exec(context.Background(),
+			`UPDATE byosmtp.accounts SET deleted_at=NULL, deleted_by=NULL, purge_after=NULL WHERE id=$1`, acctID)
+	}
+	if err != nil {
+		t.Fatalf("setAccountDeleted: %v", err)
+	}
+}
+
 func (e *dispatchEnv) accountDailySentCount(t *testing.T, acctID string) int {
 	t.Helper()
 	var n int
@@ -55,10 +78,25 @@ func (e *dispatchEnv) accountDailySentCount(t *testing.T, acctID string) int {
 
 func strPtr(s string) *string { return &s }
 
-// TestAccountConsume_NeverExceedsDailyLimit (T1, THE test) — ONE account, daily_limit=50, hammered
-// by 8 GENUINE concurrent connections (8 separate pgxpool.New pools, so 8 independent physical
-// connections — not 8 goroutines sharing one pooled connection) each trying to consume it
-// repeatedly, with demand far exceeding capacity. Asserts: (1) daily_sent_count ends at EXACTLY 50,
+// TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes (T1, THE test; renamed per
+// Docs/phase-2-strip-shared-pool.md §5.2) — ONE account, daily_limit=50, hammered by 8 GENUINE
+// concurrent connections (8 separate pgxpool.New pools, so 8 independent physical connections —
+// not 8 goroutines sharing one pooled connection) each trying to consume it repeatedly, with
+// demand far exceeding capacity.
+//
+// Module 3 removes only ONE of the three concurrency sources the pre-fork test defended against:
+// two live campaigns racing one account is now structurally excluded (one campaign per user,
+// accounts user-owned — proven separately by Test B below, TestAccountConsume_NoContentionAcrossUsers).
+// TWO SURVIVE, and this test's name now says so: concurrency_per_user_default grants a user N
+// LANES per tick, so N lanes of ONE campaign consume from the SAME user's account set
+// concurrently; and dispatch TICKS overlap, so an in-flight consume from tick k can race one from
+// tick k+1. Deleting this test on the "structurally impossible" premise would leave module 3 with
+// no defense of the daily-limit ceiling against either surviving source — this test's entire body
+// and every assertion below are unchanged from the inherited version; only the fixture is
+// user-owned (accountConsume's $2 receives a user_id, not a pool_id) and the name now names what
+// still contends.
+//
+// Asserts: (1) daily_sent_count ends at EXACTLY 50,
 // never more; (2) exactly 50 attempts observed a successful consume; (3) once capacity is gone,
 // EVERY further attempt is refused — the 51st send never happens (the confirm phase below); (4) NO
 // attempt ever surfaces accounts_daily_sent_check's SQLSTATE 23514 — the CHECK is the last-resort
@@ -85,7 +123,7 @@ func strPtr(s string) *string { return &s }
 //     which every worker attempts again and must be refused. That is a STRONGER assertion than the
 //     old budget: it proves the 51st consume is impossible, rather than hoping the budget was big
 //     enough to fill 50.
-func TestAccountConsume_NeverExceedsDailyLimit(t *testing.T) {
+func TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes(t *testing.T) {
 	e := newDispatchEnv(t, "nolimit")
 	acct := e.seedAccount(t, "sec")
 	const limit = 50
@@ -312,6 +350,12 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 	e.setAccountFlags(t, disabled, false, true)
 	atLimit := e.seedAccount(t, "al")
 	e.setAccountDailyState(t, atLimit, 30, 30, todayUTC(), true, strPtr("daily_limit"))
+	// deleted (Phase 1 §5.4): a fully healthy account, soft-deleted. Seeded WITH high headroom
+	// (not an already-ineligible account) so the deletion itself is the only thing excluding it —
+	// the anti-vacuity requirement §5.4 states explicitly.
+	deleted := e.seedAccount(t, "del")
+	e.setAccountDailyState(t, deleted, 1000, 0, todayUTC(), false, nil)
+	e.setAccountDeleted(t, deleted, true)
 
 	seen := map[string]int{}
 	for i := 0; i < 40; i++ {
@@ -324,7 +368,7 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 		}
 		seen[acct.id]++
 	}
-	for _, bad := range []string{pausedManual, quarantined, disabled, atLimit} {
+	for _, bad := range []string{pausedManual, quarantined, disabled, atLimit, deleted} {
 		if seen[bad] > 0 {
 			t.Fatalf("ineligible account %s was selected %d time(s)", bad, seen[bad])
 		}
@@ -334,6 +378,25 @@ func TestAccountConsume_SkipsIneligibleAccounts(t *testing.T) {
 	}
 	if seen[healthy] == 0 || seen[healthy2] == 0 {
 		t.Fatalf("only one healthy account was ever picked (healthy=%d healthy2=%d) — clean result might be vacuous with a single candidate", seen[healthy], seen[healthy2])
+	}
+
+	// Positive control (Phase 1 §5.4's anti-vacuity note): restore the deleted account and prove
+	// it becomes selectable again — otherwise "deleted was skipped" could just as easily mean
+	// "deleted was permanently broken by the fixture," not "the deleted_at IS NULL predicate works."
+	// Every other account is put out of contention FIRST (Rule 10: no ordering luck) so `deleted`
+	// is the ONLY eligible row and a single successful consume is dispositive, not a maybe.
+	e.setAccountDailyState(t, healthy, 25, 25, todayUTC(), true, strPtr("daily_limit"))
+	e.setAccountDailyState(t, healthy2, 1000, 1000, todayUTC(), true, strPtr("daily_limit"))
+	e.setAccountDeleted(t, deleted, false)
+	acct, ok, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
+	if err != nil {
+		t.Fatalf("accountConsume after undelete: %v", err)
+	}
+	if !ok {
+		t.Fatalf("no account selected after undelete — expected the recovered account as the sole eligible row")
+	}
+	if acct.id != deleted {
+		t.Fatalf("accountConsume after undelete returned %s, want the recovered account %s (sole eligible row)", acct.id, deleted)
 	}
 }
 

@@ -114,6 +114,7 @@ eligible_accounts AS (
                                                         -- parameter to appear in the query text
       AND a.quarantined = FALSE
       AND a.disabled = FALSE
+      AND a.deleted_at IS NULL
       AND (
             (a.daily_reset_day < today_calc.today_in_tz
                 AND (a.paused = FALSE
@@ -221,16 +222,27 @@ func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cf
 	return acct, true, nil
 }
 
-// userRoutingStrategy resolves a user's routing strategy (§3). G1 interim: byosmtp.user_settings
-// (the eventual per-user home, Phase 1 §3.1/§4.1) does not exist until G3's 0029 migration, and
-// this gate ships no migration (Docs/phase-2-strip-shared-pool.md §1.1: "G1 must not contain a
-// migration"). Routing strategy is therefore the single inherited locked default (round_robin,
-// sender_0004:20) for every user until G3 wires the per-user override. accountOrderByForStrategy
-// and the three ORDER BY templates are unchanged — only the per-user lookup is deferred. G3 must
-// replace this function's body to read byosmtp.user_settings; it must not gain a pool reference in
-// the meantime, and it does not: the strategy source here is a compile-time constant, not a query.
+// userRoutingStrategy resolves a user's routing strategy (§3) from byosmtp.user_settings
+// (Phase 1 §4.1, landed at G3's 0029 migration). Row absent = every default applies (the build
+// plan's "one row per user; row absent = default" rule) — a user who never touched their settings
+// gets the table's own column DEFAULT ('round_robin', matching the inherited
+// sender_0004:20 default), read here as a Go-side fallback so a missing row costs no extra
+// branch in the SQL. accountOrderByForStrategy and the three ORDER BY templates are unchanged —
+// only this lookup's source moved from a compile-time constant (G1/G2 interim) to a real query.
 func (d *Dispatcher) userRoutingStrategy(ctx context.Context, userID string) (string, error) {
-	return "round_robin", nil
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var strategy string
+	err := d.db.QueryRow(ctx,
+		`SELECT routing_strategy::text FROM byosmtp.user_settings WHERE user_id = $1`, userID).
+		Scan(&strategy)
+	if err == pgx.ErrNoRows {
+		return "round_robin", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strategy, nil
 }
 
 // accountConsume runs the atomic consume against ONE user's account set, using orderBy as the
@@ -279,6 +291,7 @@ SELECT EXISTS (
   WHERE a.user_id = $2
     AND a.quarantined = FALSE
     AND a.disabled = FALSE
+    AND a.deleted_at IS NULL
     AND (
           (a.daily_reset_day < today_calc.today_in_tz
               AND (a.paused = FALSE

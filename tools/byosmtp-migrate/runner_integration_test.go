@@ -98,12 +98,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// sender_0014 (the byosmtp.account_events audit sink), through module 2's close at 0024, then
 	// module 3's own additions from 0025 (Docs/phase-1-schema-delta.md §6): 0025 new enum types +
 	// event_actor ADD VALUE 'user', 0026 accounts' Phase-1 columns, 0027 accounts become
-	// user_id-owned (drops pool_id), 0028 drops byosmtp.pools/pool_kind/default_shared_pool_id.
-	// This is the executable expectation of the migration chain — it grows as later phases add
-	// 0029+.
+	// user_id-owned (drops pool_id), 0028 drops byosmtp.pools/pool_kind/default_shared_pool_id,
+	// then G3's own additions 0029-0034: 0029 user_settings, 0030 user_config_overrides, 0031
+	// user_suspensions, 0032 campaigns, 0033 notifications, 0034 widens
+	// account_events_action_check. This is the executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
-		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028"}
+		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
+		"0029", "0030", "0031", "0032", "0033", "0034"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -124,8 +126,10 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertPlatformGrant(t, admin, "job_items")
 	// Prove the Phase-1 feature objects exist and are owned by byosmtp_owner (so FORCE RLS on
 	// byosmtp.accounts genuinely enforces — ADR-0004). "pools" removed at G2 — 0028 drops the
-	// table, so by the time Up() reaches head it no longer exists to own-check.
-	for _, tbl := range []string{"accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
+	// table, so by the time Up() reaches head it no longer exists to own-check. G3 adds the five
+	// module-3 tables (Docs/phase-2-strip-shared-pool.md §5.1's ADR-0008 grants table).
+	for _, tbl := range []string{"accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events",
+		"campaigns", "notifications", "user_config_overrides", "user_settings", "user_suspensions"} {
 		assertTableOwner(t, admin, "byosmtp", tbl, "byosmtp_owner")
 	}
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
@@ -271,6 +275,37 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Up: byosmtp.config still has default_shared_pool_id (0028 did not delete the row, M3-P2-OD-1)")
 	}
 
+	// --- G3's own migrations, 0029-0034 (Docs/phase-2-strip-shared-pool.md §8.1 criterion 12) ---
+	for _, tbl := range []string{"user_settings", "user_config_overrides", "user_suspensions", "campaigns", "notifications"} {
+		if !tableExists(t, admin, tbl) {
+			t.Fatalf("after Up: byosmtp.%s missing (G3 not applied)", tbl)
+		}
+	}
+	if !columnExists(t, admin, "campaigns", "clock_paused_at") {
+		t.Fatal("after Up: byosmtp.campaigns.clock_paused_at missing (0032 not applied)")
+	}
+	if !indexExists(t, admin, "campaigns_expiry_sweep_idx") {
+		t.Fatal("after Up: byosmtp.campaigns_expiry_sweep_idx missing (0032 not applied)")
+	}
+	if !indexExists(t, admin, "notifications_live_dedup_idx") {
+		t.Fatal("after Up: byosmtp.notifications_live_dedup_idx missing (0033 not applied)")
+	}
+	if !columnExists(t, admin, "user_settings", "routing_strategy") {
+		t.Fatal("after Up: byosmtp.user_settings.routing_strategy missing (0029 not applied)")
+	}
+	if !columnExists(t, admin, "user_config_overrides", "send_delay_min_sec") {
+		t.Fatal("after Up: byosmtp.user_config_overrides.send_delay_min_sec missing (0030 not applied)")
+	}
+	if !indexExists(t, admin, "user_suspensions_active_idx") {
+		t.Fatal("after Up: byosmtp.user_suspensions_active_idx missing (0031 not applied)")
+	}
+	// 0034: the widened account_events_action_check accepts the three new module-3 actions.
+	for _, action := range []string{"verified", "credential_updated", "purged"} {
+		if !accountEventsActionAllowed(t, admin, action) {
+			t.Fatalf("after Up: account_events_action_check rejects action %q (0034 did not widen it)", action)
+		}
+	}
+
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: byosmtp.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -321,6 +356,24 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
+		}
+		if v == "0034" && accountEventsActionAllowed(t, admin, "purged") {
+			t.Fatal("after Down 0034: account_events_action_check still permits 'purged' — down did not restore the 0014 CHECK")
+		}
+		if v == "0033" && tableExists(t, admin, "notifications") {
+			t.Fatal("after Down 0033: byosmtp.notifications still present (down did not drop it)")
+		}
+		if v == "0032" && tableExists(t, admin, "campaigns") {
+			t.Fatal("after Down 0032: byosmtp.campaigns still present (down did not drop it)")
+		}
+		if v == "0031" && tableExists(t, admin, "user_suspensions") {
+			t.Fatal("after Down 0031: byosmtp.user_suspensions still present (down did not drop it)")
+		}
+		if v == "0030" && tableExists(t, admin, "user_config_overrides") {
+			t.Fatal("after Down 0030: byosmtp.user_config_overrides still present (down did not drop it)")
+		}
+		if v == "0029" && tableExists(t, admin, "user_settings") {
+			t.Fatal("after Down 0029: byosmtp.user_settings still present (down did not drop it)")
 		}
 		if v == "0028" {
 			if !tableExists(t, admin, "pools") {
@@ -505,6 +558,21 @@ func enumValueExists(t *testing.T, c *pgx.Conn, enumType, value string) bool {
 		t.Fatalf("enum value exists lookup %s.%s: %v", enumType, value, err)
 	}
 	return ok
+}
+
+// accountEventsActionAllowed reports whether account_events_action_check's definition permits the
+// given action literal — 0034's anti-vacuity (Docs/phase-2-strip-shared-pool.md §8.1 criterion 12):
+// proving the CHECK's DDL was actually widened, not merely that the constraint still exists under
+// the same name (a DROP+ADD with the OLD list would leave the name and object count unchanged).
+func accountEventsActionAllowed(t *testing.T, c *pgx.Conn, action string) bool {
+	t.Helper()
+	var def string
+	if err := c.QueryRow(context.Background(),
+		`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'account_events_action_check'`).
+		Scan(&def); err != nil {
+		t.Fatalf("account_events_action_check definition lookup: %v", err)
+	}
+	return strings.Contains(def, "'"+action+"'")
 }
 
 // fkDeleteAction returns the confdeltype of the named foreign key constraint ('r'=RESTRICT,

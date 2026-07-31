@@ -981,6 +981,60 @@ Defects 2 and 3 are the same class the brief warned about (*"a test that cannot 
 arriving in the rewrite that was supposed to prevent it — recorded because the first draft of this
 document contained them.
 
+### 8.5 G3 closeout — §8.1's criteria 12-19, verified against the real commit
+
+Migrations `0029`-`0034` (`byosmtp_0029_create_user_settings` through
+`byosmtp_0034_account_events_action_widen`) land the five new tables + the `account_events` CHECK
+widen. Each criterion below is checked against the real tree/run, not asserted:
+
+12. **Explicit grants.** `information_schema.role_table_grants` confirms `byosmtp_module` holds
+    `DELETE,INSERT,SELECT,UPDATE` on all five new tables. `TestGrantsInvariant` +
+    `TestGrantsInvariant_AntiVacuity` pass with `mustHave` widened to the full 13-table set.
+13. **`accountConsume`/`userHasEligible`** both gained `AND a.deleted_at IS NULL` in the identical
+    position (kept byte-for-byte in sync, per the file's own "IDENTICAL predicate" comment).
+    `userRoutingStrategy` reads `byosmtp.user_settings` for real (a `pgx.ErrNoRows` fallback to
+    `'round_robin'` for a user with no row, matching the table's own column default). `rrCursor`
+    was already keyed by user (confirmed unchanged from G1).
+14. **Test A**, renamed `TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes`, run directly:
+    PASS, sampler observed max 8 workers simultaneously active, `accounts_daily_sent_check` fired 0
+    times across 395 attempts, 50 successes split across 8 workers, CONFIRM phase clean.
+15. **Test B**, `TestAccountConsume_NoContentionAcrossUsers` (new file
+    `dispatch/contention_isolation_test.go`), run directly: PASS. The dispositive assertion is the
+    candidate-set selectivity read (U1={A1a,A1b}, U2={A2}, no cross-membership) — asserted BEFORE
+    any concurrency runs. The live-path sanity check separately observed max 3 workers
+    simultaneously active via the `pg_stat_activity` sampler (genuine overlap, not sequential). The
+    valid negative control (predicate weakened to `TRUE`, unmodified fixture) showed A2 correctly
+    appearing in the unscoped set; the documented-invalid control (repointing `A2.user_id`) was run
+    and observed to empty U2's set rather than share it, exactly as §5.3 predicts — both outcomes
+    recorded via `t.Logf`, not merely asserted to exist.
+16. **`TestT7_PerUserUniqueness`/`TestT12_CrossUserDuplicateIndependentCounters`** were already
+    re-keyed (G2). `TestAccountConsume_SkipsIneligibleAccounts` gained a `deleted_at` case seeded
+    WITH full headroom (not an already-ineligible account, per §5.4's own anti-vacuity note) plus a
+    positive control: the account is undeleted, every other account is driven out of contention, and
+    the sole remaining eligible row is asserted to be the recovered one.
+17. **`accounts_user_fk` RESTRICT** asserted by new test `TestT17_AccountsUserFKRestrict`
+    (`tests/harness/phase1_crypto_roles_test.go`): negative (delete refused while an account exists,
+    row survives) + positive control (delete succeeds once the account is gone). `run.sh:136`'s
+    description already read `accounts_user_fk RESTRICT` (fixed during G1/G2); no further edit
+    needed.
+18. **Rule 9 lock-order check, stated here per the criterion's own requirement:** no lock moved.
+    The only WHERE-clause change (`AND a.deleted_at IS NULL` in `accountConsume`/`userHasEligible`)
+    adds no new lock acquisition — the pre-existing `FOR UPDATE SKIP LOCKED` in the consume CTE is
+    unchanged. `userRoutingStrategy`'s new `byosmtp.user_settings` read is a plain `SELECT`, no `FOR
+    UPDATE`, so it never participates in account→job lock ordering at all. ADR-0010's enumerated
+    both-locking paths are unaffected; no new race test was needed because no new race exists.
+19. **Config-ordering invariants** — `internal/dispatch/config.go` was not touched by G3; the two
+    invariants (`smtp_operation_timeout_sec < job_max_processing_time_sec`,
+    `box_outcome_buffer_ttl_sec >= startup_reconnect_window_sec`) are enforced exactly as before,
+    confirmed by re-running the full harness (which includes the config-ordering behavioral tests)
+    green.
+
+**Verified together:** clean-slate reset (`0000`→`0034`), full harness 56/56, all six CI gates
+green, `TestRunnerLifecycle`'s up/idempotent-up/down-to-`0000` cycle covering `0034` explicitly.
+`runner_integration_test.go`'s `wantChain` (now 35 entries), the owner-assertion table list, and
+per-migration up/down anti-vacuity checks for `0029`-`0034` were added in the same commit as the
+migrations themselves.
+
 ---
 
 ## 9. What this phase does NOT touch

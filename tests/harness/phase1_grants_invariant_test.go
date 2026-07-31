@@ -60,8 +60,10 @@ func TestGrantsInvariant(t *testing.T) {
 	// meaningless. Assert the known set is present (a superset check — later phases add more).
 	// "pools" removed at G2 (Docs/phase-2-strip-shared-pool.md §5.1/§8.1 criterion 10) — the table
 	// is dropped by 0028. G3 adds campaigns/notifications/user_config_overrides/user_settings/
-	// user_suspensions to this list in its own migration commit.
-	mustHave := []string{"account_events", "accounts", "boxes", "config", "job_events", "jobs", "schema_migrations", "send_logs"}
+	// user_suspensions (0029-0033), landed here in the same commit as their migrations.
+	mustHave := []string{"account_events", "accounts", "boxes", "campaigns", "config", "job_events",
+		"jobs", "notifications", "schema_migrations", "send_logs", "user_config_overrides",
+		"user_settings", "user_suspensions"}
 	present := map[string]bool{}
 	for _, tn := range tables {
 		present[tn] = true

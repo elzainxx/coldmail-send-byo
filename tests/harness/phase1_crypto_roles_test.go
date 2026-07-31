@@ -497,6 +497,58 @@ func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 	}
 }
 
+// TestT17_AccountsUserFKRestrict — G3 (Docs/phase-2-strip-shared-pool.md §8.1 criterion 17,
+// M3-P1-OD-12): accounts_user_fk was re-keyed from CASCADE to RESTRICT at G2's 0027, restoring
+// DELIBERATELY the tenant-erasure guard the inherited pools_user_fk enforced accidentally.
+// Without this the erasure sequence "accounts -> pools -> user" would have silently collapsed to
+// a one-statement DELETE FROM public.users that destroys job_events rows outright the moment
+// pools left the tree (ADR-0012, Docs/future-work.md FW-M3-2's audit-asymmetry entry).
+//
+// Positive control (Rule 3): the SAME user, once their account is gone, deletes cleanly — proving
+// RESTRICT is scoped to "an account still exists," not a blanket refusal that would make the
+// negative case meaningless.
+func TestT17_AccountsUserFKRestrict(t *testing.T) {
+	adminDSN := AdminDSN(t)
+	template := requireTemplate(t)
+	ctx := context.Background()
+
+	cloneDSN, cleanup := CloneDB(t, adminDSN, template, "t17restrict")
+	defer cleanup()
+
+	c := Connect(t, cloneDSN)
+	uid := SeedUser(t, c, "t17@example.com")
+	acctID := insertAccount(t, c, uid, []byte("ct"), "k1", []byte("nonce"))
+
+	// Negative: an account still references this user -> RESTRICT refuses the delete.
+	_, err := c.Exec(ctx, `DELETE FROM public.users WHERE id = $1`, uid)
+	if err == nil {
+		t.Fatalf("DELETE FROM public.users succeeded while account %s still references it — accounts_user_fk RESTRICT did not fire", acctID)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "23503") && !strings.Contains(msg, "foreign key") && !strings.Contains(msg, "violates") {
+		t.Fatalf("DELETE FROM public.users failed with an unexpected error (want an FK violation): %v", err)
+	}
+
+	// Confirm the row survived the refused delete (RESTRICT rejects the whole statement, not a
+	// partial no-op — a broken implementation could otherwise "refuse" by silently doing nothing
+	// useful while still reporting success).
+	var stillThere bool
+	if err := c.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.users WHERE id = $1)`, uid).Scan(&stillThere); err != nil {
+		t.Fatalf("check user survived: %v", err)
+	}
+	if !stillThere {
+		t.Fatalf("public.users row for %s is gone despite the refused DELETE — RESTRICT reported an error but the row was removed anyway", uid)
+	}
+
+	// Positive control: remove the account, THEN the same user-delete succeeds cleanly.
+	if _, err := c.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id = $1`, acctID); err != nil {
+		t.Fatalf("delete account (positive-control setup): %v", err)
+	}
+	if _, err := c.Exec(ctx, `DELETE FROM public.users WHERE id = $1`, uid); err != nil {
+		t.Fatalf("DELETE FROM public.users failed AFTER its only account was removed — RESTRICT should have cleared: %v", err)
+	}
+}
+
 // --- helpers (crypto/roles) ---
 
 func insertAccount(t *testing.T, c *pgx.Conn, userID string, ct []byte, keyID string, nonce []byte) string {
