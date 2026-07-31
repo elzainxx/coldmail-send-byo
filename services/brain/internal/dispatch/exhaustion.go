@@ -21,42 +21,42 @@ const (
 	verdictFail                      // resolved non-empty chain, ALL terminal_blocked — fail the ready jobs
 )
 
-// evaluateChain classifies a user's resolved pool chain into the §5.1 verdict. Order (first match):
-//  1. ∃ eligible account            → CLAIM (not exhausted).
-//  2. chain is EMPTY/unresolvable    → WAIT (§5.1 P5-4b: a config gap — e.g. default_shared_pool_id
-//     unset — is NOT a pool exhaustion; ordered BEFORE the fail branch so it can never fall through).
-//  3. ∃ self_recovering account      → WAIT (a reset/throttle timer will re-open it automatically).
-//  4. else (non-empty, all terminal_blocked) → FAIL.
+// evaluateChain classifies a user's account set into the §5.1 verdict. Order (first match):
+//  1. ∃ eligible account             → CLAIM (not exhausted).
+//  2. the user has NO accounts at all → WAIT (re-keyed from "chain is empty/unresolvable" —
+//     Docs/phase-2-strip-shared-pool.md §2.3: with pools gone there is no config gap that can
+//     empty the account set, but a user simply having zero accounts is the same condition with the
+//     same correct answer. Ordered BEFORE the fail branch so it can never fall through).
+//  3. ∃ self_recovering account       → WAIT (a reset/throttle timer will re-open it automatically).
+//  4. else (≥1 account, all terminal_blocked) → FAIL.
 //
-// The eligibility test reuses poolHasEligible (the IDENTICAL predicate the consume uses), so "is
+// The eligibility test reuses userHasEligible (the IDENTICAL predicate the consume uses), so "is
 // there an eligible account" can never drift from the real selection logic. self_recovering vs
 // terminal_blocked is a cheap follow-up classification of the same accounts.
 func (d *Dispatcher) evaluateChain(ctx context.Context, userID string, cfg Config) (chainVerdict, error) {
-	pools, err := d.resolvePoolChain(ctx, userID, cfg)
+	// (2) Zero accounts at all → WAIT, never FAIL (re-keyed empty-chain branch, §2.3). Checked
+	// first, mirroring the inherited order where the empty-chain check preceded the eligibility
+	// loop — a user with no accounts has nothing to check eligibility against.
+	hasAny, err := d.userHasAnyAccount(ctx, userID)
 	if err != nil {
 		return verdictWait, err
 	}
-	// (2) Empty/unresolvable chain → WAIT. Checked first-among-non-eligible so a config gap NEVER
-	// fails a job (§5.1 P5-4b; preserves Phase 4 §4.3 shared_pool_not_configured). resolvePoolChain
-	// already emitted the throttled diagnostic when the chain is empty.
-	if len(pools) == 0 {
+	if !hasAny {
 		return verdictWait, nil
 	}
 
-	// (1) Any eligible account across the chain → CLAIM.
-	for _, poolID := range pools {
-		ok, err := d.poolHasEligible(ctx, poolID, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
-		if err != nil {
-			return verdictWait, err
-		}
-		if ok {
-			return verdictClaim, nil
-		}
+	// (1) Any eligible account → CLAIM.
+	ok, err := d.userHasEligible(ctx, userID, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
+	if err != nil {
+		return verdictWait, err
+	}
+	if ok {
+		return verdictClaim, nil
 	}
 
-	// No eligible account anywhere in a non-empty chain. Classify: is ANY account self-recovering?
+	// No eligible account, but the user has ≥1. Classify: is ANY account self-recovering?
 	// (3) self_recovering → WAIT; (4) else all terminal_blocked → FAIL.
-	selfRecovering, err := d.chainHasSelfRecovering(ctx, pools, cfg)
+	selfRecovering, err := d.userHasSelfRecovering(ctx, userID, cfg)
 	if err != nil {
 		return verdictWait, err
 	}
@@ -66,8 +66,22 @@ func (d *Dispatcher) evaluateChain(ctx context.Context, userID string, cfg Confi
 	return verdictFail, nil
 }
 
-// chainHasSelfRecovering reports whether ANY account across the chain's pools is self_recovering
-// (§5.1): NOT eligible now, but an AUTOMATIC process will make it eligible —
+// userHasAnyAccount reports whether userID owns at least one account row, regardless of
+// eligibility (§2.3's re-keyed empty-chain check).
+func (d *Dispatcher) userHasAnyAccount(ctx context.Context, userID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var exists bool
+	if err := d.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE user_id = $1)`, userID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// userHasSelfRecovering reports whether ANY of userID's accounts is self_recovering (§5.1,
+// re-keyed from chainHasSelfRecovering's pool-array param to a single userID — §2.3): NOT eligible
+// now, but an AUTOMATIC process will make it eligible —
 //   - paused with pause_reason='daily_limit'   (clears at the daily reset), OR
 //   - at the daily limit on the CURRENT cycle  (clears at the daily reset), OR
 //   - paused with pause_reason='throttle' whose window has NOT yet expired (clears at the throttle
@@ -77,11 +91,11 @@ func (d *Dispatcher) evaluateChain(ctx context.Context, userID string, cfg Confi
 // only) and does NOT count as self_recovering. A stale daily_limit-paused / at-limit account also
 // self-recovers (the lazy reset re-opens it) — but if its reset day is already past it would be
 // eligible (handled by the CLAIM branch), so here we scope to the current cycle.
-func (d *Dispatcher) chainHasSelfRecovering(ctx context.Context, pools []string, cfg Config) (bool, error) {
+func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, cfg Config) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	// One query across the whole chain (pools = the resolved id list). An account is self_recovering
-	// iff it is not quarantined/disabled AND (daily_limit-paused OR at-limit-this-cycle OR
+	// One query across the user's whole account set. An account is self_recovering iff it is not
+	// quarantined/disabled AND (daily_limit-paused OR at-limit-this-cycle OR
 	// throttle-paused-still-in-window). Manual pauses and quarantine/disable are excluded → they are
 	// terminal_blocked. today_in_tz uses the config daily-reset tz to match the eligibility notion.
 	const q = `
@@ -89,7 +103,7 @@ WITH today_calc AS (SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $2)::d
 SELECT EXISTS (
   SELECT 1
   FROM byosmtp.accounts a, today_calc
-  WHERE a.pool_id = ANY($1)
+  WHERE a.user_id = $1
     AND a.quarantined = FALSE
     AND a.disabled = FALSE
     AND (
@@ -106,7 +120,7 @@ SELECT EXISTS (
         )
 )`
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, pools, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds, cfg.DailyResetHour).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, q, userID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds, cfg.DailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

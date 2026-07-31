@@ -105,40 +105,15 @@ func TestExhaustion_SelfRecoveringWaits(t *testing.T) {
 	}
 }
 
-// TestExhaustion_EmptyChainWaits (T6, P5-4b) — a base user whose default_shared_pool_id is UNSET
-// has an EMPTY resolved chain; its job WAITS (stays queued, no fail), never failing over a config
-// gap. Then setting the pool lets it dispatch — proving the empty-chain branch is WAIT, not FAIL.
-func TestExhaustion_EmptyChainWaits(t *testing.T) {
-	e := newDispatchEnv(t, "exhaustempty")
-	ctx := context.Background()
-	// Seed a healthy shared pool + account but do NOT set it as default_shared_pool_id, so a base
-	// user's chain resolves to empty (§4.3). seedPool sets the default; use the lower-level seeders.
-	pool := e.seedSharedPool(t, "empties")
-	e.seedAccount(t, pool, "sec")
-	e.clearDefaultSharedPool(t) // ensure unset
-
-	job := e.seedQueuedJob(t, "e@example.com")
-	for i := 0; i < 3; i++ {
-		if _, _, err := e.d.Tick(ctx); err != nil {
-			t.Fatalf("tick %d: %v", i, err)
-		}
-	}
-	if s := e.jobStateStr(t, job); s != "queued" {
-		t.Fatalf("job state=%s, want queued (empty/unconfigured chain → WAIT, never fail §5.1 P5-4b)", s)
-	}
-	if n := e.eventCount(t, job); n != 1 {
-		t.Fatalf("job_events=%d on empty-chain wait, want 1 (genesis only, no churn)", n)
-	}
-
-	// Now configure the default shared pool → the SAME job dispatches (never re-enqueued).
-	e.setDefaultSharedPool(t, pool)
-	if _, err := e.d.TryDispatch(ctx); err != nil {
-		t.Fatalf("dispatch after config: %v", err)
-	}
-	if s := e.jobStateStr(t, job); s != "sending" && s != "sent" {
-		t.Fatalf("job state=%s after setting default pool, want sending/sent (recovered via config)", s)
-	}
-}
+// TestExhaustion_EmptyChainWaits is DELETED in G1 (Docs/phase-2-strip-shared-pool.md §4.1's
+// DELETE bucket: "the subject matter is gone" — a Phase 1 §2.1 inventory gap, same class as the
+// credential_test.go helper §4.4 flags). Its claim was "an account can EXIST yet be structurally
+// unreachable because a config key (default_shared_pool_id) is unset" — exactly the pool-era
+// config-gap defect exhaustion.go §2.3 removes: with pools gone there is no config key standing
+// between a user and their own accounts, so this scenario cannot be constructed anymore. The
+// surviving claim this test also carried — "a user with zero eligible routes WAITS, never FAILs"
+// — is re-keyed to "zero accounts" (exhaustion.go's userHasAnyAccount) and is still covered, via
+// Tick, by TestFairness_PreClaimGate_UnconfiguredSharedPoolNoChurn.
 
 // TestExhaustion_EligiblePresentClaimsNotFails (T6 anti-vacuity) — with an eligible account
 // present alongside terminal_blocked ones, the job CLAIMS (dispatches), never fails. Proves FAIL

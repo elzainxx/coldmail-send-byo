@@ -17,9 +17,9 @@ import (
 func TestPanicSwitch_HaltsClaimAndPush_ZeroLoss(t *testing.T) {
 	e := newDispatchEnv(t, "panicswitch")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
 	userA := e.seedUser(t, "panicswitch-a@tenant.example")
+	pool := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	e.seedAccountForUser(t, userA, pool, "sec")
 	job := e.seedQueuedJobFor(t, userA, "ps@example.com")
 
 	e.setConfigBool(t, "dispatch_enabled", false)

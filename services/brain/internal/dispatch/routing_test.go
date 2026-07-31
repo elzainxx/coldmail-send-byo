@@ -11,6 +11,39 @@ import (
 	"testing"
 )
 
+// userConsumeRoundRobin/userConsumeWithStrategy replicate what the deleted consumeFromPool did
+// (strategy lookup + cursor read/write + accountConsume), now keyed by userID instead of poolID —
+// consumeFromPool itself is gone in G1 (Docs/phase-2-strip-shared-pool.md §3.1 collapses it into
+// selectAccountForJob, which takes a full claimedJob rather than a bare id). These test helpers
+// let the routing-strategy suite keep driving the consume directly, one strategy at a time,
+// without going through the claim path. Same-package whitebox test, so touching d.rrMu/d.rrCursor
+// directly is the same access selectAccountForJob itself has.
+func (e *dispatchEnv) userConsumeWithStrategy(ctx context.Context, userID, strategy string) (selectedAccount, bool, error) {
+	orderBy, needsCursor := accountOrderByForStrategy(strategy)
+	var cursor *string
+	if needsCursor {
+		e.d.rrMu.Lock()
+		if c, ok := e.d.rrCursor[userID]; ok {
+			cursor = &c
+		}
+		e.d.rrMu.Unlock()
+	}
+	acct, ok, err := e.d.accountConsume(ctx, userID, orderBy, cursor, "UTC", 0, 900)
+	if err != nil || !ok {
+		return selectedAccount{}, false, err
+	}
+	if needsCursor {
+		e.d.rrMu.Lock()
+		e.d.rrCursor[userID] = acct.id
+		e.d.rrMu.Unlock()
+	}
+	return acct, true, nil
+}
+
+func (e *dispatchEnv) userConsumeRoundRobin(ctx context.Context, userID string) (selectedAccount, bool, error) {
+	return e.userConsumeWithStrategy(ctx, userID, "round_robin")
+}
+
 // TestRouting_RoundRobin — 4 healthy accounts, 40 consumes, ≥1 concurrent-safe: each account used
 // close to 10 times (max-min <= 1, i.e. exactly even since this is sequential — a concurrency
 // tolerance is not needed for a single-threaded drain). Anti-vacuity: sequence approximates a
@@ -28,9 +61,9 @@ func TestRouting_RoundRobin(t *testing.T) {
 	var lastAcct string
 	backToBack := 0
 	for i := 0; i < 40; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
+		a, ok, err := e.userConsumeRoundRobin(context.Background(), systemUserID)
 		if err != nil {
-			t.Fatalf("consumeFromPool: %v", err)
+			t.Fatalf("consume: %v", err)
 		}
 		if !ok {
 			t.Fatalf("consume %d found nothing (want a healthy account)", i)
@@ -51,33 +84,37 @@ func TestRouting_RoundRobin(t *testing.T) {
 	}
 }
 
-// TestRouting_RoundRobin_CursorSurvivesAcrossPools — the round_robin cursor is PER-POOL: two
-// separate round_robin pools each cycle independently (advancing one must not perturb the other).
-func TestRouting_RoundRobin_CursorSurvivesAcrossPools(t *testing.T) {
-	e := newDispatchEnv(t, "rrpools")
-	poolA := e.seedPoolWithStrategy(t, "round_robin")
-	poolB := e.seedPoolWithStrategy(t, "round_robin")
-	a1 := e.seedAccount(t, poolA, "sec")
+// TestRouting_RoundRobin_CursorSurvivesAcrossUsers — the round_robin cursor is PER-USER (re-keyed
+// from per-pool in G1, since accountConsume/the cursor map are re-keyed on user_id —
+// Docs/phase-2-strip-shared-pool.md §3.4): two users' cursors cycle independently (advancing one
+// must not perturb the other).
+func TestRouting_RoundRobin_CursorSurvivesAcrossUsers(t *testing.T) {
+	e := newDispatchEnv(t, "rrusers")
+	poolA := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	poolB := e.seedPool(t)
+	userA := "11111111-1111-1111-1111-111111111111"
+	userB := "22222222-2222-2222-2222-222222222222"
+	a1 := e.seedAccountForUser(t, userA, poolA, "sec")
 	e.setAccountDailyState(t, a1, 1000, 0, todayUTC(), false, nil)
-	a2 := e.seedAccount(t, poolA, "sec")
+	a2 := e.seedAccountForUser(t, userA, poolA, "sec")
 	e.setAccountDailyState(t, a2, 1000, 0, todayUTC(), false, nil)
-	b1 := e.seedAccount(t, poolB, "sec")
+	b1 := e.seedAccountForUser(t, userB, poolB, "sec")
 	e.setAccountDailyState(t, b1, 1000, 0, todayUTC(), false, nil)
 
-	// Consume from A twice (cycles a1,a2) then from B once — B must still see b1 (its own pool's
-	// cursor is untouched by A's activity).
-	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 0, 900); err != nil || !ok {
+	// Consume from A twice (cycles a1,a2) then from B once — B must still see b1 (its own cursor is
+	// untouched by A's activity).
+	if _, ok, err := e.userConsumeRoundRobin(context.Background(), userA); err != nil || !ok {
 		t.Fatalf("consume A#1: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := e.d.consumeFromPool(context.Background(), poolA, "UTC", 0, 900); err != nil || !ok {
+	if _, ok, err := e.userConsumeRoundRobin(context.Background(), userA); err != nil || !ok {
 		t.Fatalf("consume A#2: ok=%v err=%v", ok, err)
 	}
-	got, ok, err := e.d.consumeFromPool(context.Background(), poolB, "UTC", 0, 900)
+	got, ok, err := e.userConsumeRoundRobin(context.Background(), userB)
 	if err != nil || !ok {
 		t.Fatalf("consume B#1: ok=%v err=%v", ok, err)
 	}
 	if got.id != b1 {
-		t.Fatalf("pool B's first consume got %s, want its only account %s — pool A's cursor bled into pool B", got.id, b1)
+		t.Fatalf("user B's first consume got %s, want its only account %s — user A's cursor bled into user B", got.id, b1)
 	}
 }
 
@@ -97,9 +134,9 @@ func TestRouting_OneByOne(t *testing.T) {
 
 	var sequence []string
 	for i := 0; i < 25; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
+		a, ok, err := e.userConsumeWithStrategy(context.Background(), systemUserID, "one_by_one")
 		if err != nil {
-			t.Fatalf("consumeFromPool: %v", err)
+			t.Fatalf("consume: %v", err)
 		}
 		if !ok {
 			t.Fatalf("consume %d found nothing (want 25 total capacity across both accounts)", i)
@@ -159,9 +196,9 @@ func TestRouting_Random(t *testing.T) {
 
 	counts := map[string]int{}
 	for i := 0; i < 500; i++ {
-		a, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
+		a, ok, err := e.userConsumeWithStrategy(context.Background(), systemUserID, "random")
 		if err != nil {
-			t.Fatalf("consumeFromPool: %v", err)
+			t.Fatalf("consume: %v", err)
 		}
 		if !ok {
 			t.Fatalf("consume %d found nothing", i)
@@ -183,58 +220,12 @@ func TestRouting_Random(t *testing.T) {
 	}
 }
 
-// TestRouting_StrategyReadFromPoolColumn — the strategy actually used is whatever the POOL's
-// routing_strategy column says, not a hardcoded default: seed the SAME two accounts under
-// one_by_one, drain account A to its limit, then flip the pool to round_robin and confirm B (the
-// only remaining eligible account) is now reachable via the round_robin path too (a smoke check
-// that consumeFromPool re-reads the column every time, not a cached value).
-func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
-	e := newDispatchEnv(t, "stratswitch")
-	pool := e.seedPoolWithStrategy(t, "one_by_one")
-	x := e.seedAccount(t, pool, "sec")
-	y := e.seedAccount(t, pool, "sec")
-	// The deterministic id-ASC tiebreak (P4-OD-1) always picks the LOWER id first under
-	// one_by_one — never assume creation order == id order. Give the lower-id account (the
-	// guaranteed leader) the small limit so it exhausts, then the other becomes eligible.
-	leader, other := x, y
-	if y < x {
-		leader, other = y, x
-	}
-	e.setAccountDailyState(t, leader, 1, 0, todayUTC(), false, nil)
-	e.setAccountDailyState(t, other, 1000, 0, todayUTC(), false, nil)
-
-	// Exhaust the leader under one_by_one (deterministic — no RANDOM() tiebreak, P4-OD-1).
-	for i := 0; i < 3; i++ {
-		var full bool
-		if err := e.admin.QueryRow(context.Background(),
-			`SELECT daily_sent_count >= daily_limit FROM byosmtp.accounts WHERE id=$1`, leader).Scan(&full); err != nil {
-			t.Fatalf("check leader: %v", err)
-		}
-		if full {
-			break
-		}
-		if _, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900); err != nil || !ok {
-			t.Fatalf("drain consume %d: ok=%v err=%v", i, ok, err)
-		}
-	}
-	var leaderFull bool
-	if err := e.admin.QueryRow(context.Background(),
-		`SELECT daily_sent_count >= daily_limit FROM byosmtp.accounts WHERE id=$1`, leader).Scan(&leaderFull); err != nil {
-		t.Fatalf("check leader final: %v", err)
-	}
-	if !leaderFull {
-		t.Fatal("the leader account never reached its limit — test setup broken")
-	}
-
-	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE byosmtp.pools SET routing_strategy='round_robin' WHERE id=$1`, pool); err != nil {
-		t.Fatalf("flip strategy: %v", err)
-	}
-	got, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)
-	if err != nil {
-		t.Fatalf("consumeFromPool after flip: %v", err)
-	}
-	if !ok || got.id != other {
-		t.Fatalf("after flipping to round_robin, consume ok=%v got=%v, want the only eligible account %s", ok, got.id, other)
-	}
-}
+// TestRouting_StrategyReadFromPoolColumn is DELETED in G1, not carried forward as a fixture-only
+// rewrite (Docs/phase-2-strip-shared-pool.md §4.1's DELETE bucket: "the subject matter is gone").
+// Its subject was "the strategy is read LIVE from a DB column every call, never cached" — a live
+// claim about pools.routing_strategy, which userRoutingStrategy does not read at all at G1 (it
+// returns a hardcoded constant, §3's G1 interim). The claim this test makes is therefore false
+// about the current code, not merely differently-fixtured. G3 must add the equivalent test once
+// userRoutingStrategy reads byosmtp.user_settings for real (Docs/phase-2-strip-shared-pool.md
+// §3.2 edit 3) — re-pointing at UPDATE byosmtp.user_settings SET routing_strategy=... instead of
+// UPDATE byosmtp.pools.

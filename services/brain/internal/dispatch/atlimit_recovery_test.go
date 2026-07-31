@@ -36,26 +36,30 @@ import (
 func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 	e := newDispatchEnv(t, "atlimitrecov")
 
-	// Each shape gets its OWN pool, so "which account got consumed" is unambiguous — with both in one
-	// pool, consuming the eligible one tells us nothing about whether the other was merely outranked
-	// by the id-ASC tiebreak (P4-OD-1) rather than genuinely ineligible.
-	poolA := e.seedSharedPool(t, "atlimit-unpaused")
-	poolB := e.seedSharedPool(t, "atlimit-paused")
+	// Each shape gets its OWN user (re-keyed from "own pool" in G1 — accountConsume now filters on
+	// user_id, not pool_id, so pool-scoping no longer isolates candidate sets; see
+	// seedAccountForUser's own comment). "Which account got consumed" stays unambiguous — with both
+	// under one user, consuming the eligible one would tell us nothing about whether the other was
+	// merely outranked by the id-ASC tiebreak (P4-OD-1) rather than genuinely ineligible.
+	poolA := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	poolB := e.seedPool(t)
+	userA := "11111111-1111-1111-1111-111111111111"
+	userB := "22222222-2222-2222-2222-222222222222"
 
 	// Shape A: count == limit, NOT paused.
-	acctA := e.seedAccount(t, poolA, "shapeA")
+	acctA := e.seedAccountForUser(t, userA, poolA, "shapeA")
 	e.setAccountDailyState(t, acctA, 5, 5, todayUTC(), false, nil)
 	// Shape B: count == limit AND paused with reason daily_limit — what the capping send leaves behind.
-	acctB := e.seedAccount(t, poolB, "shapeB")
+	acctB := e.seedAccountForUser(t, userB, poolB, "shapeB")
 	e.setAccountDailyState(t, acctB, 5, 5, todayUTC(), true, strPtr("daily_limit"))
 
 	// PRECONDITION: at the same limit, BOTH are ineligible. Without this the post-raise result could
 	// be explained by shape A having been eligible all along.
 	for _, c := range []struct {
 		name string
-		pool string
-	}{{"shape A (not paused)", poolA}, {"shape B (paused)", poolB}} {
-		if _, ok, err := e.d.accountConsume(context.Background(), c.pool, defaultAccountOrderBy, nil, "UTC", 0, 900); err != nil {
+		user string
+	}{{"shape A (not paused)", userA}, {"shape B (paused)", userB}} {
+		if _, ok, err := e.d.accountConsume(context.Background(), c.user, defaultAccountOrderBy, nil, "UTC", 0, 900); err != nil {
 			t.Fatalf("precondition consume %s: %v", c.name, err)
 		} else if ok {
 			t.Fatalf("precondition: %s was consumable while at its limit — both shapes must start ineligible", c.name)
@@ -72,7 +76,7 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 		}
 	}
 
-	gotA, okA, err := e.d.accountConsume(context.Background(), poolA, defaultAccountOrderBy, nil, "UTC", 0, 900)
+	gotA, okA, err := e.d.accountConsume(context.Background(), userA, defaultAccountOrderBy, nil, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("consume shape A after raise: %v", err)
 	}
@@ -80,10 +84,10 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 		t.Fatal("shape A (at-limit, NOT paused) was still ineligible after raising daily_limit — more headroom is all the current-day branch needs; the runbook's 'raise daily_limit' advice depends on this")
 	}
 	if gotA.id != acctA {
-		t.Fatalf("consumed %s from pool A, want %s", gotA.id, acctA)
+		t.Fatalf("consumed %s for user A, want %s", gotA.id, acctA)
 	}
 
-	_, okB, err := e.d.accountConsume(context.Background(), poolB, defaultAccountOrderBy, nil, "UTC", 0, 900)
+	_, okB, err := e.d.accountConsume(context.Background(), userB, defaultAccountOrderBy, nil, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("consume shape B after raise: %v", err)
 	}
@@ -104,7 +108,7 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 		`UPDATE byosmtp.accounts SET daily_reset_day = $2::date WHERE id = $1`, acctB, yesterdayUTC()); err != nil {
 		t.Fatalf("age reset day: %v", err)
 	}
-	gotB, okB2, err := e.d.accountConsume(context.Background(), poolB, defaultAccountOrderBy, nil, "UTC", 0, 900)
+	gotB, okB2, err := e.d.accountConsume(context.Background(), userB, defaultAccountOrderBy, nil, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("consume shape B after reset: %v", err)
 	}

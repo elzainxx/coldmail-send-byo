@@ -86,12 +86,16 @@ func TestClaimForUser_RespectsGrant(t *testing.T) {
 func TestTick_ClaimsAcrossUsersAndPushes(t *testing.T) {
 	e := newDispatchEnv(t, "tickmulti")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "tick-secret")
 	e.addBox(t)
 
 	userA := e.seedUser(t, "ta@tenant.example")
 	userB := e.seedUser(t, "tb@tenant.example")
+	// Each user needs their OWN account — re-keyed from one shared-pool account in G1, since
+	// accountConsume now filters on user_id (see seedAccountForUser's comment).
+	poolA := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	poolB := e.seedPool(t)
+	e.seedAccountForUser(t, userA, poolA, "tick-secret-a")
+	e.seedAccountForUser(t, userB, poolB, "tick-secret-b")
 	jobA := e.seedQueuedJobFor(t, userA, "ta1@example.com")
 	jobB := e.seedQueuedJobFor(t, userB, "tb1@example.com")
 
@@ -125,11 +129,11 @@ func TestTick_ClaimsAcrossUsersAndPushes(t *testing.T) {
 func TestTick_NoBoxRequeuesCleanly(t *testing.T) {
 	e := newDispatchEnv(t, "tickpobox")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
 	e.px.boxID = "" // no connected box this tick
 
 	userA := e.seedUser(t, "nobox@tenant.example")
+	pool := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	e.seedAccountForUser(t, userA, pool, "sec")
 	job := e.seedQueuedJobFor(t, userA, "nb@example.com")
 
 	_, pushed, err := e.d.Tick(ctx)
@@ -157,12 +161,12 @@ func TestTick_NoBoxRequeuesCleanly(t *testing.T) {
 func TestTick_RespectsPerUserLaneCeiling(t *testing.T) {
 	e := newDispatchEnv(t, "tickceil")
 	ctx := context.Background()
-	pool := e.seedPool(t)
-	e.seedAccount(t, pool, "sec")
 	e.addBox(t)
 	e.setConfigInt(t, "concurrency_per_user_default", 2)
 
 	userA := e.seedUser(t, "ceil@tenant.example")
+	pool := e.seedPool(t) // vestigial — only satisfies accounts.pool_id NOT NULL (§2.5)
+	e.seedAccountForUser(t, userA, pool, "sec")
 	for i := 0; i < 5; i++ {
 		e.seedQueuedJobFor(t, userA, "c"+string(rune('0'+i))+"@example.com")
 	}

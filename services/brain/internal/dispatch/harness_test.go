@@ -30,6 +30,15 @@ import (
 
 const testKeyID = "cred-dek-test"
 
+// systemUserID is the reserved all-zero UUID every dispatch fixture seeds its pool/account rows
+// under (mirrors adminapi.SystemUserID; not imported directly to avoid a cross-package const
+// dependency in tests). Since G1 re-keys accountConsume/userHasEligible/consumeFromPool's filter
+// from pool_id to user_id (Docs/phase-2-strip-shared-pool.md §3.2), every direct test call to
+// those functions must pass THIS, not a pool variable — the pool id is no longer what the query
+// filters on, even though seedPool/seedAccount still create a vestigial pool row to satisfy the
+// still-NOT-NULL accounts.pool_id FK (the G1 fixture rule, §2.5).
+const systemUserID = "00000000-0000-0000-0000-000000000000"
+
 // recordingPusher is a real in-process Pusher: it records every push_job and reports a connected
 // IDLE box, honoring the Phase-3 one-job-in-flight-PER-BOX constraint. boxID is the single default
 // box (Phase 3 fixtures); extraBoxes (Chunk 1+) lets a test model several simultaneously-idle
@@ -278,6 +287,40 @@ func (e *dispatchEnv) clearDefaultSharedPool(t *testing.T) {
 		`UPDATE byosmtp.config SET value = jsonb_build_object('v', NULL) WHERE key = 'default_shared_pool_id'`); err != nil {
 		t.Fatalf("clear default_shared_pool_id: %v", err)
 	}
+}
+
+// seedAccountForUser is seedAccount with an EXPLICIT userID instead of the hardcoded system user
+// (G1 addition — Docs/phase-2-strip-shared-pool.md §4.4's class of gap: a fixture need the
+// inventory did not list). accountConsume/userHasEligible now filter on user_id (§3.2), so a test
+// needing genuine account-set ISOLATION between two fixtures — e.g. "each shape must be
+// unambiguously in its own candidate set" — cannot get that from seedAccount alone, since every
+// seedAccount call shares the one hardcoded system user regardless of which vestigial pool it's
+// filed under. poolID still satisfies the surviving accounts.pool_id NOT NULL FK (the G1 fixture
+// rule, §2.5); it is otherwise inert to eligibility from this call.
+func (e *dispatchEnv) seedAccountForUser(t *testing.T, userID, poolID, secret string) string {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := e.admin.Exec(ctx,
+		`INSERT INTO public.users (id, email, is_active) VALUES ($1::uuid, $1::text || '@ourdomain.com', true) ON CONFLICT (id) DO NOTHING`,
+		userID); err != nil {
+		t.Fatalf("seed user %s: %v", userID, err)
+	}
+	id, raw := newUUID(t)
+	ct, nonce, err := e.enc.Encrypt(raw, []byte(secret))
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	username := "u-" + id + "@ourdomain.com"
+	_, err = e.admin.Exec(ctx,
+		`INSERT INTO byosmtp.accounts
+		   (id, user_id, pool_id, smtp_host, smtp_port, smtp_username,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
+		 VALUES ($1,$7,$2,'smtp-sink',587,$6,$3,$4,$5,'u@ourdomain.com','Tester')`,
+		id, poolID, ct, testKeyID, nonce, username, userID)
+	if err != nil {
+		t.Fatalf("seed account for user: %v", err)
+	}
+	return id
 }
 
 // seedAccount seeds an eligible account in poolID with a real encrypted credential (secret). It

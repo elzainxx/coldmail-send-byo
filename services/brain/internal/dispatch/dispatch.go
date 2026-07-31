@@ -31,11 +31,12 @@ type Dispatcher struct {
 	dec *credential.Decryptor
 	px  Pusher
 
-	// rrMu/rrCursor is the in-memory per-pool round_robin account cursor (§3.1, P4-6): soft state,
-	// re-derived (reset to empty) on Brain restart — an accepted ≤one-rotation transient skew
-	// (§5.3), never load-bearing for correctness (SKIP LOCKED + accounts_daily_sent_check are).
+	// rrMu/rrCursor is the in-memory per-user round_robin account cursor (§3.1, P4-6; re-keyed from
+	// per-pool to per-user in G3 — Docs/phase-2-strip-shared-pool.md §3.4): soft state, re-derived
+	// (reset to empty) on Brain restart — an accepted ≤one-rotation transient skew (§5.3), never
+	// load-bearing for correctness (SKIP LOCKED + accounts_daily_sent_check are).
 	rrMu     sync.Mutex
-	rrCursor map[string]string // pool_id -> last-consumed account id
+	rrCursor map[string]string // user_id -> last-consumed account id
 
 	// fairMu/fairCursor is the in-memory campaign (≡ user, §8) fairness cursor (§5.1, P4-6): the
 	// user_id serviced LAST. Soft state, resets to "" (unset) on Brain restart — the same accepted

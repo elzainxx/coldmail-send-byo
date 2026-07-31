@@ -1,15 +1,18 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-07-31): ALL 81 ITEMS ARE CLOSED.** The 79 original open decisions across the build
+**Status (2026-07-31): ALL 82 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
 sweep and **ruled the same day**. The 81st,
 [M3-P0-OD-12](#m3-p0-od-12--ruled-2026-07-31-fix-it-in-phase-0-now-raised-and-closed-the-same-day),
 is a **build-time finding** raised during Phase 0's own execution (not a planning-time ruling item)
-and was **ruled and fixed the same day it was found**: fix it in Phase 0, now, rather than defer it —
-because the finding is that "clean-slate reproduction" was not actually clean-slate, and that is
-Phase 0's own exit criterion.
+and was **ruled and fixed the same day it was found**: fix it in Phase 0, now, rather than defer it,
+because the finding was that "clean-slate reproduction" was not actually clean-slate, and that is
+Phase 0's own exit criterion. The 82nd,
+[M3-P2-OD-10](#m3-p2-od-10--ruled-2026-07-31-pool-routes-stay-mounted-through-g1-healthalerting-pool-code-deferred-with-them),
+is another build-time finding, raised during G1's execution: a real gap in the gate assignment for
+both the pool admin routes and the health/alerting pool-coupled code, ruled the same day.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -391,6 +394,56 @@ over from an earlier session.
 **Registered as a fifth finding in `Docs/shared-code-manifest.md`'s bug log**, confirmed identical in
 module 2's own `.github/workflows/real-infra.yml` (same three lines, no build step) — its own
 clean-slate claim has the same hole, present and unfixed there.
+
+---
+
+## M3-P2-OD-10 — RULED 2026-07-31: pool routes stay mounted through G1; health/alerting pool code deferred with them
+
+Two findings from executing G1, both about the same underlying gap: Phase 2's gate table (§1) and
+its test-classification section (§4) never assign a gate to some of the pool-coupled surface its
+own §2.1/§8.2 inventory names.
+
+**Finding 1 — the routes.** §1's gate table assigns "all pool routes unmounted" to G1, and G1's
+exit criterion #5 requires "the full inherited suite is green." But §4.3 classifies ~150 HTTP-level
+fixture sites (most of `adminapi`'s account tests — credential handling, quarantine audit,
+lifecycle diagnosability, none of them pool-subject) as depending on `POST /v1/admin/pools` to
+seed their fixtures, and explicitly conditions that bucket on **M3-P2-OD-6**'s account-write-path
+rewrite — which the ruling places at **G2**, not G1. Confirmed in the tree: unmounting the 5 pool
+routes at G1 made 21 unrelated tests 404 immediately.
+
+**RULED: keep the pool admin routes (`pool_handlers.go`, `pool_store.go`, `pool_list_update.go`,
+and the 5 routes in `server.go`) mounted through G1.** Unmount + delete in **G2**, bundled with the
+account write-path rewrite in the same commit — the point where the fixtures stop needing pools at
+all. G1's `contract_drift` route count (16, down from 22) and the DELETE-bucket pool-route tests
+(§4.1: `TestT4_PoolOwnerRules`, `TestT5_DeletePoolWithAccounts`, `TestT6_FallbackCycleRejected`,
+`TestT13_SharedPoolRequiresSystemUser`, `TestPoolKindRequiredVsInvalid`,
+`TestPoolImmutableFieldsRejected`) move to G2 accordingly — they still pass today because their
+subject still exists.
+
+**Finding 2 — health/alerting.** §8.2's line-count table names `adminapi/health_store.go` (13
+hits), `health_alerts.go` (9), `health_handler.go` (3) as pool-coupled, and §2.1's code-dependents
+table separately lists `queryPoolHeadroom`/`queryWaitingForCapacity`/the `pool_exhausted` alert
+condition as breaking. But unlike the CRUD routes, **no section of the document assigns these three
+files to any gate at all** — not G1, not G2, not G3. They are simply never scheduled.
+
+Applying the same reasoning as Finding 1's ruling: these files are pool-coupled but not
+*dispatch-side* (G1's mechanical grep is scoped to `internal/dispatch/` symbol names and does not
+name them), they currently work correctly against the still-live `pools` table, and their own
+tests (`TestAlerts_PoolExhaustedFires`, `TestAlerts_PoolExhaustedRequiresWaitingJob`) pass today.
+Rewriting `queryWaitingForCapacity`'s `user_pools` CTE and `pool_exhausted`'s condition to be
+account-set-keyed (the `health_store.go`/`health_alerts.go` analogue of `exhaustion.go`'s
+`evaluateChain`→`userHasAnyAccount`/`userHasSelfRecovering` rewrite) is real work with its own
+anti-vacuity surface, not a mechanical rename, and forcing it into G1 under time pressure risks the
+same class of vacuous-rewrite mistake `exhaustion.go`'s own rewrite required care to avoid.
+
+**RULED (by extension of Finding 1's precedent, not separately re-asked): defer `health_store.go`,
+`health_alerts.go`, `health_handler.go`'s pool-coupled code to G2 or G3**, whichever phase's
+account-set rewrite naturally reaches them — most plausibly G3, alongside `userRoutingStrategy`
+reading `user_settings` for real, since the health/alerting rewrite needs the same "resolve this
+user's account set" primitive G3 is already building. `pool_exhausted`'s eventual re-wording to
+`accounts_exhausted` is **already** ruled for G3 by **M3-P2-OD-3** — this item is that same
+re-wording's home, extended to the code that computes the underlying count, not just the string.
+Recorded here rather than discovered mid-G2/G3 as a second surprise dependency.
 
 ---
 

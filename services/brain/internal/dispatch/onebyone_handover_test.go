@@ -74,7 +74,7 @@ func TestOneByOne_HandsOverBeforeExhaustion_WithEqualLimitControl(t *testing.T) 
 		// have written — not a hand-set number.
 		picks := make([]string, 0, 10)
 		for i := 0; i < 10; i++ {
-			got, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 0, 900)
+			got, ok, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
 			if err != nil {
 				t.Fatalf("consume %d: %v", i, err)
 			}
@@ -145,7 +145,7 @@ func TestOneByOne_HandsOverBeforeExhaustion_WithEqualLimitControl(t *testing.T) 
 
 		picks := make([]string, 0, 10)
 		for i := 0; i < 10; i++ {
-			got, ok, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 0, 900)
+			got, ok, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
 			if err != nil {
 				t.Fatalf("consume %d: %v", i, err)
 			}

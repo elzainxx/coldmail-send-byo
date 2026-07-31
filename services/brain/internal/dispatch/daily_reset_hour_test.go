@@ -49,7 +49,7 @@ func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 	e.setAccountDailyState(t, acct, 10, 10, dayAtHour23, false, nil)
 
 	// hour=23: daily_reset_day == today_in_tz(23) -> current cycle, at-limit -> INELIGIBLE.
-	has23, err := e.d.poolHasEligible(context.Background(), pool, "UTC", 23, 900)
+	has23, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 23, 900)
 	if err != nil {
 		t.Fatalf("poolHasEligible(hour=23): %v", err)
 	}
@@ -60,7 +60,7 @@ func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 	// hour=0: today_in_tz(0) is today's plain UTC date, later than today_in_tz(23) whenever the
 	// current UTC hour-of-day is < 23 (guaranteed by skipNearUTCHourBoundary) -> daily_reset_day is
 	// now STALE (< today_in_tz) -> stale-reset branch admits an unpaused account -> ELIGIBLE.
-	has0, err := e.d.poolHasEligible(context.Background(), pool, "UTC", 0, 900)
+	has0, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("poolHasEligible(hour=0): %v", err)
 	}
@@ -70,7 +70,7 @@ func TestDailyResetHour_ShiftsTheEligibilityBoundary(t *testing.T) {
 
 	// Anti-vacuity: re-checking hour=23 again is still ineligible (poolHasEligible is read-only and
 	// idempotent — the earlier flip was caused by the hour PARAMETER, not a side effect of the call).
-	has23Again, err := e.d.poolHasEligible(context.Background(), pool, "UTC", 23, 900)
+	has23Again, err := e.d.userHasEligible(context.Background(), systemUserID, "UTC", 23, 900)
 	if err != nil {
 		t.Fatalf("poolHasEligible(hour=23, recheck): %v", err)
 	}
@@ -92,7 +92,7 @@ func TestDailyResetHour_ReachesAccountConsumeAndScoreRecompute(t *testing.T) {
 	e.setAccountDailyState(t, acct, 10, 10, dayAtHour23, false, nil)
 
 	// Ineligible at hour=23 (current cycle, at-limit) — the consume must find nothing.
-	_, ok23, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 23, 900)
+	_, ok23, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 23, 900)
 	if err != nil {
 		t.Fatalf("accountConsume(hour=23): %v", err)
 	}
@@ -101,7 +101,7 @@ func TestDailyResetHour_ReachesAccountConsumeAndScoreRecompute(t *testing.T) {
 	}
 
 	// Eligible (and genuinely consumable) at hour=0, where the same row reads as stale.
-	consumed, ok0, err := e.d.accountConsume(context.Background(), pool, defaultAccountOrderBy, nil, "UTC", 0, 900)
+	consumed, ok0, err := e.d.accountConsume(context.Background(), systemUserID, defaultAccountOrderBy, nil, "UTC", 0, 900)
 	if err != nil {
 		t.Fatalf("accountConsume(hour=0): %v", err)
 	}

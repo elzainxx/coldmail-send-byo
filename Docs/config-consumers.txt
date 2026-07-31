@@ -4,7 +4,7 @@
 # cited here, or be explicitly marked RESERVED (never both silent AND passing).
 #
 # Format: key|grep-ERE-pattern-proving-consumption
-#     or: key|RESERVED
+#     or: key|RESERVED|<expiry-gate-or-phase>
 #
 # The pattern is checked by tests/harness/checks/config_consumption.sh with:
 #   grep -rlE '<pattern>' --include=*.go --include=*.js <repo root> \
@@ -16,6 +16,13 @@
 # separately) — so a key cannot be silently downgraded to RESERVED without a documented reason an
 # operator can actually read.
 #
+# RESERVED expiry (M3-P2-OD-8, ruled 2026-07-31): the third field is REQUIRED and names the
+# gate/phase by which the marker must be gone — checked against Docs/current-phase.txt. A marker
+# whose expiry has passed fails the gate, so the hatch cannot quietly become permanent. This is
+# why the two rows below carry a phase, not why they're exempt: retry_count_4xx and
+# variation_zero_width_rate_pct were both found RESERVED with no expiry by accident during a
+# Phase 9.5 review sweep, which is exactly the failure mode this field exists to close.
+#
 # Maintenance rule (mirrors the ADR-0008 grants-invariant discipline): every new seeded key gets a
 # line here in the SAME change that adds the migration — the gate fails a key with no line at all,
 # so a key can never silently ship undocumented-as-to-consumption.
@@ -24,7 +31,7 @@ daily_limit_default|resolveDailyLimit
 daily_reset_timezone|DailyResetTimezone
 daily_reset_hour|DailyResetHour
 quarantine_threshold|QuarantineThreshold
-retry_count_4xx|RESERVED
+retry_count_4xx|RESERVED|Phase 8
 dispatch_tick_interval_ms|DispatchTickIntervalMS
 send_delay_min_sec|SendDelayMinSec
 send_delay_max_sec|SendDelayMaxSec
@@ -33,7 +40,7 @@ heartbeat_interval_sec|HeartbeatIntervalSec
 heartbeat_missed_threshold|HeartbeatMissedThreshold
 job_max_processing_time_sec|JobMaxProcessingTimeSec
 debug_log_retention_days|DebugLogRetentionDays
-default_shared_pool_id|DefaultSharedPoolID
+default_shared_pool_id|RESERVED|G2
 status_score_weights|ScoreWeights
 retry_backoff_schedule|Backoff\.
 throttle_pause_seconds|ThrottlePauseSeconds
@@ -71,6 +78,6 @@ health_metrics_window_sec|health_metrics_window_sec
 brain_singleton_acquire_timeout_sec|readSingletonAcquireTimeout
 unit_price_credits|readUnitPriceCredits
 variation_comment_intensity_rates|VariationCommentIntensityRates
-variation_zero_width_rate_pct|RESERVED
+variation_zero_width_rate_pct|RESERVED|Phase 8
 variation_css_micro_params|VariationCSSMicroParams
 brain_singleton_reacquire_interval_sec|readSingletonReacquireInterval

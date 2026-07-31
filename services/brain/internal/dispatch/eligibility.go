@@ -67,8 +67,10 @@ func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor boo
 }
 
 // accountConsumeQueryTmpl is the atomic consume (§3/§7), the locked Phase 1 draft-05 UPDATE reused
-// VERBATIM except for the bound pool_id ($2) and the caller-supplied ORDER BY (%s — an internal,
-// code-controlled string, NEVER user input; see accountOrderBy call sites). It performs the LAZY
+// VERBATIM except for the bound user_id ($2, re-keyed from pool_id in G2 — Docs/phase-2 §3.2 edit
+// 1; accounts.user_id already exists (sender_0005) and is already correctly populated, so this
+// re-key needs no migration) and the caller-supplied ORDER BY (%s — an internal, code-controlled
+// string, NEVER user input; see accountOrderBy call sites). It performs the LAZY
 // daily-reset self-heal (§2.1): a stale daily_reset_day is treated as 0 and reset in the SAME
 // UPDATE, and a pause_reason='daily_limit' pause self-clears on the stale-day branch ONLY — a
 // 'manual' pause is never admitted this way.
@@ -104,7 +106,7 @@ eligible_accounts AS (
     SELECT a.id,
            (a.paused = TRUE AND a.pause_reason = 'throttle') AS was_throttle
     FROM byosmtp.accounts a, today_calc
-    WHERE a.pool_id = $2
+    WHERE a.user_id = $2
       AND ($3::uuid IS NULL OR $3::uuid IS NOT NULL) -- always true; keeps $3 (the optional
                                                         -- round_robin cursor) bound for every
                                                         -- strategy, since Postgres' extended query
@@ -185,36 +187,14 @@ SELECT id, smtp_host, smtp_port, smtp_username, from_address, from_name,
        credential_ciphertext, credential_nonce, credential_key_id
 FROM consumed`
 
-// selectAccountForJob resolves the job's pool chain (§4.2, RESOLVE_POOL_CHAIN — dedicated-first,
-// shared fallback) and atomically consumes the first eligible account found, trying pools in
-// order, using EACH pool's own routing_strategy (§3). An empty chain (no dedicated pool AND no
-// resolvable shared target — e.g. default_shared_pool_id unset/invalid, §4.3) is a clean "not
-// found," never an error: the caller requeues, and the job stays legally claimable. cfg is the
-// caller's ALREADY-LOADED config (Tick loads it once per cycle, §0 OD-14 only requires per-tick
-// freshness) — this avoids re-reading all of byosmtp.config once per claimed job.
+// selectAccountForJob resolves the job's routing strategy and atomically consumes the first
+// eligible account in the job's owner's account set. No chain, no loop, no fallback — collapsed
+// from the pre-Phase-2 three-layer resolution (chain → pool loop → per-pool consume) to one layer,
+// per Docs/phase-2-strip-shared-pool.md §3.1. cfg is the caller's ALREADY-LOADED config (Tick loads
+// it once per cycle, §0 OD-14 only requires per-tick freshness) — this avoids re-reading all of
+// byosmtp.config once per claimed job.
 func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cfg Config) (selectedAccount, bool, error) {
-	pools, err := d.resolvePoolChain(ctx, job.userID, cfg)
-	if err != nil {
-		return selectedAccount{}, false, err
-	}
-	for _, pool := range pools {
-		acct, ok, err := d.consumeFromPool(ctx, pool, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
-		if err != nil {
-			return selectedAccount{}, false, err
-		}
-		if ok {
-			return acct, true, nil
-		}
-	}
-	return selectedAccount{}, false, nil
-}
-
-// consumeFromPool resolves poolID's routing_strategy, builds the matching ORDER BY + cursor
-// (§3/§3.1), runs the atomic consume, and — on success under round_robin — advances that pool's
-// in-memory cursor to the consumed account's id (under rrMu, §3.1's "on success, under a per-pool
-// mutex" step). A non-round_robin strategy's cursor argument is nil and no cursor is ever written.
-func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
-	strategy, err := d.poolRoutingStrategy(ctx, poolID)
+	strategy, err := d.userRoutingStrategy(ctx, job.userID)
 	if err != nil {
 		return selectedAccount{}, false, err
 	}
@@ -223,49 +203,49 @@ func (d *Dispatcher) consumeFromPool(ctx context.Context, poolID, dailyResetTime
 	var cursor *string
 	if needsCursor {
 		d.rrMu.Lock()
-		if c, ok := d.rrCursor[poolID]; ok {
+		if c, ok := d.rrCursor[job.userID]; ok {
 			cursor = &c
 		}
 		d.rrMu.Unlock()
 	}
 
-	acct, ok, err := d.accountConsume(ctx, poolID, orderBy, cursor, dailyResetTimezone, dailyResetHour, throttlePauseSeconds)
+	acct, ok, err := d.accountConsume(ctx, job.userID, orderBy, cursor, cfg.DailyResetTimezone, cfg.DailyResetHour, cfg.ThrottlePauseSeconds)
 	if err != nil || !ok {
 		return selectedAccount{}, false, err
 	}
 	if needsCursor {
 		d.rrMu.Lock()
-		d.rrCursor[poolID] = acct.id
+		d.rrCursor[job.userID] = acct.id
 		d.rrMu.Unlock()
 	}
 	return acct, true, nil
 }
 
-// poolRoutingStrategy reads one pool's routing_strategy column (§3).
-func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var strategy string
-	if err := d.db.QueryRow(ctx,
-		`SELECT routing_strategy::text FROM byosmtp.pools WHERE id = $1`, poolID).Scan(&strategy); err != nil {
-		return "", err
-	}
-	return strategy, nil
+// userRoutingStrategy resolves a user's routing strategy (§3). G1 interim: byosmtp.user_settings
+// (the eventual per-user home, Phase 1 §3.1/§4.1) does not exist until G3's 0029 migration, and
+// this gate ships no migration (Docs/phase-2-strip-shared-pool.md §1.1: "G1 must not contain a
+// migration"). Routing strategy is therefore the single inherited locked default (round_robin,
+// sender_0004:20) for every user until G3 wires the per-user override. accountOrderByForStrategy
+// and the three ORDER BY templates are unchanged — only the per-user lookup is deferred. G3 must
+// replace this function's body to read byosmtp.user_settings; it must not gain a pool reference in
+// the meantime, and it does not: the strategy source here is a compile-time constant, not a query.
+func (d *Dispatcher) userRoutingStrategy(ctx context.Context, userID string) (string, error) {
+	return "round_robin", nil
 }
 
-// accountConsume runs the atomic consume against ONE pool, using orderBy as the strategy ordering
-// (a fixed, code-controlled SQL fragment — never user input) and cursor as the optional
-// round_robin cursor bound ($3, nullable; ignored by strategies whose ORDER BY doesn't reference
-// it). It is its OWN transaction (distinct from claim/markSending), matching §7.2 ("job-claim and
-// account-consume are separate transactions"). Returns (account, found, err); found=false means
-// the pool is exhausted/unhealthy by the §4.1 predicate (zero eligible accounts) — the caller
-// tries the next pool in the chain or requeues.
-func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string, cursor *string, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
+// accountConsume runs the atomic consume against ONE user's account set, using orderBy as the
+// strategy ordering (a fixed, code-controlled SQL fragment — never user input) and cursor as the
+// optional round_robin cursor bound ($3, nullable; ignored by strategies whose ORDER BY doesn't
+// reference it). It is its OWN transaction (distinct from claim/markSending), matching §7.2
+// ("job-claim and account-consume are separate transactions"). Returns (account, found, err);
+// found=false means the user's account set is exhausted/unhealthy by the §4.1 predicate (zero
+// eligible accounts) — the caller requeues.
+func (d *Dispatcher) accountConsume(ctx context.Context, userID, orderBy string, cursor *string, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	query := accountConsumeQuery(orderBy)
 	var a selectedAccount
-	err := d.db.QueryRow(ctx, query, dailyResetTimezone, poolID, cursor, throttlePauseSeconds, dailyResetHour).Scan(
+	err := d.db.QueryRow(ctx, query, dailyResetTimezone, userID, cursor, throttlePauseSeconds, dailyResetHour).Scan(
 		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
 		&a.ciphertext, &a.nonce, &a.keyID)
 	if err == pgx.ErrNoRows {
@@ -277,12 +257,12 @@ func (d *Dispatcher) accountConsume(ctx context.Context, poolID, orderBy string,
 	return a, true, nil
 }
 
-// poolHasEligible is the read-only EXISTS form of the eligibility predicate (§4.1
-// POOL_HAS_ELIGIBLE), used by the pre-claim gate (Chunk 5) to test exhaustion WITHOUT consuming.
-// Defining exhaustion as "would the consume affect zero rows" via the IDENTICAL WHERE (not a
-// separately-maintained predicate) makes it impossible for the exhaustion test to drift from the
-// real selection logic.
-func (d *Dispatcher) poolHasEligible(ctx context.Context, poolID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (bool, error) {
+// userHasEligible is the read-only EXISTS form of the eligibility predicate (§4.1
+// USER_HAS_ELIGIBLE, renamed from poolHasEligible per Docs/phase-2-strip-shared-pool.md §3.1),
+// used by the pre-claim gate (Chunk 5) to test exhaustion WITHOUT consuming. Defining exhaustion as
+// "would the consume affect zero rows" via the IDENTICAL WHERE (not a separately-maintained
+// predicate) makes it impossible for the exhaustion test to drift from the real selection logic.
+func (d *Dispatcher) userHasEligible(ctx context.Context, userID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// IDENTICAL predicate to the consume's eligible_accounts CTE, incl. the P5-13 expired-throttle
@@ -296,7 +276,7 @@ SELECT EXISTS (
   )
   SELECT 1
   FROM byosmtp.accounts a, today_calc
-  WHERE a.pool_id = $2
+  WHERE a.user_id = $2
     AND a.quarantined = FALSE
     AND a.disabled = FALSE
     AND (
@@ -314,7 +294,7 @@ SELECT EXISTS (
         )
 )`
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, poolID, throttlePauseSeconds, dailyResetHour).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, userID, throttlePauseSeconds, dailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
