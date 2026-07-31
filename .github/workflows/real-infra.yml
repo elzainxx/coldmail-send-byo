@@ -24,6 +24,9 @@ jobs:
           (cd tools/provision-box && go vet ./...)
           (cd tests/harness && go vet ./...)
 
+      - name: Build the migrate runner (M3-P0-OD-12 — required by three template-DB steps in run.sh)
+        run: (cd tools/byosmtp-migrate && go build -o bin/byosmtp-migrate .)
+
       - name: Generate dev certs/secrets + provision dev box (writes .env)
         run: bash scripts/dev.sh certs
 

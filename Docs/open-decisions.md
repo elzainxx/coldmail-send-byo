@@ -1,15 +1,15 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-07-31): 80 OF 81 PLANNING/RULING ITEMS ARE CLOSED.** The 79 original open decisions
-across the build plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into
-the decision they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12
-ruled individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the
-Chunk 3 sweep and **ruled the same day**. All 80 of those are ruling-queue items and are genuinely
-empty (needs-user: 0). **[M3-P0-OD-12](#m3-p0-od-12--raised-during-phase-0-execution-2026-07-31-build-time-not-planning-time)
-is a different kind of item** — a build-time finding raised during Phase 0's actual execution, not a
-ruling that needs the user's judgment call. It is flagged (Rule 2) and assigned to a later phase, not
-"closed," because there is nothing to rule on: the disposition is already decided by CLAUDE.md's own
-rules (Phase 0 does not change inherited behavior).
+**Status (2026-07-31): ALL 81 ITEMS ARE CLOSED.** The 79 original open decisions across the build
+plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
+they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
+individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
+sweep and **ruled the same day**. The 81st,
+[M3-P0-OD-12](#m3-p0-od-12--ruled-2026-07-31-fix-it-in-phase-0-now-raised-and-closed-the-same-day),
+is a **build-time finding** raised during Phase 0's own execution (not a planning-time ruling item)
+and was **ruled and fixed the same day it was found**: fix it in Phase 0, now, rather than defer it —
+because the finding is that "clean-slate reproduction" was not actually clean-slate, and that is
+Phase 0's own exit criterion.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -340,7 +340,7 @@ them. Applied in the phase docs; see [`plan-revision-log.md`](plan-revision-log.
 
 ---
 
-## M3-P0-OD-12 — RAISED during Phase 0 execution 2026-07-31 (build-time, not planning-time)
+## M3-P0-OD-12 — RULED 2026-07-31: fix it in Phase 0, now (raised and closed the same day)
 
 Everything above this line was written and ruled before Phase 0 was executed. This item was found
 **during** the fork/rename/verify execution itself (Gate A's evidence-gathering pass), not during
@@ -368,16 +368,29 @@ binary by hand (`go build`, no file changed) made all 141 tests run and pass wit
 proving this is a missing build step, not a defect in the tested code, and pre-existing in module 2
 (inherited unchanged by the fork, not introduced by the rename).
 
-**Disposition.** Not fixed here — Phase 0 does not patch inherited scripts or CI workflows; that is a
-behavior change, and the corollary in `phase-0-fork-and-baseline.md` §6 is explicit: *"a red harness
-at Gate A or Gate B is never fixed by changing behaviour... flagged under Rule 2 and assigned to the
-phase that owns it."* Every harness run performed during Phase 0's own verification built the binary
-by hand first, so Phase 0's own Gate A/Gate B evidence is not vacuous (`Docs/fork-point.md` records
-this explicitly). The fix — have `scripts/dev.sh certs` or `test` build the migrate binary inline, the
-way `provision-box` already is — belongs to whichever phase first touches `scripts/dev.sh` or the CI
-workflow for an unrelated reason, or to the all-modules polish pass if none does first. Also register
-in `Docs/shared-code-manifest.md`'s bug log as a module-2 finding once that phase runs, since the gap
-is inherited, not module-3-specific.
+**RULED: fix it in Phase 0, now — not deferred to a later phase.** The disposition originally
+recorded here (defer to whichever phase next touches `scripts/dev.sh` or the CI workflow) was
+**overturned same-day**: "clean-slate reproduction" is Phase 0's own central exit criterion, and a
+clean-slate run that depends on a binary already sitting on disk from an earlier manual build is not
+actually clean-slate. Leaving the gap made the phase's own headline claim weaker than it reads —
+that outweighs the general principle that Phase 0 does not change inherited behavior, because the
+behavior being fixed here is "the harness silently reports false green," which is not a feature of
+module 2's design to preserve, it is a hole in the evidence Phase 0 exists to produce.
+
+**Fixed the same day.** `tests/harness/run.sh` now builds `tools/byosmtp-migrate/bin/byosmtp-migrate`
+itself, immediately after its `PASS`/`bad`/`hr` helper definitions and before any of its three
+template-DB steps — mirroring `gen_all_secrets()`'s existing inline build of `provision-box`.
+`.github/workflows/real-infra.yml` also builds it as its own explicit step, right after the
+`gofmt`/`go vet` lint step, so CI does not rely solely on `run.sh`'s self-build. **Verified by the
+standard the finding itself demands**: deleted `tools/byosmtp-migrate/bin/`, ran
+`bash scripts/dev.sh reset` (full clean-slate, empty volume) followed by `bash scripts/dev.sh test`
+with the binary still absent beforehand — `run.sh` rebuilt it, and the harness reported **58 passed,
+0 failed with zero `SKIP`** against a binary that did not exist when the run started, not one left
+over from an earlier session.
+
+**Registered as a fifth finding in `Docs/shared-code-manifest.md`'s bug log**, confirmed identical in
+module 2's own `.github/workflows/real-infra.yml` (same three lines, no build step) — its own
+clean-slate claim has the same hole, present and unfixed there.
 
 ---
 

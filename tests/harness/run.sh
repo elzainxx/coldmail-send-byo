@@ -20,6 +20,15 @@ ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
 bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 hr()   { echo "──────────────────────────────────────────────────────────────"; }
 
+# Build the migrate runner binary this script calls three times below (M3-P0-OD-12). Missing
+# on a fresh checkout, this fails SILENTLY: each up-and-set-password call below is guarded by
+# `|| true`, so TEST_TEMPLATE_DB ends up "" and every test gated on it (141, across four
+# packages) t.Skip()s — but `go test` exits 0 on an all-skip package and this script's own
+# go_suite() judges pass/fail only by grepping for a FAIL line, so the harness still prints
+# "58 passed, 0 failed" with zero of the gated tests having run. Mirrors gen_all_secrets()'s
+# existing inline build of tools/provision-box/bin/provision-box in scripts/dev.sh.
+( cd tools/byosmtp-migrate && GOTOOLCHAIN=local go build -o bin/byosmtp-migrate . )
+
 # --- Derive connection info from the running stack ---------------------------
 # Admin (superuser) DSN via the mapped host port (M3-P0-OD-6: offset +1000 from module 2's
 # 5432 so both stacks can run simultaneously without a bind collision).

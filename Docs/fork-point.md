@@ -152,10 +152,17 @@ gap in module 2's own inherited harness, exposed here for the first time because
 byte-identical-clone methodology is the first time this harness has run against a tree that never had
 the binary built by some earlier, unrecorded manual step.
 
-**Disposition:** flagged to the Open Decisions ledger rather than silently fixed (Rule 2 — this is a
-module-2 defect surfacing in inherited code, not a module-3 design choice). Phase 0 does not patch
-`run.sh`; every harness run in this document past this point builds the binary first, matching what
-`gen_all_secrets()` already does for `provision-box`.
+**Disposition at the time this section was written:** flagged to the Open Decisions ledger rather
+than silently fixed (Rule 2 — this is a module-2 defect surfacing in inherited code, not a module-3
+design choice). Phase 0 does not patch `run.sh` at this point in the record; every harness run in
+this document past this point builds the binary first, matching what `gen_all_secrets()` already
+does for `provision-box`.
+
+**Superseded same day:** `Docs/open-decisions.md`'s M3-P0-OD-12 later ruled the opposite — fix it in
+Phase 0, now, because a clean-slate reset that depends on a binary already on disk is not actually
+clean-slate, and that is Phase 0's own exit criterion. `run.sh` and the CI workflow were both patched
+before Phase 0 closed. This section is left as the historical record of Gate A's own evidence and is
+not rewritten; see M3-P0-OD-12 for the fix and its own from-a-deleted-binary verification.
 
 ## Known limits of this evidence
 

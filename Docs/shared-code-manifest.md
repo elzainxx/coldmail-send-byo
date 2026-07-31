@@ -133,6 +133,25 @@ not have to re-derive it.
    it. Module 3 fixes it two ways (assert the ordering; `scrubSecret` throws on a zeroed buffer) —
    a **behavior change**, not a bug fix, hence its own divergence row above rather than a "rename
    only" entry.
+6. **Neither CI workflow builds the migration runner binary its own harness depends on.**
+   `tests/harness/run.sh` calls a host-built `tools/*-migrate/bin/*-migrate` binary three times to
+   build migrated template databases gating 141 tests across four Go packages
+   (`TEST_TEMPLATE_DB`); `.github/workflows/real-infra.yml` runs `gofmt`/`go vet` then
+   `scripts/dev.sh certs`/`up`/`test` directly, with **no build step for that binary anywhere** —
+   unlike `provision-box`, which `gen_all_secrets()` builds inline. On a fresh checkout the
+   binary is absent, all three `up-and-set-password` calls fail silently (`|| true`), all 141
+   gated tests `t.Skip()`, and because `go test` exits 0 on an all-skip package and `run.sh`'s
+   `go_suite()` judges pass/fail only by grepping for a `FAIL` line, the harness still prints
+   **"58 passed, 0 failed."** Found during module 3's own Phase 0 execution (Gate A's
+   evidence-gathering pass), not during planning — the first entry in this log discovered by
+   running the fork rather than by reading it. Confirmed identical in module 2's own
+   `.github/workflows/real-infra.yml` (same three missing lines). **Present, unfixed in module
+   2** — its own "clean-slate reproduction" claim rests on the same silent gap. **Fixed in module
+   3** (M3-P0-OD-12, ruled 2026-07-31, fixed the same day): `run.sh` now builds the binary itself
+   before its three template-DB steps, and the CI workflow builds it explicitly as its own step
+   too. Verified by the standard this manifest itself sets — delete the binary, re-run the
+   clean-slate reset and the harness, confirm 58/58 with zero `SKIP` and the binary rebuilt by the
+   script, not by a leftover local artifact.
 
 **Also tracked here, not only in `future-work.md`:** `FW-M3-8`, the two Go module vulnerabilities
 with live call paths inherited from module 2's own Phase 10 R3 finding. Module 3 forks the same
