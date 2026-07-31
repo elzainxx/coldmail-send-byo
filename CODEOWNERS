@@ -1,26 +1,26 @@
 # Change-controlled, load-bearing surfaces. Edits require the owning reviewers.
 
 # Operating rules: the single source of build discipline.
-/CLAUDE.md                       @sender-arch
+/CLAUDE.md                       @byosmtp-arch
 
 # Central migrations: shared schema, applied by Brain + harness + CI. Self-tracking.
-/db/migrations/                  @sender-arch @platform-db
+/db/migrations/                  @byosmtp-arch @platform-db
 
 # The migration runner: keeps the locked self-tracking convention (OD-4).
-/tools/sender-migrate/           @sender-arch @platform-db
+/tools/byosmtp-migrate/           @byosmtp-arch @platform-db
 
 # API/box contracts are additive-only; renames never.
-/Docs/api-contract.md            @sender-arch
-/Docs/config-reference.md        @sender-arch @platform-db
+/Docs/api-contract.md            @byosmtp-arch
+/Docs/config-reference.md        @byosmtp-arch @platform-db
 
 # Security posture: the page handed to a reviewer; residual risks stated honestly.
-/Docs/security-posture.md        @sender-arch
+/Docs/security-posture.md        @byosmtp-arch
 
 # Definition of Done: the gate every phase was held to.
-/Docs/history/definition-of-done.md  @sender-arch
+/Docs/history/definition-of-done.md  @byosmtp-arch
 
 # Living operational + reference docs.
-/Docs/                           @sender-arch
+/Docs/                           @byosmtp-arch
 
 # Provenance: locked phase specs, ADRs, decision ledger, build record. Archive — not edited.
-/Docs/history/                   @sender-arch
+/Docs/history/                   @byosmtp-arch

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// variation_test.go — Phase 8 CHUNK 5: proves the Brain reads the LIVE sender.config content-
+// variation_test.go — Phase 8 CHUNK 5: proves the Brain reads the LIVE byosmtp.config content-
 // variation keys (sender_0020, §6.1) — not a hardcoded snapshot — and stamps the resolved values
 // onto push_job.variation. Real Postgres, real Dispatcher, no mocks (CLAUDE.md Rule 3).
 //
@@ -67,7 +67,7 @@ func TestVariation_DefaultConfigYieldsNeutralSnapshot(t *testing.T) {
 }
 
 // TestVariation_LiveConfigChangeReachesNextPushJob — the config-not-code proof itself: flip a
-// boolean toggle + a string toggle via a direct sender.config write (the same write shape the
+// boolean toggle + a string toggle via a direct byosmtp.config write (the same write shape the
 // admin API's PUT /v1/admin/config/{key} produces), then dispatch a SECOND job with NO Brain
 // restart. Its push_job.variation MUST reflect the new values — proving the read path is live
 // config, not a cached/hardcoded snapshot.
@@ -105,7 +105,7 @@ func TestVariation_LiveConfigChangeReachesNextPushJob(t *testing.T) {
 		t.Fatal("push_job.variation is nil after the config change")
 	}
 	if !pjAfter.Variation.HTMLMinify {
-		t.Error("html_minify was set to true in sender.config but the pushed snapshot still says false — the Brain is not reading live config")
+		t.Error("html_minify was set to true in byosmtp.config but the pushed snapshot still says false — the Brain is not reading live config")
 	}
 	if pjAfter.Variation.HeaderStyle != "gmail" {
 		t.Errorf("header_style = %q after the config change, want %q", pjAfter.Variation.HeaderStyle, "gmail")
@@ -168,11 +168,11 @@ func TestVariation_S11RatesReachPushJob(t *testing.T) {
 	e.seedAccount(t, pool, "sec")
 
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('low',10,'medium',20,'high',40)) WHERE key='variation_comment_intensity_rates'`); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', jsonb_build_object('low',10,'medium',20,'high',40)) WHERE key='variation_comment_intensity_rates'`); err != nil {
 		t.Fatalf("set variation_comment_intensity_rates: %v", err)
 	}
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',9)) WHERE key='variation_css_micro_params'`); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',9)) WHERE key='variation_css_micro_params'`); err != nil {
 		t.Fatalf("set variation_css_micro_params: %v", err)
 	}
 
@@ -212,7 +212,7 @@ func TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip(t *testing.T) {
 	e.seedAccount(t, pool, "sec")
 
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',0)) WHERE key='variation_css_micro_params'`); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', jsonb_build_object('delta_px',1,'skip_below_px',0)) WHERE key='variation_css_micro_params'`); err != nil {
 		t.Fatalf("set variation_css_micro_params: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestVariation_PreheaderTemplatesOverrideReachesPushJob(t *testing.T) {
 	e.seedAccount(t, pool, "sec")
 
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $1::jsonb), updated_at = NOW() WHERE key = 'variation_preheader_templates'`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $1::jsonb), updated_at = NOW() WHERE key = 'variation_preheader_templates'`,
 		`["Custom filler one", "Custom filler two"]`); err != nil {
 		t.Fatalf("set preheader templates: %v", err)
 	}

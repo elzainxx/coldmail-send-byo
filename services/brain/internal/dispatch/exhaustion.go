@@ -88,7 +88,7 @@ func (d *Dispatcher) chainHasSelfRecovering(ctx context.Context, pools []string,
 WITH today_calc AS (SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $2)::date AS today_in_tz)
 SELECT EXISTS (
   SELECT 1
-  FROM sender.accounts a, today_calc
+  FROM byosmtp.accounts a, today_calc
   WHERE a.pool_id = ANY($1)
     AND a.quarantined = FALSE
     AND a.disabled = FALSE
@@ -124,7 +124,7 @@ func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error
 	defer cancel()
 	return d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			   SET state='failed',
 			       completed_at=NOW(),
 			       last_error_message='pool_exhausted: all eligible accounts terminal_blocked (§5.1)',

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestExit_AuthFailureThenSendsViaDifferentAccount (T2, exit criterion) — a job whose first attempt
@@ -37,7 +37,7 @@ func TestExit_AuthFailureThenSendsViaDifferentAccount(t *testing.T) {
 
 	// The account used first is now quarantined; the job is queued again.
 	var quar bool
-	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM sender.accounts WHERE id=$1`, firstAcct).Scan(&quar); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, firstAcct).Scan(&quar); err != nil {
 		t.Fatalf("quar read: %v", err)
 	}
 	if !quar {
@@ -48,7 +48,7 @@ func TestExit_AuthFailureThenSendsViaDifferentAccount(t *testing.T) {
 	}
 
 	// Next dispatch: routing skips the quarantined account and uses the OTHER one.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset next: %v", err)
 	}
 	e.dispatchToSending(t, job)
@@ -68,7 +68,7 @@ func TestExit_AuthFailureThenSendsViaDifferentAccount(t *testing.T) {
 		t.Fatalf("job state=%s, want sent (via the non-quarantined account)", s)
 	}
 	// AccBad stays quarantined (no auto-recovery).
-	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM sender.accounts WHERE id=$1`, firstAcct).Scan(&quar); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, firstAcct).Scan(&quar); err != nil {
 		t.Fatalf("quar recheck: %v", err)
 	}
 	if !quar {
@@ -115,7 +115,7 @@ func TestExit_RetryNeverDoubleSends(t *testing.T) {
 		t.Fatalf("send_log after duplicate accept=%d, want 1 (idempotent no-op §5.3)", n)
 	}
 	var pmid string
-	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
 		t.Fatalf("pmid: %v", err)
 	}
 	if pmid != "PMID-ONCE-1" {
@@ -124,7 +124,7 @@ func TestExit_RetryNeverDoubleSends(t *testing.T) {
 
 	// Even a re-dispatch attempt cannot re-send: the claim WHERE provider_message_id IS NULL skips
 	// a job that already has one. Reset next_attempt_at and try — nothing is pushed for this job.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	before := e.px.pushCount()
@@ -156,7 +156,7 @@ func TestExit_ActorVocabulariesNeverMix(t *testing.T) {
 	var sysCount, admCount int
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FILTER (WHERE actor='system'), count(*) FILTER (WHERE actor='admin')
-		 FROM sender.account_events WHERE account_id=$1`, acct).Scan(&sysCount, &admCount); err != nil {
+		 FROM byosmtp.account_events WHERE account_id=$1`, acct).Scan(&sysCount, &admCount); err != nil {
 		t.Fatalf("actor counts: %v", err)
 	}
 	if sysCount < 1 {
@@ -172,15 +172,15 @@ func TestExit_ActorVocabulariesNeverMix(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	if _, err := e.admin.Exec(ctx,
-		`INSERT INTO sender.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
+		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
 		 SELECT id, user_id, 'admin', 'unquarantine',
 		        '{"paused":false,"pause_reason":null,"quarantined":true,"disabled":false}'::jsonb,
 		        '{"paused":false,"pause_reason":null,"quarantined":false,"disabled":false}'::jsonb,
 		        'operator recovered the account'
-		 FROM sender.accounts WHERE id=$1`, acct); err != nil {
+		 FROM byosmtp.accounts WHERE id=$1`, acct); err != nil {
 		t.Fatalf("admin event: %v", err)
 	}
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET quarantined=FALSE WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=FALSE WHERE id=$1`, acct); err != nil {
 		t.Fatalf("unquarantine: %v", err)
 	}
 	if _, err := e.admin.Exec(ctx, `COMMIT`); err != nil {
@@ -189,7 +189,7 @@ func TestExit_ActorVocabulariesNeverMix(t *testing.T) {
 
 	// The system quarantine event and the admin unquarantine event coexist with distinct actors.
 	rows, err := e.admin.Query(ctx,
-		`SELECT actor::text, action FROM sender.account_events WHERE account_id=$1 ORDER BY created_at`, acct)
+		`SELECT actor::text, action FROM byosmtp.account_events WHERE account_id=$1 ORDER BY created_at`, acct)
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}

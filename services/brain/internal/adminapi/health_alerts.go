@@ -6,7 +6,7 @@ package adminapi
 // state is ever written here): buildActiveConditions issues a few small read-only queries beyond
 // the already-computed B3 snapshot (§4.1's "fires when" column needs data — waiting jobs per
 // exhausted pool, recent enforce-mode quarantines, currently-stale boxes — that healthSnapshot does
-// not carry verbatim); it never claims, locks, or mutates sender.jobs/accounts/boxes.
+// not carry verbatim); it never claims, locks, or mutates byosmtp.jobs/accounts/boxes.
 
 import (
 	"bytes"
@@ -93,12 +93,12 @@ func queryPoolExhaustedConditions(ctx context.Context, db *pgxpool.Pool, snap he
 		const q = `
 WITH pool_users AS (
     SELECT qu.user_id
-    FROM (SELECT DISTINCT user_id FROM sender.jobs WHERE state = 'queued') qu
-    JOIN sender.pools pl ON pl.id = $1
+    FROM (SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state = 'queued') qu
+    JOIN byosmtp.pools pl ON pl.id = $1
     WHERE pl.enabled = TRUE AND (pl.owner_user_id = qu.user_id OR pl.kind = 'shared')
 )
 SELECT COUNT(*), MIN(j.created_at)
-  FROM sender.jobs j
+  FROM byosmtp.jobs j
   JOIN pool_users pu ON pu.user_id = j.user_id
  WHERE j.state = 'queued'`
 		if err := db.QueryRow(ctx, q, p.PoolID).Scan(&waiting, &since); err != nil {
@@ -130,7 +130,7 @@ SELECT COUNT(*), MIN(j.created_at)
 // would_quarantine_count).
 func queryAccountQuarantinedConditions(ctx context.Context, db *pgxpool.Pool, windowSec int) ([]activeConditionJSON, error) {
 	rows, err := db.Query(ctx,
-		`SELECT account_id::text, created_at FROM sender.account_events
+		`SELECT account_id::text, created_at FROM byosmtp.account_events
 		  WHERE actor = 'system' AND action = 'quarantine'
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1
 		  ORDER BY created_at DESC`, windowSec)
@@ -165,7 +165,7 @@ func queryAccountQuarantinedConditions(ctx context.Context, db *pgxpool.Pool, wi
 // giving the §4.2 "conditions clear automatically" property for free from the live row state.
 func queryBoxDeathConditions(ctx context.Context, db *pgxpool.Pool) ([]activeConditionJSON, error) {
 	rows, err := db.Query(ctx,
-		`SELECT id::text, last_heartbeat_at FROM sender.boxes WHERE status = 'stale' ORDER BY last_heartbeat_at ASC`)
+		`SELECT id::text, last_heartbeat_at FROM byosmtp.boxes WHERE status = 'stale' ORDER BY last_heartbeat_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +306,7 @@ func postWebhookWithRetry(webhookURL string, c activeConditionJSON) {
 		Subject:   webhookSubject{Type: subjectType, ID: subjectID},
 		Detail:    c.Detail,
 		FiredAt:   time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-		Module:    "sender",
+		Module:    "byosmtp",
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

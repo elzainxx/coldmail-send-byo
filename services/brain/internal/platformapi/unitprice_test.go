@@ -2,7 +2,7 @@ package platformapi
 
 // unitprice_test.go — Phase 9.5 S10 (§2.4), O7's quote/describe half. Real Postgres, real HTTP
 // against the actual production Server (httptest) — no mocks (CLAUDE.md Rule 3). Proves
-// unit_price_credits is read LIVE from sender.config, not the old hardcoded constant: with the
+// unit_price_credits is read LIVE from byosmtp.config, not the old hardcoded constant: with the
 // seeded default (1) quote/describe charge 1 credit/recipient; a live PUT-equivalent write to
 // unit_price_credits (direct SQL, mirroring what PUT /v1/admin/config/{key} would do) is reflected
 // on the VERY NEXT request with no server restart.
@@ -14,7 +14,7 @@ import (
 func (e *testEnv) setUnitPriceCredits(t *testing.T, v int) {
 	t.Helper()
 	if _, err := e.admin.Exec(bgctx(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $1::int) WHERE key='unit_price_credits'`, v); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $1::int) WHERE key='unit_price_credits'`, v); err != nil {
 		t.Fatalf("set unit_price_credits: %v", err)
 	}
 }

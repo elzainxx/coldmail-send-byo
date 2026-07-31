@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // TestReclaimRace_OutcomeVsReclaim (ADR-0010 — the mandated two-connection race on the reclaim

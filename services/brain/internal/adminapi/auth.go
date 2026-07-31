@@ -10,7 +10,7 @@ import (
 
 // Authenticator gates /v1/admin/* with an operator bearer key (§4.2). V1 has exactly one scope,
 // platform_admin (§4.3): any valid key grants it. Keys are stored HASHED (bcrypt, same discipline
-// as sender.boxes.token_hash) in the admin service's env/secret manager — NO per-principal DB
+// as byosmtp.boxes.token_hash) in the admin service's env/secret manager — NO per-principal DB
 // table in V1 (OD-9 dropped). Comparison is constant-time via bcrypt.
 type Authenticator struct {
 	// keyHashes are bcrypt hashes of the accepted admin keys. Empty => fail-closed (reject all),

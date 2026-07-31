@@ -16,7 +16,7 @@ import (
 // creates until the row exists (§0.1).
 const SystemUserID = "00000000-0000-0000-0000-000000000000"
 
-// Server is the operator admin API. It holds the DB pool (as sender_module), the Encrypt-only
+// Server is the operator admin API. It holds the DB pool (as byosmtp_module), the Encrypt-only
 // credential Encryptor, and the operator-key Authenticator. It registers its routes on a mux
 // that the Brain mounts under /v1/admin/*.
 type Server struct {
@@ -26,7 +26,7 @@ type Server struct {
 	mux  *http.ServeMux
 }
 
-// NewServer wires the admin routes. db is the sender_module pool (never superuser); enc is the
+// NewServer wires the admin routes. db is the byosmtp_module pool (never superuser); enc is the
 // Encrypt-only credential primitive; auth is the operator-key gate.
 func NewServer(db *pgxpool.Pool, enc *Encryptor, auth *Authenticator) *Server {
 	s := &Server{db: db, enc: enc, auth: auth, mux: http.NewServeMux()}

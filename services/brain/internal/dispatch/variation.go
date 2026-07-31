@@ -1,9 +1,9 @@
 package dispatch
 
-import "github.com/sender-module/brain/internal/boxproto"
+import "github.com/byosmtp-module/brain/internal/boxproto"
 
 // variation.go — Phase 8 (P8-2/P8-3/P8-4): the Brain's half of the content-variation wire
-// contract. The Brain reads the GLOBAL sender.config toggle set (Config, populated by LoadConfig
+// contract. The Brain reads the GLOBAL byosmtp.config toggle set (Config, populated by LoadConfig
 // from the seventeen sender_0020 keys — amended from fourteen post-Chunk-5, P8-OD-1 RULED-WIDEN)
 // and stamps a RESOLVED snapshot onto every push_job (§2.2); the box never reads config
 // (services/box/src/variation.js's resolveVariation/STAGES is the box-side identity-function

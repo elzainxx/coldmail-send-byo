@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // rollup_timezone_test.go — P7-OD-7 (RULED: the rollup follows daily_reset_timezone).
@@ -44,8 +44,8 @@ func (e *dispatchEnv) eventBucketDates(t *testing.T, cfg Config, userID string, 
 func (e *dispatchEnv) seedEventAt(t *testing.T, jobID string, at time.Time) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`INSERT INTO sender.job_events (job_id, user_id, from_state, to_state, actor, created_at)
-		 SELECT j.id, j.user_id, 'sending', 'sent', 'box', $2 FROM sender.jobs j WHERE j.id = $1`,
+		`INSERT INTO byosmtp.job_events (job_id, user_id, from_state, to_state, actor, created_at)
+		 SELECT j.id, j.user_id, 'sending', 'sent', 'box', $2 FROM byosmtp.jobs j WHERE j.id = $1`,
 		jobID, at); err != nil {
 		t.Fatalf("seed job_event at %s: %v", at, err)
 	}
@@ -55,7 +55,7 @@ func (e *dispatchEnv) seedEventAt(t *testing.T, jobID string, at time.Time) {
 // is REPORTED in is the same day the DAILY-LIMIT RESET puts it in.
 //
 // It does not assert that against a recomputed formula — it asserts it against the real reset state
-// the real consume path wrote (sender.accounts.daily_reset_day, stamped from
+// the real consume path wrote (byosmtp.accounts.daily_reset_day, stamped from
 // `(NOW() AT TIME ZONE daily_reset_timezone)::date` by the eligibility consume). If the rollup and
 // the reset ever disagree on where "now" falls, this fails.
 //
@@ -94,7 +94,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 		t.Fatalf("config did not take: daily_reset_timezone=%q, want %q", cfg.DailyResetTimezone, zone)
 	}
 
-	// FIXTURE NOTE (not the property under test). sender.accounts.daily_reset_day defaults to
+	// FIXTURE NOTE (not the property under test). byosmtp.accounts.daily_reset_day defaults to
 	// CURRENT_DATE — the SERVER's date — while the eligibility predicate compares it against
 	// `(NOW() AT TIME ZONE daily_reset_timezone)::date`. For a zone WEST of the server the seeded value
 	// is a day AHEAD of today-in-tz, and neither eligibility branch matches (`<` fails, `=` fails), so
@@ -103,7 +103,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 	// self-heal handles, and the consume re-stamps it to today-in-tz — which is the value asserted below.
 	// (The default-vs-config-tz mismatch itself is flagged for the user, not fixed here.)
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.accounts SET daily_reset_day = DATE '2000-01-01' WHERE id=$1`, acct); err != nil {
+		`UPDATE byosmtp.accounts SET daily_reset_day = DATE '2000-01-01' WHERE id=$1`, acct); err != nil {
 		t.Fatalf("age daily_reset_day: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 	// The reset boundary the CAPACITY accounting actually used, read from the row the consume wrote.
 	var resetDay time.Time
 	if err := e.admin.QueryRow(ctx,
-		`SELECT daily_reset_day FROM sender.accounts WHERE id=$1`, acct).Scan(&resetDay); err != nil {
+		`SELECT daily_reset_day FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&resetDay); err != nil {
 		t.Fatalf("read daily_reset_day: %v", err)
 	}
 	resetDate := resetDay.Format("2006-01-02")
@@ -132,7 +132,7 @@ func TestRollup_BucketsFollowDailyResetTimezone(t *testing.T) {
 	}
 
 	var userID string
-	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM sender.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
 		t.Fatalf("read job user: %v", err)
 	}
 	// Window wide enough that no boundary can push a row out of range in either direction.
@@ -182,7 +182,7 @@ func TestRollup_ChangingDailyResetTimezoneShiftsBuckets(t *testing.T) {
 
 	job := e.seedQueuedJob(t, "rollshift@example.com")
 	var userID string
-	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM sender.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
 		t.Fatalf("read job user: %v", err)
 	}
 	// Exactly ONE event at the boundary instant. The job's own genesis event sits at NOW(), outside

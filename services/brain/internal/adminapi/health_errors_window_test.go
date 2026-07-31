@@ -2,8 +2,8 @@ package adminapi
 
 // health_errors_window_test.go — GET /v1/admin/health's errors_last_window counts ONE failure ONCE.
 //
-// WHY THIS EXISTS. Found walking Stage 9 of Docs/sender-module-local-test-guide.md against the live
-// docker stack. queryErrorsInWindow was `COUNT(*) FROM sender.job_events WHERE error_class IS NOT
+// WHY THIS EXISTS. Found walking Stage 9 of Docs/byosmtp-module-local-test-guide.md against the live
+// docker stack. queryErrorsInWindow was `COUNT(*) FROM byosmtp.job_events WHERE error_class IS NOT
 // NULL`, and sender_0008's triggers copied the job row's STICKY last_error_class onto EVERY event
 // (fixed in the trigger by sender_0022). So a single requeue produced four tagged rows — the requeue
 // itself plus the queued->assigned, assigned->sending, and sending->SENT that followed — and the
@@ -47,10 +47,10 @@ func (e *testEnv) seedTaggedEvent(t *testing.T, jobID, fromState, toState, class
 		from = fromState
 	}
 	if _, err := e.admin.Exec(bgCtx(),
-		`INSERT INTO sender.job_events
+		`INSERT INTO byosmtp.job_events
 		   (job_id, user_id, from_state, to_state, actor, error_class, error_message)
-		 VALUES ($1, $2, $3::sender.job_state, $4::sender.job_state, 'dispatcher',
-		         $5::sender.error_class, 'seeded for errors_last_window test')`,
+		 VALUES ($1, $2, $3::byosmtp.job_state, $4::byosmtp.job_state, 'dispatcher',
+		         $5::byosmtp.error_class, 'seeded for errors_last_window test')`,
 		jobID, sysUserHealth, from, toState, class); err != nil {
 		t.Fatalf("seed tagged event (%s->%s, %s): %v", fromState, toState, class, err)
 	}

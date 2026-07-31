@@ -28,10 +28,10 @@ DC="${COMPOSE_INVOCATION:-docker compose -f docker-compose.yml -f tests/harness/
 fail=0
 
 # 1) The seeded drain window is the authority (config-not-code, Rule 1): read it from the live DB,
-#    never from a literal here. If sender.config is not up yet, fall back to the migration's seed so
+#    never from a literal here. If byosmtp.config is not up yet, fall back to the migration's seed so
 #    the gate still runs standalone.
 drain="$($DC exec -T postgres psql -U postgres -d platform -tAc \
-  "SELECT value->>'v' FROM sender.config WHERE key='shutdown_drain_timeout_sec'" 2>/dev/null \
+  "SELECT value->>'v' FROM byosmtp.config WHERE key='shutdown_drain_timeout_sec'" 2>/dev/null \
   | tr -d '[:space:]' || true)"
 if [[ -z "$drain" ]]; then
   drain="$(grep -rhoE "'shutdown_drain_timeout_sec'[^)]*\{\"v\": *[0-9]+\}" db/migrations/ 2>/dev/null \

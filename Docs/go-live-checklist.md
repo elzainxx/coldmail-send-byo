@@ -57,14 +57,16 @@ silently adapt the module's assumptions.
 
 **Why it blocks:** two distinct collision risks, both operational rather than code:
 
-- **Advisory-lock band (G2 / OD-10).** The module reserves the
-  `9_000_000_000–9_999_999_999` advisory-lock key band (`Docs/advisory-locks.md`) for its own
-  singleton guard + per-user campaign-start locks. If the platform's own migrator or application
-  code uses advisory locks in the SAME Postgres instance, confirm it does not use this band.
-- **Migration admin credential (G1 / OD-1).** The migration runner (`tools/sender-migrate`)
+- **Advisory-lock band (G2 / M3-P0-OD-5).** The module reserves the
+  `8_000_000_000–8_999_999_999` advisory-lock key band (`Docs/advisory-locks.md`) for its own
+  singleton guard + per-user campaign-start locks — disjoint from module 2's adjacent
+  `9_000_000_000–9_999_999_999` band on the same shared platform Postgres. If the platform's own
+  migrator or application code uses advisory locks in the SAME Postgres instance, confirm it does
+  not use either band.
+- **Migration admin credential (G1 / OD-1).** The migration runner (`tools/byosmtp-migrate`)
   connects via `MIGRATE_DATABASE_URL` as an admin/owner-capable role, DISTINCT from the
-  login-only, non-superuser `sender_module` app role — it must be able to `CREATE ROLE`/
-  `CREATE SCHEMA`/assign ownership to `sender_owner`. Confirm which real role that is in the live
+  login-only, non-superuser `byosmtp_module` app role — it must be able to `CREATE ROLE`/
+  `CREATE SCHEMA`/assign ownership to `byosmtp_owner`. Confirm which real role that is in the live
   environment and that its credential is sourced from the platform's secret store, never
   committed to a repo or migration file.
 
@@ -107,8 +109,8 @@ surface (P9-A, RULED — Phase 9 §5.4a). Box lifecycle is an out-of-band operat
    will reach the box's own deploy config — it is never stored anywhere else and cannot be
    recovered after this step.**
 2. `provision-box seed --id <id> --token-hash <hash>` — emits the SQL to insert/update the
-   `sender.boxes` row (`token_hash`, `status='active'`). Run it against the live DB via the
-   migration-admin role (never `sender_module` directly, matching the rest of the module's DDL
+   `byosmtp.boxes` row (`token_hash`, `status='active'`). Run it against the live DB via the
+   migration-admin role (never `byosmtp_module` directly, matching the rest of the module's DDL
    discipline).
 3. Deploy the box process with the plaintext token in its own environment/secret store. On first
    connect it `register`s over mTLS; the Brain hashes the presented token and compares to
@@ -175,7 +177,7 @@ default actually is: [`config-reference.md`](./config-reference.md).)
 **Also check while you are looking at the accounts:** no account's `smtp_host` is a private-range or
 link-local address. The API accepts one, but the box **skips TLS certificate verification** for those
 (a harness affordance for the local sink), so the credential would cross an unverified connection —
-[`security-posture.md`](./security-posture.md) §3.13. `SELECT id, smtp_host FROM sender.accounts;`
+[`security-posture.md`](./security-posture.md) §3.13. `SELECT id, smtp_host FROM byosmtp.accounts;`
 
 **Action:** if the SMTP accounts being provisioned are genuinely new (freshly created mailboxes,
 new sending domains, accounts that haven't built sending reputation with receiving providers),
@@ -238,7 +240,7 @@ This is the single most missable operational fact in the system.
 - [ ] A scheduled health poll exists (the cron entry in `monitoring.md` §3). This is what makes the
       webhook work.
 - [ ] `alert_webhook_url` is set, and a test alert has actually been **received** — not just
-      configured. Note `SENDER_ALERT_WEBHOOK_URL` in `.env.example` is **inert**; the config row is
+      configured. Note `BYOSMTP_ALERT_WEBHOOK_URL` in `.env.example` is **inert**; the config row is
       the only source.
 - [ ] Logs are shipped somewhere with retention. The internal `reason=` behind a client error
       envelope exists **only** in the Brain's log; without retention, a reported error is a code and

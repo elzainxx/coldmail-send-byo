@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // TestPersistAck_ResolvedOnlyAfterCommit (Phase 7 §1.3, P7-4 — the persist-BEFORE-ack contract,

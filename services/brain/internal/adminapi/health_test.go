@@ -14,7 +14,7 @@ import (
 const sysUserHealth = "00000000-0000-0000-0000-000000000000"
 
 // seedHealthUser ensures the system user exists (mirrors the dispatch package's own fixture
-// convention — sender.jobs/accounts/pools/boxes all FK to public.users).
+// convention — byosmtp.jobs/accounts/pools/boxes all FK to public.users).
 func (e *testEnv) seedHealthUser(t *testing.T) {
 	t.Helper()
 	if _, err := e.admin.Exec(bgCtx(),
@@ -30,7 +30,7 @@ func (e *testEnv) seedHealthPool(t *testing.T, name string) string {
 	e.seedHealthUser(t)
 	var id string
 	if err := e.admin.QueryRow(bgCtx(),
-		`INSERT INTO sender.pools (user_id, kind, name) VALUES ($1,'shared',$2) RETURNING id`,
+		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared',$2) RETURNING id`,
 		sysUserHealth, name).Scan(&id); err != nil {
 		t.Fatalf("seed pool: %v", err)
 	}
@@ -42,12 +42,12 @@ func (e *testEnv) seedHealthAccount(t *testing.T, poolID string, paused, quarant
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(bgCtx(),
-		`INSERT INTO sender.accounts
+		`INSERT INTO byosmtp.accounts
 		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address,
 		    paused, pause_reason, quarantined, disabled, daily_sent_count, daily_limit, daily_reset_day)
 		 VALUES ($1,$2,'smtp-sink',587,$3,'\x00','k','\x00','u@ourdomain.com',
-		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::sender.pause_reason, $5, $6, $7, $8, CURRENT_DATE)
+		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::byosmtp.pause_reason, $5, $6, $7, $8, CURRENT_DATE)
 		 RETURNING id`,
 		sysUserHealth, poolID, "u-"+randHex(6)+"@ourdomain.com", paused, quarantined, disabled, dailySent, dailyLimit).Scan(&id); err != nil {
 		t.Fatalf("seed account: %v", err)
@@ -61,8 +61,8 @@ func (e *testEnv) seedHealthBox(t *testing.T, status string, heartbeatAgeSec int
 	e.seedHealthUser(t)
 	var id string
 	if err := e.admin.QueryRow(bgCtx(),
-		`INSERT INTO sender.boxes (id, user_id, token_hash, status, last_heartbeat_at, disabled_at)
-		 VALUES (gen_random_uuid(), $1, 'x', $2::sender.box_status, NOW() - INTERVAL '1 second' * $3,
+		`INSERT INTO byosmtp.boxes (id, user_id, token_hash, status, last_heartbeat_at, disabled_at)
+		 VALUES (gen_random_uuid(), $1, 'x', $2::byosmtp.box_status, NOW() - INTERVAL '1 second' * $3,
 		         CASE WHEN $2 = 'disabled' THEN NOW() ELSE NULL END)
 		 RETURNING id`, sysUserHealth, status, heartbeatAgeSec).Scan(&id); err != nil {
 		t.Fatalf("seed box: %v", err)
@@ -70,7 +70,7 @@ func (e *testEnv) seedHealthBox(t *testing.T, status string, heartbeatAgeSec int
 	return id
 }
 
-// seedHealthJobItem + seedHealthJob seed a real job_item + a sender.jobs row born in 'queued' via
+// seedHealthJobItem + seedHealthJob seed a real job_item + a byosmtp.jobs row born in 'queued' via
 // the genesis-event actor GUC, then (optionally) transitioned to a terminal/in-flight state with a
 // real actor-GUC'd UPDATE — mirroring exactly how the dispatch package's own harness seeds jobs, so
 // the job_events rows this test counts on are genuinely DB-triggered, not fabricated.
@@ -90,12 +90,12 @@ func (e *testEnv) seedHealthJob(t *testing.T, targetState string) string {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','system',true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor','system',true)"); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	var jobID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
 		 VALUES ($1,$2,$2,'h@example.com','Subj','<p>b</p>','reply@ourdomain.com','queued',NOW()) RETURNING id`,
 		jobItemID, sysUserHealth).Scan(&jobID); err != nil {
 		t.Fatalf("seed job: %v", err)
@@ -119,7 +119,7 @@ func (e *testEnv) seedHealthJob(t *testing.T, targetState string) string {
 		if err != nil {
 			t.Fatalf("begin step %s: %v", st, err)
 		}
-		if _, err := tx2.Exec(ctx, "SELECT set_config('sender.actor','dispatcher',true)"); err != nil {
+		if _, err := tx2.Exec(ctx, "SELECT set_config('byosmtp.actor','dispatcher',true)"); err != nil {
 			t.Fatalf("set actor step %s: %v", st, err)
 		}
 		var setClause string
@@ -135,7 +135,7 @@ func (e *testEnv) seedHealthJob(t *testing.T, targetState string) string {
 		case "bounced":
 			setClause = `state='bounced', completed_at=NOW(), lease_expires_at=NULL`
 		}
-		if _, err := tx2.Exec(ctx, `UPDATE sender.jobs SET `+setClause+` WHERE id=$1`, jobID); err != nil {
+		if _, err := tx2.Exec(ctx, `UPDATE byosmtp.jobs SET `+setClause+` WHERE id=$1`, jobID); err != nil {
 			t.Fatalf("update step %s: %v", st, err)
 		}
 		if err := tx2.Commit(ctx); err != nil {
@@ -150,14 +150,14 @@ func (e *testEnv) seedHealthJob(t *testing.T, targetState string) string {
 func (e *testEnv) setHealthConfigBool(t *testing.T, key string, v bool) {
 	t.Helper()
 	if _, err := e.admin.Exec(bgCtx(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::boolean) WHERE key=$1`, key, v); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::boolean) WHERE key=$1`, key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
 }
 func (e *testEnv) setHealthConfigInt(t *testing.T, key string, v int) {
 	t.Helper()
 	if _, err := e.admin.Exec(bgCtx(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::int) WHERE key=$1`, key, v); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::int) WHERE key=$1`, key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
 }
@@ -200,7 +200,7 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 
 	// Queue counts vs direct DB truth.
 	wantQueue := map[string]int{}
-	rows, err := e.admin.Query(ctx, `SELECT state::text, COUNT(*) FROM sender.jobs GROUP BY state`)
+	rows, err := e.admin.Query(ctx, `SELECT state::text, COUNT(*) FROM byosmtp.jobs GROUP BY state`)
 	if err != nil {
 		t.Fatalf("direct queue count: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 		COUNT(*) FILTER (WHERE status='active'),
 		COUNT(*) FILTER (WHERE status='stale'),
 		COUNT(*) FILTER (WHERE status='disabled')
-		FROM sender.boxes`).Scan(&wantActive, &wantStale, &wantDisabled); err != nil {
+		FROM byosmtp.boxes`).Scan(&wantActive, &wantStale, &wantDisabled); err != nil {
 		t.Fatalf("direct box count: %v", err)
 	}
 	boxes, ok := resp.body["boxes"].(map[string]any)
@@ -255,7 +255,7 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 		COUNT(*) FILTER (WHERE quarantined=TRUE),
 		COUNT(*) FILTER (WHERE disabled=TRUE),
 		COUNT(*) FILTER (WHERE daily_sent_count >= daily_limit)
-		FROM sender.accounts`).Scan(&wantPaused, &wantQuarantined, &wantDisabledAcc, &wantAtLimit); err != nil {
+		FROM byosmtp.accounts`).Scan(&wantPaused, &wantQuarantined, &wantDisabledAcc, &wantAtLimit); err != nil {
 		t.Fatalf("direct account count: %v", err)
 	}
 	accounts, ok := resp.body["accounts"].(map[string]any)

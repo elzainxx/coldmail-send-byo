@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // TestReclaimRace_DetectorAVsClassifiedFailure (R4-P6 HIGH regression, ADR-0010 §2) — the ONE
@@ -26,7 +26,7 @@ func TestReclaimRace_DetectorAVsClassifiedFailure(t *testing.T) {
 	acct := e.seedAccount(t, pool, "sec")
 	// Keep the score high via a recent success so the classified failure doesn't quarantine mid-loop
 	// (we're testing the LOCK ORDER, not the account effect).
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -79,7 +79,7 @@ func TestReclaimRace_DetectorAVsClassifiedFailure(t *testing.T) {
 			t.Fatalf("round %d: reclaimed/requeued job has a non-null lease", i)
 		}
 		// Reset the box to active for the next round so dispatchToSending can push again.
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.boxes SET status='active', last_heartbeat_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.boxes SET status='active', last_heartbeat_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
 			t.Fatalf("reset box: %v", err)
 		}
 	}

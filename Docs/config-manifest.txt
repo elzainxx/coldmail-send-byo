@@ -1,6 +1,6 @@
-# Phase-aware expected sender.config key manifest (OD-6).
+# Phase-aware expected byosmtp.config key manifest (OD-6).
 # One key name per line. The CI config_drift gate asserts:
-#   live sender.config key set  ==  this manifest  ==  the config-reference.md table.
+#   live byosmtp.config key set  ==  this manifest  ==  the config-reference.md table.
 # Each config-seeding migration (Phase 1's sender_0010 onward) appends its keys here in the
 # SAME change, so the gate grows monotonically to the eventual 53-key total after sender_0021
 # (amended from 50 — P8-OD-1, Phase 8 grew from 14 to 17 keys post-Chunk-5).
@@ -40,7 +40,7 @@ rollup_granularity
 box_outcome_buffer_ttl_sec
 
 # Phase 8 — sender_0020 (+17 keys: content-variation toggles + their 5 toggle-parameters). Config
-# rows appended to the SAME sender_0020 version file that Chunk 1 created for sender.jobs.attempt_token
+# rows appended to the SAME sender_0020 version file that Chunk 1 created for byosmtp.jobs.attempt_token
 # (flagged migration-filename deviation from the locked spec's own sender_0020_content_variation_config
 # name — see Docs/open-decisions.md P8-OD-1 and the .up.sql's own comment). All 17 default off/neutral
 # so the whole set at default is byte-identical to Phase 3 (§4/T1). AMENDED 2026-07-26 from 14 to 17

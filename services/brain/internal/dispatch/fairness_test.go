@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestFairness_RoundRobinFairness_NoStarvation (T4-style) — 3 users of unequal campaign size, an
@@ -190,7 +190,7 @@ func (e *dispatchEnv) settleAllSending(t *testing.T) {
 	// attribution guard (§1.3) applies a report only from the box owning the current attempt. With
 	// multi-box tests (extraBoxes) a hardcoded box id would be a mis-attributed report and get
 	// correctly dropped, leaving the jobs stuck 'sending'.
-	rows, err := e.admin.Query(ctx, `SELECT id, assigned_box_id::text FROM sender.jobs WHERE state = 'sending'`)
+	rows, err := e.admin.Query(ctx, `SELECT id, assigned_box_id::text FROM byosmtp.jobs WHERE state = 'sending'`)
 	if err != nil {
 		t.Fatalf("settleAllSending query: %v", err)
 	}
@@ -226,7 +226,7 @@ func (e *dispatchEnv) userTerminalCount(t *testing.T, userID string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT count(*) FROM sender.jobs WHERE user_id=$1 AND state IN ('sending','sent','bounced')`, userID).Scan(&n); err != nil {
+		`SELECT count(*) FROM byosmtp.jobs WHERE user_id=$1 AND state IN ('sending','sent','bounced')`, userID).Scan(&n); err != nil {
 		t.Fatalf("userTerminalCount: %v", err)
 	}
 	return n

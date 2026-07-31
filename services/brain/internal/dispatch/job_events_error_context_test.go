@@ -4,7 +4,7 @@ package dispatch
 // transitions, which is what sender_0008's own column comment always claimed and what sender_0022
 // finally made true.
 //
-// WHY THIS EXISTS. Found walking Stage 9 of Docs/sender-module-local-test-guide.md against the live
+// WHY THIS EXISTS. Found walking Stage 9 of Docs/byosmtp-module-local-test-guide.md against the live
 // docker stack. sender_0008 declares, verbatim, `-- Error context (nullable, only for error
 // transitions)` over job_events.error_class / error_message — then both of its triggers copied
 // `NEW.last_error_class, NEW.last_error_message` into EVERY row unconditionally. The job row's
@@ -25,7 +25,7 @@ package dispatch
 // errors_last_window {"unknown": 4} for that single failure — 4x incident sizing on the number the
 // runbook's "Sends are failing" triage reads first. And as an audit record it is simply false:
 // `sending -> sent` did not fail with error_class=unknown (CLAUDE.md Rule 5, "never invent an
-// outcome"). The row-level fact on sender.jobs is fine and is deliberately NOT changed; only the
+// outcome"). The row-level fact on byosmtp.jobs is fine and is deliberately NOT changed; only the
 // append-only point-in-time event is corrected.
 //
 // ANTI-VACUITY (Rule 10). A test that only asserted "the success event has no error_class" would
@@ -44,7 +44,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // jobEventChain returns every job_events row for a job as (from_state, to_state, actor, error_class,
@@ -56,7 +56,7 @@ func (e *dispatchEnv) jobEventChain(t *testing.T, jobID string) [][5]string {
 	rows, err := e.admin.Query(context.Background(),
 		`SELECT COALESCE(from_state::text,''), to_state::text, actor::text,
 		        COALESCE(error_class::text,''), COALESCE(error_message,'')
-		   FROM sender.job_events WHERE job_id=$1 ORDER BY seq`, jobID)
+		   FROM byosmtp.job_events WHERE job_id=$1 ORDER BY seq`, jobID)
 	if err != nil {
 		t.Fatalf("read job_events chain: %v", err)
 	}
@@ -82,7 +82,7 @@ func (e *dispatchEnv) jobLastErrorClass(t *testing.T, jobID string) string {
 	t.Helper()
 	var class *string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT last_error_class::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&class); err != nil {
+		`SELECT last_error_class::text FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&class); err != nil {
 		t.Fatalf("read jobs.last_error_class: %v", err)
 	}
 	if class == nil {
@@ -103,7 +103,7 @@ func TestJobEvents_ErrorContextOnlyOnErrorTransitions(t *testing.T) {
 
 	// --- Attempt 1: dispatch, then a REAL box-reported transport_4xx failure. ---
 	// A bare 451 is classified transport_4xx (classify.go row 5) and requeues the job
-	// (applyClassifiedFailure), stamping sender.jobs.last_error_class — the sticky row-level value
+	// (applyClassifiedFailure), stamping byosmtp.jobs.last_error_class — the sticky row-level value
 	// that the old trigger then smeared onto every subsequent event.
 	//
 	// The wording matters and is not arbitrary: classify.go's rateText keywords ("try again later",
@@ -123,14 +123,14 @@ func TestJobEvents_ErrorContextOnlyOnErrorTransitions(t *testing.T) {
 	// this test would silently stop testing anything — so assert the premise rather than assume it.
 	rowClass := e.jobLastErrorClass(t, job)
 	if rowClass != "transport_4xx" {
-		t.Fatalf("sender.jobs.last_error_class=%q, want transport_4xx — the requeue must record the real class on the ROW (that part is correct and unchanged by sender_0022). A different class here means classify.go routed this SMTP text elsewhere (e.g. rateText promoted it to throttle, which also pauses the account) and the rest of this test would be measuring a different path", rowClass)
+		t.Fatalf("byosmtp.jobs.last_error_class=%q, want transport_4xx — the requeue must record the real class on the ROW (that part is correct and unchanged by sender_0022). A different class here means classify.go routed this SMTP text elsewhere (e.g. rateText promoted it to throttle, which also pauses the account) and the rest of this test would be measuring a different path", rowClass)
 	}
 
 	// --- Attempt 2: re-dispatch the SAME job and let it SUCCEED. ---
 	// The 451 backed next_attempt_at into the future (§6.4); clear it so the next tick claims the job.
 	// This is scheduling only — it touches neither state nor an FK key, so per CLAUDE.md Rule 9(a)/(b)
 	// it emits no event and takes no account lock.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
 	e.px.freeAllBoxes()
@@ -146,7 +146,7 @@ func TestJobEvents_ErrorContextOnlyOnErrorTransitions(t *testing.T) {
 	// behavior sender_0022 deliberately did NOT change: "last error this job saw" is a running fact
 	// about a mutable row and is useful history. The fix is scoped to the append-only event.
 	if after := e.jobLastErrorClass(t, job); after != "transport_4xx" {
-		t.Fatalf("sender.jobs.last_error_class=%q after the success, want transport_4xx retained — sender_0022 changes the TRIGGER, not the row. If clearing this is now intended it is a separate locked-contract change (Rule 2), not a test to relax", after)
+		t.Fatalf("byosmtp.jobs.last_error_class=%q after the success, want transport_4xx retained — sender_0022 changes the TRIGGER, not the row. If clearing this is now intended it is a separate locked-contract change (Rule 2), not a test to relax", after)
 	}
 
 	chain := e.jobEventChain(t, job)
@@ -172,7 +172,7 @@ func TestJobEvents_ErrorContextOnlyOnErrorTransitions(t *testing.T) {
 			sawSuccess = true
 		}
 		if class != "" || msg != "" {
-			t.Fatalf("job_events[%d] %s->%s (actor=%s) is NOT an error transition but carries error_class=%q error_message=%q. sender_0008 declares these columns 'only for error transitions'; sender_0022's trigger gate is what enforces it. This is the live defect: a sticky sender.jobs.last_error_* smeared onto an unrelated later transition — and for %s->%s it asserts a failure that did not happen (Rule 5). Full chain=%v",
+			t.Fatalf("job_events[%d] %s->%s (actor=%s) is NOT an error transition but carries error_class=%q error_message=%q. sender_0008 declares these columns 'only for error transitions'; sender_0022's trigger gate is what enforces it. This is the live defect: a sticky byosmtp.jobs.last_error_* smeared onto an unrelated later transition — and for %s->%s it asserts a failure that did not happen (Rule 5). Full chain=%v",
 				i, from, to, actor, class, msg, from, to, chain)
 		}
 	}

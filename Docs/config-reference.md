@@ -3,15 +3,15 @@
 Authoritative source: **Phase 9 §4** (`history/phase-9-polish-and-documentation.md`) — the
 53-key consolidated reference (amended from 50, `Docs/history/open-decisions.md` P8-OD-1: Phase 8
 grew from 14 to 17 keys post-Chunk-5). This file is the checked-in mirror, verified by the
-CI `config_drift` gate against the live `sender.config` seeds.
+CI `config_drift` gate against the live `byosmtp.config` seeds.
 
 ## Phase 1 state (14 keys, `sender_0010`)
 
-`sender.config` is created in Phase 1 (`sender_0010`), seeding the **14 foundation keys** below
+`byosmtp.config` is created in Phase 1 (`sender_0010`), seeding the **14 foundation keys** below
 (Phase 9 §4.1). Later phases append their keys (Phase 5 `sender_0017`, Phase 6 `sender_0018`,
 Phase 7 `sender_0019`, Phase 8 `sender_0020`, Phase 9.5 `sender_0021`) growing to the 53-key
 total. The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
-live `sender.config` key set AND this table — all three must match, which is what makes "no
+live `byosmtp.config` key set AND this table — all three must match, which is what makes "no
 hardcoded tuning constant" structurally checkable. `default_value` is never mutated.
 
 | key | default_value | value_type | seeding migration | description |
@@ -72,7 +72,7 @@ Detector-B backstop deadline (§2.3).
 Phase 7 seeds six new keys via `sender_0019` (and reuses the already-seeded `debug_log_retention_days`
 from `sender_0010` as the raw-content lifetime — no duplicate). Phase 7 is **fully schema-neutral**:
 per-day debug-log summaries derive on demand from the permanent `job_events` + final `jobs` states
-(P7-1), so no `sender.send_log_summaries` table is created.
+(P7-1), so no `byosmtp.send_log_summaries` table is created.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
@@ -90,7 +90,7 @@ governed by the P7-11 ordering invariant below. The retention keys drive the sin
 ## Phase 8 state (+17 keys, `sender_0020`)
 
 Phase 8 seeds seventeen new keys — appended to the SAME `sender_0020` version file Chunk 1 created
-for `sender.jobs.attempt_token` (flagged migration-filename deviation from the locked spec's own
+for `byosmtp.jobs.attempt_token` (flagged migration-filename deviation from the locked spec's own
 `sender_0020_content_variation_config` name; see `Docs/history/open-decisions.md` P8-OD-1). **Amended from
 fourteen to seventeen, 2026-07-26 (P8-OD-1, RULED):** three toggle parameters
 (`variation_css_magnitude_px`, `variation_zero_width_rate`, `variation_user_agent_rate`) were
@@ -98,7 +98,7 @@ promoted from fixed in-code values to independent dials — see the ruling in
 `Docs/history/phase-8-content-variation.md`'s "Post-Chunk-5 amendment" section and Phase 9 §4.5. All
 seventeen default to off/neutral, so **the whole set at default is byte-identical to the Phase 3
 send path** (Phase 8 §4/T1). Every key is consumed by the box via the additive `push_job.variation`
-snapshot the Brain stamps per job (§2.2) — the box itself never reads `sender.config`.
+snapshot the Brain stamps per job (§2.2) — the box itself never reads `byosmtp.config`.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
@@ -147,7 +147,7 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**
 the admin `PUT /v1/admin/config/{key}` boundary rejects a write that would invert either pair
-BEFORE it ever lands in `sender.config` (validated against the counterpart key's LIVE value, not
+BEFORE it ever lands in `byosmtp.config` (validated against the counterpart key's LIVE value, not
 the submitted value alone); the config-LOAD path (`internal/dispatch/config.go`'s `LoadConfig`)
 independently re-checks the same invariant on every tick as a backstop, in case a bad pair reaches
 the table by any OTHER path (a direct SQL write, a future second write surface). Both enforcement
@@ -156,7 +156,7 @@ what "valid" means for either pair.
 
 **Config writes are serialized against each other** (Phase 10 R4). The read of the counterpart's
 value, the ordering check, and the write all happen in ONE transaction, holding a transaction-scoped
-advisory lock (`Docs/advisory-locks.md`, `9_300_000_001`) that every config `PUT` takes. Without
+advisory lock (`Docs/advisory-locks.md`, `8_300_000_001`) that every config `PUT` takes. Without
 that, two *concurrent* PUTs — one lowering the boundary key, one raising the dependent key — each
 read a counterpart value that was still valid at the moment it read, so both passed the check and
 both committed, landing an inverted pair anyway. Serializing costs nothing (config writes are rare
@@ -223,7 +223,7 @@ CLAUDE.md Rule 1 forbids a literal that governs runtime *behavior*. It does not 
 that governs a defensive *ceiling* an operator would never want to tune per-deployment — a
 fat-finger/DoS/reputation guard, not a tunable dial. Every such bound in this codebase is
 documented at its definition site AND here, so "no hardcoded tuning constant" stays auditable
-against a complete, not merely a plausible, list. None of these are seeded `sender.config` rows;
+against a complete, not merely a plausible, list. None of these are seeded `byosmtp.config` rows;
 promoting one to a real dial is a future additive migration, not a silent default change.
 
 | Site | Value | Why it's a bound, not a dial |

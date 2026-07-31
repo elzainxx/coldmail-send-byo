@@ -16,7 +16,7 @@ Start at the [root README](../README.md) if you have not already.
 | [`disaster-recovery.md`](./disaster-recovery.md) | KMS key backup and recovery, DB restore, credential/key rotation. **Read the key-backup section before going live** — losing the master key is unrecoverable. |
 | [`monitoring.md`](./monitoring.md) | Where do I point uptime monitoring and the alert webhook? |
 | [`capacity-planning.md`](./capacity-planning.md) | How many accounts do I need for N sends/day, and what binds first? |
-| [`sender-module-local-test-guide.md`](./sender-module-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
+| [`byosmtp-module-local-test-guide.md`](./byosmtp-module-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
 | [`smoke-test-real-provider.md`](./smoke-test-real-provider.md) | The first-contact-with-a-real-provider procedure. Written, deliberately not yet run. |
 
 ## Reference (the integrator/extender tier)
@@ -31,7 +31,7 @@ Start at the [root README](../README.md) if you have not already.
 | [`advisory-locks.md`](./advisory-locks.md) | Every advisory-lock key in the repo + the reserved band. | — |
 | [`load-test-results.md`](./load-test-results.md) | The measured single-Brain throughput ceiling (committed artifact, not a dashboard). | — |
 | `config-manifest.txt`, `config-consumers.txt` | Machine-readable inputs to the config gates. Not prose — do not hand-edit without re-running the gates. | both config gates |
-| `sender_module_backend_architecture.svg`, `sender_module_job_lifecycle_states.svg` | The canonical diagrams. | — |
+| `byosmtp_module_backend_architecture.svg`, `byosmtp_module_job_lifecycle_states.svg` | The canonical diagrams. | — |
 
 **Operating rules for changing the code** are in [`../CLAUDE.md`](../CLAUDE.md) — canonical, and
 deliberately not mirrored here (OD-11).

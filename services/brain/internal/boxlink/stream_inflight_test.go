@@ -18,7 +18,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // newMarkerServer builds a StreamServer with ONE registered box, bypassing only the TLS listener and

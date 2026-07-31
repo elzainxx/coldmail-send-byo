@@ -1,7 +1,7 @@
 -- sender_0022_job_events_error_context.up.sql — restore sender_0008's OWN declared contract:
 -- job_events.error_class / error_message are "Error context (nullable, only for error transitions)".
 --
--- THE DEFECT (found walking Stage 9 of Docs/sender-module-local-test-guide.md, on real infra).
+-- THE DEFECT (found walking Stage 9 of Docs/byosmtp-module-local-test-guide.md, on real infra).
 -- sender_0008 declares that contract verbatim over the two columns, then BOTH of its triggers
 -- violate it: they copy `NEW.last_error_class, NEW.last_error_message` into EVERY row they write,
 -- unconditionally. The job row's `last_error_*` columns are STICKY by design — the name says "last",
@@ -26,9 +26,9 @@
 -- (Docs/operator-runbook.md) would size the incident 4x too large. It is also plainly false as an
 -- audit record: `sending -> sent` did not fail with error_class=unknown.
 --
--- ROW-LEVEL vs EVENT-LEVEL is the whole distinction, and it is why sender.jobs is NOT touched here.
--- `sender.jobs.last_error_*` is a RUNNING fact about a mutable row ("the last error this job saw"),
--- and retaining it across a later success is correct and useful. `sender.job_events` is APPEND-ONLY
+-- ROW-LEVEL vs EVENT-LEVEL is the whole distinction, and it is why byosmtp.jobs is NOT touched here.
+-- `byosmtp.jobs.last_error_*` is a RUNNING fact about a mutable row ("the last error this job saw"),
+-- and retaining it across a later success is correct and useful. `byosmtp.job_events` is APPEND-ONLY
 -- and every row is a POINT-IN-TIME fact about ONE transition. Stamping a past error onto an
 -- unrelated later transition is not retention, it is fabrication — CLAUDE.md Rule 5 ("never invent
 -- an outcome"). So the fix is at the trigger, where the point-in-time row is written.
@@ -40,7 +40,7 @@
 -- a NARROWING of which rows carry error context, in the direction the schema already documented.
 --
 -- EXISTING ROWS ARE NOT REWRITTEN. job_events is append-only at the database level (sender_0008's
--- trg_job_events_reject_update + `REVOKE UPDATE, DELETE ... FROM sender_module`), and this migration
+-- trg_job_events_reject_update + `REVOKE UPDATE, DELETE ... FROM byosmtp_module`), and this migration
 -- does not weaken that to launder history — an audit log that can be retro-edited is worth less than
 -- one with a known, dated defect. Already-written rows keep their spurious tags. The two consequences
 -- are handled deliberately:
@@ -68,39 +68,39 @@
 -- here. That is the deliberate safe direction: the failure mode of guessing wrong becomes "an error
 -- was not labelled", never "a success was labelled as an error". Adding a state is a reviewed change
 -- that revisits this function.
-CREATE OR REPLACE FUNCTION sender.fn_job_event_is_error_transition(
-    p_from sender.job_state,
-    p_to   sender.job_state
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_event_is_error_transition(
+    p_from byosmtp.job_state,
+    p_to   byosmtp.job_state
 ) RETURNS BOOLEAN AS $$
     SELECT p_to IN ('failed', 'bounced')
         OR (p_to = 'queued' AND p_from IS NOT NULL);
 $$ LANGUAGE sql IMMUTABLE;
-ALTER FUNCTION sender.fn_job_event_is_error_transition(sender.job_state, sender.job_state)
-    OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_event_is_error_transition(byosmtp.job_state, byosmtp.job_state)
+    OWNER TO byosmtp_owner;
 
 -- Genesis trigger: unchanged in every respect except that error context is now gated. Under the
 -- predicate above a genesis row is never an error, so in practice this always writes NULL/NULL —
 -- which is also what it SHOULD have written all along (a job's first event cannot describe a failure
 -- that has not happened). Routing it through the shared predicate rather than hardcoding NULL keeps
 -- ONE definition of "error transition" in the schema.
-CREATE OR REPLACE FUNCTION sender.fn_job_events_on_insert()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_on_insert()
 RETURNS TRIGGER AS $$
 DECLARE
     v_actor TEXT;
     v_is_error BOOLEAN;
 BEGIN
-    v_actor := current_setting('sender.actor', true);
+    v_actor := current_setting('byosmtp.actor', true);
     IF v_actor IS NULL OR v_actor = '' THEN
         v_actor := 'system'; -- lenient on genesis: job-creation paths are diverse
     END IF;
 
-    v_is_error := sender.fn_job_event_is_error_transition(NULL, NEW.state);
+    v_is_error := byosmtp.fn_job_event_is_error_transition(NULL, NEW.state);
 
-    INSERT INTO sender.job_events (
+    INSERT INTO byosmtp.job_events (
         job_id, user_id, from_state, to_state, actor,
         account_id, box_id, error_class, error_message, metadata
     ) VALUES (
-        NEW.id, NEW.user_id, NULL, NEW.state, v_actor::sender.event_actor,
+        NEW.id, NEW.user_id, NULL, NEW.state, v_actor::byosmtp.event_actor,
         NEW.assigned_account_id, NEW.assigned_box_id,
         CASE WHEN v_is_error THEN NEW.last_error_class   ELSE NULL END,
         CASE WHEN v_is_error THEN NEW.last_error_message ELSE NULL END,
@@ -109,13 +109,13 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_on_insert() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_on_insert() OWNER TO byosmtp_owner;
 
 -- State-change trigger: the one that produced the live 4x inflation. Same early-return on an
 -- unchanged state (the semantics CLAUDE.md Rule 9(a) depends on — `SET state = state` is still not
 -- an event), same strict actor GUC, same one-row-per-transition guarantee. ONLY the error-context
 -- columns are gated.
-CREATE OR REPLACE FUNCTION sender.fn_job_events_on_state_change()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_on_state_change()
 RETURNS TRIGGER AS $$
 DECLARE
     v_actor TEXT;
@@ -125,19 +125,19 @@ BEGIN
         RETURN NEW; -- no state change, no event
     END IF;
 
-    v_actor := current_setting('sender.actor', true);
+    v_actor := current_setting('byosmtp.actor', true);
     IF v_actor IS NULL OR v_actor = '' THEN
-        RAISE EXCEPTION 'sender.actor GUC not set: cannot record state transition'
-            USING HINT = 'Call set_config(''sender.actor'', ''dispatcher'', true) before UPDATE';
+        RAISE EXCEPTION 'byosmtp.actor GUC not set: cannot record state transition'
+            USING HINT = 'Call set_config(''byosmtp.actor'', ''dispatcher'', true) before UPDATE';
     END IF;
 
-    v_is_error := sender.fn_job_event_is_error_transition(OLD.state, NEW.state);
+    v_is_error := byosmtp.fn_job_event_is_error_transition(OLD.state, NEW.state);
 
-    INSERT INTO sender.job_events (
+    INSERT INTO byosmtp.job_events (
         job_id, user_id, from_state, to_state, actor,
         account_id, box_id, error_class, error_message, metadata
     ) VALUES (
-        NEW.id, NEW.user_id, OLD.state, NEW.state, v_actor::sender.event_actor,
+        NEW.id, NEW.user_id, OLD.state, NEW.state, v_actor::byosmtp.event_actor,
         NEW.assigned_account_id, NEW.assigned_box_id,
         CASE WHEN v_is_error THEN NEW.last_error_class   ELSE NULL END,
         CASE WHEN v_is_error THEN NEW.last_error_message ELSE NULL END,
@@ -146,6 +146,6 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_on_state_change() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_on_state_change() OWNER TO byosmtp_owner;
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0022');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0022');

@@ -15,7 +15,7 @@ import (
 
 // defaultQuoteUnitCredits is the fallback used ONLY if unit_price_credits is unreadable (should
 // never happen post-sender_0021 — the key is seeded with this exact value). Not itself a tuning
-// dial: the real, live-retunable value is read fresh from sender.config on every request via
+// dial: the real, live-retunable value is read fresh from byosmtp.config on every request via
 // readUnitPriceCredits (Phase 9.5 S10, §2.4) — config-not-code, no redeploy needed for a price
 // change to take effect.
 const defaultQuoteUnitCredits = 1
@@ -129,7 +129,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
-	// Create one sender.jobs row (state=queued, genesis event via the actor='system' GUC), reading
+	// Create one byosmtp.jobs row (state=queued, genesis event via the actor='system' GUC), reading
 	// the frozen recipient/subject/body/reply_to from public.job_items (SELECT-only, Phase 1),
 	// SCOPED to the calling tenant: the job_item must belong to req.UserID (else 404-style
 	// not-found — no cross-tenant existence disclosure). The job_item_id UNIQUE constraint makes a
@@ -254,7 +254,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	unit := s.readUnitPriceCredits(ctx)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"module":      "sender",
+		"module":      "byosmtp",
 		"api_version": "v1",
 		"capabilities": map[string]any{
 			"single_send":           true,
@@ -273,7 +273,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// readUnitPriceCredits reads unit_price_credits fresh from sender.config (Phase 9.5 S10, §2.4) —
+// readUnitPriceCredits reads unit_price_credits fresh from byosmtp.config (Phase 9.5 S10, §2.4) —
 // live-retunable, no redeploy. platformapi does NOT import internal/dispatch's LoadConfig
 // (structural package isolation, OD-7's precedent — mirrors internal/adminapi's own local config
 // readers), so this is a minimal, scoped-to-one-key local reader. Falls back to the seeded default
@@ -281,7 +281,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 // low-stakes endpoints and a transient config-read blip must not 500 every quote in flight.
 func (s *Server) readUnitPriceCredits(ctx context.Context) int {
 	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'unit_price_credits'`).Scan(&raw); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = 'unit_price_credits'`).Scan(&raw); err != nil {
 		return defaultQuoteUnitCredits
 	}
 	var wrap struct {

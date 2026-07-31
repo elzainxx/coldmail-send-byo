@@ -30,7 +30,7 @@ func TestDailyResetHour_ShiftsHealthAccountCounts(t *testing.T) {
 
 	dayAtHour23 := todayInTZForHourAdmin(23)
 	if _, err := e.admin.Exec(bgCtx(),
-		`UPDATE sender.accounts SET daily_reset_day = $2::date WHERE id = $1`, acct, dayAtHour23); err != nil {
+		`UPDATE byosmtp.accounts SET daily_reset_day = $2::date WHERE id = $1`, acct, dayAtHour23); err != nil {
 		t.Fatalf("pin daily_reset_day: %v", err)
 	}
 

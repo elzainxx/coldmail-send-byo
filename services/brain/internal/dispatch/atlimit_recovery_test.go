@@ -19,7 +19,7 @@ package dispatch
 // can make an account immediately ineligible until reset — expected admin behavior"). So this test
 // does NOT assert a fix; it PINS the asymmetry, because the runbook now documents it as the reason an
 // operator must add an account rather than wait or hand-edit `paused`. Found walking Stage 8 of
-// Docs/sender-module-local-test-guide.md: raising a real paused account's limit from 5 to 500 (495
+// Docs/byosmtp-module-local-test-guide.md: raising a real paused account's limit from 5 to 500 (495
 // units of headroom) left it ineligible, and /unpause returned 422.
 //
 // ANTI-VACUITY: the two shapes are asserted to DIFFER from each other after the identical limit
@@ -67,7 +67,7 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 	// exactly as PATCH /v1/admin/accounts/{id} {"daily_limit":500} would leave them.
 	for _, id := range []string{acctA, acctB} {
 		if _, err := e.admin.Exec(context.Background(),
-			`UPDATE sender.accounts SET daily_limit = 500 WHERE id = $1`, id); err != nil {
+			`UPDATE byosmtp.accounts SET daily_limit = 500 WHERE id = $1`, id); err != nil {
 			t.Fatalf("raise daily_limit: %v", err)
 		}
 	}
@@ -101,7 +101,7 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 	// its ineligibility above really was the pause, not something else about the row) by aging
 	// daily_reset_day and consuming it — the lazy self-heal in the same UPDATE.
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.accounts SET daily_reset_day = $2::date WHERE id = $1`, acctB, yesterdayUTC()); err != nil {
+		`UPDATE byosmtp.accounts SET daily_reset_day = $2::date WHERE id = $1`, acctB, yesterdayUTC()); err != nil {
 		t.Fatalf("age reset day: %v", err)
 	}
 	gotB, okB2, err := e.d.accountConsume(context.Background(), poolB, defaultAccountOrderBy, nil, "UTC", 0, 900)
@@ -114,7 +114,7 @@ func TestAtLimit_RaisingDailyLimitRecoversOnlyTheUnpausedShape(t *testing.T) {
 	var paused bool
 	var reason *string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT paused, pause_reason::text FROM sender.accounts WHERE id=$1`, acctB).Scan(&paused, &reason); err != nil {
+		`SELECT paused, pause_reason::text FROM byosmtp.accounts WHERE id=$1`, acctB).Scan(&paused, &reason); err != nil {
 		t.Fatalf("read back shape B: %v", err)
 	}
 	if paused || reason != nil {

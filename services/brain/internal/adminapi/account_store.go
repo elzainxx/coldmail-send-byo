@@ -69,7 +69,7 @@ func scanAccount(row pgx.Row) (*accountResource, error) {
 
 // getAccount reads one account by id. errAccountNotFound if absent.
 func getAccount(ctx context.Context, db pgxDB, id string) (*accountResource, error) {
-	row := db.QueryRow(ctx, "SELECT "+accountSelectCols+" FROM sender.accounts a WHERE a.id=$1", id)
+	row := db.QueryRow(ctx, "SELECT "+accountSelectCols+" FROM byosmtp.accounts a WHERE a.id=$1", id)
 	a, err := scanAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errAccountNotFound
@@ -91,7 +91,7 @@ type accountFlags struct {
 func readFlags(ctx context.Context, db pgxDB, id string) (accountFlags, error) {
 	var f accountFlags
 	err := db.QueryRow(ctx,
-		"SELECT paused, pause_reason, quarantined, disabled FROM sender.accounts WHERE id=$1", id).
+		"SELECT paused, pause_reason, quarantined, disabled FROM byosmtp.accounts WHERE id=$1", id).
 		Scan(&f.Paused, &f.PauseReason, &f.Quarantined, &f.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return f, errAccountNotFound
@@ -101,7 +101,7 @@ func readFlags(ctx context.Context, db pgxDB, id string) (accountFlags, error) {
 
 // poolTenancy returns a pool's (kind, owner_user_id) for deriving an account's user_id (§2.2.1).
 func poolTenancy(ctx context.Context, db pgxDB, poolID string) (kind string, ownerUserID *string, err error) {
-	err = db.QueryRow(ctx, "SELECT kind, owner_user_id FROM sender.pools WHERE id=$1", poolID).
+	err = db.QueryRow(ctx, "SELECT kind, owner_user_id FROM byosmtp.pools WHERE id=$1", poolID).
 		Scan(&kind, &ownerUserID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, errPoolNotFound

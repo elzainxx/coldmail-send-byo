@@ -83,7 +83,7 @@ func TestT6_FallbackCycleRejected(t *testing.T) {
 	}
 	// A.fallback_pool_id unchanged in the DB (still null).
 	var fb *string
-	if err := e.admin.QueryRow(bgCtx(), "SELECT fallback_pool_id FROM sender.pools WHERE id=$1", a).Scan(&fb); err != nil {
+	if err := e.admin.QueryRow(bgCtx(), "SELECT fallback_pool_id FROM byosmtp.pools WHERE id=$1", a).Scan(&fb); err != nil {
 		t.Fatalf("read A fallback: %v", err)
 	}
 	if fb != nil {
@@ -133,7 +133,7 @@ func TestT10_ConfigValueTypeValidation(t *testing.T) {
 		t.Fatalf("config value after update = %v, want 750", g.body["value"])
 	}
 	var rawVal string
-	if err := e.admin.QueryRow(bgCtx(), "SELECT value::text FROM sender.config WHERE key='daily_limit_default'").Scan(&rawVal); err != nil {
+	if err := e.admin.QueryRow(bgCtx(), "SELECT value::text FROM byosmtp.config WHERE key='daily_limit_default'").Scan(&rawVal); err != nil {
 		t.Fatalf("read raw config: %v", err)
 	}
 	if !strings.Contains(strings.ReplaceAll(rawVal, " ", ""), `"v":750`) {

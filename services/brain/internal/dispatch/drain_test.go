@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // drain_test.go — Phase 7 §6 T4 (graceful shutdown). REAL infra: a real Postgres clone, the real
@@ -144,7 +144,7 @@ func (e *dispatchEnv) leaseOf(t *testing.T, jobID string) *time.Time {
 	t.Helper()
 	var lease *time.Time
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT lease_expires_at FROM sender.jobs WHERE id=$1`, jobID).Scan(&lease); err != nil {
+		`SELECT lease_expires_at FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&lease); err != nil {
 		t.Fatalf("read lease: %v", err)
 	}
 	return lease

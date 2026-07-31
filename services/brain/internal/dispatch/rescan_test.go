@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // jobLeaseAndEvents reads a job's raw lease_expires_at + its total job_events count — the two data a
@@ -15,8 +15,8 @@ import (
 func (e *dispatchEnv) jobLeaseAndEvents(t *testing.T, jobID string) (lease *time.Time, events int) {
 	t.Helper()
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT lease_expires_at, (SELECT count(*) FROM sender.job_events WHERE job_id=$1)
-		   FROM sender.jobs WHERE id=$1`, jobID).Scan(&lease, &events); err != nil {
+		`SELECT lease_expires_at, (SELECT count(*) FROM byosmtp.job_events WHERE job_id=$1)
+		   FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&lease, &events); err != nil {
 		t.Fatalf("read lease+events: %v", err)
 	}
 	return lease, events
@@ -27,7 +27,7 @@ func (e *dispatchEnv) boxHeartbeat(t *testing.T, boxID string) time.Time {
 	t.Helper()
 	var hb time.Time
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT last_heartbeat_at FROM sender.boxes WHERE id=$1`, boxID).Scan(&hb); err != nil {
+		`SELECT last_heartbeat_at FROM byosmtp.boxes WHERE id=$1`, boxID).Scan(&hb); err != nil {
 		t.Fatalf("read heartbeat: %v", err)
 	}
 	return hb
@@ -62,7 +62,7 @@ func TestRescan_ExtendsLeasesAndRefreshesHeartbeats(t *testing.T) {
 	// MUST (non-disabled). Force both heartbeats far into the past first.
 	e.setBoxHeartbeat(t, e.px.boxID, 500*time.Second)
 	// disabled requires disabled_at (boxes_disabled_at_check); set both in one statement.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.boxes SET status='disabled', disabled_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.boxes SET status='disabled', disabled_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
 		t.Fatalf("disable box: %v", err)
 	}
 	disabledHBBefore := e.boxHeartbeat(t, e.px.boxID)
@@ -176,7 +176,7 @@ func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
 	// Keep the account high-scored (recent success) so the classified failures across many rounds
 	// don't quarantine it and stall dispatchToSending — we're testing the LOCK ORDER, not scoring.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 

@@ -67,7 +67,7 @@ func (s *Server) handlePoolList(w http.ResponseWriter, r *http.Request) {
 	}
 	args = append(args, limit+1) // fetch one extra to detect next page
 	limitParam := "$" + strconv.Itoa(len(args))
-	q := "SELECT " + poolSelectCols + " FROM sender.pools p" + where +
+	q := "SELECT " + poolSelectCols + " FROM byosmtp.pools p" + where +
 		" ORDER BY p.created_at ASC, p.id ASC LIMIT " + limitParam
 
 	ctx, cancel := dbCtx(r.Context())
@@ -224,7 +224,7 @@ func (s *Server) handlePoolUpdate(w http.ResponseWriter, r *http.Request) {
 	sets = append(sets, "updated_at = NOW()")
 	args = append(args, id)
 	idParam := "$" + strconv.Itoa(len(args))
-	if _, err := s.db.Exec(ctx, "UPDATE sender.pools SET "+strings.Join(sets, ", ")+" WHERE id="+idParam, args...); err != nil {
+	if _, err := s.db.Exec(ctx, "UPDATE byosmtp.pools SET "+strings.Join(sets, ", ")+" WHERE id="+idParam, args...); err != nil {
 		s.fail(w, r, s.translatePoolWrite(err))
 		return
 	}

@@ -16,9 +16,9 @@ deploy/certs/
 
 # ── Go (Brain) ──────────────────────────────────────────────────────────────
 /services/brain/bin/
-/tools/sender-migrate/bin/
+/tools/byosmtp-migrate/bin/
 /tools/provision-box/bin/
-**/bin/sender-migrate
+**/bin/byosmtp-migrate
 **/bin/provision-box
 *.exe
 *.out

@@ -1,7 +1,7 @@
 -- sender_0016_accounts_scoring_columns.down.sql — reverse the two additive Phase 5 columns.
 -- IF EXISTS so the down is idempotent; drops touch only the additive columns, never a locked one.
-ALTER TABLE sender.accounts
+ALTER TABLE byosmtp.accounts
     DROP COLUMN IF EXISTS throttle_paused_at,
     DROP COLUMN IF EXISTS consecutive_failures;
 
-DELETE FROM sender.schema_migrations WHERE version = '0016';
+DELETE FROM byosmtp.schema_migrations WHERE version = '0016';

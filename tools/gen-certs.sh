@@ -52,7 +52,7 @@ distinguished_name = dn
 prompt = no
 x509_extensions = v3ca
 [dn]
-CN = sender-dev-ca
+CN = byosmtp-dev-ca
 [v3ca]
 basicConstraints = critical, CA:TRUE
 keyUsage = critical, keyCertSign, cRLSign

@@ -15,7 +15,7 @@ losses those trees cannot fix.
 
 ### Why it is fatal
 
-SMTP credentials are stored in `sender.accounts.credential_ciphertext`, encrypted AES-256-GCM. The
+SMTP credentials are stored in `byosmtp.accounts.credential_ciphertext`, encrypted AES-256-GCM. The
 key lives **outside the database**, held only by the Brain (`KMS_DEV_KEY_FILE`, or your KMS wiring).
 That separation is the point — a stolen database dump yields no credentials — and it is exactly why
 losing the key is terminal:
@@ -45,7 +45,7 @@ Exactly one file (or, with a cloud KMS, the key's own backup/replica arrangement
 
 | Item | Where it is in a default install | Notes |
 |---|---|---|
-| The master key material | the path in `KMS_DEV_KEY_FILE` (install guide: `/etc/sender/kms/master.key`; local dev: `secrets/dev/kms/dev-master.key`) | 32 raw bytes, AES-256. This is the whole risk. |
+| The master key material | the path in `KMS_DEV_KEY_FILE` (install guide: `/etc/byosmtp/kms/master.key`; local dev: `secrets/dev/kms/dev-master.key`) | 32 raw bytes, AES-256. This is the whole risk. |
 | `CREDENTIAL_KEY_ID` | the Brain's environment | Not secret, but a restore with the wrong label fails AAD authentication. Back up the *pairing* of key file to label. |
 
 The mTLS CA key (local dev: `secrets/dev/certs/ca.key`) is a *separate* and much less severe
@@ -66,7 +66,7 @@ umask 077
 # copied the install guide's annotated block, the line has an inline "# or your KMS wiring"
 # comment, and a bare `cut -d= -f2-` hands you a path with the comment glued on. Verify, don't
 # assume — an unreadable path here means you back up nothing and find out during a restore.
-KEY_PATH="$(grep -E '^KMS_DEV_KEY_FILE=' /etc/sender/brain.env \
+KEY_PATH="$(grep -E '^KMS_DEV_KEY_FILE=' /etc/byosmtp/brain.env \
              | cut -d= -f2- | sed 's/[[:space:]]*#.*$//' | tr -d '"'\''\r')"
 test -s "$KEY_PATH" || { echo "FATAL: no key at [$KEY_PATH]"; exit 1; }
 test "$(wc -c < "$KEY_PATH")" -eq 32 || echo "WARNING: key is not 32 bytes — check before trusting this backup"
@@ -79,7 +79,7 @@ cat > /tmp/sender-master-key.README <<'EOF'
 Sender module credential master key (AES-256, 32 raw bytes).
 Pairs with CREDENTIAL_KEY_ID=<value>  <-- fill this in; a mismatch fails AAD authentication.
 Restore to the path named by KMS_DEV_KEY_FILE on the Brain host, mode 0400, owned by the brain user.
-Losing this file makes every SMTP credential in sender.accounts permanently unrecoverable.
+Losing this file makes every SMTP credential in byosmtp.accounts permanently unrecoverable.
 EOF
 
 # 3. Move both OFF this host, then shred the temporary copies.
@@ -188,15 +188,15 @@ risk, not a corruption risk — decide deliberately whether to hold dispatch aft
    rollback). This module does not prescribe one.
 3. **Re-verify roles and ownership.** A restore into a fresh cluster can land the `sender` schema
    under the wrong owner, which silently breaks a load-bearing property: `FORCE ROW LEVEL SECURITY`
-   on `sender.accounts` only enforces because the schema is owned by the non-login, non-superuser
-   `sender_owner` role. Confirm it (read-only):
+   on `byosmtp.accounts` only enforces because the schema is owned by the non-login, non-superuser
+   `byosmtp_owner` role. Confirm it (read-only):
 
    ```sql
    SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner
-     FROM pg_namespace n WHERE n.nspname = 'sender';                 -- expect sender_owner
+     FROM pg_namespace n WHERE n.nspname = 'sender';                 -- expect byosmtp_owner
    SELECT relname, relrowsecurity, relforcerowsecurity
      FROM pg_class WHERE relname = 'accounts';                       -- expect t, t
-   SELECT rolcanlogin, rolsuper FROM pg_roles WHERE rolname = 'sender_owner';  -- expect f, f
+   SELECT rolcanlogin, rolsuper FROM pg_roles WHERE rolname = 'byosmtp_owner';  -- expect f, f
    ```
 
    If any of these are wrong, fix them before accepting traffic. The install guide's roles/grants
@@ -268,14 +268,14 @@ Safe ordering — the sequence that never leaves a row unreadable while dispatch
    progress against the DB, not against your list (read-only):
 
    ```sql
-   SELECT credential_key_id, COUNT(*) FROM sender.accounts GROUP BY 1 ORDER BY 1;
+   SELECT credential_key_id, COUNT(*) FROM byosmtp.accounts GROUP BY 1 ORDER BY 1;
    ```
 
 5. **Verify before unfreezing.** The count under the old label must be **zero**. Any row still on the
    old label will fail at send time, so check, do not assume:
 
    ```sql
-   SELECT id, smtp_host, smtp_username FROM sender.accounts
+   SELECT id, smtp_host, smtp_username FROM byosmtp.accounts
     WHERE credential_key_id <> '<new label>';       -- expect no rows
    ```
 
@@ -315,7 +315,7 @@ auth/confidentiality. That splits the work:
 - **The CA:** every leaf must be re-issued and every box restarted, plus the Brain's own
   `MTLS_CA_CERT`. Do the Brain last, so boxes are already carrying certs the new root can verify.
   Plan a maintenance window; there is no dual-trust-root mode.
-- **Decommissioning a box:** clear or rotate `sender.boxes.token_hash`. It is refused on its next
+- **Decommissioning a box:** clear or rotate `byosmtp.boxes.token_hash`. It is refused on its next
   connect *regardless of a still-valid cert* — that is the intended kill path, and it is why cert
   revocation infrastructure is not required to remove a box. **Then stop the box process**, because
   the SQL alone does not disconnect a box that is currently connected — see §4a. For a routine
@@ -339,7 +339,7 @@ Not a drill — the case where you believe the master key or a backup copy leake
 4. Rotate the master key and re-enter the new passwords in one pass — §3's procedure does both,
    since re-entry is required either way.
 5. Review who could reach the backups (§1's table), and treat the audit trail as evidence:
-   `sender.account_events` records every credential write with a request id, and it is never swept.
+   `byosmtp.account_events` records every credential write with a request id, and it is never swept.
 
 ---
 
@@ -348,7 +348,7 @@ Not a drill — the case where you believe the master key or a backup copy leake
 A different incident from §4, with a different first move — and the one place where doing the obvious
 thing first does **not** stop the bleeding.
 
-**The trap:** clearing `sender.boxes.token_hash` is checked only during the register handshake. A box
+**The trap:** clearing `byosmtp.boxes.token_hash` is checked only during the register handshake. A box
 that is *already* connected keeps its stream, and the Brain keeps pushing jobs to it from its
 in-memory registration — each push carrying one freshly decrypted SMTP credential. The revocation SQL
 stops the box coming *back*; it does not stop it *now*. Run it and walk away and the attacker keeps
@@ -359,17 +359,17 @@ harvesting a new credential per job while your ticket says "box evicted".
    outbound connection, so nothing the Brain does terminates it.
    - If you cannot reach the host, `dispatch_enabled=false` is the blunt Brain-side stop — it halts
      dispatch to *every* box, which is the right trade for a few minutes.
-2. **Then revoke:** clear/rotate `sender.boxes.token_hash` and set `status='disabled'`, so it is
+2. **Then revoke:** clear/rotate `byosmtp.boxes.token_hash` and set `status='disabled'`, so it is
    refused if it ever reconnects.
 3. **Rotate the SMTP passwords of every account that dispatched to that box** while it may have been
-   compromised. `SELECT DISTINCT assigned_account_id FROM sender.jobs WHERE assigned_box_id = '<box>'
+   compromised. `SELECT DISTINCT assigned_account_id FROM byosmtp.jobs WHERE assigned_box_id = '<box>'
    AND updated_at > '<suspected start>';` gives you the list. Do not skip this because the box was
    stopped: shutdown does **not** zero the in-flight credential (`security-posture.md` §3.12), and a
    box that ran for a while saw many accounts.
 4. **Distrust what that box reported.** A compromised box can report any outcome for a job it
    legitimately held — including `accepted` for mail never sent, and fabricated `auth_failure`s that
    may already have quarantined healthy accounts (`security-posture.md` §3.15). Review
-   `sender.account_events` for quarantines in the window and un-quarantine what the box lied about;
+   `byosmtp.account_events` for quarantines in the window and un-quarantine what the box lied about;
    treat `sent` rows from that box as unverified.
 5. **The master key is not exposed.** A box holds no key material and cannot decrypt anything, so this
    is not a §4 incident unless you have separate evidence. Do not rotate the master key reflexively —

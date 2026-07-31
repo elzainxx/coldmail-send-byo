@@ -25,8 +25,8 @@ import (
 )
 
 // LockKey is the fixed, namespaced advisory-lock key for the Brain singleton. Distinct from
-// the migration runner's key (9_100_000_001) — see docs/advisory-locks.md.
-const LockKey int64 = 9_200_000_001
+// the migration runner's key (8_100_000_001) — see docs/advisory-locks.md.
+const LockKey int64 = 8_200_000_001
 
 // ErrNotAcquired means another Brain holds the lock and the bounded wait elapsed. Callers
 // treat this as a clean, expected exit — not a crash.
@@ -137,7 +137,7 @@ func Acquire(ctx context.Context, dsn string, timeout time.Duration) (*Guard, er
 //
 // The stale-in-memory-state objection (ADR-0011 option C) is answered by WHAT is gated rather than
 // by refusing to re-acquire: every resumed loop re-reads config and re-queries the DB for its work
-// (claims come from sender.jobs, reclaim from lease timestamps, the fairness cursor only biases an
+// (claims come from byosmtp.jobs, reclaim from lease timestamps, the fairness cursor only biases an
 // ordering), so nothing that decides a send survives the pause in memory. The one piece of state
 // that does — box registrations on the live mTLS streams — is not stale but AUTHORITATIVE: those
 // streams either stayed connected (the boxes are genuinely there) or dropped and re-registered.

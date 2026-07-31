@@ -1,7 +1,7 @@
 // account_effect.go — Phase 5 Chunks 2/3/4: the per-outcome account effect (§2/§3/§4). Given a
 // penalizing failure's error_class and the account it landed on, this applies — in the SAME
 // transaction as the job requeue (outcome.go) — the score recompute (§3, Chunk 3) and the flag
-// change (§4, Chunk 4), writing sender.account_events(actor='system') on any flag change (§4.2/§2).
+// change (§4, Chunk 4), writing byosmtp.account_events(actor='system') on any flag change (§4.2/§2).
 //
 // THE DECISION SEAMS (Chunk 4 structural requirement): auto-quarantine and auto-pause each go
 // through ONE explicit predicate — quarantineDecision() and pauseDecision(). Every automatic
@@ -18,8 +18,8 @@ import (
 	"log"
 	"strconv"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // accountFlagState is the account's flag snapshot before/after an effect, matching the JSONB shape
@@ -108,7 +108,7 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 		newThrottlePause := after.Paused && after.PauseReason != nil && *after.PauseReason == "throttle" &&
 			!(before.Paused && before.PauseReason != nil && *before.PauseReason == "throttle")
 		if _, err := tx.Exec(ctx,
-			`UPDATE sender.accounts
+			`UPDATE byosmtp.accounts
 			   SET quarantined = $2,
 			       paused = $3,
 			       pause_reason = $4,
@@ -183,7 +183,7 @@ func (h *OutcomeHandler) readAccountEffectState(ctx context.Context, tx pgx.Tx, 
 	var f accountFlagState
 	var uid string
 	err := tx.QueryRow(ctx,
-		`SELECT paused, pause_reason, quarantined, disabled, user_id FROM sender.accounts WHERE id=$1 FOR UPDATE`, accountID).
+		`SELECT paused, pause_reason, quarantined, disabled, user_id FROM byosmtp.accounts WHERE id=$1 FOR UPDATE`, accountID).
 		Scan(&f.Paused, &f.PauseReason, &f.Quarantined, &f.Disabled, &uid)
 	return f, uid, err
 }
@@ -207,7 +207,7 @@ func (h *OutcomeHandler) writeSystemAccountEvent(ctx context.Context, tx pgx.Tx,
 		return err
 	}
 	_, err = tx.Exec(ctx,
-		`INSERT INTO sender.account_events
+		`INSERT INTO byosmtp.account_events
 		   (account_id, user_id, actor, action, from_flags, to_flags, reason, request_id)
 		 VALUES ($1, $2, 'system', $3, $4, $5, $6, NULL)`,
 		accountID, userID, action, fromJSON, toJSON, reason)
@@ -239,7 +239,7 @@ func (h *OutcomeHandler) writeShadowQuarantineEvent(ctx context.Context, tx pgx.
 	}
 	reason := shadowWouldQuarantineReason(score, threshold, trigger)
 	_, err = tx.Exec(ctx,
-		`INSERT INTO sender.account_events
+		`INSERT INTO byosmtp.account_events
 		   (account_id, user_id, actor, action, from_flags, to_flags, reason, request_id)
 		 VALUES ($1, $2, 'system', 'updated', $3, $3, $4, NULL)`,
 		accountID, userID, flagsJSON, reason)

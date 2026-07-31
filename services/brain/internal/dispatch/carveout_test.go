@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // accountScoreState reads the three columns a reclaim must NOT touch (the P6-10 carve-out surface).
 func (e *dispatchEnv) accountScoreState(t *testing.T, acctID string) (score, cf int, lastFail *time.Time) {
 	t.Helper()
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT account_status_score, consecutive_failures, last_failure_at FROM sender.accounts WHERE id=$1`, acctID).
+		`SELECT account_status_score, consecutive_failures, last_failure_at FROM byosmtp.accounts WHERE id=$1`, acctID).
 		Scan(&score, &cf, &lastFail); err != nil {
 		t.Fatalf("read account score state: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 	job := e.seedQueuedJob(t, "reclaim@example.com")
 	e.dispatchToSending(t, job)
 	var acctID string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM sender.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
 	score0, cf0, lastFail0 := e.accountScoreState(t, acctID)
@@ -62,7 +62,7 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 		t.Fatalf("RECLAIM CHANGED last_failure_at nullity (must be untouched, P6-10)")
 	}
 	var aev int
-	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM sender.account_events WHERE account_id=$1`, acctID).Scan(&aev); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1`, acctID).Scan(&aev); err != nil {
 		t.Fatalf("account_events: %v", err)
 	}
 	if aev != 0 {
@@ -75,7 +75,7 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 	// the real outcome handler — Phase 5 §3.3 recomputes on a reported outcome.
 	ctlAcct := e.seedAccount(t, pool, "sec-ctl")
 	ctlScore0, ctlCf0, _ := e.accountScoreState(t, ctlAcct)
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET quarantined=TRUE WHERE id=$1`, acctID); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("park first account: %v", err)
 	}
 	e.px.freeAllBoxes()
@@ -83,7 +83,7 @@ func TestCarveout_ReclaimDoesNotScore_WithReportedControl(t *testing.T) {
 	e.dispatchToSending(t, ctlJob)
 	// Sanity: the control job used the fresh account, not the parked one.
 	var usedAcct string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM sender.jobs WHERE id=$1`, ctlJob).Scan(&usedAcct); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM byosmtp.jobs WHERE id=$1`, ctlJob).Scan(&usedAcct); err != nil {
 		t.Fatalf("read control account: %v", err)
 	}
 	if usedAcct != ctlAcct {
@@ -145,7 +145,7 @@ func TestCarveout_NoCascadeQuarantine(t *testing.T) {
 			t.Fatalf("account %s was quarantined by a box-death reclaim (cascade-quarantine — P6-10 violated)", a)
 		}
 		var aev int
-		if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM sender.account_events WHERE account_id=$1`, a).Scan(&aev); err != nil {
+		if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1`, a).Scan(&aev); err != nil {
 			t.Fatalf("events: %v", err)
 		}
 		if aev != 0 {

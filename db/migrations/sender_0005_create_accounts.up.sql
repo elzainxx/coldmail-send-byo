@@ -1,12 +1,12 @@
--- sender_0005_create_accounts.up.sql — Phase 1: sender.accounts (crown-jewel credential table).
+-- sender_0005_create_accounts.up.sql — Phase 1: byosmtp.accounts (crown-jewel credential table).
 -- Only the SMTP secret is encrypted (AES-256-GCM, key OUTSIDE the DB — §9); host/port/username
 -- stay plaintext. Three credential columns exactly (no credential_alg / credential_encrypted_at
--- — DECIDED not adopted). Owned by sender_owner so FORCE RLS (0012) genuinely enforces the RLS
--- policy against sender_module (ADR-0004). No credential-integrity CHECKs are added in Phase 1
+-- — DECIDED not adopted). Owned by byosmtp_owner so FORCE RLS (0012) genuinely enforces the RLS
+-- policy against byosmtp_module (ADR-0004). No credential-integrity CHECKs are added in Phase 1
 -- (the 03-encryption draft marks them recommended/optional, not locked — the encode contract is
 -- Phase 2); the three columns are NOT NULL as locked in 01-backbone.
 
-CREATE TABLE sender.accounts (
+CREATE TABLE byosmtp.accounts (
     -- Identity
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE sender.accounts (
     -- Status and health (independent flags; score keeps running underneath)
     account_status_score SMALLINT NOT NULL DEFAULT 100,
     paused BOOLEAN NOT NULL DEFAULT FALSE,
-    pause_reason sender.pause_reason,
+    pause_reason byosmtp.pause_reason,
     quarantined BOOLEAN NOT NULL DEFAULT FALSE,
     disabled BOOLEAN NOT NULL DEFAULT FALSE,
 
@@ -54,7 +54,7 @@ CREATE TABLE sender.accounts (
 
     CONSTRAINT accounts_pool_fk
         FOREIGN KEY (pool_id)
-        REFERENCES sender.pools(id)
+        REFERENCES byosmtp.pools(id)
         ON DELETE RESTRICT,
 
     CONSTRAINT accounts_smtp_port_check
@@ -80,6 +80,6 @@ CREATE TABLE sender.accounts (
         )
 );
 
-ALTER TABLE sender.accounts OWNER TO sender_owner;
+ALTER TABLE byosmtp.accounts OWNER TO byosmtp_owner;
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0005');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0005');

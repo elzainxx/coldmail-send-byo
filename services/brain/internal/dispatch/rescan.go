@@ -80,7 +80,7 @@ func (d *Dispatcher) startupRescanWithWindow(ctx context.Context, windowSec int)
 	var extended int64
 	if windowSec > 0 {
 		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			    SET lease_expires_at = NOW() + make_interval(secs => $1),
 			        updated_at = NOW()
 			  WHERE state IN ('assigned','sending')`, windowSec)
@@ -93,9 +93,9 @@ func (d *Dispatcher) startupRescanWithWindow(ctx context.Context, windowSec int)
 	// (3) Refresh box heartbeats so Detector A does not instantly mark a reconnectable box stale — the
 	// Brain died, not the boxes; they are presumed live until they miss a heartbeat measured FROM BOOT.
 	// 'disabled' boxes are an admin verb (intentionally offline) and are left as-is. This is a plain
-	// non-state column on sender.boxes (no trigger), so it is likewise event-free.
+	// non-state column on byosmtp.boxes (no trigger), so it is likewise event-free.
 	if _, err := tx.Exec(ctx,
-		`UPDATE sender.boxes SET last_heartbeat_at = NOW() WHERE status <> 'disabled'`); err != nil {
+		`UPDATE byosmtp.boxes SET last_heartbeat_at = NOW() WHERE status <> 'disabled'`); err != nil {
 		return 0, err
 	}
 

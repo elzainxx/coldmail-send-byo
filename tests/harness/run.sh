@@ -3,7 +3,7 @@
 # Postgres + real Brain + real box + real Mailpit). NEVER mocks infra (CLAUDE.md Rule 3).
 #
 # Suites:
-#   1. migration lifecycle        (tools/sender-migrate integration test — real PG)
+#   1. migration lifecycle        (tools/byosmtp-migrate integration test — real PG)
 #   2. DB isolation modes         (template-clone cross-connection + txn-rollback)
 #   3. box<->Brain mTLS register/heartbeat + wrong-token negative control (live Brain)
 #   4. two-Brain singleton        (real 2nd Brain process exits, no double-lock)
@@ -21,21 +21,22 @@ bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 hr()   { echo "──────────────────────────────────────────────────────────────"; }
 
 # --- Derive connection info from the running stack ---------------------------
-# Admin (superuser) DSN via the mapped host port 5432.
+# Admin (superuser) DSN via the mapped host port (M3-P0-OD-6: offset +1000 from module 2's
+# 5432 so both stacks can run simultaneously without a bind collision).
 SUPER="${POSTGRES_SUPERPASS:-devsuperpass}"
-export TEST_ADMIN_DATABASE_URL="postgres://postgres:${SUPER}@localhost:5432/platform"
+export TEST_ADMIN_DATABASE_URL="postgres://postgres:${SUPER}@localhost:6432/platform"
 export MIGRATIONS_DIR="$(pwd)/db/migrations"
 export PREFLIGHT_SQL="$(pwd)/db/preflight/check_platform_tables.sql"
 
 # The migration lifecycle test runs the down migration, so it gets its OWN dedicated DB —
-# never the live `platform` DB the Brain is using (dropping the sender schema out from under
+# never the live `platform` DB the Brain is using (dropping the byosmtp schema out from under
 # a running Brain would disrupt the stack). Create + seed fixtures here.
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-  -c "DROP DATABASE IF EXISTS sender_migtest" -c "CREATE DATABASE sender_migtest" >/dev/null 2>&1 || true
-$DC exec -T postgres psql -U postgres -d sender_migtest -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS byosmtp_migtest" -c "CREATE DATABASE byosmtp_migtest" >/dev/null 2>&1 || true
+$DC exec -T postgres psql -U postgres -d byosmtp_migtest -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
-export TEST_DATABASE_URL="postgres://postgres:${SUPER}@localhost:5432/sender_migtest"
+export TEST_DATABASE_URL="postgres://postgres:${SUPER}@localhost:6432/byosmtp_migtest"
 
 # Box token for the live mTLS test (from .env, written by scripts/dev.sh certs).
 if [[ -f .env ]]; then
@@ -43,37 +44,37 @@ if [[ -f .env ]]; then
   export DEV_BOX_ID="$(grep -E '^DEV_BOX_ID=' .env | cut -d= -f2-)"
   export BOX_TOKEN="$(grep -E '^DEV_BOX_TOKEN=' .env | cut -d= -f2-)"
 fi
-export BRAIN_BOXLINK_URL="https://localhost:8443"
+export BRAIN_BOXLINK_URL="https://localhost:9443"
 export BOX_MTLS_CERT="$(pwd)/secrets/dev/certs/box.crt"
 export BOX_MTLS_KEY="$(pwd)/secrets/dev/certs/box.key"
 export BOX_MTLS_CA="$(pwd)/secrets/dev/certs/ca.crt"
 
 # --- Build a migrated TEMPLATE db for the isolation suite --------------------
-# Create sender_template as a FRESH empty DB (NOT a clone of the live `platform`). Cloning
+# Create byosmtp_template as a FRESH empty DB (NOT a clone of the live `platform`). Cloning
 # platform would require pg_terminate_backend on its connections — which would kill the
 # Brain's singleton-lock connection (SQLSTATE 57P01) and release the lock. The isolation
-# tests only need a database with the platform fixture tables + the migrated sender schema,
+# tests only need a database with the platform fixture tables + the migrated byosmtp schema,
 # so we build one from scratch and never touch platform's live connections.
-echo "== preparing template DB (sender_template) =="
+echo "== preparing template DB (byosmtp_template) =="
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-  -c "DROP DATABASE IF EXISTS sender_template" \
-  -c "CREATE DATABASE sender_template" >/dev/null 2>&1 || true
-# Seed the platform fixture tables + apply the sender migration chain into the template,
-# using an admin DSN pointed at sender_template (never platform).
-TPL_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template"
-$DC exec -T postgres psql -U postgres -d sender_template -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS byosmtp_template" \
+  -c "CREATE DATABASE byosmtp_template" >/dev/null 2>&1 || true
+# Seed the platform fixture tables + apply the byosmtp migration chain into the template,
+# using an admin DSN pointed at byosmtp_template (never platform).
+TPL_DSN="postgres://postgres:${SUPER}@localhost:6432/byosmtp_template"
+$DC exec -T postgres psql -U postgres -d byosmtp_template -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
-# up-and-set-password: apply the full chain AND set sender_module's password out-of-band, so
-# the Phase 1 role-isolation tests (T5/T6/T3e) can connect as sender_module against clones.
-if MIGRATE_DATABASE_URL="$TPL_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
-     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
-  export TEST_TEMPLATE_DB="sender_template"; echo "  template ready (fresh DB, migrated + app password; platform untouched)"
+# up-and-set-password: apply the full chain AND set byosmtp_module's password out-of-band, so
+# the Phase 1 role-isolation tests (T5/T6/T3e) can connect as byosmtp_module against clones.
+if MIGRATE_DATABASE_URL="$TPL_DSN" BYOSMTP_MODULE_PASSWORD="${BYOSMTP_MODULE_PASSWORD:-devmodulepass}" \
+     tools/byosmtp-migrate/bin/byosmtp-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="byosmtp_template"; echo "  template ready (fresh DB, migrated + app password; platform untouched)"
 else
   export TEST_TEMPLATE_DB=""; echo "  template create failed"
 fi
-# Phase 1 behavioral tests connect as sender_module; hand them the dev password.
-export SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}"
+# Phase 1 behavioral tests connect as byosmtp_module; hand them the dev password.
+export BYOSMTP_MODULE_PASSWORD="${BYOSMTP_MODULE_PASSWORD:-devmodulepass}"
 
 hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation + Phase 1 data model)"; hr
 # Judge on the Go test verdict line ("^ok"/"^FAIL"), NOT the raw exit code: on Windows the
@@ -94,7 +95,7 @@ go_suite() { # $1=dir  $2=label
   echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -40
   if echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
 }
-go_suite tools/sender-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
+go_suite tools/byosmtp-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
 # The harness package now holds BOTH the isolation-mode tests AND the Phase 1 behavioral suite
 # (T1 concurrent claim, T1b N-workers, T2 event-per-transition, T3 no-silent-state-change,
 # T3e RLS default-deny, T3f superuser-reads-only-ciphertext, T4 credential round-trip+tamper+
@@ -105,18 +106,18 @@ go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/cryp
 # --- Phase 2 admin API behavioral suite (real Server over httptest against real PG clones) -----
 # These tests live in the brain module (internal/adminapi) and drive the ACTUAL admin handlers
 # against clones of a template migrated 0000..0014. Build a dedicated template so the clones have
-# sender.account_events (0014) + sender_module's password. Never touches the live `platform` DB.
-echo "== preparing Phase 2 admin template (sender_template_p2, migrated 0000..0014) =="
+# byosmtp.account_events (0014) + byosmtp_module's password. Never touches the live `platform` DB.
+echo "== preparing Phase 2 admin template (byosmtp_template_p2, migrated 0000..0014) =="
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-  -c "DROP DATABASE IF EXISTS sender_template_p2" \
-  -c "CREATE DATABASE sender_template_p2" >/dev/null 2>&1 || true
-P2_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template_p2"
-$DC exec -T postgres psql -U postgres -d sender_template_p2 -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS byosmtp_template_p2" \
+  -c "CREATE DATABASE byosmtp_template_p2" >/dev/null 2>&1 || true
+P2_DSN="postgres://postgres:${SUPER}@localhost:6432/byosmtp_template_p2"
+$DC exec -T postgres psql -U postgres -d byosmtp_template_p2 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
-if MIGRATE_DATABASE_URL="$P2_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
-     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
-  export TEST_TEMPLATE_DB="sender_template_p2"; echo "  Phase 2 template ready (migrated 0000..0014 + app password)"
+if MIGRATE_DATABASE_URL="$P2_DSN" BYOSMTP_MODULE_PASSWORD="${BYOSMTP_MODULE_PASSWORD:-devmodulepass}" \
+     tools/byosmtp-migrate/bin/byosmtp-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="byosmtp_template_p2"; echo "  Phase 2 template ready (migrated 0000..0014 + app password)"
 else
   export TEST_TEMPLATE_DB=""; echo "  Phase 2 template create failed"
 fi
@@ -124,7 +125,7 @@ fi
 ( cd services/brain && GOTOOLCHAIN=local go build -o /dev/null ./... ) >/dev/null 2>&1 || true
 go_suite services/brain/internal/adminapi "Phase 2 admin API (credential intake/omit/AAD, pools/owner/cycle/RESTRICT, lifecycle+audit, config, auth 401)"
 # Restore the Phase 1 isolation template env for any later suite that expects it.
-export TEST_TEMPLATE_DB="sender_template"
+export TEST_TEMPLATE_DB="byosmtp_template"
 
 hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from the box container)"; hr
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
@@ -159,7 +160,7 @@ else
   bad "second Brain did NOT report clean singleton exit; output: $(echo "$SECOND_OUT" | tail -3)"
 fi
 # Anti-vacuity: prove the FIRST brain is still healthy (the lock is genuinely held, not free).
-if curl -fsS http://localhost:8080/readyz | grep -q '"singleton_lock":true'; then
+if curl -fsS http://localhost:9080/readyz | grep -q '"singleton_lock":true'; then
   ok "first Brain still holds the singleton lock (readyz singleton_lock=true)"
 else
   bad "first Brain readyz does not report singleton_lock=true"
@@ -226,24 +227,24 @@ fi
 hr; echo "SUITE 8: Phase 3 dispatch + credential Go tests (real Postgres clones)"; hr
 # Build a template migrated 0000..0014 (same shape as the Phase 2 template) and run the real
 # Dispatcher + OutcomeHandler + credential.Decryptor against clones. Reuses the Phase 2 template
-# if present, else builds sender_template_p3.
-echo "== preparing Phase 3 dispatch template (sender_template_p3, migrated 0000..0014) =="
+# if present, else builds byosmtp_template_p3.
+echo "== preparing Phase 3 dispatch template (byosmtp_template_p3, migrated 0000..0014) =="
 $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
-  -c "DROP DATABASE IF EXISTS sender_template_p3" -c "CREATE DATABASE sender_template_p3" >/dev/null 2>&1 || true
-P3_DSN="postgres://postgres:${SUPER}@localhost:5432/sender_template_p3"
-$DC exec -T postgres psql -U postgres -d sender_template_p3 -v ON_ERROR_STOP=1 -q \
+  -c "DROP DATABASE IF EXISTS byosmtp_template_p3" -c "CREATE DATABASE byosmtp_template_p3" >/dev/null 2>&1 || true
+P3_DSN="postgres://postgres:${SUPER}@localhost:6432/byosmtp_template_p3"
+$DC exec -T postgres psql -U postgres -d byosmtp_template_p3 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
   -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
-if MIGRATE_DATABASE_URL="$P3_DSN" SENDER_MODULE_PASSWORD="${SENDER_MODULE_PASSWORD:-devmodulepass}" \
-     tools/sender-migrate/bin/sender-migrate up-and-set-password >/dev/null 2>&1; then
-  export TEST_TEMPLATE_DB="sender_template_p3"; echo "  Phase 3 template ready"
+if MIGRATE_DATABASE_URL="$P3_DSN" BYOSMTP_MODULE_PASSWORD="${BYOSMTP_MODULE_PASSWORD:-devmodulepass}" \
+     tools/byosmtp-migrate/bin/byosmtp-migrate up-and-set-password >/dev/null 2>&1; then
+  export TEST_TEMPLATE_DB="byosmtp_template_p3"; echo "  Phase 3 template ready"
 else
   export TEST_TEMPLATE_DB=""; echo "  Phase 3 template create failed"
 fi
 go_suite services/brain/internal/dispatch "Phase 3 dispatch (claim/decrypt/push, idempotency, requeue, bounced, never-invent)"
 go_suite services/brain/internal/credential "Phase 3 credential decryptor (round-trip/tamper/transplant/key-id)"
 go_suite services/brain/internal/platformapi "Platform API tenancy (OD-25) + one-campaign-per-user (Phase 4 P4-7, incl. concurrent-attempt serialization)"
-export TEST_TEMPLATE_DB="sender_template"
+export TEST_TEMPLATE_DB="byosmtp_template"
 
 hr; echo "SUITE 9: Phase 3 minimal send path — LIVE end-to-end (real box + real Mailpit)"; hr
 # T1 real email accepted, T2 async run + report, T4 no double-send, T6 register auth, S1 no

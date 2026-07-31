@@ -3,7 +3,7 @@
 // push_job (Brain→box), and report (box→Brain) as newline-delimited JSON frames. This is the
 // channel the credential travels on, so it is the strictest transport in the system: mutual TLS
 // (RequireAndVerifyClientCert on the listener; the box verifies the Brain's cert on its side),
-// token-gated registration bound to a sender.boxes row, and stream-close on any auth failure —
+// token-gated registration bound to a byosmtp.boxes row, and stream-close on any auth failure —
 // NO job or credential is ever written to an unregistered/unauthenticated stream (§3.1/§3.3, S2).
 //
 // Phase 3 is one-job-in-flight-per-box (§2.5). The StreamServer tracks each registered box's
@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/tlsutil"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
-	"github.com/sender-module/brain/internal/tlsutil"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -70,7 +70,7 @@ type boxConn struct {
 	inFlight string // job id currently pushed to this box ("" = idle); guarded by StreamServer.mu
 }
 
-// NewStreamServer builds the stream listener. db is the sender_module pool (token verification +
+// NewStreamServer builds the stream listener. db is the byosmtp_module pool (token verification +
 // heartbeat updates). It does not start accepting until Serve is called.
 func NewStreamServer(addr string, tlsCfg tlsutil.ServerConfig, db *pgxpool.Pool, onReport ReportHandler) (*StreamServer, error) {
 	tc, err := tlsCfg.Build()
@@ -325,7 +325,7 @@ func (s *StreamServer) writeFrame(bc *boxConn, v any) error {
 	return nil
 }
 
-// authorizeBox verifies (id, token) against sender.boxes: the token is the authorization
+// authorizeBox verifies (id, token) against byosmtp.boxes: the token is the authorization
 // AUTHORITY (bcrypt vs token_hash), the client cert is transport (already verified by TLS). A
 // missing/disabled box, an empty token_hash (decommissioned), or a token mismatch → reject.
 func (s *StreamServer) authorizeBox(boxID, token string) bool {
@@ -336,7 +336,7 @@ func (s *StreamServer) authorizeBox(boxID, token string) bool {
 	defer cancel()
 	var hash, status string
 	err := s.db.QueryRow(ctx,
-		`SELECT token_hash, status::text FROM sender.boxes WHERE id = $1`, boxID).Scan(&hash, &status)
+		`SELECT token_hash, status::text FROM byosmtp.boxes WHERE id = $1`, boxID).Scan(&hash, &status)
 	if err != nil {
 		return false // unknown box id (or DB error): fail closed
 	}
@@ -355,7 +355,7 @@ func (s *StreamServer) markActive(reg boxproto.Register) error {
 	defer cancel()
 	meta := boxMetadata(reg)
 	_, err := s.db.Exec(ctx,
-		`UPDATE sender.boxes
+		`UPDATE byosmtp.boxes
 		   SET status = 'active',
 		       last_heartbeat_at = NOW(),
 		       box_metadata = COALESCE($2, box_metadata)
@@ -370,7 +370,7 @@ func (s *StreamServer) readOutcomeBufferTTLSec() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='box_outcome_buffer_ttl_sec'`).Scan(&raw); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='box_outcome_buffer_ttl_sec'`).Scan(&raw); err != nil {
 		log.Printf("boxlink stream: box_outcome_buffer_ttl_sec unreadable (%v) — box uses its bootstrap default", err)
 		return 0
 	}
@@ -388,9 +388,9 @@ func (s *StreamServer) touchHeartbeat(boxID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := s.db.Exec(ctx,
-		`UPDATE sender.boxes
+		`UPDATE byosmtp.boxes
 		   SET last_heartbeat_at = NOW(),
-		       status = CASE WHEN status = 'stale' THEN 'active'::sender.box_status ELSE status END
+		       status = CASE WHEN status = 'stale' THEN 'active'::byosmtp.box_status ELSE status END
 		 WHERE id = $1`, boxID)
 	return err
 }

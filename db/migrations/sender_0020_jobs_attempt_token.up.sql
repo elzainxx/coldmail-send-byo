@@ -1,5 +1,5 @@
 -- sender_0020_jobs_attempt_token.up.sql — Phase 8 CHUNK 1 (P7-OD-6, RULED-ADOPT 2026-07-26).
--- ONE additive column on the EXISTING sender.jobs table: the per-attempt identity the Brain has
+-- ONE additive column on the EXISTING byosmtp.jobs table: the per-attempt identity the Brain has
 -- lacked on the report path. Additive-only (CLAUDE.md Rule 5): no existing column, constraint, enum,
 -- index, or trigger is changed, so the locked jobs_attempt_count_check, jobs_lease_valid_check, the
 -- job_state enum, and the state machine are all untouched.
@@ -31,7 +31,7 @@
 -- max_attempts. That divergence is the whole point and is asserted behaviorally
 -- (TestAttemptToken_MonotonicAndNonSaturating).
 --
--- Grants (ADR-0008 trap): the column lands on sender.jobs, which sender_module already holds
+-- Grants (ADR-0008 trap): the column lands on byosmtp.jobs, which byosmtp_module already holds
 -- SELECT/INSERT/UPDATE/DELETE on (sender_0012). Table-level DML covers every column, present and
 -- future, so NO new GRANT is required and none is issued — and the schema-wide TestGrantsInvariant
 -- stays green (an ADD COLUMN changes no table-class privilege). No new table, no new grant, no
@@ -55,10 +55,10 @@
 -- order. markSending takes no exclusive account lock, so Rule 9's precondition does not apply to it
 -- (unchanged from Phase 3). The new Handle guard is a pure READ on the path that already read the job.
 
-ALTER TABLE sender.jobs
+ALTER TABLE byosmtp.jobs
     ADD COLUMN attempt_token BIGINT NOT NULL DEFAULT 0;  -- 0 = no attempt has been dispatched yet
 
-COMMENT ON COLUMN sender.jobs.attempt_token IS
+COMMENT ON COLUMN byosmtp.jobs.attempt_token IS
     'Monotonic, NON-saturating per-attempt identity (P7-OD-6). Incremented by the Brain in the guarded assigned->sending UPDATE; echoed on push_job and returned in report; a mismatching report is a stale replay and is rejected without mutating state or scoring the account. Deliberately uncapped — unlike attempt_count, which saturates at max_attempts and therefore cannot identify an attempt.';
 
 -- ---------------------------------------------------------------------------------------------
@@ -87,10 +87,10 @@ COMMENT ON COLUMN sender.jobs.attempt_token IS
 -- variation_user_agent_rate. The box's former literal constants (ZWJ_RATE, the CSS +/-1px spread,
 -- UA_INJECT_RATE) are REMOVED, not merely overridden, so there is exactly one source of truth.
 --
--- Grants (ADR-0008 trap): all seventeen rows land in sender.config, which sender_module already
+-- Grants (ADR-0008 trap): all seventeen rows land in byosmtp.config, which byosmtp_module already
 -- holds SELECT on (sender_0010). No new table, no new grant; the schema-wide TestGrantsInvariant
 -- stays green (a config INSERT changes no table-class privilege).
-INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES
 ('variation_html_minify', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 1: minify HTML body at box-side MIME assembly (strip comments/whitespace; preserve Outlook conditionals). Off = Phase 3 body. Box-consumed via push_job.variation.', 'boolean'),
 ('variation_comment_injection', '{"v":false}', '{"v":false}',
@@ -128,4 +128,4 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('variation_thread_index', '{"v":false}', '{"v":false}',
  'Phase 8 toggle 12: Thread-Index header. INERT in V1 (no sequences => no thread to index); emits nothing whether on or off. Kept for a future sequences phase. Box-consumed.', 'boolean');
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0020');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0020');

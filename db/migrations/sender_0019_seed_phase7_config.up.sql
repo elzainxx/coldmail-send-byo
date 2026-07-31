@@ -1,8 +1,8 @@
 -- sender_0019_seed_phase7_config.up.sql — Phase 7 (§5.1). The ONLY structural delta Phase 7 makes.
--- Six additive INSERTs into the EXISTING sender.config table (same pattern as sender_0010/0017/0018).
+-- Six additive INSERTs into the EXISTING byosmtp.config table (same pattern as sender_0010/0017/0018).
 -- No table structure changes; NO column, constraint, enum, or index is added or altered — Phase 7 is
 -- fully schema-neutral (P7-1: per-day summaries derive on demand from the permanent job_events, so
--- NO sender.send_log_summaries table / sender_0020 is created). value is JSONB-wrapped {"v": ...};
+-- NO byosmtp.send_log_summaries table / sender_0020 is created). value is JSONB-wrapped {"v": ...};
 -- default_value is never mutated (CLAUDE.md Rule 1). All six keys are appended to
 -- Docs/config-manifest.txt + Docs/config-reference.md in the SAME change (config_drift gate: 19 -> 25).
 --
@@ -32,11 +32,11 @@
 --                                  (P7-11): must be >= startup_reconnect_window_sec (default 900 >= 120,
 --                                  ~2x margin recommended for reconnect-backoff).
 --
--- Grants (ADR-0008 trap): all six rows land in sender.config, which sender_module already holds SELECT
+-- Grants (ADR-0008 trap): all six rows land in byosmtp.config, which byosmtp_module already holds SELECT
 -- on (sender_0010). No new table, no new grant; the schema-wide TestGrantsInvariant stays green (a
 -- config INSERT changes no table-class privilege). Phase 7 adds NO schema object, so there is no new
 -- grant to enumerate.
-INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES
 ('startup_reconnect_window_sec', '{"v":120}', '{"v":120}',
  'Startup rescan reconnect-reconciliation window: seconds the rescan extends orphaned in-flight leases / holds boxes before the continuous reclaim loop reclaims. Phase 7 §1. INVARIANT (P7-11): box_outcome_buffer_ttl_sec >= this.',
  'integer'),
@@ -56,4 +56,4 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
  'Bound on the box outcome-buffer: retain/replay unacked outcomes up to this age, then drop and fall back to reclaim. Consumed by the box (coordinated Phase 3). INVARIANT (P7-11): >= startup_reconnect_window_sec (with margin). Phase 7 §1.3.',
  'integer');
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0019');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0019');

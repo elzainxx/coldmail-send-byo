@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/adminapi"
+	"github.com/byosmtp-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/credential"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/adminapi"
-	"github.com/sender-module/brain/internal/boxproto"
-	"github.com/sender-module/brain/internal/credential"
 )
 
 const testKeyID = "cred-dek-test"
@@ -124,7 +124,7 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	t.Cleanup(drop)
 
 	admin := connect(t, cloneDSN)
-	moduleDSN := withUserPass(cloneDSN, "sender_module", modulePassword())
+	moduleDSN := withUserPass(cloneDSN, "byosmtp_module", modulePassword())
 	pool, err := pgxpool.New(context.Background(), moduleDSN)
 	if err != nil {
 		t.Fatalf("module pool: %v", err)
@@ -195,19 +195,19 @@ func (e *dispatchEnv) seedPool(t *testing.T) string {
 	}
 	var poolID string
 	if err := e.admin.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared','p3') RETURNING id`).Scan(&poolID); err != nil {
+		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared','p3') RETURNING id`).Scan(&poolID); err != nil {
 		t.Fatalf("seed pool: %v", err)
 	}
 	e.setDefaultSharedPool(t, poolID)
 	return poolID
 }
 
-// setDefaultSharedPool sets sender.config's default_shared_pool_id to poolID (the Phase 2
+// setDefaultSharedPool sets byosmtp.config's default_shared_pool_id to poolID (the Phase 2
 // config-update path, done directly here since these are dispatch-package fixtures).
 func (e *dispatchEnv) setDefaultSharedPool(t *testing.T, poolID string) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $1::text) WHERE key = 'default_shared_pool_id'`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $1::text) WHERE key = 'default_shared_pool_id'`,
 		poolID); err != nil {
 		t.Fatalf("set default_shared_pool_id: %v", err)
 	}
@@ -225,7 +225,7 @@ func (e *dispatchEnv) seedPoolWithStrategy(t *testing.T, strategy string) string
 	}
 	var poolID string
 	if err := e.admin.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, name, routing_strategy) VALUES ('00000000-0000-0000-0000-000000000000','shared','p4-strategy',$1::sender.routing_strategy) RETURNING id`,
+		`INSERT INTO byosmtp.pools (user_id, kind, name, routing_strategy) VALUES ('00000000-0000-0000-0000-000000000000','shared','p4-strategy',$1::byosmtp.routing_strategy) RETURNING id`,
 		strategy).Scan(&poolID); err != nil {
 		t.Fatalf("seed pool with strategy %s: %v", strategy, err)
 	}
@@ -245,7 +245,7 @@ func (e *dispatchEnv) seedDedicatedPool(t *testing.T, userID, fallbackPoolID str
 	}
 	var poolID string
 	if err := e.admin.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, owner_user_id, name, fallback_pool_id)
+		`INSERT INTO byosmtp.pools (user_id, kind, owner_user_id, name, fallback_pool_id)
 		 VALUES ($1,'dedicated',$1,'dedicated-p4',$2) RETURNING id`, userID, fb).Scan(&poolID); err != nil {
 		t.Fatalf("seed dedicated pool: %v", err)
 	}
@@ -265,7 +265,7 @@ func (e *dispatchEnv) seedSharedPool(t *testing.T, name string) string {
 	}
 	var poolID string
 	if err := e.admin.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared',$1) RETURNING id`, name).Scan(&poolID); err != nil {
+		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ('00000000-0000-0000-0000-000000000000','shared',$1) RETURNING id`, name).Scan(&poolID); err != nil {
 		t.Fatalf("seed shared pool: %v", err)
 	}
 	return poolID
@@ -275,7 +275,7 @@ func (e *dispatchEnv) seedSharedPool(t *testing.T, name string) string {
 func (e *dispatchEnv) clearDefaultSharedPool(t *testing.T) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', NULL) WHERE key = 'default_shared_pool_id'`); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', NULL) WHERE key = 'default_shared_pool_id'`); err != nil {
 		t.Fatalf("clear default_shared_pool_id: %v", err)
 	}
 }
@@ -296,7 +296,7 @@ func (e *dispatchEnv) seedAccount(t *testing.T, poolID, secret string) string {
 	}
 	username := "u-" + id + "@ourdomain.com"
 	_, err = e.admin.Exec(ctx,
-		`INSERT INTO sender.accounts
+		`INSERT INTO byosmtp.accounts
 		   (id, user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
 		 VALUES ($1,'00000000-0000-0000-0000-000000000000',$2,'smtp-sink',587,$6,$3,$4,$5,'u@ourdomain.com','Tester')`,
@@ -319,7 +319,7 @@ func (e *dispatchEnv) seedUser(t *testing.T, email string) string {
 	return id
 }
 
-// addBox seeds one more real sender.boxes row and registers it as an additional idle box on the
+// addBox seeds one more real byosmtp.boxes row and registers it as an additional idle box on the
 // env's recordingPusher, so a test can exercise more than one simultaneous push (the default
 // dispatchEnv has exactly one box, mirroring the Phase 3 fixtures).
 func (e *dispatchEnv) addBox(t *testing.T) {
@@ -338,7 +338,7 @@ func (e *dispatchEnv) jobBox(t *testing.T, jobID string) string {
 	t.Helper()
 	var box *string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT assigned_box_id::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&box); err != nil {
+		`SELECT assigned_box_id::text FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&box); err != nil {
 		t.Fatalf("read assigned box for job %s: %v", jobID, err)
 	}
 	if box == nil {
@@ -347,7 +347,7 @@ func (e *dispatchEnv) jobBox(t *testing.T, jobID string) string {
 	return *box
 }
 
-// mustLoadConfig reads the CURRENT live sender.config (via the real LoadConfig, same as Tick/
+// mustLoadConfig reads the CURRENT live byosmtp.config (via the real LoadConfig, same as Tick/
 // TryDispatch use) — for tests that call selectAccountForJob directly and need the freshest
 // config after mutating a key mid-test (e.g. setDefaultSharedPool/clearDefaultSharedPool).
 func (e *dispatchEnv) mustLoadConfig(t *testing.T) Config {
@@ -359,12 +359,12 @@ func (e *dispatchEnv) mustLoadConfig(t *testing.T) Config {
 	return cfg
 }
 
-// setConfigInt overwrites a seeded sender.config integer value (default_value is left untouched —
+// setConfigInt overwrites a seeded byosmtp.config integer value (default_value is left untouched —
 // CLAUDE.md Rule 1 forbids mutating default_value; only value is overridden for the test).
 func (e *dispatchEnv) setConfigInt(t *testing.T, key string, v int) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::int), updated_at = NOW() WHERE key = $1`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::int), updated_at = NOW() WHERE key = $1`,
 		key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
@@ -374,7 +374,7 @@ func (e *dispatchEnv) setConfigInt(t *testing.T, key string, v int) {
 func (e *dispatchEnv) setConfigStr(t *testing.T, key, v string) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::text), updated_at = NOW() WHERE key = $1`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::text), updated_at = NOW() WHERE key = $1`,
 		key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
@@ -384,7 +384,7 @@ func (e *dispatchEnv) setConfigStr(t *testing.T, key, v string) {
 func (e *dispatchEnv) setConfigBool(t *testing.T, key string, v bool) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::boolean), updated_at = NOW() WHERE key = $1`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::boolean), updated_at = NOW() WHERE key = $1`,
 		key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
@@ -395,13 +395,13 @@ func (e *dispatchEnv) setConfigBool(t *testing.T, key string, v bool) {
 func (e *dispatchEnv) setConfigFloat(t *testing.T, key string, v float64) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', $2::float8), updated_at = NOW() WHERE key = $1`,
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::float8), updated_at = NOW() WHERE key = $1`,
 		key, v); err != nil {
 		t.Fatalf("set config %s: %v", key, err)
 	}
 }
 
-// seedQueuedJob seeds a job_item + a queued sender.jobs row (genesis event) and returns the job id.
+// seedQueuedJob seeds a job_item + a queued byosmtp.jobs row (genesis event) and returns the job id.
 func (e *dispatchEnv) seedQueuedJob(t *testing.T, recipient string) string {
 	return e.seedQueuedJobSubject(t, recipient, "Subj")
 }
@@ -424,11 +424,11 @@ func (e *dispatchEnv) seedQueuedJobFor(t *testing.T, userID, recipient string) s
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','system',true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor','system',true)"); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
 		 VALUES ($1,(SELECT campaign_id FROM public.job_items WHERE id=$1),$2,$3,'Subj','<p>b</p>','reply@ourdomain.com','queued',NOW())
 		 RETURNING id`, jobItemID, userID, recipient).Scan(&jobID); err != nil {
 		t.Fatalf("seed job for user: %v", err)
@@ -463,11 +463,11 @@ func (e *dispatchEnv) seedQueuedJobImpl(t *testing.T, recipient, subject string)
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','system',true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor','system',true)"); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
 		 VALUES ($1,'00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000',$2,$3,'<p>b</p>','reply@ourdomain.com','queued',NOW())
 		 RETURNING id`, jobItemID, recipient, subject).Scan(&jobID); err != nil {
 		t.Fatalf("seed job: %v", err)
@@ -484,7 +484,7 @@ func (e *dispatchEnv) jobState(t *testing.T, jobID string) (state string, hasPMI
 	var pmid *string
 	var lease, completed *time.Time
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT state::text, provider_message_id, lease_expires_at, completed_at, attempt_count FROM sender.jobs WHERE id=$1`, jobID).
+		`SELECT state::text, provider_message_id, lease_expires_at, completed_at, attempt_count FROM byosmtp.jobs WHERE id=$1`, jobID).
 		Scan(&state, &pmid, &lease, &completed, &attempt); err != nil {
 		t.Fatalf("job state: %v", err)
 	}
@@ -495,7 +495,7 @@ func (e *dispatchEnv) eventCount(t *testing.T, jobID string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT count(*) FROM sender.job_events WHERE job_id=$1`, jobID).Scan(&n); err != nil {
+		`SELECT count(*) FROM byosmtp.job_events WHERE job_id=$1`, jobID).Scan(&n); err != nil {
 		t.Fatalf("event count: %v", err)
 	}
 	return n
@@ -505,7 +505,7 @@ func (e *dispatchEnv) sendLogCount(t *testing.T, jobID string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT count(*) FROM sender.send_logs WHERE job_id=$1`, jobID).Scan(&n); err != nil {
+		`SELECT count(*) FROM byosmtp.send_logs WHERE job_id=$1`, jobID).Scan(&n); err != nil {
 		t.Fatalf("send_log count: %v", err)
 	}
 	return n
@@ -532,7 +532,7 @@ func requireTemplate(t *testing.T) string {
 }
 
 func modulePassword() string {
-	if p := os.Getenv("SENDER_MODULE_PASSWORD"); p != "" {
+	if p := os.Getenv("BYOSMTP_MODULE_PASSWORD"); p != "" {
 		return p
 	}
 	return "devmodulepass"
@@ -577,7 +577,7 @@ func cloneDB(t *testing.T, adminDSN, templateDB, suffix string) (string, func())
 	return cloneDSN, cleanup
 }
 
-// seedBox seeds a real sender.boxes row and returns its id (a UUID). Its token_hash is irrelevant
+// seedBox seeds a real byosmtp.boxes row and returns its id (a UUID). Its token_hash is irrelevant
 // to these tests (the recording Pusher is used directly, not the stream auth path).
 func seedBox(t *testing.T, admin *pgx.Conn) string {
 	t.Helper()
@@ -586,7 +586,7 @@ func seedBox(t *testing.T, admin *pgx.Conn) string {
 		`INSERT INTO public.users (id, email, is_active) VALUES ('00000000-0000-0000-0000-000000000000','sys@sender.local',true) ON CONFLICT (id) DO NOTHING`)
 	var id string
 	if err := admin.QueryRow(ctx,
-		`INSERT INTO sender.boxes (id, user_id, token_hash) VALUES (gen_random_uuid(),'00000000-0000-0000-0000-000000000000','x') RETURNING id`).Scan(&id); err != nil {
+		`INSERT INTO byosmtp.boxes (id, user_id, token_hash) VALUES (gen_random_uuid(),'00000000-0000-0000-0000-000000000000','x') RETURNING id`).Scan(&id); err != nil {
 		t.Fatalf("seed box: %v", err)
 	}
 	return id

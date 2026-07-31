@@ -233,7 +233,7 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "updated_at = NOW()")
 		args = append(args, id)
 		idParam := "$" + strconv.Itoa(len(args))
-		if _, err := tx.Exec(ctx, "UPDATE sender.accounts SET "+strings.Join(sets, ", ")+" WHERE id="+idParam, args...); err != nil {
+		if _, err := tx.Exec(ctx, "UPDATE byosmtp.accounts SET "+strings.Join(sets, ", ")+" WHERE id="+idParam, args...); err != nil {
 			s.fail(w, r, s.translateAccountWrite(err))
 			return
 		}

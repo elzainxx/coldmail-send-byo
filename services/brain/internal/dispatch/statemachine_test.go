@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestStateMachine_ScoreCrossingAutoQuarantines (T5) — driving consecutive transient failures on a
@@ -25,12 +25,12 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 	// n=1 → 100-12-25=63; n=2 → 51; n=3 → 39; n=4 → 27 < 30 → quarantine at the 4th failure.
 	quarantinedAt := 0
 	for i := 1; i <= 5; i++ {
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next: %v", err)
 		}
 		// Once quarantined the account is ineligible, so the job can't reach sending anymore — stop.
 		var q bool
-		if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM sender.accounts WHERE id=$1`, acct).Scan(&q); err != nil {
+		if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&q); err != nil {
 			t.Fatalf("read quar: %v", err)
 		}
 		if q {
@@ -63,14 +63,14 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 
 	// Score HOLDS while quarantined: snapshot, run more dispatch ticks, assert unchanged (§3.3).
 	var scoreHeld int
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score FROM sender.accounts WHERE id=$1`, acct).Scan(&scoreHeld); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&scoreHeld); err != nil {
 		t.Fatalf("held score: %v", err)
 	}
 	if scoreHeld >= 30 {
 		t.Fatalf("quarantined at score %d, expected < 30", scoreHeld)
 	}
 	for i := 0; i < 3; i++ {
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset: %v", err)
 		}
 		if _, err := e.d.TryDispatch(ctx); err != nil {
@@ -79,7 +79,7 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 	}
 	var scoreAfter int
 	var quarStill bool
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, quarantined FROM sender.accounts WHERE id=$1`, acct).Scan(&scoreAfter, &quarStill); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, quarantined FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&scoreAfter, &quarStill); err != nil {
 		t.Fatalf("after ticks: %v", err)
 	}
 	if scoreAfter != scoreHeld {
@@ -104,14 +104,14 @@ func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 	// far in the past (throttle_pause_seconds default 900s; -1h is well past). This is the exact
 	// post-throttle state (paused, reason throttle, timestamp stamped) the clock seam lets us test.
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, acct); err != nil {
+		`UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW()-INTERVAL '1 hour' WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed throttle pause: %v", err)
 	}
 
 	// A second account, MANUALLY paused, in the SAME pool — must NOT be swept by throttle clearing.
 	manualAcct := e.seedAccount(t, pool, "sec2")
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.accounts SET paused=TRUE, pause_reason='manual' WHERE id=$1`, manualAcct); err != nil {
+		`UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='manual' WHERE id=$1`, manualAcct); err != nil {
 		t.Fatalf("seed manual pause: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 	var paused bool
 	var reason *string
 	var stamp *time.Time
-	if err := e.admin.QueryRow(ctx, `SELECT paused, pause_reason, throttle_paused_at FROM sender.accounts WHERE id=$1`, acct).Scan(&paused, &reason, &stamp); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT paused, pause_reason, throttle_paused_at FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&paused, &reason, &stamp); err != nil {
 		t.Fatalf("read throttle acct: %v", err)
 	}
 	if paused || reason != nil || stamp != nil {
@@ -139,7 +139,7 @@ func TestStateMachine_ThrottleAutoClears(t *testing.T) {
 	// Negative control: the MANUAL pause is untouched — still paused, reason manual, NO unpause event.
 	var mPaused bool
 	var mReason *string
-	if err := e.admin.QueryRow(ctx, `SELECT paused, pause_reason FROM sender.accounts WHERE id=$1`, manualAcct).Scan(&mPaused, &mReason); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT paused, pause_reason FROM byosmtp.accounts WHERE id=$1`, manualAcct).Scan(&mPaused, &mReason); err != nil {
 		t.Fatalf("read manual acct: %v", err)
 	}
 	if !mPaused || mReason == nil || *mReason != "manual" {
@@ -159,7 +159,7 @@ func TestStateMachine_InWindowThrottleNotEligible(t *testing.T) {
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW() WHERE id=$1`, acct); err != nil {
+		`UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed live throttle: %v", err)
 	}
 
@@ -178,7 +178,7 @@ func TestStateMachine_InWindowThrottleNotEligible(t *testing.T) {
 	}
 	// The pause is untouched (not cleared early), no unpause event.
 	var paused bool
-	if err := e.admin.QueryRow(ctx, `SELECT paused FROM sender.accounts WHERE id=$1`, acct).Scan(&paused); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT paused FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&paused); err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	if !paused {

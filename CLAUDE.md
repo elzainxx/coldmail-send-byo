@@ -14,7 +14,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 
 ## 1. Config not code
 - Every tunable — timeout, window, limit, batch size, interval, mode — is a seeded
-  row in `sender.config` with a documented `default_value` and a `value_type` hint.
+  row in `byosmtp.config` with a documented `default_value` and a `value_type` hint.
   Values are JSONB-wrapped `{"v": ...}`. There are NO hardcoded tuning constants in
   Go, Node, or SQL. A literal that governs runtime behavior is a bug.
 - `default_value` is never mutated. Phase 9 §4 is the authoritative 50-key reference.
@@ -27,7 +27,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   `config_ordering_violation` (Phase 7 §5.3 authoritative). Do not "clamp" or
   auto-correct — reject.
 - The ONE narrow, documented exception: the migration runner's own `lock_timeout` /
-  `statement_timeout` are CLI-flag defaults, because `sender.config` does not exist
+  `statement_timeout` are CLI-flag defaults, because `byosmtp.config` does not exist
   until the bootstrap migration creates it. This exception is the runner only — never
   Brain/box runtime behavior.
 
@@ -87,15 +87,15 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 - SMTP: STARTTLS-before-AUTH on ports 587/25; implicit TLS on 465. AUTH never
   precedes TLS.
 - Box authorization authority is the registration token (hash seeded in
-  sender.boxes.token_hash; plaintext never stored); the client cert is transport
+  byosmtp.boxes.token_hash; plaintext never stored); the client cert is transport
   auth/confidentiality. A decommissioned box (token_hash cleared/rotated) is refused
   on next connect regardless of cert.
 - Auth domains never share a credential: Domain A = platform service token
   (quote/run/report/describe); Domain B = operator platform_admin bearer key
   (stored hashed, constant-time compared) for /v1/admin/*.
 - The `sender` schema is owned by a dedicated NON-LOGIN, NON-SUPERUSER role
-  (`sender_owner`) so that `FORCE ROW LEVEL SECURITY` on `sender.accounts` actually
-  enforces. The app role `sender_module` is login-only and holds the enumerated grants,
+  (`byosmtp_owner`) so that `FORCE ROW LEVEL SECURITY` on `byosmtp.accounts` actually
+  enforces. The app role `byosmtp_module` is login-only and holds the enumerated grants,
   never ownership.
 
 ## 7. Autonomous-subsystem safety controls are respected
@@ -125,10 +125,10 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 
 ## 9. Account→job lock ordering (deadlock-avoidance invariant)
 - Any transaction that acquires an EXCLUSIVE account-row lock (`SELECT … FROM
-  sender.accounts … FOR UPDATE`) AND also writes a `sender.jobs` row MUST acquire the
+  byosmtp.accounts … FOR UPDATE`) AND also writes a `byosmtp.jobs` row MUST acquire the
   account lock FIRST — account → job. This is load-bearing and codebase-wide, not a
   per-phase detail.
-- WHY (structural, permanent): the `sender.jobs` `AFTER UPDATE OF state` trigger
+- WHY (structural, permanent): the `byosmtp.jobs` `AFTER UPDATE OF state` trigger
   (`sender_0008`) inserts `NEW.assigned_account_id` into `job_events`, so EVERY job-row
   UPDATE that leaves the account assigned takes an FK `KEY SHARE` on the account row
   AFTER the job-row lock. A path that separately grabs an exclusive account `FOR UPDATE`

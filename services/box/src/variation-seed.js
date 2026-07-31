@@ -44,7 +44,7 @@ export function pickSeeded(list, jobId, stream) {
 // can't guarantee). Lives here (a leaf module) rather than in variation.js so both variation.js
 // (VARIATION_DEFAULTS) and variation-content.js (the dynamic_preheader stage's fallback pool) can
 // import the SAME list without creating an import cycle between them. Chunk 5 moves the SOURCE of
-// this list into a seeded sender.config row (config-not-code); the value itself does not change —
+// this list into a seeded byosmtp.config row (config-not-code); the value itself does not change —
 // it is copied verbatim from the spec, not invented here.
 export const DEFAULT_PREHEADER_TEMPLATES = [
   "A brief note for you",

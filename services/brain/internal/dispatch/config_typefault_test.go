@@ -10,13 +10,13 @@ import (
 
 // setConfigRaw writes a RAW jsonb value to a config key, bypassing the typed setters (and the admin
 // PUT validator entirely). This is the whole point of the test below: it reproduces the ONE way a
-// type-invalid value can actually reach sender.config on a live system — a direct SQL write or a bad
+// type-invalid value can actually reach byosmtp.config on a live system — a direct SQL write or a bad
 // migration — which config.go's validateConfigOrdering comment already names as the reason
 // load-time validation exists as a backstop at all.
 func (e *dispatchEnv) setConfigRaw(t *testing.T, key, rawJSON string) {
 	t.Helper()
 	tag, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.config SET value = $2::jsonb, updated_at = NOW() WHERE key = $1`, key, rawJSON)
+		`UPDATE byosmtp.config SET value = $2::jsonb, updated_at = NOW() WHERE key = $1`, key, rawJSON)
 	if err != nil {
 		t.Fatalf("set raw config %s = %s: %v", key, rawJSON, err)
 	}
@@ -26,7 +26,7 @@ func (e *dispatchEnv) setConfigRaw(t *testing.T, key, rawJSON string) {
 }
 
 // TestConfigTypeFault_IsNotADBOutage (§2.1 classification; found 2026-07-28 walking Stage 6 of
-// Docs/sender-module-local-test-guide.md, "an invalid config type does not wedge the Brain").
+// Docs/byosmtp-module-local-test-guide.md, "an invalid config type does not wedge the Brain").
 //
 // A WRONG-TYPE config value and a DB outage are different faults with different correct operator
 // responses, and the §2.1 gate must not confuse them. This is the sibling of

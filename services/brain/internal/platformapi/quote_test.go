@@ -6,7 +6,7 @@ package platformapi
 //
 // The correctness claim under test: cost = recipient_count * unit_price_credits, and that number
 // is EXACTLY what gets billed regardless of retries/requeues/reclaims/duplicate-run attempts,
-// because none of those create a second sender.jobs row for the same job_item (Phase 3 §6.2's
+// because none of those create a second byosmtp.jobs row for the same job_item (Phase 3 §6.2's
 // job_item_id UNIQUE constraint) — they re-dispatch the SAME job. A rare accepted-duplicate
 // delivery (crash-after-250) is an extra DELIVERY, never an extra billed JOB (Phase 6 §2.6).
 
@@ -34,7 +34,7 @@ func TestQuote_MatchesRecipientCountTimesUnit(t *testing.T) {
 		t.Fatalf("quote is not idempotent: first=%v second=%v", resp.body["cost"], resp2.body["cost"])
 	}
 	var jobCount int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs`).Scan(&jobCount); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs`).Scan(&jobCount); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
 	if jobCount != 0 {
@@ -45,7 +45,7 @@ func TestQuote_MatchesRecipientCountTimesUnit(t *testing.T) {
 // TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun — the reconciliation claim (§1.2):
 // N recipients quoted at N*unit; after creating the N jobs via run, forcing one job through
 // several retry/attempt-count cycles (simulating Phase 5/6 requeue+reclaim) and attempting a
-// duplicate run for one job_item, the BILLABLE unit count (one sender.jobs row per job_item) is
+// duplicate run for one job_item, the BILLABLE unit count (one byosmtp.jobs row per job_item) is
 // still exactly N — never more (over-quote: retries would have to fabricate extra billable units)
 // and never fewer (under-quote: a job must not vanish under retry).
 func TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun(t *testing.T) {
@@ -68,12 +68,12 @@ func TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun(t *testing.T) {
 
 	// Simulate retry/reclaim churn on the FIRST job: bump attempt_count and cycle it back to
 	// queued several times, exactly as the outcome handler / reclaim loop would (Phase 5 §6,
-	// Phase 6 §2) — this must NOT create any new sender.jobs row for the same job_item.
+	// Phase 6 §2) — this must NOT create any new byosmtp.jobs row for the same job_item.
 	for cycle := 0; cycle < 3; cycle++ {
 		e.actorExec(t, "dispatcher",
-			`UPDATE sender.jobs SET state='sending', lease_expires_at=NOW()+interval '30 seconds' WHERE id=$1`, jobIDs[0])
+			`UPDATE byosmtp.jobs SET state='sending', lease_expires_at=NOW()+interval '30 seconds' WHERE id=$1`, jobIDs[0])
 		e.actorExec(t, "reclaim_loop",
-			`UPDATE sender.jobs SET state='queued', lease_expires_at=NULL, attempt_count=attempt_count+1 WHERE id=$1`, jobIDs[0])
+			`UPDATE byosmtp.jobs SET state='queued', lease_expires_at=NULL, attempt_count=attempt_count+1 WHERE id=$1`, jobIDs[0])
 	}
 
 	// Duplicate run for the SAME job_item (same tenant) must return the existing job, not create
@@ -86,7 +86,7 @@ func TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun(t *testing.T) {
 	}
 
 	var totalJobs int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs WHERE user_id=$1`, userU).Scan(&totalJobs); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs WHERE user_id=$1`, userU).Scan(&totalJobs); err != nil {
 		t.Fatalf("count total jobs: %v", err)
 	}
 	if totalJobs != n {
@@ -94,7 +94,7 @@ func TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun(t *testing.T) {
 	}
 }
 
-// actorExec runs a state-changing UPDATE inside a transaction with sender.actor set (required by
+// actorExec runs a state-changing UPDATE inside a transaction with byosmtp.actor set (required by
 // the sender_0008 job_events trigger for any non-genesis transition, per its own RAISE EXCEPTION).
 func (e *testEnv) actorExec(t *testing.T, actor, sql string, args ...any) {
 	t.Helper()
@@ -103,7 +103,7 @@ func (e *testEnv) actorExec(t *testing.T, actor, sql string, args ...any) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(bgctx())
-	if _, err := tx.Exec(bgctx(), `SELECT set_config('sender.actor', $1, true)`, actor); err != nil {
+	if _, err := tx.Exec(bgctx(), `SELECT set_config('byosmtp.actor', $1, true)`, actor); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	if _, err := tx.Exec(bgctx(), sql, args...); err != nil {
@@ -114,11 +114,11 @@ func (e *testEnv) actorExec(t *testing.T, actor, sql string, args ...any) {
 	}
 }
 
-// jobItemIDForJob reads back the job_item_id for a sender.jobs row (test helper).
+// jobItemIDForJob reads back the job_item_id for a byosmtp.jobs row (test helper).
 func (e *testEnv) jobItemIDForJob(t *testing.T, jobID string) (string, bool) {
 	t.Helper()
 	var id string
-	if err := e.admin.QueryRow(bgctx(), `SELECT job_item_id::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&id); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT job_item_id::text FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&id); err != nil {
 		t.Fatalf("job_item_id for job: %v", err)
 	}
 	return id, true

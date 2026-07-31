@@ -19,7 +19,7 @@ import (
 	"fmt"
 )
 
-// Decryptor unseals sender.accounts credentials. AES-256-GCM, 12-byte nonce, 128-bit tag
+// Decryptor unseals byosmtp.accounts credentials. AES-256-GCM, 12-byte nonce, 128-bit tag
 // appended inside the ciphertext (the combined-mode layout the schema stores). AAD =
 // account.id (raw 16 bytes) ‖ credential_key_id (utf8) — the exact encode contract the admin
 // Encryptor and the harness reference implementation share (Phase 2 OD-3, LOCKED-ADOPTED). The

@@ -3,7 +3,7 @@ package dispatch
 import (
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestClassify_Table drives the §1.1 mapping table with real SMTP response strings (the exact

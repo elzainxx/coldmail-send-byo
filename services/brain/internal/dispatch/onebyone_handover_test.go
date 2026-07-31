@@ -5,7 +5,7 @@ package dispatch
 // WHY THIS EXISTS. The operator runbook's "levers that actually exist in V1" table described account
 // rotation as "the default order prefers the highest-scoring account and exhausts it before moving
 // on; round_robin spreads instead." Two things were wrong with that sentence, and Stage 8 of
-// Docs/sender-module-local-test-guide.md surfaced both:
+// Docs/byosmtp-module-local-test-guide.md surfaced both:
 //
 //	(1) round_robin IS the default (sender_0004_create_pools.up.sql's column DEFAULT and
 //	    adminapi's POST /v1/admin/pools default), so "the default order" named the wrong strategy.
@@ -114,7 +114,7 @@ func TestOneByOne_HandsOverBeforeExhaustion_WithEqualLimitControl(t *testing.T) 
 		var paused, quarantined, disabled bool
 		if err := e.admin.QueryRow(context.Background(),
 			`SELECT daily_limit, daily_sent_count, paused, quarantined, disabled
-			   FROM sender.accounts WHERE id = $1`, leader).
+			   FROM byosmtp.accounts WHERE id = $1`, leader).
 			Scan(&limit, &sent, &paused, &quarantined, &disabled); err != nil {
 			t.Fatalf("read leader state: %v", err)
 		}

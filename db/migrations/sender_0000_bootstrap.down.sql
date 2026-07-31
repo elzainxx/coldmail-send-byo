@@ -4,20 +4,20 @@
 -- moot once the schema is dropped, but we keep the convention explicit for symmetry.
 
 -- Revoke platform-table grants (roles may persist if they own other objects).
-REVOKE SELECT ON public.users     FROM sender_module;
-REVOKE SELECT ON public.job_items FROM sender_module;
+REVOKE SELECT ON public.users     FROM byosmtp_module;
+REVOKE SELECT ON public.job_items FROM byosmtp_module;
 
 -- Remove default privileges we set.
-ALTER DEFAULT PRIVILEGES FOR ROLE sender_owner IN SCHEMA sender
-    REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM sender_module;
-ALTER DEFAULT PRIVILEGES FOR ROLE sender_owner IN SCHEMA sender
-    REVOKE USAGE, SELECT ON SEQUENCES FROM sender_module;
+ALTER DEFAULT PRIVILEGES FOR ROLE byosmtp_owner IN SCHEMA byosmtp
+    REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM byosmtp_module;
+ALTER DEFAULT PRIVILEGES FOR ROLE byosmtp_owner IN SCHEMA byosmtp
+    REVOKE USAGE, SELECT ON SEQUENCES FROM byosmtp_module;
 
 -- Bookkeeping delete (explicit, though the CASCADE below also removes the table).
-DELETE FROM sender.schema_migrations WHERE version = '0000';
+DELETE FROM byosmtp.schema_migrations WHERE version = '0000';
 
 -- Drop the schema and everything in it.
-DROP SCHEMA IF EXISTS sender CASCADE;
+DROP SCHEMA IF EXISTS byosmtp CASCADE;
 
 -- Drop the cluster-global roles BEST-EFFORT. Roles are shared across databases; if a role
 -- still owns objects in another database (e.g. a template/test DB, or the platform DB),
@@ -27,13 +27,13 @@ DROP SCHEMA IF EXISTS sender CASCADE;
 DO $$
 BEGIN
   BEGIN
-    DROP ROLE IF EXISTS sender_module;
+    DROP ROLE IF EXISTS byosmtp_module;
   EXCEPTION WHEN dependent_objects_still_exist THEN
-    RAISE NOTICE 'sender_module retained: still owns objects in another database';
+    RAISE NOTICE 'byosmtp_module retained: still owns objects in another database';
   END;
   BEGIN
-    DROP ROLE IF EXISTS sender_owner;
+    DROP ROLE IF EXISTS byosmtp_owner;
   EXCEPTION WHEN dependent_objects_still_exist THEN
-    RAISE NOTICE 'sender_owner retained: still owns objects in another database';
+    RAISE NOTICE 'byosmtp_owner retained: still owns objects in another database';
   END;
 END $$;

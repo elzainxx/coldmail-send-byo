@@ -207,7 +207,7 @@ func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		var full bool
 		if err := e.admin.QueryRow(context.Background(),
-			`SELECT daily_sent_count >= daily_limit FROM sender.accounts WHERE id=$1`, leader).Scan(&full); err != nil {
+			`SELECT daily_sent_count >= daily_limit FROM byosmtp.accounts WHERE id=$1`, leader).Scan(&full); err != nil {
 			t.Fatalf("check leader: %v", err)
 		}
 		if full {
@@ -219,7 +219,7 @@ func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
 	}
 	var leaderFull bool
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT daily_sent_count >= daily_limit FROM sender.accounts WHERE id=$1`, leader).Scan(&leaderFull); err != nil {
+		`SELECT daily_sent_count >= daily_limit FROM byosmtp.accounts WHERE id=$1`, leader).Scan(&leaderFull); err != nil {
 		t.Fatalf("check leader final: %v", err)
 	}
 	if !leaderFull {
@@ -227,7 +227,7 @@ func TestRouting_StrategyReadFromPoolColumn(t *testing.T) {
 	}
 
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.pools SET routing_strategy='round_robin' WHERE id=$1`, pool); err != nil {
+		`UPDATE byosmtp.pools SET routing_strategy='round_robin' WHERE id=$1`, pool); err != nil {
 		t.Fatalf("flip strategy: %v", err)
 	}
 	got, ok, err := e.d.consumeFromPool(context.Background(), pool, "UTC", 0, 900)

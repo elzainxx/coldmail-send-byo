@@ -33,7 +33,7 @@ docker compose exec postgres psql -U postgres -d platform
 
 Every query below is read-only unless it says otherwise. **Do not fix state with SQL.** Flag changes
 (pause/unpause, quarantine/unquarantine, enable/disable) go through the admin API so they write an
-audited `sender.account_events` row; a hand-edited `UPDATE` leaves no trace and the next incident
+audited `byosmtp.account_events` row; a hand-edited `UPDATE` leaves no trace and the next incident
 has no history to read.
 
 ## The 30-second triage
@@ -117,7 +117,7 @@ until an operator sets it. Until then, a base-tier campaign has no pool to resol
 stay cleanly `queued` forever.
 
 ```sql
-SELECT value FROM sender.config WHERE key = 'default_shared_pool_id';
+SELECT value FROM byosmtp.config WHERE key = 'default_shared_pool_id';
 ```
 
 `{"v": null}` is your cause. The Brain logs it too, rate-limited across the whole process so it
@@ -138,8 +138,8 @@ the pointer actually resolves:
 
 ```sql
 SELECT p.id, p.kind, p.enabled, p.name
-  FROM sender.pools p
- WHERE p.id = (SELECT (value->>'v')::uuid FROM sender.config WHERE key = 'default_shared_pool_id');
+  FROM byosmtp.pools p
+ WHERE p.id = (SELECT (value->>'v')::uuid FROM byosmtp.config WHERE key = 'default_shared_pool_id');
 ```
 
 Zero rows, `enabled = false`, or `kind <> 'shared'` — same cause, same fix.
@@ -179,8 +179,8 @@ agrees with the Brain's own notion of "today":
 
 ```sql
 WITH cfg AS (
-  SELECT (SELECT value->>'v'         FROM sender.config WHERE key = 'daily_reset_timezone') AS tz,
-         (SELECT (value->>'v')::int  FROM sender.config WHERE key = 'daily_reset_hour')     AS hr
+  SELECT (SELECT value->>'v'         FROM byosmtp.config WHERE key = 'daily_reset_timezone') AS tz,
+         (SELECT (value->>'v')::int  FROM byosmtp.config WHERE key = 'daily_reset_hour')     AS hr
 )
 SELECT a.id, a.pool_id, a.smtp_host, a.account_status_score AS score,
        CASE
@@ -193,7 +193,7 @@ SELECT a.id, a.pool_id, a.smtp_host, a.account_status_score AS score,
               AND a.daily_sent_count >= a.daily_limit  THEN 'at daily limit — SELF-CLEARS at reset'
          ELSE 'ELIGIBLE'
        END AS why_not_eligible
-  FROM sender.accounts a, cfg
+  FROM byosmtp.accounts a, cfg
  ORDER BY a.pool_id, why_not_eligible, a.id;
 ```
 
@@ -206,7 +206,7 @@ Read the right-hand column. It splits into two fundamentally different situation
 - **MANUAL recovery only** (`quarantined`, `disabled`, `paused: manual`) — nothing will re-open these
   on their own. For `quarantined`, go to [An account got quarantined](#an-account-got-quarantined)
   **before** unquarantining. For `paused: manual` / `disabled`, someone turned it off deliberately;
-  check `sender.account_events` for who and why before turning it back on.
+  check `byosmtp.account_events` for who and why before turning it back on.
 
 > **The two at-limit rows above are NOT the same row, and raising `daily_limit` only fixes one of
 > them.** Both read "at daily limit" to the eye, and both self-clear at the reset, but they recover
@@ -237,7 +237,7 @@ but not yet claimable, which looks like a stall if you only watch state counts.
 SELECT state, count(*),
        min(next_attempt_at) AS earliest_due,
        max(next_attempt_at) AS latest_due
-  FROM sender.jobs WHERE state = 'queued' GROUP BY state;
+  FROM byosmtp.jobs WHERE state = 'queued' GROUP BY state;
 ```
 
 If `earliest_due` is in the future, nothing is wrong — the backoff is doing its job. Look at *why*
@@ -245,7 +245,7 @@ they were requeued:
 
 ```sql
 SELECT last_error_class, count(*), max(attempt_count) AS worst_attempt
-  FROM sender.jobs WHERE state = 'queued' AND last_error_class IS NOT NULL
+  FROM byosmtp.jobs WHERE state = 'queued' AND last_error_class IS NOT NULL
  GROUP BY last_error_class ORDER BY 2 DESC;
 ```
 
@@ -266,11 +266,11 @@ arriving at all:
 
 ```sql
 SELECT count(*) AS created_last_hour
-  FROM sender.jobs WHERE created_at >= NOW() - INTERVAL '1 hour';
+  FROM byosmtp.jobs WHERE created_at >= NOW() - INTERVAL '1 hour';
 ```
 
 Zero, with a healthy Brain, means nothing is being submitted — that is a platform-side question, not
-a sender-module one. Quota enforcement is registered as deliberately out of scope in
+a byosmtp-module one. Quota enforcement is registered as deliberately out of scope in
 [`future-work.md`](./future-work.md).
 
 There is one genuine module-side rejection worth knowing, because it looks like a quota error:
@@ -279,7 +279,7 @@ campaign, `run` rejects the new campaign with `409 conflict` and creates zero jo
 
 ```sql
 SELECT user_id, campaign_id, count(*), min(state::text) AS a_state
-  FROM sender.jobs
+  FROM byosmtp.jobs
  WHERE state NOT IN ('sent','failed','bounced')
  GROUP BY user_id, campaign_id ORDER BY user_id;
 ```
@@ -297,7 +297,7 @@ nothing is reclaimed, and the only symptom is in the log.
 There are **two** kinds of config fault, and they look nearly identical in the log. Grep for both:
 
 ```bash
-journalctl -u sender-brain --since "15 min ago" | grep -E 'tick error: config|sweep error: config'
+journalctl -u byosmtp-brain --since "15 min ago" | grep -E 'tick error: config|sweep error: config'
 # (a) an ORDERING invariant — two keys that are individually fine but wrong relative to each other:
 # dispatch: tick error: config_ordering_violation: smtp_operation_timeout_sec (100) must be < job_max_processing_time_sec (50) level=error
 # reclaim:  tick error: config_ordering_violation: … level=error
@@ -323,7 +323,7 @@ Confirm against the table — this also shows a corrupt value, since `value->>'v
 row whose `v` key is missing entirely:
 
 ```sql
-SELECT key, value->>'v' AS value FROM sender.config
+SELECT key, value->>'v' AS value FROM byosmtp.config
  WHERE key IN ('smtp_operation_timeout_sec','job_max_processing_time_sec',
                'box_outcome_buffer_ttl_sec','startup_reconnect_window_sec') ORDER BY key;
 ```
@@ -349,7 +349,7 @@ both classes before they land — a write that would invert either pair (`400
 config_ordering_violation`) and a value of the wrong type for its key (`400 validation_failed`) — and
 config writes are serialized, so the API cannot produce either state, even from two simultaneous PUTs.
 A live fault therefore means it arrived by some **other** path: a direct SQL `UPDATE` against
-`sender.config`, a restore/seed that wrote several keys at once, or a migration that seeded a bad
+`byosmtp.config`, a restore/seed that wrote several keys at once, or a migration that seeded a bad
 value. Look there, not at the API. Both invariants, and every key's declared `value_type`, are in
 [`config-reference.md`](./config-reference.md).
 
@@ -369,7 +369,7 @@ Two triggers exist, and they mean very different things. The audit trail records
 
 ```sql
 SELECT created_at, actor, action, reason, from_flags, to_flags
-  FROM sender.account_events
+  FROM byosmtp.account_events
  WHERE account_id = '<account-uuid>'
  ORDER BY created_at DESC LIMIT 20;
 ```
@@ -407,9 +407,9 @@ SELECT id, account_status_score, consecutive_failures,
        daily_sent_count, daily_limit,
        last_success_at, last_failure_at,
        NOW() - last_success_at AS since_last_success
-  FROM sender.accounts WHERE id = '<account-uuid>';
-SELECT (SELECT value FROM sender.config WHERE key = 'quarantine_threshold') AS threshold,
-       (SELECT value FROM sender.config WHERE key = 'status_score_weights') AS weights;
+  FROM byosmtp.accounts WHERE id = '<account-uuid>';
+SELECT (SELECT value FROM byosmtp.config WHERE key = 'quarantine_threshold') AS threshold,
+       (SELECT value FROM byosmtp.config WHERE key = 'status_score_weights') AS weights;
 ```
 
 Then read the failures that drove it down:
@@ -417,7 +417,7 @@ Then read the failures that drove it down:
 ```sql
 SELECT je.created_at, je.error_class, je.from_state, je.to_state, je.actor,
        left(je.error_message, 160) AS err
-  FROM sender.job_events je
+  FROM byosmtp.job_events je
  WHERE je.account_id = '<account-uuid>' AND je.error_class IS NOT NULL
  ORDER BY je.created_at DESC LIMIT 30;
 ```
@@ -514,11 +514,11 @@ dedicated pools first (oldest first), then the shared fallback:
 ```sql
 -- The tenant's dedicated pools, in the order the Brain tries them:
 SELECT id, name, enabled, fallback_pool_id, routing_strategy
-  FROM sender.pools
+  FROM byosmtp.pools
  WHERE kind = 'dedicated' AND owner_user_id = '<user-uuid>' AND enabled = TRUE
  ORDER BY created_at ASC;
 -- Then the shared fallback:
-SELECT (SELECT value FROM sender.config WHERE key = 'default_shared_pool_id') AS default_shared;
+SELECT (SELECT value FROM byosmtp.config WHERE key = 'default_shared_pool_id') AS default_shared;
 ```
 
 Then run the per-account `why_not_eligible` query from
@@ -583,15 +583,15 @@ ahealth | jq .boxes
 ```sql
 SELECT id, status, last_heartbeat_at,
        NOW() - last_heartbeat_at AS silent_for, registered_at, disabled_at
-  FROM sender.boxes ORDER BY last_heartbeat_at ASC;
+  FROM byosmtp.boxes ORDER BY last_heartbeat_at ASC;
 
 -- Jobs it was holding (should trend to zero as reclaim runs):
-SELECT state, count(*) FROM sender.jobs
+SELECT state, count(*) FROM byosmtp.jobs
  WHERE assigned_box_id = '<box-uuid>' AND state IN ('assigned','sending') GROUP BY state;
 
 -- Proof the reclaim loop is working:
 SELECT created_at, job_id, from_state, to_state, error_class
-  FROM sender.job_events WHERE actor = 'reclaim_loop'
+  FROM byosmtp.job_events WHERE actor = 'reclaim_loop'
  ORDER BY created_at DESC LIMIT 20;
 ```
 
@@ -602,13 +602,13 @@ Then read the box's own log on its host. Useful lines, and what they mean:
 | `registered over mTLS stream` | Healthy. It is connected and waiting for work. |
 | `control stream closed; reconnecting (outcome buffer retained)` | Normal reconnect. It kept its outcomes. No action. |
 | `still cannot register after N attempts, but M unacked outcome(s) remain inside the buffer TTL — continuing to retry rather than exiting` | It is deliberately staying alive to protect buffered outcomes. Let it. Fix the Brain-side reachability. |
-| `could not (re)register within the retry budget; exiting for restart` | It gave up and expects its supervisor to restart it. Almost always: the Brain was not reachable, or the `sender.boxes` row / token is wrong. |
+| `could not (re)register within the retry budget; exiting for restart` | It gave up and expects its supervisor to restart it. Almost always: the Brain was not reachable, or the `byosmtp.boxes` row / token is wrong. |
 
 ### When a human should actually intervene
 
 Reclaim handles the *jobs*. It does not bring the box back. Step in when:
 
-- **The box is not coming back on its own.** Check the supervisor (`systemctl status sender-box`),
+- **The box is not coming back on its own.** Check the supervisor (`systemctl status byosmtp-box`),
   the host, and network reachability to the Brain's box-link port. See
   [`install-and-deploy.md`](./install-and-deploy.md) Part 5 for redeploy and add/remove procedures.
 - **It flaps** — repeatedly `active` → `stale` → `active`. Each cycle reclaims in-flight jobs and
@@ -617,7 +617,7 @@ Reclaim handles the *jobs*. It does not bring the box back. Step in when:
 - **`boxes.active` reaches 0.** Nothing can send at all. This is the one box condition that is a
   full outage rather than degraded capacity.
 - **It is being decommissioned.** Removing a box is a *token* operation, not a certificate one:
-  clearing or rotating `token_hash` in `sender.boxes` refuses it on its **next connect** regardless of
+  clearing or rotating `token_hash` in `byosmtp.boxes` refuses it on its **next connect** regardless of
   how valid its mTLS certificate still is. Procedure in
   [`install-and-deploy.md`](./install-and-deploy.md). **Stop the box process too** — the check runs
   only in the register handshake, so the SQL does not disconnect a box that is currently streaming,
@@ -718,7 +718,7 @@ failed attempts, not twelve log rows from fewer real failures. A job that failed
 succeeded on retry contributes exactly 1 here and shows up in `queue.sent` — a non-zero
 `errors_last_window` alongside a healthy `send_rate_per_min` is normal retry churn, not an outage.
 
-> If you query `sender.job_events` by hand rather than through this endpoint, filter on the transition
+> If you query `byosmtp.job_events` by hand rather than through this endpoint, filter on the transition
 > shape (`to_state IN ('failed','bounced') OR (to_state='queued' AND from_state IS NOT NULL)`), not just
 > on `error_class IS NOT NULL`. Rows written before migration `sender_0022` carry a stale class on
 > success and forward-progress transitions too, and `job_events` is append-only so they were not
@@ -731,7 +731,7 @@ succeeded on retry contributes exactly 1 here and shows up in `queue.sent` — a
 > **V1 has no bounce, complaint, open, or click data.** The module knows only what the SMTP
 > conversation told it. A message the provider accepted with a `250` is recorded as `sent`, and if it
 > later bounces asynchronously, is filtered to spam, or is silently dropped, **this system will
-> never know.** `sender.error_class` has a `bounce_permanent` value, but it is only ever assigned
+> never know.** `byosmtp.error_class` has a `bounce_permanent` value, but it is only ever assigned
 > from a *synchronous* SMTP rejection during the send itself.
 
 So a spam-folder problem or a reputation slide is, in V1, **invisible from inside this module**. You
@@ -848,8 +848,8 @@ vanished from the list was disabled, not deleted.
 Not a tree so much as a short checklist, because everything else depends on it.
 
 ```bash
-systemctl status sender-brain          # or: docker compose ps brain
-journalctl -u sender-brain -n 100      # or: docker compose logs --tail=100 brain
+systemctl status byosmtp-brain          # or: docker compose ps brain
+journalctl -u byosmtp-brain -n 100      # or: docker compose logs --tail=100 brain
 curl -fsS $ADMIN/readyz
 ```
 
@@ -863,7 +863,7 @@ curl -fsS $ADMIN/readyz
 | Clean shutdown that seems to hang | The drain: dispatch stops claiming while in-flight sends are given up to `shutdown_drain_timeout_sec` to report. | Let it finish. If your supervisor's stop timeout is *shorter* than that key, it will `SIGKILL` a Brain that was draining correctly — the systemd unit in the install guide sets `TimeoutStopSec` above it for exactly this reason. |
 | Brain exits **137** on shutdown instead of 0 | The stop grace is shorter than `shutdown_drain_timeout_sec`, so the supervisor killed a drain in progress. Under Compose that is `stop_grace_period` (Docker's default is only **10 s**); under systemd it is `TimeoutStopSec`; if a unit wraps a compose file, **both** apply and the shorter wins. | Raise the grace above the key. Not urgent and never unsafe — §4.2 leave-in-place requeues nothing and marks nothing, and the next boot's rescan recovers the in-flight jobs — but it converts a clean drain into avoidable reclaim work. The `drain_grace` CI gate enforces this for the committed dev file and the documented unit; it cannot see your prod file. |
 | Jobs left in flight after shutdown | Deliberate leave-in-place. The log says so: `N job(s) left in flight and RECOVERABLE (not requeued, not marked)`. | Nothing. The next boot's startup rescan extends their leases so boxes can replay; genuinely stuck ones reclaim normally. |
-| `DELETE /v1/admin/accounts/{id}` returns **500**, log says `account_write_error: … sender.job_events is append-only: UPDATE forbidden` | **Your schema is behind the binary: migration `0024` is not applied.** This was a real defect from Phase 1 through Phase 10 (G12-OD-1 / ADR-0012) and is **fixed** as of 2026-07-29 by `sender_0024`, so on a current schema you will not see it. The mechanism: the account has been assigned a job at least once, so `job_events` holds rows referencing it; the FK's `ON DELETE SET NULL` cleanup is an `UPDATE`, which that table's append-only trigger rejected with no carve-out. Deleting a **box** with job history failed the same way. An account with **no** job history always deleted `204` — which is why the defect stayed invisible for ten phases. | Check `SELECT version FROM sender.schema_migrations ORDER BY version` for `0024`, and run migrations if it is missing (**migrations always lead the Brain deploy** — [`install-and-deploy.md`](./install-and-deploy.md) Part 6). Nothing needs cleaning up either way: the delete aborts atomically, so **nothing is dropped, nulled, or corrupted**. Note that hard delete is rarely the right verb operationally — to take an account out of service, `POST /v1/admin/accounts/{id}/disable` (or `/quarantine`) remains the intended lever, reversible and audit-preserving. Reach for `DELETE` only for genuine erasure. |
+| `DELETE /v1/admin/accounts/{id}` returns **500**, log says `account_write_error: … byosmtp.job_events is append-only: UPDATE forbidden` | **Your schema is behind the binary: migration `0024` is not applied.** This was a real defect from Phase 1 through Phase 10 (G12-OD-1 / ADR-0012) and is **fixed** as of 2026-07-29 by `sender_0024`, so on a current schema you will not see it. The mechanism: the account has been assigned a job at least once, so `job_events` holds rows referencing it; the FK's `ON DELETE SET NULL` cleanup is an `UPDATE`, which that table's append-only trigger rejected with no carve-out. Deleting a **box** with job history failed the same way. An account with **no** job history always deleted `204` — which is why the defect stayed invisible for ten phases. | Check `SELECT version FROM byosmtp.schema_migrations ORDER BY version` for `0024`, and run migrations if it is missing (**migrations always lead the Brain deploy** — [`install-and-deploy.md`](./install-and-deploy.md) Part 6). Nothing needs cleaning up either way: the delete aborts atomically, so **nothing is dropped, nulled, or corrupted**. Note that hard delete is rarely the right verb operationally — to take an account out of service, `POST /v1/admin/accounts/{id}/disable` (or `/quarantine`) remains the intended lever, reversible and audit-preserving. Reach for `DELETE` only for genuine erasure. |
 
 ---
 
@@ -885,9 +885,9 @@ Confirm which state you are in:
 
 ```bash
 # 1. Is it paused, and for how long? (throttled to ~1 line/minute across all three loops, not a flood)
-journalctl -u sender-brain --since "15 min ago" | grep 'singleton_lock_not_held'
+journalctl -u byosmtp-brain --since "15 min ago" | grep 'singleton_lock_not_held'
 # 2. Did it lose the lock, and did it get it back on its own? (both halves of the story)
-journalctl -u sender-brain --since "15 min ago" | grep -E 'singleton: (lock connection lost|lock RE-ACQUIRED|re-acquire attempt)'
+journalctl -u byosmtp-brain --since "15 min ago" | grep -E 'singleton: (lock connection lost|lock RE-ACQUIRED|re-acquire attempt)'
 # 3. Who holds the lock right now? Zero rows = nobody; a row = a live session, possibly another Brain.
 psql "$DATABASE_URL" -c "SELECT pid, backend_start FROM pg_locks l JOIN pg_stat_activity a USING (pid)
   WHERE l.locktype='advisory' AND ((l.classid::bigint<<32)|l.objid::bigint) = 9200000001"
@@ -935,8 +935,8 @@ That second point has an operational consequence: **without log retention, a rep
 and a request id with nothing behind them.** Ship the logs somewhere ([`monitoring.md`](./monitoring.md)).
 
 ```bash
-journalctl -u sender-brain --since "1 hour ago" | grep 'level=error'   # real faults only
-journalctl -u sender-brain | grep 'req_abc123…'                        # one caller's report
+journalctl -u byosmtp-brain --since "1 hour ago" | grep 'level=error'   # real faults only
+journalctl -u byosmtp-brain | grep 'req_abc123…'                        # one caller's report
 ```
 
 A `level=error` line is not automatically an outage — a single `internal_error` on one request is a

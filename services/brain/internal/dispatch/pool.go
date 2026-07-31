@@ -20,7 +20,7 @@ import (
 // DailyLimitCeiling precedent, OD-24).
 const maxFallbackHops = 8
 
-// poolInfo is the subset of sender.pools RESOLVE_POOL_CHAIN needs.
+// poolInfo is the subset of byosmtp.pools RESOLVE_POOL_CHAIN needs.
 type poolInfo struct {
 	id             string
 	kind           string // 'shared' | 'dedicated'
@@ -70,7 +70,7 @@ func (d *Dispatcher) dedicatedPools(ctx context.Context, userID string) ([]poolI
 	defer cancel()
 	rows, err := d.db.Query(ctx,
 		`SELECT id, kind::text, fallback_pool_id, enabled
-		 FROM sender.pools
+		 FROM byosmtp.pools
 		 WHERE kind = 'dedicated' AND owner_user_id = $1 AND enabled = TRUE
 		 ORDER BY created_at ASC`, userID)
 	if err != nil {
@@ -132,7 +132,7 @@ func (d *Dispatcher) isEnabledSharedPool(ctx context.Context, poolID string) (bo
 	defer cancel()
 	var ok bool
 	err := d.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM sender.pools WHERE id = $1 AND kind = 'shared' AND enabled = TRUE)`,
+		`SELECT EXISTS (SELECT 1 FROM byosmtp.pools WHERE id = $1 AND kind = 'shared' AND enabled = TRUE)`,
 		poolID).Scan(&ok)
 	if err != nil {
 		return false, err

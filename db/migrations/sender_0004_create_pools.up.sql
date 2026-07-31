@@ -1,15 +1,15 @@
--- sender_0004_create_pools.up.sql — Phase 1: sender.pools (first-class, plural pools).
+-- sender_0004_create_pools.up.sql — Phase 1: byosmtp.pools (first-class, plural pools).
 -- Many shared and many dedicated pools are permitted (no UNIQUE on owner_user_id — U2). Owned
--- by sender_owner so FORCE RLS (0012) enforces. FKs to public.users assume the platform table
+-- by byosmtp_owner so FORCE RLS (0012) enforces. FKs to public.users assume the platform table
 -- exists (guaranteed by the pre-flight existence check that runs before the chain).
 
-CREATE TABLE sender.pools (
+CREATE TABLE byosmtp.pools (
     -- Identity
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL,
 
     -- Pool type and ownership
-    kind sender.pool_kind NOT NULL,
+    kind byosmtp.pool_kind NOT NULL,
     owner_user_id UUID,
 
     -- Fallback chain (self-referential)
@@ -17,7 +17,7 @@ CREATE TABLE sender.pools (
 
     -- Configuration
     name TEXT NOT NULL,
-    routing_strategy sender.routing_strategy NOT NULL DEFAULT 'round_robin',
+    routing_strategy byosmtp.routing_strategy NOT NULL DEFAULT 'round_robin',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
 
     -- Timestamps
@@ -37,7 +37,7 @@ CREATE TABLE sender.pools (
 
     CONSTRAINT pools_fallback_fk
         FOREIGN KEY (fallback_pool_id)
-        REFERENCES sender.pools(id)
+        REFERENCES byosmtp.pools(id)
         ON DELETE SET NULL,
 
     CONSTRAINT pools_kind_ownership_check
@@ -50,6 +50,6 @@ CREATE TABLE sender.pools (
         CHECK (fallback_pool_id IS DISTINCT FROM id)
 );
 
-ALTER TABLE sender.pools OWNER TO sender_owner;
+ALTER TABLE byosmtp.pools OWNER TO byosmtp_owner;
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0004');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0004');

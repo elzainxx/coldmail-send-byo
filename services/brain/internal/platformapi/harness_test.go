@@ -33,7 +33,7 @@ type testEnv struct {
 	pool    *pgxpool.Pool
 }
 
-// newTestEnv clones the template, builds a real Server (pool as sender_module, one service-token
+// newTestEnv clones the template, builds a real Server (pool as byosmtp_module, one service-token
 // hash), and starts an httptest server. Registers cleanup.
 func newTestEnv(t *testing.T, suffix string) *testEnv {
 	t.Helper()
@@ -44,7 +44,7 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	t.Cleanup(drop)
 
 	admin := connect(t, cloneDSN)
-	moduleDSN := withUserPass(cloneDSN, "sender_module", modulePassword())
+	moduleDSN := withUserPass(cloneDSN, "byosmtp_module", modulePassword())
 	pool, err := pgxpool.New(context.Background(), moduleDSN)
 	if err != nil {
 		t.Fatalf("module pool: %v", err)
@@ -99,12 +99,12 @@ func (e *testEnv) seedJobItemCampaign(t *testing.T, campaignID, userID, recipien
 	return id
 }
 
-// jobUserID reads the user_id of a sender.jobs row (to assert the tenant was frozen correctly).
+// jobUserID reads the user_id of a byosmtp.jobs row (to assert the tenant was frozen correctly).
 func (e *testEnv) jobUserID(t *testing.T, jobID string) string {
 	t.Helper()
 	var uid string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT user_id::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&uid); err != nil {
+		`SELECT user_id::text FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&uid); err != nil {
 		t.Fatalf("job user_id: %v", err)
 	}
 	return uid
@@ -131,7 +131,7 @@ func requireTemplate(t *testing.T) string {
 }
 
 func modulePassword() string {
-	if p := os.Getenv("SENDER_MODULE_PASSWORD"); p != "" {
+	if p := os.Getenv("BYOSMTP_MODULE_PASSWORD"); p != "" {
 		return p
 	}
 	return "devmodulepass"

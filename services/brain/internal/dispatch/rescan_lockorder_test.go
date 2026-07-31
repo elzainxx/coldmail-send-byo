@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // Phase 7 review gate R4 — the rescan lease-extension vs outcome lock-order proof, DETERMINISTICALLY
@@ -42,7 +42,7 @@ import (
 //
 // CONSEQUENCE FOR WHOEVER EDITS THESE TESTS: neither no-op SET above will make them fail. Both were
 // tried and both left the suite green. To verify the teeth, inject an EXPLICIT
-// `SELECT … FROM sender.accounts … FOR KEY SHARE` into the rescan transaction — that produces the
+// `SELECT … FROM byosmtp.accounts … FOR KEY SHARE` into the rescan transaction — that produces the
 // "BLOCKED behind a held exclusive account lock" failure below, which is how these tests were validated.
 
 // TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome forces: the rescan's bulk lease UPDATE
@@ -55,7 +55,7 @@ func TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome(t *testing.T) {
 	ctx := context.Background()
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestRescan_ForcedInterleave_JobHeldThenAccountFirstOutcome(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx,
-		`UPDATE sender.jobs
+		`UPDATE byosmtp.jobs
 		    SET lease_expires_at = NOW() + make_interval(secs => $1),
 		        updated_at = NOW()
 		  WHERE state IN ('assigned','sending')`, 120); err != nil {
@@ -155,7 +155,7 @@ func TestRescan_ForcedInterleave_AccountHeldThenRescan(t *testing.T) {
 	e.px.freeAllBoxes()
 	// The job must genuinely be on the account whose row we pin, or the test is vacuous.
 	var onAcct *string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&onAcct); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&onAcct); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
 	if onAcct == nil || *onAcct != acct {
@@ -180,7 +180,7 @@ func TestRescan_ForcedInterleave_AccountHeldThenRescan(t *testing.T) {
 		t.Fatalf("begin hold tx: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, acct); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM byosmtp.accounts WHERE id=$1 FOR UPDATE`, acct); err != nil {
 		t.Fatalf("hold account FOR UPDATE: %v", err)
 	}
 

@@ -6,9 +6,9 @@ import (
 	"log"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // OutcomeHandler applies a box `report` to the DB (§5.3–§5.5). It is installed as the stream
@@ -147,7 +147,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// from the accepted crash-after-250 window (a box that dies between the SMTP 250 and its report):
 	// that one is unavoidable, this one is fixable, which is why it is fixed rather than accepted.
 	//
-	// The identity is sender.jobs.attempt_token (sender_0020): minted by the Brain, incremented in the
+	// The identity is byosmtp.jobs.attempt_token (sender_0020): minted by the Brain, incremented in the
 	// one guarded assigned→sending UPDATE (dispatch.go markSending), echoed on push_job, returned
 	// verbatim in the report. NOT attempt_count — Phase 5 made that saturate at max_attempts while
 	// requeue is unbounded until pool exhaustion, so a long-lived job reuses the value and it cannot
@@ -233,7 +233,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 	}
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			   SET state='sent',
 			       provider_message_id=$2,
 			       completed_at=NOW(),
@@ -256,7 +256,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 		// assigned account first so the recompute targets exactly the account that sent.
 		var acctID *string
 		if err := tx.QueryRow(ctx,
-			`SELECT assigned_account_id FROM sender.jobs WHERE id=$1`, rep.JobID).Scan(&acctID); err != nil {
+			`SELECT assigned_account_id FROM byosmtp.jobs WHERE id=$1`, rep.JobID).Scan(&acctID); err != nil {
 			return err
 		}
 		if acctID != nil {
@@ -280,7 +280,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report, cfg Config) error {
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			   SET state='bounced',
 			       completed_at=NOW(),
 			       lease_expires_at=NULL,
@@ -327,7 +327,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// (only the box is), but reading first keeps the account effect independent of that ordering.
 		var acctID *string
 		if err := tx.QueryRow(ctx,
-			`SELECT assigned_account_id FROM sender.jobs
+			`SELECT assigned_account_id FROM byosmtp.jobs
 			  WHERE id=$1 AND state='sending'
 			    AND ($2 = 0 OR attempt_token = 0 OR attempt_token = $2)`,
 			rep.JobID, rep.AttemptToken).Scan(&acctID); err != nil {
@@ -347,7 +347,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// the lock applyAccountEffect's readAccountEffectState needs; acquiring it here (a no-op to
 		// re-request the same row lock later) makes the ordering explicit at the tx entry point.
 		if acctID != nil {
-			if _, err := tx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM byosmtp.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
 				return err
 			}
 		}
@@ -358,7 +358,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// for any job lifetime. next_attempt_at uses the post-increment attempt as the backoff index.
 		nextSecs := h.backoffSecondsForClass(class, saturatingAttempt(ctx, tx, rep.JobID), cfg)
 		tag, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			   SET state='queued',
 			       lease_expires_at=NULL,
 			       last_error_class=$3,
@@ -415,7 +415,7 @@ func (h *OutcomeHandler) backoffSecondsForClass(class string, attemptCount int, 
 func saturatingAttempt(ctx context.Context, tx pgx.Tx, jobID string) int {
 	var attempt, max int
 	if err := tx.QueryRow(ctx,
-		`SELECT attempt_count, max_attempts FROM sender.jobs WHERE id=$1`, jobID).Scan(&attempt, &max); err != nil {
+		`SELECT attempt_count, max_attempts FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&attempt, &max); err != nil {
 		return 1 // conservative: treat as first retry if unreadable (backoff still bounded)
 	}
 	if attempt+1 > max {
@@ -440,8 +440,8 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 	err := tx.QueryRow(ctx,
 		`SELECT j.recipient_email, j.rendered_subject, j.rendered_body, j.reply_to,
 		        a.from_address, a.from_name
-		 FROM sender.jobs j
-		 LEFT JOIN sender.accounts a ON a.id = j.assigned_account_id
+		 FROM byosmtp.jobs j
+		 LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
 		 WHERE j.id = $1`, jobID).Scan(&recipient, &subject, &body, &replyTo, &fromAddr, &fromName)
 	if err != nil {
 		return err
@@ -457,11 +457,11 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 	headers := buildHeaders(fn, fromAddr, recipient, subject, rt, messageIDFor(jobID, fromAddr), time.Now().UTC())
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO sender.send_logs
+		`INSERT INTO byosmtp.send_logs
 		   (job_id, user_id, recipient_email, subject, body, headers, smtp_response, ttl_expires_at)
 		 SELECT j.id, j.user_id, j.recipient_email, j.rendered_subject, j.rendered_body,
 		        $2::jsonb, $3, NOW() + make_interval(days => $4)
-		 FROM sender.jobs j WHERE j.id = $1`,
+		 FROM byosmtp.jobs j WHERE j.id = $1`,
 		jobID, mustJSON(headers), scrubSmtpResponse(smtpResponse), cfg.DebugLogRetentionDays)
 	return err
 }
@@ -476,7 +476,7 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 func (h *OutcomeHandler) jobStatus(ctx context.Context, jobID string) (alreadySent bool, state string, assignedBox *string, attemptToken int64, err error) {
 	var pmid *string
 	err = h.db.QueryRow(ctx,
-		`SELECT provider_message_id, state::text, assigned_box_id::text, attempt_token FROM sender.jobs WHERE id=$1`,
+		`SELECT provider_message_id, state::text, assigned_box_id::text, attempt_token FROM byosmtp.jobs WHERE id=$1`,
 		jobID).Scan(&pmid, &state, &assignedBox, &attemptToken)
 	if err != nil {
 		return false, "", nil, 0, err
@@ -490,7 +490,7 @@ func (h *OutcomeHandler) inActorTx(ctx context.Context, actor string, fn func(tx
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', $1, true)", actor); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', $1, true)", actor); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {

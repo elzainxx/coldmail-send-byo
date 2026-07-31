@@ -1,4 +1,4 @@
-module github.com/sender-module/brain
+module github.com/byosmtp-module/brain
 
 go 1.23
 

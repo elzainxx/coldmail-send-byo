@@ -95,13 +95,13 @@ func (r *Runner) preflight(ctx context.Context, c *pgx.Conn) error {
 	return nil
 }
 
-// appliedVersions reads sender.schema_migrations. If the table doesn't exist yet (fresh DB,
+// appliedVersions reads byosmtp.schema_migrations. If the table doesn't exist yet (fresh DB,
 // pre-bootstrap), returns an empty set — the only special case, to bootstrap 0000 itself.
 func (r *Runner) appliedVersions(ctx context.Context, c *pgx.Conn) (map[string]bool, error) {
 	var exists bool
 	err := c.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM information_schema.tables
-		WHERE table_schema='sender' AND table_name='schema_migrations')`).Scan(&exists)
+		WHERE table_schema='byosmtp' AND table_name='schema_migrations')`).Scan(&exists)
 	if err != nil {
 		return nil, fmt.Errorf("check schema_migrations: %w", err)
 	}
@@ -109,7 +109,7 @@ func (r *Runner) appliedVersions(ctx context.Context, c *pgx.Conn) (map[string]b
 	if !exists {
 		return applied, nil
 	}
-	rows, err := c.Query(ctx, "SELECT version FROM sender.schema_migrations")
+	rows, err := c.Query(ctx, "SELECT version FROM byosmtp.schema_migrations")
 	if err != nil {
 		return nil, fmt.Errorf("select versions: %w", err)
 	}
@@ -268,7 +268,7 @@ func (r *Runner) applyOne(ctx context.Context, c *pgx.Conn, f migrationFile) err
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%s'", r.StatementTimeout)); err != nil {
 		return err
 	}
-	// The file includes its OWN INSERT INTO sender.schema_migrations — we do not add one.
+	// The file includes its OWN INSERT INTO byosmtp.schema_migrations — we do not add one.
 	if _, err := tx.Exec(ctx, sqlText); err != nil {
 		return err
 	}
@@ -481,12 +481,12 @@ func (r *Runner) Status(ctx context.Context) error {
 	return nil
 }
 
-// SetAppPassword sets sender_module's password from the provided value (out-of-band; never
+// SetAppPassword sets byosmtp_module's password from the provided value (out-of-band; never
 // in migration SQL, never logged). Uses a parameterized-safe ALTER ROLE via format with a
 // quoted literal. The role must already exist (created by the bootstrap migration).
 func (r *Runner) SetAppPassword(ctx context.Context, password string) error {
 	if password == "" {
-		return fmt.Errorf("SENDER_MODULE_PASSWORD is empty; refusing to set an empty app-role password")
+		return fmt.Errorf("BYOSMTP_MODULE_PASSWORD is empty; refusing to set an empty app-role password")
 	}
 	c, err := r.connect(ctx)
 	if err != nil {
@@ -495,13 +495,13 @@ func (r *Runner) SetAppPassword(ctx context.Context, password string) error {
 	defer c.Close(context.Background())
 	// quote_literal via a server-side format to avoid injection; the value is never logged.
 	var stmt string
-	if err := c.QueryRow(ctx, "SELECT format('ALTER ROLE sender_module LOGIN PASSWORD %L', $1::text)", password).Scan(&stmt); err != nil {
+	if err := c.QueryRow(ctx, "SELECT format('ALTER ROLE byosmtp_module LOGIN PASSWORD %L', $1::text)", password).Scan(&stmt); err != nil {
 		return fmt.Errorf("format alter role: %w", err)
 	}
 	if _, err := c.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("alter role sender_module: %w", err)
+		return fmt.Errorf("alter role byosmtp_module: %w", err)
 	}
-	fmt.Println("set-app-password: sender_module password set (value not logged)")
+	fmt.Println("set-app-password: byosmtp_module password set (value not logged)")
 	return nil
 }
 

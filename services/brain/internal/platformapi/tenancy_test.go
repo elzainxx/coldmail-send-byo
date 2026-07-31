@@ -168,7 +168,7 @@ func TestTenancy_CrossTenantRunIsNotFound(t *testing.T) {
 		t.Fatalf("B running A's job_item: code=%s, want not_found", bad.errorCode())
 	}
 	var n int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs WHERE job_item_id=$1`, itemA).Scan(&n); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs WHERE job_item_id=$1`, itemA).Scan(&n); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
 	if n != 0 {

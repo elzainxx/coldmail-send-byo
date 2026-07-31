@@ -200,7 +200,7 @@ Using it costs nothing.
 - [ ] Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
       `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts, pools}')` (expect only the intended
       new account and its pool).
-- [ ] Review `sender.account_events` for the account — every lifecycle change during the test is
+- [ ] Review `byosmtp.account_events` for the account — every lifecycle change during the test is
       recorded there, and it is the honest log of what happened.
 - [ ] Record the result: date, provider, ports used, inbox-vs-spam per receiver, anything surprising.
       Append it here or alongside [`load-test-results.md`](./load-test-results.md); a first-contact

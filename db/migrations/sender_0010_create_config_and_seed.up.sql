@@ -1,11 +1,11 @@
--- sender_0010_create_config_and_seed.up.sql — Phase 1: sender.config + the 14 foundation keys.
+-- sender_0010_create_config_and_seed.up.sql — Phase 1: byosmtp.config + the 14 foundation keys.
 -- Config-not-code (CLAUDE.md Rule 1): every tunable is a seeded row with a documented
 -- default_value + value_type. This is `sender_0010` exactly as Phase 9 §4.1 locks ("Phase 1 —
 -- sender_0010 (14 keys, the foundation)"). value is JSONB-wrapped {"v": ...}. default_value is
--- never mutated. Owned by sender_owner. These 14 keys are appended to Docs/config-manifest.txt
+-- never mutated. Owned by byosmtp_owner. These 14 keys are appended to Docs/config-manifest.txt
 -- and Docs/config-reference.md in the same change (config_drift gate).
 
-CREATE TABLE sender.config (
+CREATE TABLE byosmtp.config (
     -- Identity
     key TEXT PRIMARY KEY,
 
@@ -22,9 +22,9 @@ CREATE TABLE sender.config (
     updated_by UUID
 );
 
-ALTER TABLE sender.config OWNER TO sender_owner;
+ALTER TABLE byosmtp.config OWNER TO byosmtp_owner;
 
-INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES
 ('daily_limit_default', '{"v": 500}', '{"v": 500}', 'Default max sends per account per day', 'integer'),
 ('daily_reset_timezone', '{"v": "UTC"}', '{"v": "UTC"}', 'Timezone for daily reset schedule (IANA tz name)', 'string'),
 ('daily_reset_hour', '{"v": 0}', '{"v": 0}', 'Hour of day (0-23) when daily counters reset', 'integer'),
@@ -40,4 +40,4 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
 ('debug_log_retention_days', '{"v": 7}', '{"v": 7}', 'Days to retain full-content debug logs before rollup', 'integer'),
 ('default_shared_pool_id', '{"v": null}', '{"v": null}', 'Platform-wide default shared pool ID for fallback (NULL until pool created)', 'uuid');
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0010');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0010');

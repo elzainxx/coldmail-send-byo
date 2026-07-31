@@ -98,13 +98,13 @@ func TestAlerts_AccountQuarantinedFires(t *testing.T) {
 	shadowed := e.seedHealthAccount(t, pool, false, false, false, 0, 100)
 
 	if _, err := e.admin.Exec(bgCtx(),
-		`INSERT INTO sender.account_events (account_id, user_id, actor, action, reason)
+		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, reason)
 		 VALUES ($1, $2, 'system', 'quarantine', 'score_below_threshold')`,
 		enforced, sysUserHealth); err != nil {
 		t.Fatalf("seed enforce quarantine event: %v", err)
 	}
 	if _, err := e.admin.Exec(bgCtx(),
-		`INSERT INTO sender.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
+		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
 		 VALUES ($1, $2, 'system', 'updated', '{"quarantined":false}', '{"quarantined":false}',
 		         'shadow_would_quarantine: score=10 threshold=30 trigger=score')`,
 		shadowed, sysUserHealth); err != nil {
@@ -157,7 +157,7 @@ func TestAlerts_BoxDeathFires(t *testing.T) {
 
 	// Clear: mark the box active again (mirrors boxlink/stream.go's touchHeartbeat) and re-poll.
 	if _, err := e.admin.Exec(bgCtx(),
-		`UPDATE sender.boxes SET status='active', last_heartbeat_at=NOW() WHERE id=$1`, staleBox); err != nil {
+		`UPDATE byosmtp.boxes SET status='active', last_heartbeat_at=NOW() WHERE id=$1`, staleBox); err != nil {
 		t.Fatalf("clear stale: %v", err)
 	}
 	resp2 := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
@@ -280,8 +280,8 @@ func TestAlerts_WebhookFiresOncePerRisingEdge(t *testing.T) {
 	if p["fired_at"] == "" || p["fired_at"] == nil {
 		t.Fatalf("webhook payload missing fired_at: %+v", p)
 	}
-	if p["module"] != "sender" {
-		t.Fatalf("webhook payload module=%v, want sender: %+v", p["module"], p)
+	if p["module"] != "byosmtp" {
+		t.Fatalf("webhook payload module=%v, want byosmtp: %+v", p["module"], p)
 	}
 	// Two-vocabulary: only the documented clean fields, never a credential/SQL/hostname/content key.
 	for k := range p {

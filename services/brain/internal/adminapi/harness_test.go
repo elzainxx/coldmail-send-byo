@@ -7,7 +7,7 @@ package adminapi
 // and set counters directly, exactly like the Phase 1 crypto/roles tests.
 //
 // Isolation mirrors tests/harness: TEST_ADMIN_DATABASE_URL (admin/superuser DSN) + TEST_TEMPLATE_DB
-// (a DB migrated 0000..0014 with sender_module's password set). Tests SKIP when unset, so `go
+// (a DB migrated 0000..0014 with byosmtp_module's password set). Tests SKIP when unset, so `go
 // test` never silently passes on nothing.
 
 import (
@@ -45,7 +45,7 @@ type testEnv struct {
 	cloneDSN string
 }
 
-// newTestEnv clones the template, builds a real Server (pool as sender_module, Encrypt-only
+// newTestEnv clones the template, builds a real Server (pool as byosmtp_module, Encrypt-only
 // Encryptor with a fresh key), and starts an httptest server. Registers all cleanup.
 func newTestEnv(t *testing.T, suffix string) *testEnv {
 	t.Helper()
@@ -58,8 +58,8 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	// Admin connection (superuser) for direct truth + seeding public.users.
 	admin := connect(t, cloneDSN)
 
-	// Server pool as sender_module (the role the real Brain runs as).
-	moduleDSN := withUserPass(cloneDSN, "sender_module", modulePassword())
+	// Server pool as byosmtp_module (the role the real Brain runs as).
+	moduleDSN := withUserPass(cloneDSN, "byosmtp_module", modulePassword())
 	pool, err := pgxpool.New(context.Background(), moduleDSN)
 	if err != nil {
 		t.Fatalf("module pool: %v", err)
@@ -128,7 +128,7 @@ func requireTemplate(t *testing.T) string {
 }
 
 func modulePassword() string {
-	if p := os.Getenv("SENDER_MODULE_PASSWORD"); p != "" {
+	if p := os.Getenv("BYOSMTP_MODULE_PASSWORD"); p != "" {
 		return p
 	}
 	return "devmodulepass"

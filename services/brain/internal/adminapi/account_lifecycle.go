@@ -32,7 +32,7 @@ type transitionSpec struct {
 // so the two-vocabulary rule (Rule 5) holds. The flag names are already public in the account
 // read model's `status` object, so naming one discloses nothing new.
 //
-// WHY: found walking Docs/sender-module-local-test-guide.md Stage 4 as an operator. Every illegal
+// WHY: found walking Docs/byosmtp-module-local-test-guide.md Stage 4 as an operator. Every illegal
 // transition was correctly rejected and correctly wrote no audit row, but all six returned the
 // same bare `{"code":"unprocessable","message":"The request is well-formed but cannot be
 // processed."}` — indistinguishable from each other, and silent about WHICH precondition failed.
@@ -176,7 +176,7 @@ func (s *Server) doTransition(w http.ResponseWriter, r *http.Request, spec trans
 		return
 	}
 	var userID string
-	if err := tx.QueryRow(ctx, "SELECT user_id FROM sender.accounts WHERE id=$1", id).Scan(&userID); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT user_id FROM byosmtp.accounts WHERE id=$1", id).Scan(&userID); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "user_id_read_error: "+err.Error()))
 		return
 	}
@@ -188,7 +188,7 @@ func (s *Server) doTransition(w http.ResponseWriter, r *http.Request, spec trans
 	}
 
 	// Apply the flag mutation.
-	if _, err := tx.Exec(ctx, "UPDATE sender.accounts SET "+spec.setClause+", updated_at = NOW() WHERE id=$1", id); err != nil {
+	if _, err := tx.Exec(ctx, "UPDATE byosmtp.accounts SET "+spec.setClause+", updated_at = NOW() WHERE id=$1", id); err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))
 		return
 	}

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // defaultWeights mirrors the sender_0017 seed (the documented V1 defaults, §3.2).
@@ -99,7 +99,7 @@ func TestScore_DegradesOnFailureResetsOnSuccess(t *testing.T) {
 
 	readScore := func() (int, int) {
 		var score, cf int
-		if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM sender.accounts WHERE id=$1`, acct).Scan(&score, &cf); err != nil {
+		if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&score, &cf); err != nil {
 			t.Fatalf("read score: %v", err)
 		}
 		return score, cf
@@ -109,7 +109,7 @@ func TestScore_DegradesOnFailureResetsOnSuccess(t *testing.T) {
 	job := e.seedQueuedJob(t, "s@example.com")
 	prev := 101
 	for i := 0; i < 2; i++ {
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next: %v", err)
 		}
 		e.dispatchToSending(t, job)
@@ -127,7 +127,7 @@ func TestScore_DegradesOnFailureResetsOnSuccess(t *testing.T) {
 	}
 
 	// Now a success: consecutive_failures resets to 0 and the score recomputes upward.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset next: %v", err)
 	}
 	e.dispatchToSending(t, job)
@@ -154,7 +154,7 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	// Baseline snapshot (fresh account: score 100, cf 0, last_failure_at NULL).
 	var score0, cf0 int
 	var lastFail0 *time.Time
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures, last_failure_at FROM sender.accounts WHERE id=$1`, acct).Scan(&score0, &cf0, &lastFail0); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures, last_failure_at FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&score0, &cf0, &lastFail0); err != nil {
 		t.Fatalf("baseline: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	}
 	var score1, cf1 int
 	var lastFail1 *time.Time
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures, last_failure_at FROM sender.accounts WHERE id=$1`, acct).Scan(&score1, &cf1, &lastFail1); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures, last_failure_at FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&score1, &cf1, &lastFail1); err != nil {
 		t.Fatalf("after bounce: %v", err)
 	}
 	if score1 != score0 {
@@ -184,7 +184,7 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	}
 	// And NO account_events row (a bounce writes none — §2.1).
 	var aev int
-	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM sender.account_events WHERE account_id=$1`, acct).Scan(&aev); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1`, acct).Scan(&aev); err != nil {
 		t.Fatalf("account_events: %v", err)
 	}
 	if aev != 0 {
@@ -199,11 +199,11 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	// failure — so the carve-out is a real exemption, not a dead code path.
 	acct2 := e.seedAccount(t, pool, "sec2")
 	var score2Base, cf2Base int
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM sender.accounts WHERE id=$1`, acct2).Scan(&score2Base, &cf2Base); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM byosmtp.accounts WHERE id=$1`, acct2).Scan(&score2Base, &cf2Base); err != nil {
 		t.Fatalf("control baseline: %v", err)
 	}
 	// Quarantine the FIRST account so routing lands the next job on acct2 (the control target).
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET quarantined=TRUE WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, acct); err != nil {
 		t.Fatalf("park acct1: %v", err)
 	}
 	e.px.freeAllBoxes() // the bounce report freed the box in reality; free the recordingPusher's marker
@@ -212,7 +212,7 @@ func TestScore_BounceNeverPenalizes(t *testing.T) {
 	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: jobCtl, Outcome: boxproto.OutcomeError,
 		SMTPResponse: "451 4.3.0 temporary local error"}) // transport_4xx — a penalizing (non-bounce) failure
 	var score2After, cf2After int
-	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM sender.accounts WHERE id=$1`, acct2).Scan(&score2After, &cf2After); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT account_status_score, consecutive_failures FROM byosmtp.accounts WHERE id=$1`, acct2).Scan(&score2After, &cf2After); err != nil {
 		t.Fatalf("control after: %v", err)
 	}
 	if score2After >= score2Base {

@@ -5,7 +5,7 @@ package platformapi
 //
 // WHAT THIS PINS, and why it is not covered by quote_test.go: quote_test.go proves the NUMBER is
 // right. These prove the REJECTIONS are diagnosable. Two defects found walking Stage 7 of
-// Docs/sender-module-local-test-guide.md:
+// Docs/byosmtp-module-local-test-guide.md:
 //
 //  1. `{"recipient_count": -5}` reported details[] = [recipient_count:required] — telling the caller
 //     a field it had plainly supplied was missing. run/report on the SAME server already distinguish
@@ -140,7 +140,7 @@ func TestQuote_WrongTypeRecipientCountNamesTheField(t *testing.T) {
 
 	// Nothing above created state — quote is side-effect-free even on its error paths.
 	var jobs int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs`).Scan(&jobs); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs`).Scan(&jobs); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
 	if jobs != 0 {

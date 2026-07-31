@@ -8,7 +8,7 @@ import (
 )
 
 // handleAccountDelete: DELETE /v1/admin/accounts/{id} (§2.5). Hard delete. No FK referencing
-// sender.accounts.id uses RESTRICT (jobs/job_events/account_events are ON DELETE SET NULL), so
+// byosmtp.accounts.id uses RESTRICT (jobs/job_events/account_events are ON DELETE SET NULL), so
 // nothing blocks it. Writes one 'deleted' audit row BEFORE the row removal in the SAME tx; the
 // FK ON DELETE SET NULL then nulls that row's account_id as part of the DELETE — so the audit
 // survives. Returns 204. (Disable is the everyday "take out of service" verb — §2.5.)
@@ -44,7 +44,7 @@ func (s *Server) handleAccountDelete(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
 	}
-	if _, err := tx.Exec(ctx, "DELETE FROM sender.accounts WHERE id=$1", id); err != nil {
+	if _, err := tx.Exec(ctx, "DELETE FROM byosmtp.accounts WHERE id=$1", id); err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))
 		return
 	}
@@ -102,7 +102,7 @@ func (s *Server) handleAccountEvents(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT e.id, e.account_id, e.user_id, e.actor, e.action, e.from_flags, e.to_flags,
 	          e.reason, e.request_id,
 	          to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
-	          FROM sender.account_events e WHERE ` + strings.Join(conds, " AND ") +
+	          FROM byosmtp.account_events e WHERE ` + strings.Join(conds, " AND ") +
 		" ORDER BY e.created_at ASC, e.id ASC LIMIT " + limitParam
 
 	ctx, cancel := dbCtx(r.Context())

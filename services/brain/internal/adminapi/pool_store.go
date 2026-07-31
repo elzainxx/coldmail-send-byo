@@ -26,7 +26,7 @@ type poolResource struct {
 
 const poolSelectCols = `p.id, p.user_id, p.kind, p.owner_user_id, p.name, p.routing_strategy,
 	p.fallback_pool_id, p.enabled,
-	(SELECT count(*) FROM sender.accounts a WHERE a.pool_id = p.id) AS account_count,
+	(SELECT count(*) FROM byosmtp.accounts a WHERE a.pool_id = p.id) AS account_count,
 	to_char(p.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(p.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')`
 
@@ -43,7 +43,7 @@ func scanPool(row pgx.Row) (*poolResource, error) {
 
 // getPool reads one pool by id. errPoolNotFound if absent.
 func getPool(ctx context.Context, db pgxDB, id string) (*poolResource, error) {
-	row := db.QueryRow(ctx, "SELECT "+poolSelectCols+" FROM sender.pools p WHERE p.id=$1", id)
+	row := db.QueryRow(ctx, "SELECT "+poolSelectCols+" FROM byosmtp.pools p WHERE p.id=$1", id)
 	p, err := scanPool(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errPoolNotFound
@@ -78,7 +78,7 @@ func fallbackCycleExists(ctx context.Context, db pgxDB, editing, target string) 
 			return true, nil // the chain from target loops back to the pool being edited
 		}
 		var next *string
-		err := db.QueryRow(ctx, "SELECT fallback_pool_id FROM sender.pools WHERE id=$1", cur).Scan(&next)
+		err := db.QueryRow(ctx, "SELECT fallback_pool_id FROM byosmtp.pools WHERE id=$1", cur).Scan(&next)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, errPoolNotFound // target (or a hop) does not exist
 		}
@@ -99,7 +99,7 @@ func fallbackCycleExists(ctx context.Context, db pgxDB, editing, target string) 
 func insertPool(ctx context.Context, db pgxDB, userID string, ownerUserID *string, kind, name, routing string, fallback *string, enabled bool) (*poolResource, error) {
 	var id string
 	err := db.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, owner_user_id, name, routing_strategy, fallback_pool_id, enabled)
+		`INSERT INTO byosmtp.pools (user_id, kind, owner_user_id, name, routing_strategy, fallback_pool_id, enabled)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
 		userID, kind, ownerUserID, name, routing, fallback, enabled).Scan(&id)
 	if err != nil {
@@ -111,7 +111,7 @@ func insertPool(ctx context.Context, db pgxDB, userID string, ownerUserID *strin
 // deletePool deletes a pool by id. Returns the command tag's row count via the error-free path;
 // a RESTRICT violation surfaces as a *pgconn.PgError (23503) for the handler to translate.
 func deletePool(ctx context.Context, db pgxDB, id string) (int64, error) {
-	tag, err := db.Exec(ctx, "DELETE FROM sender.pools WHERE id=$1", id)
+	tag, err := db.Exec(ctx, "DELETE FROM byosmtp.pools WHERE id=$1", id)
 	if err != nil {
 		return 0, err
 	}

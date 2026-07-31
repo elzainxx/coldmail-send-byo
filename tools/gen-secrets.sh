@@ -10,7 +10,7 @@
 # NOTE (Phase 2 reconciliation): the operator admin (Domain B) bearer key is now minted with a
 # BCRYPT hash by `provision-box admin-key` and written to .env by `scripts/dev.sh certs`
 # (ADMIN_API_KEY / ADMIN_API_KEY_HASHES). That matches the spec's "same discipline as
-# sender.boxes.token_hash" (bcrypt, constant-time — services/brain/internal/adminapi/auth.go).
+# byosmtp.boxes.token_hash" (bcrypt, constant-time — services/brain/internal/adminapi/auth.go).
 # The earlier SHA-256 PLATFORM_ADMIN_KEY_HASH scaffold printed here has been REMOVED to avoid two
 # competing admin-key mechanisms; there is one operator key, bcrypt-hashed.
 set -euo pipefail

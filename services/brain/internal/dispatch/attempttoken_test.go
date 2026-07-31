@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // attempttoken_test.go — Phase 8 CHUNK 1 (P7-OD-6, RULED-ADOPT 2026-07-26): the Brain's per-attempt
-// identity, sender.jobs.attempt_token.
+// identity, byosmtp.jobs.attempt_token.
 //
 // THE HOLE THESE TESTS CLOSE. The box's outcome buffer deliberately outlives its own attempt
 // (box_outcome_buffer_ttl_sec 900s >> job_max_processing_time_sec 120s), so a job can be reclaimed and
@@ -29,7 +29,7 @@ func (e *dispatchEnv) jobAttemptToken(t *testing.T, jobID string) int64 {
 	t.Helper()
 	var tok int64
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT attempt_token FROM sender.jobs WHERE id=$1`, jobID).Scan(&tok); err != nil {
+		`SELECT attempt_token FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&tok); err != nil {
 		t.Fatalf("read attempt_token: %v", err)
 	}
 	return tok
@@ -71,7 +71,7 @@ func TestAttemptToken_MintedPerDispatchAndPushed(t *testing.T) {
 		t.Fatalf("reclaim: n=%d err=%v, want 1/nil", n, err)
 	}
 	e.px.freeAllBoxes()
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
 	if _, err := e.d.TryDispatch(ctx); err != nil {
@@ -103,7 +103,7 @@ func TestAttemptToken_MonotonicAndNonSaturating(t *testing.T) {
 	acct := e.seedAccount(t, pool, "sec")
 	// Keep the account healthy across many classified failures so dispatch keeps succeeding — we are
 	// measuring the counters, not scoring.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -113,7 +113,7 @@ func TestAttemptToken_MonotonicAndNonSaturating(t *testing.T) {
 	var counts []int
 	for i := 0; i < attempts; i++ {
 		if _, err := e.admin.Exec(ctx,
-			`UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+			`UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("clear backoff: %v", err)
 		}
 		e.px.freeAllBoxes()
@@ -172,7 +172,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 	ctx := context.Background()
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 		t.Fatalf("reclaim: n=%d err=%v, want 1/nil", n, err)
 	}
 	e.px.freeAllBoxes()
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
 	if _, err := e.d.TryDispatch(ctx); err != nil {
@@ -226,7 +226,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 	var cfBefore int
 	var scoreBefore float64
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 		Scan(&cfBefore, &scoreBefore); err != nil {
 		t.Fatalf("read account before: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 		var cfAfter int
 		var scoreAfter float64
 		if err := e.admin.QueryRow(ctx,
-			`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+			`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 			Scan(&cfAfter, &scoreAfter); err != nil {
 			t.Fatalf("read account after: %v", err)
 		}
@@ -288,7 +288,7 @@ func TestAttemptToken_StaleReplaySameBoxRejected(t *testing.T) {
 	}
 	// And the pmid stored is attempt 2's, not the stale one the rejected replay carried.
 	var pmid string
-	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
 		t.Fatalf("read pmid: %v", err)
 	}
 	if pmid != "live-attempt-2-pmid" {
@@ -331,7 +331,7 @@ func TestAttemptToken_AbsentTokenIsNotAMismatch(t *testing.T) {
 	jobB := e.seedQueuedJob(t, "compat-b@example.com")
 	e.px.freeAllBoxes()
 	e.dispatchToSending(t, jobB)
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET attempt_token=0 WHERE id=$1`, jobB); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET attempt_token=0 WHERE id=$1`, jobB); err != nil {
 		t.Fatalf("force stored token 0: %v", err)
 	}
 	if !e.oh.Handle(e.jobBox(t, jobB), boxproto.Report{

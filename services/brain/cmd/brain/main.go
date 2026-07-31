@@ -1,7 +1,7 @@
-// Command brain is the Phase-0 SKELETON of the sender-module orchestrator ("the Brain").
+// Command brain is the Phase-0 SKELETON of the byosmtp-module orchestrator ("the Brain").
 //
 // Scope (Phase 0 only — NO feature logic): start; acquire the single-active-Brain
-// advisory lock (a second Brain exits cleanly); connect to Postgres as sender_module;
+// advisory lock (a second Brain exits cleanly); connect to Postgres as byosmtp_module;
 // load the dev KMS key (Brain is the SOLE decryptor); serve a health stub; serve an
 // mTLS box-link that lets a box register (id+token) and heartbeat. There is deliberately
 // NO dispatch loop, NO routing, NO SMTP — those are Phase 1+.
@@ -20,16 +20,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sender-module/brain/internal/adminapi"
-	"github.com/sender-module/brain/internal/boxlink"
-	"github.com/sender-module/brain/internal/config"
-	"github.com/sender-module/brain/internal/credential"
-	"github.com/sender-module/brain/internal/db"
-	"github.com/sender-module/brain/internal/dispatch"
-	"github.com/sender-module/brain/internal/httpapi"
-	"github.com/sender-module/brain/internal/kms"
-	"github.com/sender-module/brain/internal/platformapi"
-	"github.com/sender-module/brain/internal/singleton"
+	"github.com/byosmtp-module/brain/internal/adminapi"
+	"github.com/byosmtp-module/brain/internal/boxlink"
+	"github.com/byosmtp-module/brain/internal/config"
+	"github.com/byosmtp-module/brain/internal/credential"
+	"github.com/byosmtp-module/brain/internal/db"
+	"github.com/byosmtp-module/brain/internal/dispatch"
+	"github.com/byosmtp-module/brain/internal/httpapi"
+	"github.com/byosmtp-module/brain/internal/kms"
+	"github.com/byosmtp-module/brain/internal/platformapi"
+	"github.com/byosmtp-module/brain/internal/singleton"
 )
 
 func main() {
@@ -44,7 +44,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// DB connection as the app role (sender_module) — never a superuser at runtime.
+	// DB connection as the app role (byosmtp_module) — never a superuser at runtime.
 	database, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("FATAL db connect: %v", err)
@@ -58,7 +58,7 @@ func main() {
 	//
 	// brain_singleton_acquire_timeout_sec (Phase 9.5 B5, §5.2, seeded sender_0021) is config-not-code
 	// (CLAUDE.md Rule 1) — the env var BRAIN_SINGLETON_ACQUIRE_TIMEOUT_SEC is ONLY the Phase-0
-	// bootstrap default (OD-18: before sender.config existed) and is used ONLY as the fallback when
+	// bootstrap default (OD-18: before byosmtp.config existed) and is used ONLY as the fallback when
 	// the DB read fails (e.g. a genuinely pre-migration database — the runner hasn't applied
 	// sender_0021 yet). The already-connected pool can read the live value BEFORE the singleton
 	// lock is attempted; a bad/missing row degrades to the env default rather than blocking startup
@@ -200,12 +200,12 @@ func main() {
 	go reclaimer.Run(ctx)
 
 	// Phase 7 (§3.1): the retention sweep — a FOURTH single-Brain housekeeping loop that DELETEs raw
-	// sender.send_logs content past debug_log_retention_days, in batches of retention_delete_batch_size,
+	// byosmtp.send_logs content past debug_log_retention_days, in batches of retention_delete_batch_size,
 	// every retention_sweep_interval_ms. It drops ONLY raw content: job OUTCOMES (job_events + final job
 	// states) are permanent and are never rolled up or deleted, and the per-day summaries are DERIVED ON
 	// DEMAND from job_events (P7-1, no summary table). It shares the §2 outage gate, so a DB outage
 	// pauses it too — retention is a ceiling on raw-content lifetime, not a deadline, so a delayed sweep
-	// is correct. Deliberately in-Brain rather than pg_cron (P7-7: one owner of sender.* DML).
+	// is correct. Deliberately in-Brain rather than pg_cron (P7-7: one owner of byosmtp.* DML).
 	retention := dispatch.NewRetentionRunner(dispatcher)
 	go retention.Run(ctx)
 	go func() {
@@ -310,7 +310,7 @@ func main() {
 // itself from running.
 func readSingletonAcquireTimeout(ctx context.Context, pool *pgxpool.Pool, envDefault time.Duration) time.Duration {
 	var raw []byte
-	if err := pool.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'brain_singleton_acquire_timeout_sec'`).Scan(&raw); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = 'brain_singleton_acquire_timeout_sec'`).Scan(&raw); err != nil {
 		return envDefault
 	}
 	var wrap struct {
@@ -335,7 +335,7 @@ func readSingletonAcquireTimeout(ctx context.Context, pool *pgxpool.Pool, envDef
 // default, which is the same posture PLATFORM_TOKEN_HASHES-empty and alert_webhook_url-empty take.
 func readSingletonReacquireInterval(ctx context.Context, pool *pgxpool.Pool) time.Duration {
 	var raw []byte
-	if err := pool.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'brain_singleton_reacquire_interval_sec'`).Scan(&raw); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = 'brain_singleton_reacquire_interval_sec'`).Scan(&raw); err != nil {
 		return 0
 	}
 	var wrap struct {

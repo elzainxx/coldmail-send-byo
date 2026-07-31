@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // setBoxHeartbeat forces a box's last_heartbeat_at into the past (or future) to simulate silence /
@@ -13,7 +13,7 @@ import (
 func (e *dispatchEnv) setBoxHeartbeat(t *testing.T, boxID string, ago time.Duration) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.boxes SET last_heartbeat_at = NOW() - make_interval(secs => $2) WHERE id=$1`,
+		`UPDATE byosmtp.boxes SET last_heartbeat_at = NOW() - make_interval(secs => $2) WHERE id=$1`,
 		boxID, int(ago.Seconds())); err != nil {
 		t.Fatalf("set box heartbeat: %v", err)
 	}
@@ -24,7 +24,7 @@ func (e *dispatchEnv) boxStatus(t *testing.T, boxID string) string {
 	t.Helper()
 	var s string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT status::text FROM sender.boxes WHERE id=$1`, boxID).Scan(&s); err != nil {
+		`SELECT status::text FROM byosmtp.boxes WHERE id=$1`, boxID).Scan(&s); err != nil {
 		t.Fatalf("read box status: %v", err)
 	}
 	return s
@@ -36,7 +36,7 @@ func (e *dispatchEnv) reclaimEvents(t *testing.T, jobID string) [][3]string {
 	t.Helper()
 	rows, err := e.admin.Query(context.Background(),
 		`SELECT to_state::text, actor::text, COALESCE(error_class::text,'')
-		   FROM sender.job_events WHERE job_id=$1 AND actor='reclaim_loop' ORDER BY created_at`, jobID)
+		   FROM byosmtp.job_events WHERE job_id=$1 AND actor='reclaim_loop' ORDER BY created_at`, jobID)
 	if err != nil {
 		t.Fatalf("read reclaim events: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestReclaim_LiveBoxNotReclaimed(t *testing.T) {
 func (e *dispatchEnv) expireLease(t *testing.T, jobID string) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id=$1`, jobID); err != nil {
+		`UPDATE byosmtp.jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id=$1`, jobID); err != nil {
 		t.Fatalf("expire lease: %v", err)
 	}
 }
@@ -227,11 +227,11 @@ func TestReclaim_AssignedNeverPushedReclaimed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor','dispatcher',true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor','dispatcher',true)"); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE sender.jobs SET state='assigned', lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, job); err != nil {
+		`UPDATE byosmtp.jobs SET state='assigned', lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, job); err != nil {
 		t.Fatalf("strand assigned: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -239,7 +239,7 @@ func TestReclaim_AssignedNeverPushedReclaimed(t *testing.T) {
 	}
 	// Sanity: no box assigned.
 	var boxID *string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id FROM sender.jobs WHERE id=$1`, job).Scan(&boxID); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&boxID); err != nil {
 		t.Fatalf("read box: %v", err)
 	}
 	if boxID != nil {
@@ -311,7 +311,7 @@ func TestReclaim_RedispatchesToDifferentBoxNoDoubleSend(t *testing.T) {
 	pushesBefore := e.px.pushCount()
 	// Re-dispatch: the dead box is stale so AnyConnectedBox returns the healthy extra box.
 	e.px.freeAllBoxes()
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset next: %v", err)
 	}
 	if _, err := e.d.TryDispatch(ctx); err != nil {
@@ -336,7 +336,7 @@ func TestReclaim_RedispatchesToDifferentBoxNoDoubleSend(t *testing.T) {
 	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeAccepted,
 		ProviderMessageID: "PMID-REDISP-DUP", SMTPResponse: "250 2.0.0 Ok"})
 	var pmid string
-	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
 		t.Fatalf("read pmid: %v", err)
 	}
 	if pmid != "PMID-REDISP-1" {
@@ -403,7 +403,7 @@ func TestReclaim_DisabledBoxExcluded(t *testing.T) {
 
 	// Disable the default box (status='disabled' requires disabled_at non-null — boxes_disabled_at_check).
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.boxes SET status='disabled', disabled_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
+		`UPDATE byosmtp.boxes SET status='disabled', disabled_at=NOW() WHERE id=$1`, e.px.boxID); err != nil {
 		t.Fatalf("disable box: %v", err)
 	}
 	e.setBoxHeartbeat(t, e.px.boxID, 400*time.Second) // silent AND disabled

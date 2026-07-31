@@ -152,7 +152,7 @@ func TestT2b_AADRowBindingRejectsTransplant(t *testing.T) {
 
 	// Transplant A's ciphertext+nonce into B's row (direct admin write).
 	if _, err := e.admin.Exec(bgCtx(),
-		"UPDATE sender.accounts SET credential_ciphertext=$2, credential_nonce=$3, credential_key_id=$4 WHERE id=$1",
+		"UPDATE byosmtp.accounts SET credential_ciphertext=$2, credential_nonce=$3, credential_key_id=$4 WHERE id=$1",
 		accB, ctA, nonceA, kidA); err != nil {
 		t.Fatalf("transplant: %v", err)
 	}

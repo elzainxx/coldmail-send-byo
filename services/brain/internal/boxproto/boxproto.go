@@ -39,7 +39,7 @@ type Register struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
 	BoxID     string `json:"box_id"`
-	Token     string `json:"token"` // authorization AUTHORITY (verified vs sender.boxes.token_hash)
+	Token     string `json:"token"` // authorization AUTHORITY (verified vs byosmtp.boxes.token_hash)
 	// Optional diagnostics merged into box_metadata (§3.5); never read by dispatch.
 	BoxVersion string `json:"box_version,omitempty"`
 	Hostname   string `json:"hostname,omitempty"`
@@ -57,7 +57,7 @@ type RegisterAck struct {
 	// DB-less box on accept: the box retains/replays unacked outcomes up to this age, then drops them
 	// and falls back to Brain reclaim. Additive-only, omitempty so older boxes/tests still parse; the
 	// box falls back to its bootstrap env default when it is 0/absent. Config-not-code: the box holds
-	// no seeded value of its own — it consumes what the Brain reads from sender.config (the same
+	// no seeded value of its own — it consumes what the Brain reads from byosmtp.config (the same
 	// pattern as smtp_operation_timeout_sec on push_job).
 	//
 	// CHECKED, NOT CHANGED (Config Consumption Sweep closeout, 2026-07-27): an operator CAN reach
@@ -114,7 +114,7 @@ type PushJob struct {
 	RequestID string `json:"request_id"`
 	JobID     string `json:"job_id"`
 	// AttemptToken is the PERSISTED per-attempt identity (Phase 8 Chunk 1, P7-OD-6). The Brain mints it
-	// by incrementing sender.jobs.attempt_token in the same guarded assigned→sending UPDATE that
+	// by incrementing byosmtp.jobs.attempt_token in the same guarded assigned→sending UPDATE that
 	// dispatches this attempt, so it is monotonic, non-saturating, and unforgeable by the box. The box
 	// echoes it VERBATIM in its report; the Brain rejects any report whose token is not the job's
 	// current one (a stale replay from a superseded attempt). Distinct from RequestID: request_id is a
@@ -129,18 +129,18 @@ type PushJob struct {
 	// chosen option (a)): an additive, per-job-fresh wire field, never a schema change. Nil (omitted
 	// from the frame) or a Variation whose fields are all at their Phase-3-neutral values (§4.2)
 	// means "apply nothing" — the box's assembler then produces byte-for-byte Phase 3 output. The
-	// box never reads sender.config; it applies exactly the resolved booleans/strings/arrays here.
+	// box never reads byosmtp.config; it applies exactly the resolved booleans/strings/arrays here.
 	Variation *Variation `json:"variation,omitempty"`
 }
 
 // Variation is the box-consumed, per-job-fresh snapshot of the Phase 8 content-variation config
 // (§2.2 of the locked spec). Every field is a plain value — no logic, no config-table shape — so
-// unmarshaling never requires the box to understand sender.config at all. HeaderStyle=="none" and
+// unmarshaling never requires the box to understand byosmtp.config at all. HeaderStyle=="none" and
 // Precedence=="auto" are the Phase-3-neutral values (NOT Go zero values, so the Brain always sets
 // them explicitly); the boolean toggles rely on Go's zero value (false) coinciding with "off".
 //
 // Chunk 2 stamps this with a literal Phase-3-neutral snapshot (services/brain/internal/dispatch/
-// variation.go); Chunk 5 replaces that source with live sender.config reads once sender_0020 seeds
+// variation.go); Chunk 5 replaces that source with live byosmtp.config reads once sender_0020 seeds
 // the fourteen keys (config-not-code — deferred to the chunk that actually seeds them).
 type Variation struct {
 	HTMLMinify       bool   `json:"html_minify,omitempty"`
@@ -195,7 +195,7 @@ type Report struct {
 	RequestID string `json:"request_id"`
 	JobID     string `json:"job_id"`
 	// AttemptToken echoes push_job.attempt_token VERBATIM (Phase 8 Chunk 1, P7-OD-6) — the identity of
-	// the attempt that produced this outcome. The Brain compares it to sender.jobs.attempt_token and
+	// the attempt that produced this outcome. The Brain compares it to byosmtp.jobs.attempt_token and
 	// applies the report only when they match; a mismatch is a stale replay from a superseded attempt
 	// and mutates nothing. Additive-only, omitempty; 0/absent = a pre-0020 box, which degrades to
 	// Phase 7 behavior (the different-box attribution guard) rather than being rejected.

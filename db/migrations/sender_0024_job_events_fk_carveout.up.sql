@@ -1,20 +1,20 @@
 -- sender_0024_job_events_fk_carveout.up.sql — G12-OD-1, ruled option (A) by the user 2026-07-29:
--- give sender.job_events' append-only reject-trigger the SAME narrow per-nullable-FK-column carve-out
--- that sender.account_events has had since sender_0014, so the documented hard delete works again.
+-- give byosmtp.job_events' append-only reject-trigger the SAME narrow per-nullable-FK-column carve-out
+-- that byosmtp.account_events has had since sender_0014, so the documented hard delete works again.
 --
--- THE DEFECT (ADR-0012; found walking Stage 12 step 7 of Docs/sender-module-local-test-guide.md, on
--- real infra). sender.job_events declares TWO `ON DELETE SET NULL` foreign keys:
+-- THE DEFECT (ADR-0012; found walking Stage 12 step 7 of Docs/byosmtp-module-local-test-guide.md, on
+-- real infra). byosmtp.job_events declares TWO `ON DELETE SET NULL` foreign keys:
 --
---     job_events_account_fk  FOREIGN KEY (account_id) REFERENCES sender.accounts(id) ON DELETE SET NULL
---     job_events_box_fk      FOREIGN KEY (box_id)     REFERENCES sender.boxes(id)    ON DELETE SET NULL
+--     job_events_account_fk  FOREIGN KEY (account_id) REFERENCES byosmtp.accounts(id) ON DELETE SET NULL
+--     job_events_box_fk      FOREIGN KEY (box_id)     REFERENCES byosmtp.boxes(id)    ON DELETE SET NULL
 --
 -- Postgres implements `ON DELETE SET NULL` as an internal `UPDATE ONLY … SET <col> = NULL`. sender_0008's
 -- BEFORE UPDATE reject-trigger raises on EVERY update with no carve-out, so the FK's own maintenance
 -- update aborts and takes the parent DELETE with it:
 --
 --     code=internal_error reason=account_write_error:
---       ERROR: sender.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)
---     CONTEXT: SQL statement "UPDATE ONLY "sender"."job_events" SET "account_id" = NULL WHERE …"
+--       ERROR: byosmtp.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)
+--     CONTEXT: SQL statement "UPDATE ONLY "byosmtp"."job_events" SET "account_id" = NULL WHERE …"
 --
 -- Consequence: `DELETE /v1/admin/accounts/{id}` returned 500 for any account that had ever been
 -- assigned a job, and deleting a box with job history failed identically — while an account with NO
@@ -54,7 +54,7 @@
 --
 -- ADDITIVE-ONLY (Rule 5). No column, constraint, enum, index, grant, or FK action changes. ONE trigger
 -- FUNCTION BODY is replaced (CREATE OR REPLACE, same signature, same trigger, same owner). The
--- REVOKE UPDATE, DELETE from sender_module (sender_0008) is untouched, so the app role still cannot
+-- REVOKE UPDATE, DELETE from byosmtp_module (sender_0008) is untouched, so the app role still cannot
 -- issue ANY update — this carve-out is reachable only by the system-performed FK maintenance update and
 -- by the schema owner. Nothing that was rejected before is now accepted except that one mutation.
 --
@@ -70,7 +70,7 @@
 -- that ever touched the account — including jobs unrelated to the deletion. job_events has no DELETE
 -- grant precisely to prevent that. See ADR-0012 option (C).
 
-CREATE OR REPLACE FUNCTION sender.fn_job_events_reject_update()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_reject_update()
 RETURNS TRIGGER AS $$
 BEGIN
     -- Permit ONLY the FK `ON DELETE SET NULL` maintenance update, enumerated per column:
@@ -107,16 +107,16 @@ BEGIN
 
     -- Unchanged message, hint, and ERRCODE: the rejection is the same contract it always was, and
     -- callers/tests that match on this string keep working (Rule 5, additive-only).
-    RAISE EXCEPTION 'sender.job_events is append-only: UPDATE forbidden'
+    RAISE EXCEPTION 'byosmtp.job_events is append-only: UPDATE forbidden'
         USING HINT = 'Events are immutable audit records',
               ERRCODE = 'integrity_constraint_violation';
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_reject_update() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_reject_update() OWNER TO byosmtp_owner;
 
 -- The trigger itself (trg_job_events_reject_update, sender_0008) is NOT recreated — CREATE OR REPLACE
 -- FUNCTION rebinds it in place. And there is still deliberately NO trg_job_events_reject_delete:
 -- Postgres fires row-level BEFORE DELETE on FK CASCADE, so one would block legitimate cascade cleanup
--- (sender_0008's header; Phase 1 #23). Direct DELETE by sender_module stays denied by the REVOKE.
+-- (sender_0008's header; Phase 1 #23). Direct DELETE by byosmtp_module stays denied by the REVOKE.
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0024');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0024');

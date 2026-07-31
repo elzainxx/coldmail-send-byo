@@ -30,9 +30,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // --- the outage injector -----------------------------------------------------------------------
@@ -375,7 +375,7 @@ func TestOutage_ReportDuringOutageNotAckedThenReplaysOnce(t *testing.T) {
 		t.Fatalf("after replay: state=%q hasPMID=%v leaseNull=%v completed=%v, want sent/true/true/true", st, hasPMID, leaseNull, completedSet)
 	}
 	var pmid string
-	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
 		t.Fatalf("read pmid: %v", err)
 	}
 	if pmid != report.ProviderMessageID {
@@ -548,7 +548,7 @@ func captureLogs(t *testing.T) *logCapture {
 // at 500ms forever, burying the one log line an operator needs (the offending config pair) under noise
 // about an outage that is not happening.
 //
-// Real infra throughout: a real Postgres clone, a real violating row in `sender.config`, the REAL
+// Real infra throughout: a real Postgres clone, a real violating row in `byosmtp.config`, the REAL
 // dispatch Runner goroutine, and the real standard logger captured verbatim. Paired controls:
 //   - NEGATIVE (the behavior under test): a config violation must NOT halt the gate and must log NO
 //     outage line;
@@ -691,7 +691,7 @@ func TestIsOutage_TransportVsApplicationError(t *testing.T) {
 	// NEGATIVE control — a real 23514 from a real server. jobs_attempt_count_check bounds
 	// attempt_count <= max_attempts; violate it deliberately on a real row.
 	job := e.seedQueuedJob(t, "classify@example.com")
-	_, appErr := e.pool.Exec(ctx, `UPDATE sender.jobs SET attempt_count = max_attempts + 5 WHERE id=$1`, job)
+	_, appErr := e.pool.Exec(ctx, `UPDATE byosmtp.jobs SET attempt_count = max_attempts + 5 WHERE id=$1`, job)
 	if appErr == nil {
 		t.Fatal("precondition: the CHECK did not fire — cannot test the application-error branch")
 	}

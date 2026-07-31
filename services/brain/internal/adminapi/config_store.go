@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// configStore reads/writes sender.config, translating the Phase 1 JSONB envelope {"v": …} to a
+// configStore reads/writes byosmtp.config, translating the Phase 1 JSONB envelope {"v": …} to a
 // clean scalar for the API (§6.1) and back. The DB stores opaque JSONB; value_type + semantic
 // validation are application-layer (§6.3/§6.4) — the store does not validate, callers do.
 
@@ -36,7 +36,7 @@ func getConfig(ctx context.Context, db pgxDB, key string) (*configRow, error) {
 	err := db.QueryRow(ctx,
 		`SELECT value, default_value, value_type, description,
 		        to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
-		   FROM sender.config WHERE key=$1`, key).
+		   FROM byosmtp.config WHERE key=$1`, key).
 		Scan(&valJSON, &defJSON, &vtype, &desc, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errConfigKeyNotFound
@@ -63,7 +63,7 @@ func listConfig(ctx context.Context, db pgxDB) ([]configRow, error) {
 	rows, err := db.Query(ctx,
 		`SELECT key, value, default_value, value_type, description,
 		        to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
-		   FROM sender.config ORDER BY key`)
+		   FROM byosmtp.config ORDER BY key`)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func updateConfigValue(ctx context.Context, db pgxDB, key string, value json.Raw
 		return err
 	}
 	tag, err := db.Exec(ctx,
-		`UPDATE sender.config SET value=$2, updated_at=NOW() WHERE key=$1`, key, wrapped)
+		`UPDATE byosmtp.config SET value=$2, updated_at=NOW() WHERE key=$1`, key, wrapped)
 	if err != nil {
 		return err
 	}

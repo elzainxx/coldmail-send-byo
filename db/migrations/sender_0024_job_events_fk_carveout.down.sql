@@ -17,14 +17,14 @@
 -- The function body is restored with CREATE OR REPLACE (same signature), so the trigger created by
 -- sender_0008 keeps pointing at it and is not dropped/recreated.
 
-CREATE OR REPLACE FUNCTION sender.fn_job_events_reject_update()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_reject_update()
 RETURNS TRIGGER AS $$
 BEGIN
-    RAISE EXCEPTION 'sender.job_events is append-only: UPDATE forbidden'
+    RAISE EXCEPTION 'byosmtp.job_events is append-only: UPDATE forbidden'
         USING HINT = 'Events are immutable audit records',
               ERRCODE = 'integrity_constraint_violation';
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_reject_update() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_reject_update() OWNER TO byosmtp_owner;
 
-DELETE FROM sender.schema_migrations WHERE version = '0024';
+DELETE FROM byosmtp.schema_migrations WHERE version = '0024';

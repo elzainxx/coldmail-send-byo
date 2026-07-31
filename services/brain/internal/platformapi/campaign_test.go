@@ -50,7 +50,7 @@ func TestCampaign_SecondConcurrentCampaignRejectedCleanly(t *testing.T) {
 		t.Fatalf("second campaign run: code=%s, want conflict", rejected.errorCode())
 	}
 	var n int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs WHERE campaign_id=$1`, c2).Scan(&n); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs WHERE campaign_id=$1`, c2).Scan(&n); err != nil {
 		t.Fatalf("count C2 jobs: %v", err)
 	}
 	if n != 0 {
@@ -59,7 +59,7 @@ func TestCampaign_SecondConcurrentCampaignRejectedCleanly(t *testing.T) {
 	// No job_events reference C2 either (nothing was ever created to transition).
 	var evN int
 	if err := e.admin.QueryRow(bgctx(),
-		`SELECT count(*) FROM sender.job_events je JOIN sender.jobs j ON j.id = je.job_id WHERE j.campaign_id = $1`, c2).Scan(&evN); err != nil {
+		`SELECT count(*) FROM byosmtp.job_events je JOIN byosmtp.jobs j ON j.id = je.job_id WHERE j.campaign_id = $1`, c2).Scan(&evN); err != nil {
 		t.Fatalf("count C2 events: %v", err)
 	}
 	if evN != 0 {
@@ -118,7 +118,7 @@ func TestCampaign_ConcurrentSecondCampaignStartsBothRejected(t *testing.T) {
 		}
 	}
 	var n int
-	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM sender.jobs WHERE campaign_id=$1`, c2).Scan(&n); err != nil {
+	if err := e.admin.QueryRow(bgctx(), `SELECT count(*) FROM byosmtp.jobs WHERE campaign_id=$1`, c2).Scan(&n); err != nil {
 		t.Fatalf("count C2 jobs: %v", err)
 	}
 	if n != 0 {

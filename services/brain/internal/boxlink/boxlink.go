@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sender-module/brain/internal/tlsutil"
+	"github.com/byosmtp-module/brain/internal/tlsutil"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // Registry is the Phase-0 box authorization source: one dev box id + its token hash (from
-// env; Phase 1 moves this to sender.boxes.token_hash). token=authority (P9-A).
+// env; Phase 1 moves this to byosmtp.boxes.token_hash). token=authority (P9-A).
 type Registry struct {
 	BoxID     string
 	TokenHash string

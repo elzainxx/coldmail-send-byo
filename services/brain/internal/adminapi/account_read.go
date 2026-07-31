@@ -86,7 +86,7 @@ func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 	}
 	args = append(args, limit+1)
 	limitParam := "$" + strconv.Itoa(len(args))
-	query := "SELECT " + accountSelectCols + " FROM sender.accounts a" + where +
+	query := "SELECT " + accountSelectCols + " FROM byosmtp.accounts a" + where +
 		" ORDER BY a.created_at ASC, a.id ASC LIMIT " + limitParam
 
 	ctx, cancel := dbCtx(r.Context())

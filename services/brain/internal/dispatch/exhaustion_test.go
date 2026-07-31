@@ -9,7 +9,7 @@ import (
 func (e *dispatchEnv) jobStateStr(t *testing.T, jobID string) string {
 	t.Helper()
 	var s string
-	if err := e.admin.QueryRow(context.Background(), `SELECT state::text FROM sender.jobs WHERE id=$1`, jobID).Scan(&s); err != nil {
+	if err := e.admin.QueryRow(context.Background(), `SELECT state::text FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&s); err != nil {
 		t.Fatalf("read state: %v", err)
 	}
 	return s
@@ -27,10 +27,10 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 	// zero eligible, zero self-recovering → FAIL.
 	q := e.seedAccount(t, pool, "sec")
 	m := e.seedAccount(t, pool, "sec2")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET quarantined=TRUE WHERE id=$1`, q); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, q); err != nil {
 		t.Fatalf("quarantine: %v", err)
 	}
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET paused=TRUE, pause_reason='manual' WHERE id=$1`, m); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='manual' WHERE id=$1`, m); err != nil {
 		t.Fatalf("manual pause: %v", err)
 	}
 	job := e.seedQueuedJob(t, "x@example.com")
@@ -45,7 +45,7 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 	}
 	// completed_at set (terminal CHECK), lease null, exactly one →failed event by dispatcher.
 	var completed, leaseNull bool
-	if err := e.admin.QueryRow(ctx, `SELECT completed_at IS NOT NULL, lease_expires_at IS NULL FROM sender.jobs WHERE id=$1`, job).Scan(&completed, &leaseNull); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT completed_at IS NOT NULL, lease_expires_at IS NULL FROM byosmtp.jobs WHERE id=$1`, job).Scan(&completed, &leaseNull); err != nil {
 		t.Fatalf("terminal cols: %v", err)
 	}
 	if !completed || !leaseNull {
@@ -54,7 +54,7 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 	var actor string
 	var nEvents int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*), COALESCE(max(actor::text),'') FROM sender.job_events WHERE job_id=$1 AND to_state='failed'`, job).Scan(&nEvents, &actor); err != nil {
+		`SELECT count(*), COALESCE(max(actor::text),'') FROM byosmtp.job_events WHERE job_id=$1 AND to_state='failed'`, job).Scan(&nEvents, &actor); err != nil {
 		t.Fatalf("fail event: %v", err)
 	}
 	if nEvents != 1 || actor != "dispatcher" {
@@ -63,7 +63,7 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 	// The transition was queued→failed (never sending→failed — illegal).
 	var fromState string
 	if err := e.admin.QueryRow(ctx,
-		`SELECT from_state::text FROM sender.job_events WHERE job_id=$1 AND to_state='failed'`, job).Scan(&fromState); err != nil {
+		`SELECT from_state::text FROM byosmtp.job_events WHERE job_id=$1 AND to_state='failed'`, job).Scan(&fromState); err != nil {
 		t.Fatalf("from_state: %v", err)
 	}
 	if fromState != "queued" {
@@ -82,10 +82,10 @@ func TestExhaustion_SelfRecoveringWaits(t *testing.T) {
 	// self-recovering, neither eligible now.
 	dl := e.seedAccount(t, pool, "sec")
 	th := e.seedAccount(t, pool, "sec2")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET paused=TRUE, pause_reason='daily_limit' WHERE id=$1`, dl); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='daily_limit' WHERE id=$1`, dl); err != nil {
 		t.Fatalf("daily_limit pause: %v", err)
 	}
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW() WHERE id=$1`, th); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET paused=TRUE, pause_reason='throttle', throttle_paused_at=NOW() WHERE id=$1`, th); err != nil {
 		t.Fatalf("throttle pause: %v", err)
 	}
 	job := e.seedQueuedJob(t, "w@example.com")
@@ -151,7 +151,7 @@ func TestExhaustion_EligiblePresentClaimsNotFails(t *testing.T) {
 	// → CLAIM.
 	bad := e.seedAccount(t, pool, "sec")
 	e.seedAccount(t, pool, "sec2")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET quarantined=TRUE WHERE id=$1`, bad); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET quarantined=TRUE WHERE id=$1`, bad); err != nil {
 		t.Fatalf("quarantine: %v", err)
 	}
 	job := e.seedQueuedJob(t, "c@example.com")

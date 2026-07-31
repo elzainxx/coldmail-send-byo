@@ -60,7 +60,7 @@ func TestClaimForUser_RespectsGrant(t *testing.T) {
 
 	var remaining int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM sender.jobs WHERE user_id=$1 AND state='queued'`, userA).Scan(&remaining); err != nil {
+		`SELECT count(*) FROM byosmtp.jobs WHERE user_id=$1 AND state='queued'`, userA).Scan(&remaining); err != nil {
 		t.Fatalf("count remaining: %v", err)
 	}
 	if remaining != 3 {
@@ -176,7 +176,7 @@ func TestTick_RespectsPerUserLaneCeiling(t *testing.T) {
 	}
 	var inFlight int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM sender.jobs WHERE user_id=$1 AND state IN ('assigned','sending')`, userA).Scan(&inFlight); err != nil {
+		`SELECT count(*) FROM byosmtp.jobs WHERE user_id=$1 AND state IN ('assigned','sending')`, userA).Scan(&inFlight); err != nil {
 		t.Fatalf("count in-flight: %v", err)
 	}
 	if inFlight != 2 {

@@ -32,7 +32,7 @@ func schemaMigrationsExists(t *testing.T, c *pgx.Conn) bool {
 	t.Helper()
 	var ok bool
 	err := c.QueryRow(context.Background(),
-		`SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='sender' AND table_name='schema_migrations')`).Scan(&ok)
+		`SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='byosmtp' AND table_name='schema_migrations')`).Scan(&ok)
 	if err != nil {
 		t.Fatalf("exists check: %v", err)
 	}
@@ -41,7 +41,7 @@ func schemaMigrationsExists(t *testing.T, c *pgx.Conn) bool {
 
 func versions(t *testing.T, c *pgx.Conn) []string {
 	t.Helper()
-	rows, err := c.Query(context.Background(), "SELECT version FROM sender.schema_migrations ORDER BY version")
+	rows, err := c.Query(context.Background(), "SELECT version FROM byosmtp.schema_migrations ORDER BY version")
 	if err != nil {
 		t.Fatalf("select versions: %v", err)
 	}
@@ -72,16 +72,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	defer admin.Close(context.Background())
 
 	// Clean slate on THIS connection. Drop only the SCHEMA (per-database); the cluster-global
-	// roles sender_owner/sender_module are shared across databases (platform, template, this
+	// roles byosmtp_owner/byosmtp_module are shared across databases (platform, template, this
 	// one) and the bootstrap creates them idempotently (IF NOT EXISTS), so we do NOT drop
 	// them here — dropping a role that still owns objects in another DB fails (2BP01). The
 	// bootstrap's ownership/grant statements are idempotent against pre-existing roles.
-	mustExec(t, admin, "DROP SCHEMA IF EXISTS sender CASCADE")
+	mustExec(t, admin, "DROP SCHEMA IF EXISTS byosmtp CASCADE")
 
 	// ANTI-VACUITY: assert the precondition. If the schema already existed here, the test
 	// below would be meaningless — so prove it's genuinely gone before we apply.
 	if schemaMigrationsExists(t, admin) {
-		t.Fatal("precondition failed: sender.schema_migrations still exists after DROP — test would be vacuous")
+		t.Fatal("precondition failed: byosmtp.schema_migrations still exists after DROP — test would be vacuous")
 	}
 
 	r := &Runner{
@@ -95,7 +95,7 @@ func TestRunnerLifecycle(t *testing.T) {
 
 	// The full feature chain: bootstrap 0000, the locked Phase-1 data model sender_0001..0012,
 	// then Phase 2's additive migrations sender_0013 (per-pool account uniqueness index) and
-	// sender_0014 (the sender.account_events audit sink). This is the executable expectation of
+	// sender_0014 (the byosmtp.account_events audit sink). This is the executable expectation of
 	// the migration chain — it grows as later phases add 0015+.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
@@ -106,22 +106,22 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatalf("Up: %v", err)
 	}
 	if !schemaMigrationsExists(t, admin) {
-		t.Fatal("after Up: sender.schema_migrations does not exist")
+		t.Fatal("after Up: byosmtp.schema_migrations does not exist")
 	}
 	if got := versions(t, admin); !equalStrings(got, wantChain) {
 		t.Fatalf("after Up: versions = %v, want %v", got, wantChain)
 	}
 	// Prove the real objects/roles/grants exist (not just the tracking rows). The roles,
 	// schema ownership, and platform grants are established by the bootstrap (0000).
-	assertRole(t, admin, "sender_owner", false /*login*/, false /*super*/)
-	assertRole(t, admin, "sender_module", true /*login*/, false /*super*/)
-	assertSchemaOwner(t, admin, "sender", "sender_owner")
+	assertRole(t, admin, "byosmtp_owner", false /*login*/, false /*super*/)
+	assertRole(t, admin, "byosmtp_module", true /*login*/, false /*super*/)
+	assertSchemaOwner(t, admin, "byosmtp", "byosmtp_owner")
 	assertPlatformGrant(t, admin, "users")
 	assertPlatformGrant(t, admin, "job_items")
-	// Prove the Phase-1 feature objects exist and are owned by sender_owner (so FORCE RLS on
-	// sender.accounts genuinely enforces — ADR-0004).
+	// Prove the Phase-1 feature objects exist and are owned by byosmtp_owner (so FORCE RLS on
+	// byosmtp.accounts genuinely enforces — ADR-0004).
 	for _, tbl := range []string{"pools", "accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events"} {
-		assertTableOwner(t, admin, "sender", tbl, "sender_owner")
+		assertTableOwner(t, admin, "byosmtp", tbl, "byosmtp_owner")
 	}
 	// Config seeds the 14 foundation keys (sender_0010) + Phase 5's 3 (sender_0017) + Phase 6's 2
 	// (sender_0018: reclaim_tick_interval_ms, smtp_operation_timeout_sec) + Phase 7's 6 (sender_0019:
@@ -134,7 +134,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// Phase 4 added NO config key (§0); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral
 	// (config seeds only, no table).
 	if n := configKeyCount(t, admin); n != 54 {
-		t.Fatalf("after Up: sender.config has %d keys, want 54 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023)", n)
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 54 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -147,26 +147,26 @@ func TestRunnerLifecycle(t *testing.T) {
 		"variation_user_agent_rate", "variation_precedence", "variation_thread_index",
 	} {
 		if !configKeyExists(t, admin, key) {
-			t.Fatalf("after Up: sender.config missing %q (sender_0020 Phase 8 seed not applied)", key)
+			t.Fatalf("after Up: byosmtp.config missing %q (sender_0020 Phase 8 seed not applied)", key)
 		}
 	}
 	// Phase 4's ONE additive schema delta: the per-user claim index (sender_0015, CONCURRENTLY).
 	// Proves the runner APPLIED a CONCURRENTLY migration (not a no-op) — anti-vacuity for the
 	// non-transactional path fix.
 	if !indexExists(t, admin, "jobs_claim_by_user_idx") {
-		t.Fatal("after Up: sender.jobs_claim_by_user_idx missing (sender_0015 CONCURRENTLY not applied)")
+		t.Fatal("after Up: byosmtp.jobs_claim_by_user_idx missing (sender_0015 CONCURRENTLY not applied)")
 	}
 	// Phase 5's additive columns (sender_0016). Anti-vacuity that the ADD COLUMN migration ran.
 	if !columnExists(t, admin, "accounts", "consecutive_failures") {
-		t.Fatal("after Up: sender.accounts.consecutive_failures missing (sender_0016 not applied)")
+		t.Fatal("after Up: byosmtp.accounts.consecutive_failures missing (sender_0016 not applied)")
 	}
 	if !columnExists(t, admin, "accounts", "throttle_paused_at") {
-		t.Fatal("after Up: sender.accounts.throttle_paused_at missing (sender_0016 not applied)")
+		t.Fatal("after Up: byosmtp.accounts.throttle_paused_at missing (sender_0016 not applied)")
 	}
 	// Phase 8 Chunk 1's additive column (sender_0020): the per-attempt identity that lets the Brain
 	// reject a stale replay from a superseded attempt (P7-OD-6).
 	if !columnExists(t, admin, "jobs", "attempt_token") {
-		t.Fatal("after Up: sender.jobs.attempt_token missing (sender_0020 not applied)")
+		t.Fatal("after Up: byosmtp.jobs.attempt_token missing (sender_0020 not applied)")
 	}
 	// Phase 9.5's eleven operability + completeness config seeds (sender_0021) — anti-vacuity.
 	for _, key := range []string{
@@ -176,7 +176,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"variation_css_micro_params",
 	} {
 		if !configKeyExists(t, admin, key) {
-			t.Fatalf("after Up: sender.config missing %q (sender_0021 Phase 9.5 seed not applied)", key)
+			t.Fatalf("after Up: byosmtp.config missing %q (sender_0021 Phase 9.5 seed not applied)", key)
 		}
 	}
 	// sender_0022's shared error-transition predicate — the single definition both job_events
@@ -184,7 +184,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// CREATE OR REPLACE of two existing function BODIES, so no column/index/config check can see
 	// it; the one NEW object it adds is this function.
 	if !functionExists(t, admin, "fn_job_event_is_error_transition") {
-		t.Fatal("after Up: sender.fn_job_event_is_error_transition missing (sender_0022 not applied)")
+		t.Fatal("after Up: byosmtp.fn_job_event_is_error_transition missing (sender_0022 not applied)")
 	}
 	// ...and that the replaced bodies actually GATE on it, which is the behavior 0022 exists for.
 	// The predicate is IMMUTABLE SQL, so it can be evaluated directly: a success transition
@@ -198,12 +198,12 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Up: fn_job_event_is_error_transition('assigned','queued') is FALSE — a requeue would lose its error context (sender_0022 predicate wrong)")
 	}
 	// sender_0023 (G11-OD-1 / ADR-0011 option B): the mid-life singleton re-acquire cadence. Its ONLY
-	// object is one sender.config row, so existence alone would be a weak check — assert the seeded
+	// object is one byosmtp.config row, so existence alone would be a weak check — assert the seeded
 	// value AND default_value, because Rule 1 requires every key to ship a documented default_value
 	// and the whole point of the key is that the cadence is configured, not hardcoded. A seed that
 	// landed with a NULL/absent default would satisfy configKeyExists and still violate Rule 1.
 	if !configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
-		t.Fatal("after Up: sender.config missing \"brain_singleton_reacquire_interval_sec\" (sender_0023 seed not applied)")
+		t.Fatal("after Up: byosmtp.config missing \"brain_singleton_reacquire_interval_sec\" (sender_0023 seed not applied)")
 	}
 	if v, d := configValueAndDefault(t, admin, "brain_singleton_reacquire_interval_sec"); v != `{"v": 5}` || d != `{"v": 5}` {
 		t.Fatalf("after Up: brain_singleton_reacquire_interval_sec value=%s default_value=%s, want both {\"v\": 5} (sender_0023 seeded the wrong shape — the reader in main.go unwraps {\"v\": ...} and a bare 5 would silently fall back to 0 = never re-acquire)", v, d)
@@ -215,14 +215,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// PAIRED, per Rule 10: the permitted half alone would report "landed" for a tree with the trigger
 	// DROPPED, which is a strictly worse bug (a mutable audit log) than the wedge 0024 fixes.
 	if !jobEventsCarveoutActive(t, admin) {
-		t.Fatal("after Up: an ON DELETE SET NULL-shaped UPDATE on sender.job_events (account_id -> NULL) was REJECTED — sender_0024's carve-out did not land, so DELETE /v1/admin/accounts/{id} is still wedged for any account with job history (ADR-0012)")
+		t.Fatal("after Up: an ON DELETE SET NULL-shaped UPDATE on byosmtp.job_events (account_id -> NULL) was REJECTED — sender_0024's carve-out did not land, so DELETE /v1/admin/accounts/{id} is still wedged for any account with job history (ADR-0012)")
 	}
 	if !jobEventsContentUpdateRejected(t, admin) {
-		t.Fatal("after Up: a CONTENT update on sender.job_events (actor -> 'admin') was PERMITTED — sender_0024's carve-out is too wide, or the append-only trigger is gone entirely; the audit log is mutable")
+		t.Fatal("after Up: a CONTENT update on byosmtp.job_events (actor -> 'admin') was PERMITTED — sender_0024's carve-out is too wide, or the append-only trigger is gone entirely; the audit log is mutable")
 	}
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
-		t.Fatal("after Up: sender.accounts does not have FORCE ROW LEVEL SECURITY")
+		t.Fatal("after Up: byosmtp.accounts does not have FORCE ROW LEVEL SECURITY")
 	}
 
 	// --- Idempotent re-run: applying again changes nothing, still exactly the full chain ---
@@ -257,7 +257,7 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatal("after Down 0019: a Phase 7 config seed is still present (down did not delete it)")
 		}
 		if v == "0020" && columnExists(t, admin, "jobs", "attempt_token") {
-			t.Fatal("after Down 0020: sender.jobs.attempt_token is still present (down did not drop it)")
+			t.Fatal("after Down 0020: byosmtp.jobs.attempt_token is still present (down did not drop it)")
 		}
 		if v == "0020" && configKeyExists(t, admin, "variation_html_minify") {
 			t.Fatal("after Down 0020: a Phase 8 content-variation config seed is still present (down did not delete it)")
@@ -266,7 +266,7 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatal("after Down 0021: a Phase 9.5 operability config seed is still present (down did not delete it)")
 		}
 		if v == "0022" && functionExists(t, admin, "fn_job_event_is_error_transition") {
-			t.Fatal("after Down 0022: sender.fn_job_event_is_error_transition is still present (down did not drop it)")
+			t.Fatal("after Down 0022: byosmtp.fn_job_event_is_error_transition is still present (down did not drop it)")
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
@@ -275,7 +275,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		// that is what "reversible" means here. Driving the probe is the only way to see it, and this
 		// assertion is what proves the down is real rather than a version-row deletion.
 		if v == "0024" && jobEventsCarveoutActive(t, admin) {
-			t.Fatal("after Down 0024: an account_id -> NULL update on sender.job_events is STILL permitted (down did not restore sender_0008's unconditional reject-trigger)")
+			t.Fatal("after Down 0024: an account_id -> NULL update on byosmtp.job_events is STILL permitted (down did not restore sender_0008's unconditional reject-trigger)")
 		}
 	}
 	// After reversing 0001..0012 the schema is still present (owned by the bootstrap) with
@@ -289,7 +289,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatalf("Down 0000: %v", err)
 	}
 	if schemaMigrationsExists(t, admin) {
-		t.Fatal("after Down 0000: sender schema still present")
+		t.Fatal("after Down 0000: byosmtp schema still present")
 	}
 }
 
@@ -321,31 +321,31 @@ func assertTableOwner(t *testing.T, c *pgx.Conn, schema, table, owner string) {
 func configKeyCount(t *testing.T, c *pgx.Conn) int {
 	t.Helper()
 	var n int
-	if err := c.QueryRow(context.Background(), "SELECT count(*) FROM sender.config").Scan(&n); err != nil {
+	if err := c.QueryRow(context.Background(), "SELECT count(*) FROM byosmtp.config").Scan(&n); err != nil {
 		t.Fatalf("config count: %v", err)
 	}
 	return n
 }
 
-// columnExists reports whether sender.<table> has a column of the given name.
+// columnExists reports whether byosmtp.<table> has a column of the given name.
 func columnExists(t *testing.T, c *pgx.Conn, table, column string) bool {
 	t.Helper()
 	var ok bool
 	if err := c.QueryRow(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM information_schema.columns
-		   WHERE table_schema='sender' AND table_name=$1 AND column_name=$2)`, table, column).Scan(&ok); err != nil {
+		   WHERE table_schema='byosmtp' AND table_name=$1 AND column_name=$2)`, table, column).Scan(&ok); err != nil {
 		t.Fatalf("column exists lookup %q.%q: %v", table, column, err)
 	}
 	return ok
 }
 
-// configKeyExists reports whether a sender.config row with the given key is present (for the
+// configKeyExists reports whether a byosmtp.config row with the given key is present (for the
 // 0018-down anti-vacuity check: a Phase 6 seed must be gone after its down migration).
 func configKeyExists(t *testing.T, c *pgx.Conn, key string) bool {
 	t.Helper()
 	var ok bool
 	if err := c.QueryRow(context.Background(),
-		`SELECT EXISTS(SELECT 1 FROM sender.config WHERE key=$1)`, key).Scan(&ok); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM byosmtp.config WHERE key=$1)`, key).Scan(&ok); err != nil {
 		t.Fatalf("config key exists lookup %q: %v", key, err)
 	}
 	return ok
@@ -359,24 +359,24 @@ func configValueAndDefault(t *testing.T, c *pgx.Conn, key string) (string, strin
 	t.Helper()
 	var value, def string
 	if err := c.QueryRow(context.Background(),
-		`SELECT value::text, default_value::text FROM sender.config WHERE key=$1`, key).Scan(&value, &def); err != nil {
+		`SELECT value::text, default_value::text FROM byosmtp.config WHERE key=$1`, key).Scan(&value, &def); err != nil {
 		t.Fatalf("config value lookup %q: %v", key, err)
 	}
 	return value, def
 }
 
-// indexExists reports whether an index of the given name exists in the sender schema.
+// indexExists reports whether an index of the given name exists in the byosmtp schema.
 func indexExists(t *testing.T, c *pgx.Conn, name string) bool {
 	t.Helper()
 	var ok bool
 	if err := c.QueryRow(context.Background(),
-		`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='sender' AND indexname=$1)`, name).Scan(&ok); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE schemaname='byosmtp' AND indexname=$1)`, name).Scan(&ok); err != nil {
 		t.Fatalf("index exists lookup %q: %v", name, err)
 	}
 	return ok
 }
 
-// functionExists reports whether a function of the given name exists in the sender schema (for
+// functionExists reports whether a function of the given name exists in the byosmtp schema (for
 // sender_0022, whose only NEW object is a function — its other two changes are CREATE OR REPLACE
 // of bodies that already existed).
 func functionExists(t *testing.T, c *pgx.Conn, name string) bool {
@@ -384,7 +384,7 @@ func functionExists(t *testing.T, c *pgx.Conn, name string) bool {
 	var ok bool
 	if err := c.QueryRow(context.Background(),
 		`SELECT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-		   WHERE n.nspname='sender' AND p.proname=$1)`, name).Scan(&ok); err != nil {
+		   WHERE n.nspname='byosmtp' AND p.proname=$1)`, name).Scan(&ok); err != nil {
 		t.Fatalf("function exists lookup %q: %v", name, err)
 	}
 	return ok
@@ -399,7 +399,7 @@ func functionExists(t *testing.T, c *pgx.Conn, name string) bool {
 // So: insert a throwaway job_events row with account_id set, attempt the exact mutation the FK's
 // ON DELETE SET NULL maintenance statement performs, and report whether it was permitted. Wrapped in
 // a transaction that is always ROLLED BACK, so the lifecycle DB is unchanged either way. Runs as the
-// admin/superuser connection deliberately — sender_module has UPDATE revoked (sender_0008), so a
+// admin/superuser connection deliberately — byosmtp_module has UPDATE revoked (sender_0008), so a
 // rejection seen as that role would prove the REVOKE, not the trigger.
 func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
 	t.Helper()
@@ -421,13 +421,13 @@ func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
 	}
 	var poolID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.pools (user_id, kind, name) VALUES ($1,'shared','carveout-probe') RETURNING id`,
+		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared','carveout-probe') RETURNING id`,
 		userID).Scan(&poolID); err != nil {
 		t.Fatalf("carve-out probe: seed pool: %v", err)
 	}
 	var acctID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.accounts
+		`INSERT INTO byosmtp.accounts
 		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address)
 		 VALUES ($1,$2,'probe.invalid',587,'probe@ourdomain.com','\x00','k','\x00','probe@ourdomain.com')
@@ -440,19 +440,19 @@ func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
 		 VALUES ($1,$1,'probe@example.com','S','<p>b</p>','pending') RETURNING id`, userID).Scan(&jobItemID); err != nil {
 		t.Fatalf("carve-out probe: seed job_item: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','system',true)`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor','system',true)`); err != nil {
 		t.Fatalf("carve-out probe: set actor: %v", err)
 	}
 	var jobID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
 		 VALUES ($1,$2,$2,'probe@example.com','S','<p>b</p>','queued',NOW()) RETURNING id`,
 		jobItemID, userID).Scan(&jobID); err != nil {
 		t.Fatalf("carve-out probe: seed job: %v", err)
 	}
 	var evID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.job_events (job_id, user_id, from_state, to_state, actor, account_id)
+		`INSERT INTO byosmtp.job_events (job_id, user_id, from_state, to_state, actor, account_id)
 		 VALUES ($1,$2,'queued','assigned','dispatcher',$3) RETURNING id`,
 		jobID, userID, acctID).Scan(&evID); err != nil {
 		t.Fatalf("carve-out probe: seed job_events row: %v", err)
@@ -460,7 +460,7 @@ func jobEventsCarveoutActive(t *testing.T, c *pgx.Conn) bool {
 
 	// THE PROBE: exactly what `ON DELETE SET NULL` issues. Permitted only under sender_0024.
 	permitted := true
-	if _, err := tx.Exec(ctx, `UPDATE sender.job_events SET account_id=NULL WHERE id=$1`, evID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE byosmtp.job_events SET account_id=NULL WHERE id=$1`, evID); err != nil {
 		permitted = false
 		// A rejection must come from the append-only trigger; anything else means the probe itself is
 		// broken and the answer would be meaningless.
@@ -496,22 +496,22 @@ func jobEventsContentUpdateRejected(t *testing.T, c *pgx.Conn) bool {
 		 VALUES ($1,$1,'probe2@example.com','S','<p>b</p>','pending') RETURNING id`, userID).Scan(&jobItemID); err != nil {
 		t.Fatalf("content-reject probe: seed job_item: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','system',true)`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor','system',true)`); err != nil {
 		t.Fatalf("content-reject probe: set actor: %v", err)
 	}
 	var jobID string
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, state, next_attempt_at)
 		 VALUES ($1,$2,$2,'probe2@example.com','S','<p>b</p>','queued',NOW()) RETURNING id`,
 		jobItemID, userID).Scan(&jobID); err != nil {
 		t.Fatalf("content-reject probe: seed job: %v", err)
 	}
 	var evID string
 	if err := tx.QueryRow(ctx,
-		`SELECT id FROM sender.job_events WHERE job_id=$1 ORDER BY seq LIMIT 1`, jobID).Scan(&evID); err != nil {
+		`SELECT id FROM byosmtp.job_events WHERE job_id=$1 ORDER BY seq LIMIT 1`, jobID).Scan(&evID); err != nil {
 		t.Fatalf("content-reject probe: read genesis event: %v", err)
 	}
-	_, err = tx.Exec(ctx, `UPDATE sender.job_events SET actor='admin' WHERE id=$1`, evID)
+	_, err = tx.Exec(ctx, `UPDATE byosmtp.job_events SET actor='admin' WHERE id=$1`, evID)
 	return err != nil && strings.Contains(err.Error(), "append-only: UPDATE forbidden")
 }
 
@@ -521,7 +521,7 @@ func isErrorTransition(t *testing.T, c *pgx.Conn, from, to string) bool {
 	t.Helper()
 	var ok bool
 	if err := c.QueryRow(context.Background(),
-		`SELECT sender.fn_job_event_is_error_transition($1::sender.job_state, $2::sender.job_state)`,
+		`SELECT byosmtp.fn_job_event_is_error_transition($1::byosmtp.job_state, $2::byosmtp.job_state)`,
 		from, to).Scan(&ok); err != nil {
 		t.Fatalf("is_error_transition(%q,%q): %v", from, to, err)
 	}
@@ -532,7 +532,7 @@ func accountsForceRLS(t *testing.T, c *pgx.Conn) bool {
 	t.Helper()
 	var relforcerowsecurity bool
 	err := c.QueryRow(context.Background(),
-		"SELECT relforcerowsecurity FROM pg_class WHERE oid='sender.accounts'::regclass").Scan(&relforcerowsecurity)
+		"SELECT relforcerowsecurity FROM pg_class WHERE oid='byosmtp.accounts'::regclass").Scan(&relforcerowsecurity)
 	if err != nil {
 		t.Fatalf("force rls lookup: %v", err)
 	}
@@ -570,12 +570,12 @@ func assertPlatformGrant(t *testing.T, c *pgx.Conn, table string) {
 	var priv string
 	err := c.QueryRow(context.Background(),
 		`SELECT string_agg(privilege_type, ',') FROM information_schema.role_table_grants
-		 WHERE grantee='sender_module' AND table_schema='public' AND table_name=$1`, table).Scan(&priv)
+		 WHERE grantee='byosmtp_module' AND table_schema='public' AND table_name=$1`, table).Scan(&priv)
 	if err != nil {
 		t.Fatalf("grant lookup public.%s: %v", table, err)
 	}
 	if priv != "SELECT" {
-		t.Fatalf("public.%s grants to sender_module = %q, want exactly SELECT", table, priv)
+		t.Fatalf("public.%s grants to byosmtp_module = %q, want exactly SELECT", table, priv)
 	}
 }
 

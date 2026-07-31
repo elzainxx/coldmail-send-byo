@@ -9,11 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestGrantsInvariant is a schema-wide, catalog-enumerated guard on the sender_module DML
+// TestGrantsInvariant is a schema-wide, catalog-enumerated guard on the byosmtp_module DML
 // grants. It exists because of the ADR-0008 grants trap: Phase 0 pre-created the schema and
-// feature objects are created as admin then ALTER OWNER TO sender_owner, so ALTER DEFAULT
+// feature objects are created as admin then ALTER OWNER TO byosmtp_owner, so ALTER DEFAULT
 // PRIVILEGES does NOT fire — every table needs an EXPLICIT grant (sender_0012). Forgetting that
-// for a future table means it silently has zero rights for sender_module and fails at runtime.
+// for a future table means it silently has zero rights for byosmtp_module and fails at runtime.
 //
 // This test ENUMERATES tables dynamically from pg_tables, so a table added in a later phase
 // WITHOUT grants FAILS here rather than being silently skipped. Each table's expected privilege
@@ -36,11 +36,11 @@ func TestGrantsInvariant(t *testing.T) {
 
 	c := Connect(t, cloneDSN)
 
-	// Enumerate every base table in the sender schema from the catalog.
+	// Enumerate every base table in the byosmtp schema from the catalog.
 	rows, err := c.Query(ctx,
-		"SELECT tablename FROM pg_tables WHERE schemaname='sender' ORDER BY tablename")
+		"SELECT tablename FROM pg_tables WHERE schemaname='byosmtp' ORDER BY tablename")
 	if err != nil {
-		t.Fatalf("enumerate sender tables: %v", err)
+		t.Fatalf("enumerate byosmtp tables: %v", err)
 	}
 	var tables []string
 	for rows.Next() {
@@ -65,7 +65,7 @@ func TestGrantsInvariant(t *testing.T) {
 	}
 	for _, tn := range mustHave {
 		if !present[tn] {
-			t.Fatalf("anti-vacuity: expected sender.%s to exist; enumerated %v", tn, tables)
+			t.Fatalf("anti-vacuity: expected byosmtp.%s to exist; enumerated %v", tn, tables)
 		}
 	}
 
@@ -73,7 +73,7 @@ func TestGrantsInvariant(t *testing.T) {
 		want := expectedPrivs(tn)
 		got := grantsFor(t, c, tn)
 		if !sameStringSet(got, want) {
-			t.Fatalf("grants invariant FAILED for sender.%s: sender_module has {%s}, expected {%s}. "+
+			t.Fatalf("grants invariant FAILED for byosmtp.%s: byosmtp_module has {%s}, expected {%s}. "+
 				"A new table needs EXPLICIT grants (ADR-0008); add them in the migration that creates it, "+
 				"or update the classifier in this test IN THE SAME CHANGE if a new privilege class is intended.",
 				tn, strings.Join(got, ","), strings.Join(want, ","))
@@ -81,7 +81,7 @@ func TestGrantsInvariant(t *testing.T) {
 	}
 }
 
-// expectedPrivs returns the privilege set sender_module must hold on a sender.<table>, by class.
+// expectedPrivs returns the privilege set byosmtp_module must hold on a byosmtp.<table>, by class.
 func expectedPrivs(table string) []string {
 	switch table {
 	case "job_events": // append-only audit log
@@ -101,9 +101,9 @@ func grantsFor(t *testing.T, c *pgx.Conn, table string) []string {
 	t.Helper()
 	rows, err := c.Query(context.Background(),
 		`SELECT privilege_type FROM information_schema.role_table_grants
-		 WHERE grantee='sender_module' AND table_schema='sender' AND table_name=$1`, table)
+		 WHERE grantee='byosmtp_module' AND table_schema='byosmtp' AND table_name=$1`, table)
 	if err != nil {
-		t.Fatalf("grants lookup sender.%s: %v", table, err)
+		t.Fatalf("grants lookup byosmtp.%s: %v", table, err)
 	}
 	defer rows.Close()
 	var got []string
@@ -137,10 +137,10 @@ func sameStringSet(a, b []string) bool {
 // TestSendLogsWriteOnceButRetentionCanDelete verifies the send_logs end state required by the
 // Phase 1 closeout ruling 2 and the Phase 7 retention sweep: rows are IMMUTABLE (UPDATE
 // rejected) but the retention path CAN delete them. Per Phase 7 §3.1, the sweep runs IN THE
-// BRAIN as sender_module (it "uses the send_logs DELETE privilege Phase 1 sender_0009 reserved
+// BRAIN as byosmtp_module (it "uses the send_logs DELETE privilege Phase 1 sender_0009 reserved
 // exactly for this") — so no separate role and no new migration are needed; sender_0012 already
 // grants send_logs INSERT+SELECT+DELETE and revokes UPDATE. This test asserts that behaviorally
-// as sender_module, with anti-vacuity positive controls (INSERT + SELECT succeed).
+// as byosmtp_module, with anti-vacuity positive controls (INSERT + SELECT succeed).
 func TestSendLogsWriteOnceButRetentionCanDelete(t *testing.T) {
 	adminDSN := AdminDSN(t)
 	template := requireTemplate(t)
@@ -155,46 +155,46 @@ func TestSendLogsWriteOnceButRetentionCanDelete(t *testing.T) {
 
 	m := moduleConn(t, cloneDSN)
 
-	// Positive control (anti-vacuity): sender_module CAN INSERT a send_logs row — an EXPIRED
+	// Positive control (anti-vacuity): byosmtp_module CAN INSERT a send_logs row — an EXPIRED
 	// one (ttl in the past) so the retention sweep query below is eligible to delete it.
 	var logID string
 	if err := m.QueryRow(ctx,
-		`INSERT INTO sender.send_logs (job_id,user_id,recipient_email,subject,body,headers,smtp_response,ttl_expires_at)
+		`INSERT INTO byosmtp.send_logs (job_id,user_id,recipient_email,subject,body,headers,smtp_response,ttl_expires_at)
 		 VALUES ($1,$2,'r@x.co','s','b','{}'::jsonb,'250 OK', NOW() - INTERVAL '1 day') RETURNING id`,
 		jobID, uid).Scan(&logID); err != nil {
 		t.Fatalf("module INSERT send_logs failed (should succeed): %v", err)
 	}
 	// Positive control: SELECT succeeds.
 	var seen int
-	if err := m.QueryRow(ctx, "SELECT count(*) FROM sender.send_logs WHERE id=$1", logID).Scan(&seen); err != nil || seen != 1 {
+	if err := m.QueryRow(ctx, "SELECT count(*) FROM byosmtp.send_logs WHERE id=$1", logID).Scan(&seen); err != nil || seen != 1 {
 		t.Fatalf("module SELECT send_logs: seen=%d err=%v (want 1, nil)", seen, err)
 	}
 
 	// UPDATE must be REJECTED (write-once: REVOKE UPDATE + BEFORE UPDATE reject-trigger).
-	if _, err := m.Exec(ctx, "UPDATE sender.send_logs SET smtp_response='tampered' WHERE id=$1", logID); err == nil {
-		t.Fatal("UPDATE sender.send_logs succeeded, want rejection (write-once)")
+	if _, err := m.Exec(ctx, "UPDATE byosmtp.send_logs SET smtp_response='tampered' WHERE id=$1", logID); err == nil {
+		t.Fatal("UPDATE byosmtp.send_logs succeeded, want rejection (write-once)")
 	}
 	// Confirm the row is unchanged after the rejected UPDATE.
 	var resp string
-	if err := admin.QueryRow(ctx, "SELECT smtp_response FROM sender.send_logs WHERE id=$1", logID).Scan(&resp); err != nil {
+	if err := admin.QueryRow(ctx, "SELECT smtp_response FROM byosmtp.send_logs WHERE id=$1", logID).Scan(&resp); err != nil {
 		t.Fatalf("read smtp_response: %v", err)
 	}
 	if resp != "250 OK" {
 		t.Fatalf("send_logs row mutated despite write-once (%q), want '250 OK'", resp)
 	}
 
-	// The retention sweep path (sender_module, Phase 7 §3.1) CAN DELETE expired rows. Use the
+	// The retention sweep path (byosmtp_module, Phase 7 §3.1) CAN DELETE expired rows. Use the
 	// exact batched-DELETE shape from the Phase 7 spec.
 	tag, err := m.Exec(ctx,
-		"DELETE FROM sender.send_logs WHERE ctid IN (SELECT ctid FROM sender.send_logs WHERE ttl_expires_at < NOW() LIMIT 1000)")
+		"DELETE FROM byosmtp.send_logs WHERE ctid IN (SELECT ctid FROM byosmtp.send_logs WHERE ttl_expires_at < NOW() LIMIT 1000)")
 	if err != nil {
-		t.Fatalf("retention-path DELETE failed (should succeed as sender_module): %v", err)
+		t.Fatalf("retention-path DELETE failed (should succeed as byosmtp_module): %v", err)
 	}
 	if tag.RowsAffected() != 1 {
 		t.Fatalf("retention DELETE removed %d rows, want 1", tag.RowsAffected())
 	}
 	// Confirm the expired row is gone.
-	if err := admin.QueryRow(ctx, "SELECT count(*) FROM sender.send_logs WHERE id=$1", logID).Scan(&seen); err != nil {
+	if err := admin.QueryRow(ctx, "SELECT count(*) FROM byosmtp.send_logs WHERE id=$1", logID).Scan(&seen); err != nil {
 		t.Fatalf("recount: %v", err)
 	}
 	if seen != 0 {
@@ -203,8 +203,8 @@ func TestSendLogsWriteOnceButRetentionCanDelete(t *testing.T) {
 }
 
 // TestGrantsInvariant_AntiVacuity proves the invariant test above has teeth: a NEW table created
-// (as admin, then reowned to sender_owner, exactly like a real feature migration) WITHOUT any
-// explicit grant must be caught — sender_module holds ZERO privileges on it, which is NOT any
+// (as admin, then reowned to byosmtp_owner, exactly like a real feature migration) WITHOUT any
+// explicit grant must be caught — byosmtp_module holds ZERO privileges on it, which is NOT any
 // expected class, so the invariant check flags it. We assert that directly here (self-contained,
 // reverts by dropping the clone), so a reviewer sees the negative control without editing the
 // real schema.
@@ -219,14 +219,14 @@ func TestGrantsInvariant_AntiVacuity(t *testing.T) {
 	c := Connect(t, cloneDSN)
 
 	// Simulate a phase author adding a table the ADR-0008 way but forgetting the explicit grant.
-	if _, err := c.Exec(ctx, "CREATE TABLE sender.forgot_grants (id uuid primary key default gen_random_uuid())"); err != nil {
+	if _, err := c.Exec(ctx, "CREATE TABLE byosmtp.forgot_grants (id uuid primary key default gen_random_uuid())"); err != nil {
 		t.Fatalf("create test table: %v", err)
 	}
-	if _, err := c.Exec(ctx, "ALTER TABLE sender.forgot_grants OWNER TO sender_owner"); err != nil {
+	if _, err := c.Exec(ctx, "ALTER TABLE byosmtp.forgot_grants OWNER TO byosmtp_owner"); err != nil {
 		t.Fatalf("reown test table: %v", err)
 	}
 
-	// The forgotten table has zero sender_module grants (ADR-0008: default privileges don't fire
+	// The forgotten table has zero byosmtp_module grants (ADR-0008: default privileges don't fire
 	// for reowned tables). Prove the invariant check would REJECT it.
 	got := grantsFor(t, c, "forgot_grants")
 	want := expectedPrivs("forgot_grants") // classified 'normal' => SIUD

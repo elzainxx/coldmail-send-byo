@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // TestLockOrderAudit_ConcurrentAcceptedSameAccount (closeout Chunk 1 — empirical confirmation) —
@@ -30,15 +30,15 @@ func TestLockOrderAudit_ConcurrentAcceptedSameAccount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','dispatcher',true)`); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor','dispatcher',true)`); err != nil {
 			t.Fatalf("actor: %v", err)
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE sender.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
+			`UPDATE byosmtp.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
 			   lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id=$1`, j, acct, e.px.boxID); err != nil {
 			t.Fatalf("assign: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE sender.jobs SET state='sending' WHERE id=$1`, j); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE byosmtp.jobs SET state='sending' WHERE id=$1`, j); err != nil {
 			t.Fatalf("sending: %v", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -83,7 +83,7 @@ func TestLockOrderAudit_AcceptedVsClassifiedSameAccount(t *testing.T) {
 	ctx := context.Background()
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -91,13 +91,13 @@ func TestLockOrderAudit_AcceptedVsClassifiedSameAccount(t *testing.T) {
 	jobFail := e.seedQueuedJob(t, "mix-fail@example.com")
 	for _, j := range []string{jobAcc, jobFail} {
 		tx, _ := e.admin.Begin(ctx)
-		_, _ = tx.Exec(ctx, `SELECT set_config('sender.actor','dispatcher',true)`)
+		_, _ = tx.Exec(ctx, `SELECT set_config('byosmtp.actor','dispatcher',true)`)
 		if _, err := tx.Exec(ctx,
-			`UPDATE sender.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
+			`UPDATE byosmtp.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
 			   lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id=$1`, j, acct, e.px.boxID); err != nil {
 			t.Fatalf("assign: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE sender.jobs SET state='sending' WHERE id=$1`, j); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE byosmtp.jobs SET state='sending' WHERE id=$1`, j); err != nil {
 			t.Fatalf("sending: %v", err)
 		}
 		if err := tx.Commit(ctx); err != nil {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestShadowMode_LogsWithoutActing_ThenEnforceActs (O2) — driving the SAME auth_failure condition
@@ -41,7 +41,7 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 	var action, reason string
 	var fromFlags, toFlags []byte
 	if err := e.admin.QueryRow(ctx,
-		`SELECT action, reason, from_flags::text, to_flags::text FROM sender.account_events
+		`SELECT action, reason, from_flags::text, to_flags::text FROM byosmtp.account_events
 		 WHERE account_id=$1 AND actor='system' ORDER BY created_at DESC LIMIT 1`, acctShadow).
 		Scan(&action, &reason, &fromFlags, &toFlags); err != nil {
 		t.Fatalf("read shadow event: %v", err)
@@ -72,7 +72,7 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 	// auth_failure requeues with a ZERO backoff (next_attempt_at=NOW()), so jobShadow itself would
 	// win the very next claim (it's older) — delete it so job2 is unambiguously the one dispatched,
 	// isolating "does the account still send" from "which job the claim happens to pick".
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.jobs WHERE id=$1`, jobShadow); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.jobs WHERE id=$1`, jobShadow); err != nil {
 		t.Fatalf("cleanup jobShadow: %v", err)
 	}
 	job2 := e.seedQueuedJob(t, "shadow2@example.com")
@@ -121,7 +121,7 @@ func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 
 	// Drive the same 4-transient-failure recipe that crosses quarantine_threshold under enforce.
 	for i := 0; i < 5; i++ {
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next: %v", err)
 		}
 		e.dispatchToSending(t, job)

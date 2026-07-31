@@ -17,10 +17,10 @@ jobs:
 
       - name: Go lint — gofmt + vet (BLOCKING; keeps code/format from drifting)
         run: |
-          test -z "$(gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness)" \
-            || { echo 'gofmt: files need formatting:'; gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness; exit 1; }
+          test -z "$(gofmt -l services/brain tools/byosmtp-migrate tools/provision-box tests/harness)" \
+            || { echo 'gofmt: files need formatting:'; gofmt -l services/brain tools/byosmtp-migrate tools/provision-box tests/harness; exit 1; }
           (cd services/brain && go vet ./...)
-          (cd tools/sender-migrate && go vet ./...)
+          (cd tools/byosmtp-migrate && go vet ./...)
           (cd tools/provision-box && go vet ./...)
           (cd tests/harness && go vet ./...)
 
@@ -33,7 +33,7 @@ jobs:
       - name: Real-infra behavioral harness (10 checks, must be all-green)
         run: bash scripts/dev.sh test
 
-      - name: Drift gate — config reference vs seeded sender.config (BLOCKING)
+      - name: Drift gate — config reference vs seeded byosmtp.config (BLOCKING)
         if: always()
         run: bash tests/harness/checks/config_drift.sh
 

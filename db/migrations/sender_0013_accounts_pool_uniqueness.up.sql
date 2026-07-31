@@ -1,5 +1,5 @@
 -- sender_0013_accounts_pool_uniqueness.up.sql — Phase 2 (ruling 3): per-pool account uniqueness.
--- Additive UNIQUE index on the EXISTING sender.accounts table — NO column is added, dropped, or
+-- Additive UNIQUE index on the EXISTING byosmtp.accounts table — NO column is added, dropped, or
 -- altered (Phase 2 modifies no Phase 1 table column). Blocks a duplicate (smtp_host,
 -- smtp_username) WITHIN a pool; the SAME pair is allowed in a DIFFERENT pool (the same real
 -- mailbox may legitimately be placed in more than one pool — accepted residual, spec §2.7).
@@ -9,9 +9,9 @@
 -- Population note (spec §12): on the empty/near-empty Phase-2 dataset this is a plain
 -- CREATE UNIQUE INDEX (runs in the runner's txn). If ever applied to a populated table, switch
 -- to CREATE UNIQUE INDEX CONCURRENTLY (cannot run in a txn) and pre-verify no existing dupes.
--- The index inherits sender.accounts' owner (sender_owner) — no ALTER needed.
+-- The index inherits byosmtp.accounts' owner (byosmtp_owner) — no ALTER needed.
 
 CREATE UNIQUE INDEX accounts_pool_host_user_unique
-    ON sender.accounts (pool_id, smtp_host, smtp_username);
+    ON byosmtp.accounts (pool_id, smtp_host, smtp_username);
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0013');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0013');

@@ -12,7 +12,7 @@ import (
 
 // TestConfigOrdering_InvertedPUTRejectedAndNotPersisted — a PUT that would invert invariant (a)
 // (smtp_operation_timeout_sec >= job_max_processing_time_sec) is rejected with
-// config_ordering_violation, and the bad value does NOT land in sender.config (anti-vacuity: the
+// config_ordering_violation, and the bad value does NOT land in byosmtp.config (anti-vacuity: the
 // stored value is read back and confirmed unchanged, not merely "the response said 400").
 func TestConfigOrdering_InvertedPUTRejectedAndNotPersisted(t *testing.T) {
 	e := newTestEnv(t, "ordwriteA")
@@ -134,7 +134,7 @@ func TestConfigOrdering_OrderedTwoStepWideningSucceeds(t *testing.T) {
 }
 
 // TestConfigOrdering_LoadPathBackstopStillRejectsDirectSQL — defense in depth: a value that
-// reaches sender.config by a path OTHER than the admin PUT (e.g. a direct SQL write, or a future
+// reaches byosmtp.config by a path OTHER than the admin PUT (e.g. a direct SQL write, or a future
 // second write path) is STILL caught, because the config-LOAD path's own validateConfigOrdering
 // is untouched — it is not bypassed or weakened by the new write-path check, only supplemented by
 // it. This proves the boundary fix is additive, not a replacement for the existing backstop.
@@ -144,7 +144,7 @@ func TestConfigOrdering_LoadPathBackstopStillRejectsDirectSQL(t *testing.T) {
 	// Bypass the admin API entirely: write an inverted pair directly, exactly as a rogue write
 	// path (or a pre-P9-OD-2 client) might have.
 	if _, err := e.admin.Exec(bgCtx(),
-		`UPDATE sender.config SET value = jsonb_build_object('v', 999) WHERE key='smtp_operation_timeout_sec'`); err != nil {
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', 999) WHERE key='smtp_operation_timeout_sec'`); err != nil {
 		t.Fatalf("direct SQL write: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestConfigOrdering_LoadPathBackstopStillRejectsDirectSQL(t *testing.T) {
 	// exercised by internal/dispatch's own TestConfigOrdering_RejectsInvertedPair /
 	// TestConfigOrdering_IsNotADBOutage against a real Dispatcher — this test only proves the
 	// ADMIN write-path fix did not remove or alter that backstop's own inputs: the bad value is
-	// genuinely present in sender.config for the Brain's next LoadConfig call to catch, exactly as
+	// genuinely present in byosmtp.config for the Brain's next LoadConfig call to catch, exactly as
 	// it always was. (Driving a full Dispatcher here would duplicate internal/dispatch's own
 	// suite; this package deliberately does not import internal/dispatch, OD-7's structural
 	// package-isolation precedent.)

@@ -244,7 +244,7 @@ func TestPoolChain_InvalidDefaultBehavesLikeUnset(t *testing.T) {
 
 	// Case 1: default points at a DISABLED shared pool.
 	disabledShared := e.seedSharedPool(t, "disabled-shared")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.pools SET enabled = FALSE WHERE id = $1`, disabledShared); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.pools SET enabled = FALSE WHERE id = $1`, disabledShared); err != nil {
 		t.Fatalf("disable pool: %v", err)
 	}
 	e.setDefaultSharedPool(t, disabledShared)

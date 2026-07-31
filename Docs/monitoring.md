@@ -77,7 +77,7 @@ curl -fsS -X PUT "$ADMIN/v1/admin/config/alert_webhook_url" \
 It takes effect **immediately, with no redeploy** — the URL is re-read on each health evaluation.
 Only `http://` or `https://` values are accepted; anything else is rejected at write time.
 
-> **`SENDER_ALERT_WEBHOOK_URL` in `.env.example` is inert.** No code reads that variable — the
+> **`BYOSMTP_ALERT_WEBHOOK_URL` in `.env.example` is inert.** No code reads that variable — the
 > webhook destination comes *only* from the `alert_webhook_url` config row. Setting the env var alone
 > does nothing. Recorded in [`future-work.md`](./future-work.md).
 
@@ -93,7 +93,7 @@ capability for the receiving system.
   "subject": { "type": "box", "id": "<uuid>" },
   "detail":  { "...": "condition-specific" },
   "fired_at": "2026-07-28T14:03:11Z",
-  "module": "sender"
+  "module": "byosmtp"
 }
 ```
 
@@ -125,7 +125,7 @@ Because conditions are evaluated on request, wire a scheduled poll. Without it, 
 # /etc/cron.d/sender-health  — evaluate conditions every 5 minutes so the webhook can fire.
 # The response is discarded; the POINT is the evaluation. Keep the key out of the crontab itself.
 */5 * * * * brain curl -fsS -m 10 -o /dev/null \
-  -H "Authorization: Bearer $(cat /etc/sender/admin.key)" \
+  -H "Authorization: Bearer $(cat /etc/byosmtp/admin.key)" \
   http://127.0.0.1:8080/v1/admin/health || true
 ```
 

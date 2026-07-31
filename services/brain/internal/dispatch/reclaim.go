@@ -8,7 +8,7 @@
 // queued, actor='reclaim_loop', lease cleared, saturating attempt_count, error_class='timeout',
 // next_attempt_at from Phase 5's timeout backoff. The account is deliberately NOT touched — no flag,
 // no score recompute — because a reclaim is a Brain-DECLARED timeout with no send outcome to
-// attribute (P6-10; the carve-out is structural — this file's transition writes only sender.jobs).
+// attribute (P6-10; the carve-out is structural — this file's transition writes only byosmtp.jobs).
 //
 // Race-safety rests on the single-Brain model (identical to Phase 4 §6): exactly one reclaim loop
 // and one dispatch loop in one process. To be safe against the tiny window where a lane worker is
@@ -49,7 +49,7 @@ import (
 //
 // Locking the account is NOT a write — the P6-10 carve-out (a Brain-declared reclaim performs no
 // account UPDATE and no score recompute) is fully preserved; a shared/exclusive row lock touches no
-// column. This function reads assigned_account_id and WRITES ONLY sender.jobs columns.
+// column. This function reads assigned_account_id and WRITES ONLY byosmtp.jobs columns.
 //
 // The transition itself is Phase 5's timeout JOB policy declared by the Brain: state→'queued' (the
 // one locked reassignment, P4-20); lease NULL (jobs_lease_valid_check); attempt_count saturates via
@@ -76,7 +76,7 @@ func reclaimJobLocked(ctx context.Context, tx pgx.Tx, cfg Config, jobID, reason 
 	// that already left is a clean no-op.
 	var acctID *string
 	if err := tx.QueryRow(ctx,
-		`SELECT assigned_account_id FROM sender.jobs WHERE id=$1 AND state IN ('assigned','sending')`, jobID).Scan(&acctID); err != nil {
+		`SELECT assigned_account_id FROM byosmtp.jobs WHERE id=$1 AND state IN ('assigned','sending')`, jobID).Scan(&acctID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil // already left in-flight (reported sent/bounced/requeued) — nothing to reclaim
 		}
@@ -85,7 +85,7 @@ func reclaimJobLocked(ctx context.Context, tx pgx.Tx, cfg Config, jobID, reason 
 
 	// (2) Lock the account FOR UPDATE FIRST (account→job order, mirroring applyClassifiedFailure).
 	if acctID != nil {
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM byosmtp.accounts WHERE id=$1 FOR UPDATE`, *acctID); err != nil {
 			return 0, err
 		}
 	}
@@ -94,7 +94,7 @@ func reclaimJobLocked(ctx context.Context, tx pgx.Tx, cfg Config, jobID, reason 
 	// in-flight guard under the lock. No row → skipped/raced → clean no-op this tick.
 	var locked string
 	if err := tx.QueryRow(ctx,
-		`SELECT id FROM sender.jobs WHERE id=$1 AND state IN ('assigned','sending') FOR UPDATE SKIP LOCKED`, jobID).Scan(&locked); err != nil {
+		`SELECT id FROM byosmtp.jobs WHERE id=$1 AND state IN ('assigned','sending') FOR UPDATE SKIP LOCKED`, jobID).Scan(&locked); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil
 		}
@@ -103,7 +103,7 @@ func reclaimJobLocked(ctx context.Context, tx pgx.Tx, cfg Config, jobID, reason 
 
 	// (4) Apply the §2.4 transition on the locked row.
 	tag, err := tx.Exec(ctx, `
-UPDATE sender.jobs
+UPDATE byosmtp.jobs
    SET state            = 'queued',
        lease_expires_at = NULL,
        attempt_count    = LEAST(attempt_count + 1, max_attempts),
@@ -176,7 +176,7 @@ func (d *Dispatcher) reclaimDeadBoxes(ctx context.Context, cfg Config) (int, err
 	//    query (no long-held lock) — the per-box reclaim below re-checks status='active' under the
 	//    UPDATE, so a box that changed state between this read and the reclaim is handled correctly.
 	rows, err := d.db.Query(ctx,
-		`SELECT id FROM sender.boxes
+		`SELECT id FROM byosmtp.boxes
 		  WHERE status <> 'disabled'
 		    AND last_heartbeat_at < NOW() - make_interval(secs => $1)`, silenceSecs)
 	if err != nil {
@@ -229,7 +229,7 @@ func (d *Dispatcher) reclaimExpiredLeases(ctx context.Context, cfg Config) (int,
 	// a job that changes state between this read and its reclaim is handled by the guard). Bounded by
 	// nothing here — a large backlog is reclaimed across ticks naturally; each row is cheap.
 	rows, err := d.db.Query(ctx,
-		`SELECT id FROM sender.jobs
+		`SELECT id FROM byosmtp.jobs
 		  WHERE state IN ('assigned','sending') AND lease_expires_at < NOW()`)
 	if err != nil {
 		return 0, err
@@ -304,7 +304,7 @@ func (d *Dispatcher) reclaimJobsOnBox(ctx context.Context, boxID string, cfg Con
 	// rows and the over-mark self-heals on the box's next heartbeat (Phase 3 §3.2).
 	if err := d.inActorTx(ctx, "reclaim_loop", func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE sender.boxes SET status='stale' WHERE id=$1 AND status='active'`, boxID)
+			`UPDATE byosmtp.boxes SET status='stale' WHERE id=$1 AND status='active'`, boxID)
 		return err
 	}); err != nil {
 		return 0, err
@@ -313,7 +313,7 @@ func (d *Dispatcher) reclaimJobsOnBox(ctx context.Context, boxID string, cfg Con
 	// Enumerate the box's in-flight jobs (served by jobs_assigned_box_id_idx), then reclaim each in
 	// its own tx via the shared account→job-ordered path.
 	rows, err := d.db.Query(ctx,
-		`SELECT id FROM sender.jobs WHERE assigned_box_id=$1 AND state IN ('assigned','sending')`, boxID)
+		`SELECT id FROM byosmtp.jobs WHERE assigned_box_id=$1 AND state IN ('assigned','sending')`, boxID)
 	if err != nil {
 		return 0, err
 	}

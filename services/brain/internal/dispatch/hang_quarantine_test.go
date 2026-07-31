@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestHang_BoxReportedTimeoutQuarantinesBounded (T8 — the P6-11 ordering invariant's teeth) — a
@@ -32,7 +32,7 @@ func TestHang_BoxReportedTimeoutQuarantinesBounded(t *testing.T) {
 	quarantined := false
 	for i := 0; i < maxAttempts; i++ {
 		// Make the requeued job immediately claimable again.
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next_attempt_at: %v", err)
 		}
 		if _, err := e.d.TryDispatch(ctx); err != nil {
@@ -88,7 +88,7 @@ func TestHang_BoxReportedTimeoutQuarantinesBounded(t *testing.T) {
 	// Now a healthy account joins the pool; the job routes to it and sends (accHang is out of
 	// eligibility). Proves the campaign is NOT stuck — it fails over to good capacity.
 	accGood := e.seedAccount(t, pool, "sec-good")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("reset next_attempt_at: %v", err)
 	}
 	e.px.freeAllBoxes()
@@ -100,7 +100,7 @@ func TestHang_BoxReportedTimeoutQuarantinesBounded(t *testing.T) {
 		t.Fatalf("after a healthy account joined, job state=%s, want sending (failover)", st)
 	}
 	var usedAcct string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM sender.jobs WHERE id=$1`, job).Scan(&usedAcct); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_account_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&usedAcct); err != nil {
 		t.Fatalf("read account: %v", err)
 	}
 	if usedAcct != accGood {

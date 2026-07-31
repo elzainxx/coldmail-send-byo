@@ -46,7 +46,7 @@ export { prngFor, hashFor, pickSeeded };
 
 // VARIATION_DEFAULTS is the resolved shape of an ABSENT variation block, and the value of every key
 // at its seeded default (§6.1). This set IS the Phase 3 identity — see the header. It is not a tuning
-// constant: the operator-tunable source of truth is sender.config, which the Brain resolves and
+// constant: the operator-tunable source of truth is byosmtp.config, which the Brain resolves and
 // stamps onto push_job; this object exists so that a missing/partial block degrades to Phase 3
 // rather than to something invented. preheader_templates defaults to the spec's own token-free pool
 // (§6.1) — NOT an empty list — so that enabling dynamic_preheader without an explicit override still

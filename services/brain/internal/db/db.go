@@ -15,7 +15,7 @@ type DB struct {
 	Pool *pgxpool.Pool
 }
 
-// Connect opens a pgx pool as the app role encoded in the DSN (sender_module — never a
+// Connect opens a pgx pool as the app role encoded in the DSN (byosmtp_module — never a
 // superuser at runtime). It pings to prove reachability before returning.
 func Connect(ctx context.Context, dsn string) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)

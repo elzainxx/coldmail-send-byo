@@ -3,10 +3,10 @@
 // THE LOCKED INTENT. send_logs raw content (recipient + subject + body + headers + smtp_response) is
 // retention-bounded: after debug_log_retention_days it is DROPPED. Job OUTCOMES (job_events + final
 // jobs states) are PERMANENT and are never rolled up, mutated, or deleted. This file's sweep deletes
-// ONLY sender.send_logs rows — that carve-out is STRUCTURAL, not policy: the sweep issues exactly one
+// ONLY byosmtp.send_logs rows — that carve-out is STRUCTURAL, not policy: the sweep issues exactly one
 // DML statement, a DELETE against send_logs, and no statement here touches jobs or job_events at all.
 //
-// P7-1 chose SCHEMA-NEUTRAL (§3.2): there is NO sender.send_log_summaries table (no sender_0020).
+// P7-1 chose SCHEMA-NEUTRAL (§3.2): there is NO byosmtp.send_log_summaries table (no sender_0020).
 // "Per-day summaries" are DERIVED ON DEMAND by aggregating the permanent job_events, bucketed by
 // rollup_granularity — because every per-day OUTCOME aggregate already lives there permanently, so
 // the summary source survives the raw drop by construction. The accepted V1 cost (§3.2): signal that
@@ -16,13 +16,13 @@
 //
 // MECHANISM (§3.1, P7-7): a single-Brain periodic housekeeping loop on retention_sweep_interval_ms
 // (default 1h) — the same discipline as the dispatch and reclaim loops, NOT pg_cron (which would
-// split ownership of sender.* DML across two actors and need an extension the shared instance does
+// split ownership of byosmtp.* DML across two actors and need an extension the shared instance does
 // not guarantee). It is the FOURTH loop in the one singleton Brain.
 //
 // GRANTS (ADR-0008 trap, CONFIRMED not assumed): sender_0009 makes send_logs write-once by REVOKING
 // UPDATE and installing a BEFORE UPDATE reject trigger — but DELETE was deliberately preserved for
-// exactly this sweep, and sender_0012 grants `SELECT, INSERT, DELETE ON sender.send_logs TO
-// sender_module` with a permissive RLS policy (USING/WITH CHECK true). So the sweep needs NO new
+// exactly this sweep, and sender_0012 grants `SELECT, INSERT, DELETE ON byosmtp.send_logs TO
+// byosmtp_module` with a permissive RLS policy (USING/WITH CHECK true). So the sweep needs NO new
 // grant and NO additive migration; Phase 7 stays schema-neutral. The write-once trigger is BEFORE
 // UPDATE only, so it does not fire on DELETE. TestRetention_SweepCanActuallyDelete proves the
 // privilege holds for the real app role rather than trusting this comment.
@@ -90,12 +90,12 @@ func (d *Dispatcher) sweepExpiredSendLogs(ctx context.Context, cfg Config) (dele
 
 	total := 0
 	for i := 0; i < maxSweepBatchesPerTick; i++ {
-		// ONE bounded DELETE. Only sender.send_logs is touched — jobs/job_events are never named by
+		// ONE bounded DELETE. Only byosmtp.send_logs is touched — jobs/job_events are never named by
 		// this statement, which is what makes "outcomes are permanent" structural (§3.2 guarantee).
 		tag, err := d.db.Exec(ctx,
-			`DELETE FROM sender.send_logs
+			`DELETE FROM byosmtp.send_logs
 			  WHERE id IN (
-			        SELECT id FROM sender.send_logs
+			        SELECT id FROM byosmtp.send_logs
 			         WHERE ttl_expires_at < NOW()
 			         ORDER BY ttl_expires_at
 			         LIMIT $1)`, batch)
@@ -157,7 +157,7 @@ func (r *RetentionRunner) tick(ctx context.Context) (interval time.Duration) {
 	}
 	// ADR-0011 leadership gate (same as dispatch/reclaim): the sweep DELETES rows, so only the
 	// lock-holding Brain runs it. Two Brains sweeping concurrently would not corrupt anything (the
-	// DELETE is idempotent by predicate), but a non-leader writing sender.* at all violates the
+	// DELETE is idempotent by predicate), but a non-leader writing byosmtp.* at all violates the
 	// single-owner-of-DML property Rule 7 rests on.
 	if !r.d.IsLeader() {
 		r.d.logNotLeader("retention")
@@ -195,7 +195,7 @@ type DaySummary struct {
 }
 
 // SummarizeByPeriod derives per-period outcome summaries for one user over [from, to) by aggregating
-// sender.job_events — the permanent ledger P7-1 relies on, NOT send_logs (whose raw content the sweep
+// byosmtp.job_events — the permanent ledger P7-1 relies on, NOT send_logs (whose raw content the sweep
 // drops). This is the whole of the "rollup": there is no summary table to write, so a swept day still
 // summarizes correctly because its outcomes were never in send_logs to begin with.
 //
@@ -235,7 +235,7 @@ func (d *Dispatcher) SummarizeByPeriod(ctx context.Context, cfg Config, userID s
 		       to_state::text,
 		       COALESCE(error_class::text, '') AS class,
 		       COUNT(*)
-		  FROM sender.job_events
+		  FROM byosmtp.job_events
 		 WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		 GROUP BY 1, 2, 3
 		 ORDER BY 1`, field), userID, from, to, cfg.DailyResetTimezone)
@@ -283,7 +283,7 @@ func truncFieldFor(granularity string) (string, error) {
 // expired raw content is currently pending. Read-only.
 func (d *Dispatcher) countExpiredSendLogs(ctx context.Context) (int, error) {
 	var n int
-	err := d.db.QueryRow(ctx, `SELECT count(*) FROM sender.send_logs WHERE ttl_expires_at < NOW()`).Scan(&n)
+	err := d.db.QueryRow(ctx, `SELECT count(*) FROM byosmtp.send_logs WHERE ttl_expires_at < NOW()`).Scan(&n)
 	if err != nil && err != pgx.ErrNoRows {
 		return 0, err
 	}

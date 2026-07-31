@@ -101,7 +101,7 @@ All under `/v1/admin/*`; every route requires the operator `platform_admin` bear
 internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal hostname (§1.2 of
 `history/phase-2-account-management.md`). Additive-only: these routes never rename; later phases add.
 
-**Accounts** (`sender.accounts`; `smtp_secret` is write-only — reads expose only `has_credential`):
+**Accounts** (`byosmtp.accounts`; `smtp_secret` is write-only — reads expose only `has_credential`):
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -109,7 +109,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | GET | `/v1/admin/accounts` | list (cursor paginated; filters `pool_id`/`paused`/`quarantined`/`disabled`/`user_id`) |
 | GET | `/v1/admin/accounts/{id}` | read one |
 | PATCH | `/v1/admin/accounts/{id}` | update (omit `smtp_secret` = unchanged, structural) |
-| DELETE | `/v1/admin/accounts/{id}` | hard delete → `204`. The audit row survives: `sender.job_events` and `sender.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`sender_0024`, ADR-0012). Deleting a **box** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `sender_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
+| DELETE | `/v1/admin/accounts/{id}` | hard delete → `204`. The audit row survives: `byosmtp.job_events` and `byosmtp.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`sender_0024`, ADR-0012). Deleting a **box** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `sender_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
 | GET | `/v1/admin/accounts/{id}/events` | read the account audit trail (cursor paginated) |
 
 ### `POST /v1/admin/accounts` request body
@@ -156,7 +156,7 @@ distinct — asserted behaviorally, not by convention. Flag names are already pu
 read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
 the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
 
-**Pools** (`sender.pools`; `user_id` derived from `kind`, never a request field):
+**Pools** (`byosmtp.pools`; `user_id` derived from `kind`, never a request field):
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -166,7 +166,7 @@ the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`)
 | PATCH | `/v1/admin/pools/{id}` | update (`kind`/`owner_user_id` immutable) |
 | DELETE | `/v1/admin/pools/{id}` | delete (RESTRICT if it still has accounts → clean 409) |
 
-**Config** (`sender.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
+**Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
 
 The `PUT` request body is `{"value": <v>}` — the bare JSON value at `value`, **not** the stored
 `{"v": …}` envelope, which is an internal storage detail the API unwraps on read and re-wraps on
@@ -205,7 +205,7 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `dispatch.ticks_per_min` | float | observed dispatch cadence |
 | `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
 | `dispatch.send_rate_per_min` | float | derived from the two above |
-| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `sender.jobs` — one field per `job_state` |
+| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `byosmtp.jobs` — one field per `job_state` |
 | `queue.waiting_for_capacity` | int | queued jobs whose resolved pool chain has ZERO eligible accounts. **Not an error state** |
 | `boxes.{active,stale,disabled}` | int | counts by `box_status` |
 | `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
@@ -217,7 +217,7 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
 | `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all three V1 conditions |
 
-**`errors_last_window` counts one failure once.** It counts `sender.job_events` rows in the window
+**`errors_last_window` counts one failure once.** It counts `byosmtp.job_events` rows in the window
 that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis
 transition back to `queued`). Forward progress (`queued→assigned`, `assigned→sending`) and success
 (`sending→sent`) are never counted, so the number is a count of *failures*, not of rows that happen to
@@ -269,7 +269,7 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 
 > **Per-tenant isolation is ENFORCED (OD-25, RULED option b).** Every platform request carries an
 > explicit tenant selector — `user_id` (a UUID): `run` in the body, `report` in the query. The
-> module scopes every `sender.jobs` read/write `WHERE user_id = <tenant>`. A `run` for a
+> module scopes every `byosmtp.jobs` read/write `WHERE user_id = <tenant>`. A `run` for a
 > `job_item_id` **owned by another tenant**, or a `report` for a `job_id`/`job_item_id` belonging to
 > another tenant, returns the SAME `404 not_found` as a non-existent id (never `403`) — so a caller
 > can neither read nor confirm the existence of another tenant's jobs. "The same" means the same
@@ -284,12 +284,12 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `sender.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count (`cost: 0`), not a rejection |
-| POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `sender.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
+| POST | `/v1/quote` | recipient count → cost (Phase 9 §1, finalized: `cost = recipient_count × unit_price_credits`, unit read LIVE from `byosmtp.config`) — response adds the additive `unit_price_credits`/`tier` fields so the platform's preview/confirm-cost step can show the caller why the number is what it is; pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count (`cost: 0`), not a rejection |
+| POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `byosmtp.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy |
 | GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or an unconfigured shared-pool chain — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire resolved pool is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`pool_exhausted`, which accounts, why) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true pool exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
-derived ENTIRELY from `sender.jobs` state counts + existing per-job fields — no new state, no
+derived ENTIRELY from `byosmtp.jobs` state counts + existing per-job fields — no new state, no
 schema change:
 
 ```jsonc
@@ -369,7 +369,7 @@ means the last page.
 >
 > **Phase 8 Chunk 1 (P7-OD-6) — per-attempt identity (additive wire field `attempt_token`).** Both
 > `push_job` and `report` carry an additive integer `attempt_token`. The Brain mints it inside the
-> guarded `assigned → sending` transition (`sender.jobs.attempt_token`, migration `sender_0020`:
+> guarded `assigned → sending` transition (`byosmtp.jobs.attempt_token`, migration `sender_0020`:
 > monotonic, NON-saturating, one increment per dispatched attempt) and the box echoes it back
 > VERBATIM — the box never mints, defaults, or increments one. The Brain REJECTS a report whose token
 > is a PROVABLE mismatch with the job's current attempt (both values non-zero and different): the report
@@ -384,17 +384,17 @@ means the last page.
 >
 > **Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
 > gains one optional field, `variation`: the Brain's RESOLVED content-variation toggle snapshot
-> (plain booleans/strings/arrays — no `sender.config` shape, no logic) for the box's MIME-assembly
+> (plain booleans/strings/arrays — no `byosmtp.config` shape, no logic) for the box's MIME-assembly
 > pipeline to apply. It is per-job-fresh (the Brain builds it fresh for every `push_job`, never
 > cached) and GLOBAL in V1 (one operator-owned toggle set applied to every send, §3). The block is
 > ABSENT, or present with every field at its documented neutral default, exactly when Phase 3
 > behavior is intended: the box's variation layer is then the IDENTITY FUNCTION and the bytes it
 > puts on the wire are byte-for-byte the Phase 3 output (the headline safety property, §4). The box
-> never reads `sender.config` and holds no variation state across jobs — it applies exactly the
+> never reads `byosmtp.config` and holds no variation state across jobs — it applies exactly the
 > values this block carries. Two-vocabulary is unchanged: the block carries no credential, no
 > internal reason string, and never appears on any client-facing boundary. Chunk 2 shipped the wire
 > shape and the box-side identity-function pipeline with the Brain stamping a literal Phase-3-neutral
-> snapshot (no `sender.config` row existed yet for these keys); Chunk 5 seeded the toggle/intensity
+> snapshot (no `byosmtp.config` row existed yet for these keys); Chunk 5 seeded the toggle/intensity
 > keys into `sender_0020` and switched the Brain to read them for real — this wire contract did not
 > change when it did. **Amended 2026-07-26 (P8-OD-1 RULED-WIDEN):** the block gained three additional
 > fields (`css_magnitude_px`, `zero_width_rate`, `user_agent_rate`), promoting what were fixed-in-code

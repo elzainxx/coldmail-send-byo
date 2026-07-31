@@ -1,9 +1,9 @@
--- sender_0007_create_jobs.up.sql — Phase 1: sender.jobs (core state-machine table).
+-- sender_0007_create_jobs.up.sql — Phase 1: byosmtp.jobs (core state-machine table).
 -- job_item_id is UNIQUE (exactly one sender job per platform job_item). provider_message_id is
 -- UNIQUE (idempotency). CHECK constraints tie lease/completed_at validity to state. Owned by
--- sender_owner. FKs to boxes/accounts SET NULL (a deleted box/account requeues, never orphans).
+-- byosmtp_owner. FKs to boxes/accounts SET NULL (a deleted box/account requeues, never orphans).
 
-CREATE TABLE sender.jobs (
+CREATE TABLE byosmtp.jobs (
     -- Identity
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_item_id UUID NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE sender.jobs (
     reply_to TEXT,
 
     -- State machine
-    state sender.job_state NOT NULL DEFAULT 'queued',
+    state byosmtp.job_state NOT NULL DEFAULT 'queued',
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Retry and attempt tracking
@@ -31,7 +31,7 @@ CREATE TABLE sender.jobs (
 
     -- Outcome tracking
     provider_message_id TEXT UNIQUE,
-    last_error_class sender.error_class,
+    last_error_class byosmtp.error_class,
     last_error_message TEXT,
 
     -- Timestamps
@@ -51,12 +51,12 @@ CREATE TABLE sender.jobs (
 
     CONSTRAINT jobs_assigned_box_fk
         FOREIGN KEY (assigned_box_id)
-        REFERENCES sender.boxes(id)
+        REFERENCES byosmtp.boxes(id)
         ON DELETE SET NULL,
 
     CONSTRAINT jobs_assigned_account_fk
         FOREIGN KEY (assigned_account_id)
-        REFERENCES sender.accounts(id)
+        REFERENCES byosmtp.accounts(id)
         ON DELETE SET NULL,
 
     CONSTRAINT jobs_attempt_count_check
@@ -79,6 +79,6 @@ CREATE TABLE sender.jobs (
         CHECK (last_error_message IS NULL OR char_length(last_error_message) <= 2000)
 );
 
-ALTER TABLE sender.jobs OWNER TO sender_owner;
+ALTER TABLE byosmtp.jobs OWNER TO byosmtp_owner;
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0007');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0007');

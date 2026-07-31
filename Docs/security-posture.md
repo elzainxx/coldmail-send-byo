@@ -14,12 +14,12 @@ live in [`disaster-recovery.md`](./disaster-recovery.md).
 
 | Asset | Where it lives | Sensitivity |
 |---|---|---|
-| SMTP credentials | `sender.accounts.credential_ciphertext` (AES-256-GCM); plaintext transiently in Brain and box memory | **Highest.** Grants the ability to send as the customer's domain. |
+| SMTP credentials | `byosmtp.accounts.credential_ciphertext` (AES-256-GCM); plaintext transiently in Brain and box memory | **Highest.** Grants the ability to send as the customer's domain. |
 | The credential master key | Outside the DB, Brain host only | **Highest.** Decrypts all of the above. |
-| Message content and recipients | `sender.send_logs` (`body`, `subject`, `headers`, `recipient_email`) — **plaintext at rest** | High. Retention-bounded, not encrypted. |
+| Message content and recipients | `byosmtp.send_logs` (`body`, `subject`, `headers`, `recipient_email`) — **plaintext at rest** | High. Retention-bounded, not encrypted. |
 | Operator admin key (Domain B) | bcrypt hashes in the Brain env; plaintext never stored | High. Full control-plane authority. |
 | Platform service token (Domain A) | bcrypt hashes in the Brain env | High. Can queue sends and read campaign reports. |
-| Box registration tokens | bcrypt hash in `sender.boxes.token_hash`; plaintext only in the box env | High. A box's actual authority to receive credentialed work. |
+| Box registration tokens | bcrypt hash in `byosmtp.boxes.token_hash`; plaintext only in the box env | High. A box's actual authority to receive credentialed work. |
 | mTLS CA key | The CA host — **never** on a box, never on the Brain in a proper deploy | High. Mints box identities. |
 
 ---
@@ -39,13 +39,13 @@ structurally where it can, rather than by convention.
 | The box holds credentials in memory only | Zeroed on **every send-path exit** — accept, SMTP error, thrown exception — by a `finally` the send cannot skip. Not on the SIGTERM or uncaught-exception paths: see §3.12 | `services/box/src/creds.js` + `stream.js`'s `finally`; behavioral tests cover all three send-path exits |
 | Credentials never appear in logs | Two scans. The `no_secret_leak` CI gate covers the **box registration token and its hash**; the SMTP-credential canary scan lives in the send-path harness (`phase3_send.sh`, `phase8_variation.sh`), which also checks `send_logs`, `jobs.last_error_message`, the delivered message, and the ciphertext column. The credential scan looks for the canary in **plaintext and in three base64 forms** — SMTP AUTH transmits the secret encoded, so a logged AUTH exchange leaks a *working* credential while a plaintext grep still reads clean (AUTH LOGIN base64s the secret alone, padded or trimmed; AUTH PLAIN base64s `\0user\0secret` as one blob in which the secret's own base64 is **not** a substring) | Blocking CI gate + harness on every push. Neither runs against a production log stream — see §5 |
 | Box↔Brain is mutually authenticated and confidential | mTLS on both the register/heartbeat and the send-stream listeners | `internal/tlsutil`; no non-TLS path exists |
-| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`sender.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on **next connect**. No CRL/OCSP needed to evict a box. The check runs at register only — it does not tear down a stream already open (§3.12). The legacy `:8443` register/heartbeat listener authorizes against `DEV_BOX_ID`/`DEV_BOX_TOKEN_HASH` from the **environment**, not `sender.boxes`, so clearing the hash does not affect it; it carries no job stream and no credential (`internal/boxlink/boxlink.go`) |
+| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`byosmtp.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on **next connect**. No CRL/OCSP needed to evict a box. The check runs at register only — it does not tear down a stream already open (§3.12). The legacy `:8443` register/heartbeat listener authorizes against `DEV_BOX_ID`/`DEV_BOX_TOKEN_HASH` from the **environment**, not `byosmtp.boxes`, so clearing the hash does not affect it; it carries no job stream and no credential (`internal/boxlink/boxlink.go`) |
 | AUTH never precedes TLS | STARTTLS-before-AUTH on 587/25; implicit TLS on 465. TLS is always established first — but the **certificate is verified only for public hosts**; a loopback/RFC-1918/link-local `smtp_host` is trusted without validation (a test affordance, §3.13) | `services/box/src/smtp.js` |
 | The two auth domains never share a credential | Domain A platform service token vs Domain B operator admin key, separate env vars, separate hash lists | `internal/config`; distinct middleware |
 | Both API surfaces fail **closed** | No configured hash ⇒ the surface is **not mounted** at all (logged as `admin API NOT mounted`) | `internal/config` + `cmd/brain` |
 | Bearer keys are not brute-forceable from the DB | Stored bcrypt-hashed, compared in constant time | `internal/adminapi/auth.go` |
-| Row-level security actually enforces | `sender.accounts` is `FORCE ROW LEVEL SECURITY`, and the schema is owned by the **non-login, non-superuser** `sender_owner` — a table owner would otherwise bypass its own policies | `sender_0000`, `sender_0012` |
-| The app role cannot alter the schema | `sender_module` is login-only with enumerated grants, never ownership | `sender_0000`/`sender_0002` |
+| Row-level security actually enforces | `byosmtp.accounts` is `FORCE ROW LEVEL SECURITY`, and the schema is owned by the **non-login, non-superuser** `byosmtp_owner` — a table owner would otherwise bypass its own policies | `sender_0000`, `sender_0012` |
+| The app role cannot alter the schema | `byosmtp_module` is login-only with enumerated grants, never ownership | `sender_0000`/`sender_0002` |
 | Audit trails cannot be rewritten | `job_events`/`account_events` are append-only; `send_logs` is write-once (reject-trigger + `REVOKE UPDATE`) | Triggers + grants |
 | No internal detail crosses a client boundary | Two-vocabulary rule: client envelopes carry only `{code, message, request_id}`; internal reasons go to logs keyed by that request id | `internal/adminapi/errors.go`; contract tests |
 | The alert webhook's **payload** leaks nothing | Treated as untrusted outbound egress: payload is condition code, severity, subject `{type,id}`, detail, timestamp, module — no content, credentials, reasons, SQL, or hostnames. Delivery failure is logged internally and dropped | `internal/adminapi/health_alerts.go`. The **destination** is unrestricted — §3.14 |
@@ -74,7 +74,7 @@ What bounds the exposure:
 - **Not the whole pool.** A box cannot enumerate accounts, query the database, or ask the Brain for a
   credential it was not sent — it has no DB access and no such request exists in the protocol.
 - **Not the master key.** The box holds no key material and cannot decrypt anything.
-- **Eviction needs no certificate revocation:** clear `sender.boxes.token_hash` (or set
+- **Eviction needs no certificate revocation:** clear `byosmtp.boxes.token_hash` (or set
   `status='disabled'`) and the box is refused on its **next connect**. No CRL, no OCSP.
 
 What does **not** bound it:
@@ -82,7 +82,7 @@ What does **not** bound it:
 - **Eviction is not immediate, and this is the most important correction to make before an
   incident.** The token/status check runs **only in the register handshake**
   (`internal/boxlink/stream.go`). Once a stream is registered, job pushes are served from an
-  in-memory box map with no re-read of `sender.boxes`, and the heartbeat path will even return a
+  in-memory box map with no re-read of `byosmtp.boxes`, and the heartbeat path will even return a
   `stale` box to `active` without re-checking the token. So an attacker who keeps the (box-initiated,
   outbound) stream open **continues to receive one fresh plaintext credential per job** after the
   operator has run the revocation SQL and believes the box is evicted. **Kill the host or cut its
@@ -96,7 +96,7 @@ Treat box hosts as holding live credentials, and keep them off the public intern
 
 ### 3.2 `send_logs` holds plaintext message bodies and recipient addresses at rest
 
-`sender.send_logs.body`, `subject`, `headers`, and `recipient_email` are stored **unencrypted**. This
+`byosmtp.send_logs.body`, `subject`, `headers`, and `recipient_email` are stored **unencrypted**. This
 was a deliberate V1 decision: retention (`ttl_expires_at`, driven by `debug_log_retention_days`) is
 the *sole* privacy control, and the sweep drops raw content once it expires.
 
@@ -233,7 +233,7 @@ for each. Two exits are **not** covered:
 
 Practical meaning: a memory image captured at that instant — core dump, container checkpoint,
 hypervisor snapshot, `/proc/<pid>/mem` read by local root — may still contain the plaintext of one
-in-flight send. So `systemctl stop sender-box` on a host you suspect is compromised is **not** a
+in-flight send. So `systemctl stop byosmtp-box` on a host you suspect is compromised is **not** a
 credential scrub; rotate that provider password rather than assuming it was cleared. Closing this is
 a behavior change and is registered in [`future-work.md`](./future-work.md).
 
@@ -328,11 +328,11 @@ The codebase cannot check these; they are the deployment's half of the posture.
 - [ ] No box host has `DATABASE_URL`, any KMS variable, `ca.key`, or `brain.key`. Presence is an incident, not a misconfiguration.
 - [ ] Boxes have **no** public ingress; box↔Brain traffic is on a private network.
 - [ ] `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each rotatable, each held by the smallest possible set.
-- [ ] `sender` schema owner is `sender_owner` (non-login, non-superuser) and `sender.accounts` shows `relforcerowsecurity = t`.
+- [ ] `sender` schema owner is `byosmtp_owner` (non-login, non-superuser) and `byosmtp.accounts` shows `relforcerowsecurity = t`.
 - [ ] `debug_log_retention_days` reflects a deliberate privacy decision (§3.2), not a default nobody looked at.
 - [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on nothing).
 - [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content besides retention).
-- [ ] No account has a **private-range or link-local `smtp_host`** (§3.13) — certificate verification is skipped for those, so the credential would cross an unverified connection. `SELECT id, smtp_host FROM sender.accounts;` and eyeball it.
+- [ ] No account has a **private-range or link-local `smtp_host`** (§3.13) — certificate verification is skipped for those, so the credential would cross an unverified connection. `SELECT id, smtp_host FROM byosmtp.accounts;` and eyeball it.
 - [ ] `alert_webhook_url` points where you think it does (§3.14) — the value is validated for scheme prefix only, and the Brain will POST to a private or link-local address just as readily as to your alerting service.
 - [ ] Both Go module advisories are cleared (§3.16) — `go-live-checklist.md` item 9. Do this before a pilot carries real data.
 - [ ] Your **own** log stream has been grepped for a known account's password. The shipped `no_secret_leak.sh` gate reads `.env` and compares only the **dev box token/hash** against the *dev compose* logs — against a production deployment it either aborts on the missing `.env` or prints `OK` having compared nothing. There is no production-ready credential-leak scan; write the grep yourself, or treat this box as unchecked.

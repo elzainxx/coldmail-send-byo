@@ -6,8 +6,8 @@ and where each guarantee is enforced. It is the "how is this built" document. It
 no longer carries the per-phase build diary — that moved to `history/phase-build-record.md`, which
 is provenance rather than documentation.
 
-Canonical diagrams: `sender_module_backend_architecture.svg` and
-`sender_module_job_lifecycle_states.svg` (both in this directory).
+Canonical diagrams: `byosmtp_module_backend_architecture.svg` and
+`byosmtp_module_job_lifecycle_states.svg` (both in this directory).
 
 ## Deployment (locked)
 
@@ -20,7 +20,7 @@ Single repository, multiple deployable services:
 - **Sender boxes** (`services/box/`, Node.js) — pure SMTP relays. NO DB, NO KMS; credentials
   held in memory only and zeroed on every exit from the send path. Scale by adding box containers.
 - **Shared Postgres/Supabase** — the module owns the `sender` schema (owned by the non-login
-  `sender_owner` role); the platform owns `public`. The module reads exactly two platform
+  `byosmtp_owner` role); the platform owns `public`. The module reads exactly two platform
   tables (`public.users`, `public.job_items`) read-only.
 
 For the physical deployment (which VPS runs what, the private network, systemd units,
@@ -43,7 +43,7 @@ The full threat model, what each boundary actually protects, and the honest resi
 ## The send path, end to end
 
 1. **Platform calls Domain A** (`quote` → `run` → `report` / `describe`, authenticated by the
-   platform service token). `run` creates `sender.jobs` rows in state `queued`, under a per-user
+   platform service token). `run` creates `byosmtp.jobs` rows in state `queued`, under a per-user
    advisory lock enforcing one active campaign per user.
 2. **The dispatcher tick** (Brain, `internal/dispatch`) claims queued jobs with a
    `FOR UPDATE SKIP LOCKED` CTE against a partial index — exactly-once pickup under real
@@ -67,7 +67,7 @@ The full threat model, what each boundary actually protects, and the honest resi
 
 The job state machine (`queued → assigned → sending → sent`, plus `sending → queued` requeue,
 `sending → bounced`, `queued → failed`) is drawn in
-`sender_module_job_lifecycle_states.svg`. Diagnosing where a job is stuck is
+`byosmtp_module_job_lifecycle_states.svg`. Diagnosing where a job is stuck is
 `operator-runbook.md`.
 
 ## Where each guarantee lives
@@ -81,9 +81,9 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Brain is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Brain role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
 | Box holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every **send-path** exit (not on shutdown — `security-posture.md` §3.12) | `services/box` (structural) |
 | Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (box token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
-| Tenant isolation | `user_id` on every table; RLS on all `sender.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `sender_owner` | DB |
+| Tenant isolation | `user_id` on every table; RLS on all `sender.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `byosmtp_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
-| Every tunable is config, not code | 53 seeded `sender.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
+| Every tunable is config, not code | 53 seeded `byosmtp.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
 
 ## Control plane
 
@@ -109,7 +109,7 @@ and all **six** CI gates pass (`config_drift`, `contract_drift`, `migration_lint
 has been in `.github/workflows/real-infra.yml` since it was added). Deferred work is registered in
 `future-work.md` rather than left implicit.
 
-**Open Decisions.** The pre-deploy gate walkthrough (`sender-module-local-test-guide.md`) surfaced two
+**Open Decisions.** The pre-deploy gate walkthrough (`byosmtp-module-local-test-guide.md`) surfaced two
 new ones, **G11-OD-1** and **G12-OD-1**, and **both were ruled on 2026-07-29, implemented, tested on
 real infra, and closed**: G11-OD-1 option B (a Brain that loses the singleton lock **pauses** dispatch
 and re-acquires on a bounded retry rather than exiting — ADR-0011), and G12-OD-1 option A (an FK-aware

@@ -367,7 +367,7 @@ test("P7-4: an outcome older than the TTL is DROPPED (bounded buffer → falls b
 
 // --- Phase 8 CHUNK 1 (P7-OD-6): the box's half of the per-attempt identity contract ---
 //
-// The Brain mints sender.jobs.attempt_token inside the guarded assigned→sending UPDATE and puts it on
+// The Brain mints byosmtp.jobs.attempt_token inside the guarded assigned→sending UPDATE and puts it on
 // push_job. The box's ONLY obligation is to echo it back VERBATIM in the outcome report — it must never
 // mint, increment, default, or otherwise author a token, because the token is the Brain's proof of WHICH
 // attempt produced an outcome. A box that invented one could resurrect a stale buffered outcome onto a

@@ -28,7 +28,7 @@ Treat this as the gate: nothing deploys until every stage below is green.
 - A **local webhook receiver** for alert testing — a container running a request-logger, or [webhook.site](https://webhook.site) if the container can reach the internet
 - **A scratch copy of the local KMS key**, stored outside the repo — you need this for the restore drill in Stage 11
 - **A second box.** Multi-box routing, box death, and reclaim all need one to mean anything. `scripts/dev.sh certs` provisions it and `scripts/dev.sh reset` seeds it; start it with **`scripts/dev.sh up2`**. It is a distinct `box2` compose service behind the `multibox` profile, so it stays off until you ask for it.
-  - **Do not use `docker compose up --scale box=2`.** Box identity is the authorization subject: scaled replicas share one `BOX_ID`/`BOX_TOKEN`, and the Brain closes the previous connection whenever an id re-registers (the correct reconnect rule). Two same-id replicas evict each other in a permanent register/disconnect loop, `sender.boxes` still shows one row, and no work is distributed. The two boxes intentionally **share** the dev mTLS cert — the cert is transport, the token is the authority.
+  - **Do not use `docker compose up --scale box=2`.** Box identity is the authorization subject: scaled replicas share one `BOX_ID`/`BOX_TOKEN`, and the Brain closes the previous connection whenever an id re-registers (the correct reconnect rule). Two same-id replicas evict each other in a permanent register/disconnect loop, `byosmtp.boxes` still shows one row, and no work is distributed. The two boxes intentionally **share** the dev mTLS cert — the cert is transport, the token is the authority.
 
 ---
 
@@ -38,12 +38,12 @@ Read these first; they will each cost you an hour otherwise.
 
 - **Host antivirus intercepts host→localhost TLS.** This is a known environment quirk, not a defect. mTLS must be probed **in-network** (container-to-container), not from the Windows host. If an mTLS check fails from the host, re-run it from inside a container before believing it.
 - **`dev.sh reset` means reset.** Clean-slate tests need a genuinely fresh volume — a stale volume will silently skip migrations and give you a false pass on Stage 2.
-- **A reset drops the box rows, and `--wait` will lie to you about it.** `reset` is `down -v`, which destroys the volume holding `sender.boxes` — so a box has nothing to authorize against, is refused with `unauthenticated`, burns its retry budget and **exits 1**. `up --wait` reports it *healthy* seconds before it dies, so a scripted run sees a green light on a dead box. `reset` now re-seeds the box rows itself (postgres → migrate → seed → the rest); if you drive compose by hand, run `scripts/dev.sh seed` after migrations and before the box. Always confirm with `docker compose ps -a` (**`-a`** — a plain `ps` hides an exited container).
+- **A reset drops the box rows, and `--wait` will lie to you about it.** `reset` is `down -v`, which destroys the volume holding `byosmtp.boxes` — so a box has nothing to authorize against, is refused with `unauthenticated`, burns its retry budget and **exits 1**. `up --wait` reports it *healthy* seconds before it dies, so a scripted run sees a green light on a dead box. `reset` now re-seeds the box rows itself (postgres → migrate → seed → the rest); if you drive compose by hand, run `scripts/dev.sh seed` after migrations and before the box. Always confirm with `docker compose ps -a` (**`-a`** — a plain `ps` hides an exited container).
 - **Dev and CI use the same compose** (base + harness override). If something passes locally but fails in CI, suspect the override, not the code.
 - **Always drive compose through `scripts/dev.sh`, or pass BOTH `-f` files — and never restart postgres mid-stage.** Two separate traps with the same symptom (your fixtures silently vanish, and `migrate` logs `applied 22 migration(s)` on what you thought was a warm database):
   - The harness override backs postgres's data directory with **`tmpfs`** (RAM). It is not a volume — the data does not survive the container being recreated *at all*, and there is nothing to inspect afterwards.
   - `scripts/dev.sh` always passes `-f docker-compose.yml -f tests/harness/compose.test.yml`. A bare `docker compose ...` typed by hand uses only the base file, where postgres is **volume**-backed with different flags. The two invocations describe *different* containers, so alternating between them **recreates postgres and discards its data**.
-  - So: a bare `docker compose up -d --force-recreate --wait brain` to pick up a rebuilt Brain will take postgres with it if the previous `up` came from `dev.sh`. Rebuild through `dev.sh`, or add `--no-deps`, and re-check your fixtures (`SELECT count(*) FROM sender.jobs`) before trusting a result. Anything you must keep across a restart belongs in a re-runnable seed step, not in the database only.
+  - So: a bare `docker compose up -d --force-recreate --wait brain` to pick up a rebuilt Brain will take postgres with it if the previous `up` came from `dev.sh`. Rebuild through `dev.sh`, or add `--no-deps`, and re-check your fixtures (`SELECT count(*) FROM byosmtp.jobs`) before trusting a result. Anything you must keep across a restart belongs in a re-runnable seed step, not in the database only.
 - **Timing tests need a quiet machine.** Stage 8 measures actual throughput. Don't run it while a build is churning — you'll chase a pacing bug that's really CPU contention.
 - **One host, one log stream.** Since the Brain and both boxes run on the same machine, tail them together during Stage 9. Watching a heartbeat miss, the reclaim, and the re-dispatch scroll past in one place makes failure tests dramatically easier to read.
 
@@ -56,9 +56,9 @@ Read these first; they will each cost you an hour otherwise.
 1. `scripts/dev.sh reset` — tear down completely (including volumes), then bring the stack back up. This re-seeds the box rows in the correct order (postgres → migrate → seed → rest); without that, the box cannot register.
 2. `scripts/dev.sh up2` — start the second box (`multibox` profile; needed from Stage 8 onward)
 3. `docker compose ... ps -a` — confirm every container is up and **nothing has exited**. Use `-a`: a plain `ps` omits exited containers, which is exactly how a dead box hides.
-4. Confirm both boxes registered: `SELECT id, status FROM sender.boxes` shows **two** `active` rows, and the Brain logged `box registered id=...` exactly twice with no `stream closed` churn
+4. Confirm both boxes registered: `SELECT id, status FROM byosmtp.boxes` shows **two** `active` rows, and the Brain logged `box registered id=...` exactly twice with no `stream closed` churn
 5. Open the Mailpit UI; confirm it is reachable and empty
-6. Connect with `psql`; confirm the `sender` schema exists (owner `sender_owner`) and `sender.config` holds **53** rows
+6. Connect with `psql`; confirm the `sender` schema exists (owner `byosmtp_owner`) and `byosmtp.config` holds **53** rows
 
 **Pass:** every container up and stable, both boxes `active`, Mailpit empty, schema present.
 
@@ -167,7 +167,7 @@ From a fresh reset, before creating anything, look at the system as a new operat
 
 | What | Observed | Why it matters |
 |---|---|---|
-| `sender.jobs.state` | `queued` (unchanged) | not failed, not stuck |
+| `byosmtp.jobs.state` | `queued` (unchanged) | not failed, not stuck |
 | `attempt_count` | `0` | dispatch never burned an attempt on an unservable job |
 | `job_events` rows | **exactly 1** (`system`, `→ queued`, no error class) | **no event churn** — the genesis row and nothing else |
 | `/v1/report` (tenant) | `{"state":"queued","attempt_count":0}` | reads as clean pending; no internal reason leaks |
@@ -252,7 +252,7 @@ Do this by hand through the API, not through a script. You are testing whether t
      Brain load it:
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -c \
-       "UPDATE sender.config SET value='{\"v\":\"thirty\"}' WHERE key='smtp_operation_timeout_sec'"
+       "UPDATE byosmtp.config SET value='{\"v\":\"thirty\"}' WHERE key='smtp_operation_timeout_sec'"
      ```
      **Pass:** the loops halt fail-closed (jobs stay `queued`, nothing marked sent/failed), the
      container does **not** restart, the log names the offending key at `level=error`, there is **no**
@@ -339,7 +339,7 @@ Do this by hand through the API, not through a script. You are testing whether t
      never land on another tenant's identities.
 7. Start a second campaign for a user who already has one active
    - **Pass:** rejected outright, cleanly; no job rows created
-   - `409 conflict` per attempt, and `SELECT count(*) FROM sender.jobs WHERE campaign_id = <B>` must be
+   - `409 conflict` per attempt, and `SELECT count(*) FROM byosmtp.jobs WHERE campaign_id = <B>` must be
      **0** — the rejection is what's under test, but the *zero rows* is what makes it "outright" rather
      than "queued and ignored". Confirm the envelope carries only `{code, message, request_id}` — the
      internal reason `user_campaign_active` must not appear (Rule 5).
@@ -436,7 +436,7 @@ The most valuable stage.
      ```bash
      docker compose pause box2                    # freeze it
      tests/manual/launch-campaign.sh s9dead 10    # peers drain; one job pins on the frozen box
-     docker kill --signal=SIGKILL sender-module-box2-1   # kill it WHILE STILL FROZEN
+     docker kill --signal=SIGKILL byosmtp-module-box2-1   # kill it WHILE STILL FROZEN
      ```
    - **Kill it while frozen, and check Mailpit *before* the kill.** Unpausing first invalidates the
      run: the first attempt here did that, box2 completed the SMTP hop and reported `sent` before
@@ -458,7 +458,7 @@ The most valuable stage.
      nothing, and the system did not invent an outcome for it). **Exactly one** Mailpit copy and
      **exactly one** `send_logs` row — one real SMTP attempt for one reclaimed job.
    - This run also confirmed [`sender_0022`](../db/migrations/sender_0022_job_events_error_context.up.sql)
-     in the wild: `sender.jobs.last_error_class` correctly *retained* `timeout` on the now-`sent` row
+     in the wild: `byosmtp.jobs.last_error_class` correctly *retained* `timeout` on the now-`sent` row
      (a running fact about a mutable row), while the `sending→sent` **event** carried no error class.
      Pre-0022 that success would have been tagged `timeout` and counted as a failure.
 7. **Brain restart** — restart the Brain mid-campaign
@@ -504,8 +504,8 @@ The most valuable stage.
      single fabricated transition anywhere in the system advances it:
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -tAc "
-       SELECT (SELECT count(*) FROM sender.jobs), (SELECT count(*) FROM sender.job_events),
-              (SELECT count(*) FROM sender.send_logs), (SELECT max(seq) FROM sender.job_events)"
+       SELECT (SELECT count(*) FROM byosmtp.jobs), (SELECT count(*) FROM byosmtp.job_events),
+              (SELECT count(*) FROM byosmtp.send_logs), (SELECT max(seq) FROM byosmtp.job_events)"
      ```
      Freeze `box2` first (step 6's trick) so a job is genuinely in-flight when the DB dies — an outage
      with nothing in flight is the easy case and skips the whole question.
@@ -519,7 +519,7 @@ The most valuable stage.
         persist.
      4. The internal reason appears **in the log keyed by that same `request_id`** and nowhere else.
         This is Rule 5 in both directions; grep the response body for `SQLSTATE`, `5432`,
-        `sender_module`, `postgres`, `select` and expect **nothing**.
+        `byosmtp_module`, `postgres`, `select` and expect **nothing**.
    - **Observed (live, 2026-07-29).** 16 jobs, 15 sent, 1 pinned `sending` on frozen `box2`; snapshot
      266 jobs / 1088 events / 265 send_logs / `max(seq)`=1088. Postgres stopped for **1m48s**.
      - Brain stayed `running (healthy)` with **0 restarts**. Backoff went 0→3→4→9→14→27→46→59→78→91s
@@ -556,7 +556,7 @@ The most valuable stage.
      cycle (not disabled, not quarantined, not manually paused):
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -c \
-       "UPDATE sender.accounts SET daily_sent_count=daily_limit, daily_reset_day=CURRENT_DATE,
+       "UPDATE byosmtp.accounts SET daily_sent_count=daily_limit, daily_reset_day=CURRENT_DATE,
               paused=TRUE, pause_reason='daily_limit' WHERE user_id='<tenant>'"
      ```
      Remember Stage 5's trap: it must be **every** account the tenant can reach, or a healthy peer
@@ -607,7 +607,7 @@ The most valuable stage.
      whether any NEW transition was written after it:
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -c \
-       "SELECT max(created_at) FROM sender.job_events"   # must predate the flip
+       "SELECT max(created_at) FROM byosmtp.job_events"   # must predate the flip
      ```
    - **Observed (live, 2026-07-29).** Flipped mid-campaign: the last `job_events` row system-wide was
      **3s before** the flip and **zero** events followed it, so dispatch genuinely stopped claiming.
@@ -679,8 +679,8 @@ The most valuable stage.
      account sent them:
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -c \
-       "SELECT a.smtp_username, j.state, count(*) FROM sender.jobs j
-          LEFT JOIN sender.accounts a ON a.id = j.assigned_account_id
+       "SELECT a.smtp_username, j.state, count(*) FROM byosmtp.jobs j
+          LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
          WHERE j.user_id = '<tenant>' GROUP BY 1,2"
      ```
      It also explains a side effect worth expecting: the Stage 7 shared accounts (`step7@`, `s7b@`)
@@ -745,7 +745,7 @@ The most valuable stage.
    - **Restore all of it, and verify rather than assume** — one query catches any key left drifted:
      ```bash
      docker compose exec -T postgres psql -U postgres -d platform -c \
-       "SELECT key, value, default_value FROM sender.config
+       "SELECT key, value, default_value FROM byosmtp.config
          WHERE key LIKE 'variation%' AND value <> default_value"   # must return 0 rows
      ```
      Returned 0 rows after restoring, so all 21 `variation_*` keys are back at their defaults.
@@ -763,7 +763,7 @@ The most valuable stage.
      `paused` 0→**1**, `disabled` 0→**1**, and the two affected dedicated pools flipped to
      `eligible_accounts: 0` with `headroom: "exhausted"`. The endpoint tracks live state, not a cache.
    - **`sends_last_window` and `send_logs` legitimately DISAGREE — don't file it as a bug.** The
-     snapshot read `sends_last_window: 136` while `SELECT count(*) FROM sender.send_logs` over the same
+     snapshot read `sends_last_window: 136` while `SELECT count(*) FROM byosmtp.send_logs` over the same
      window returned **152**. `queryTerminalCountInWindow` counts *jobs that reached `sent`*
      (`state='sent' AND completed_at >= …`), whereas `send_logs` gets a row **per attempt**. Reconciled
      exactly: `count(DISTINCT job_id)` over those 152 rows is **136** — the 16 extra rows are the
@@ -784,7 +784,7 @@ The most valuable stage.
      boundary (Rule 5 names `alert_webhook_url` explicitly), so the test has to read exactly what went
      out. Run it and point the config at it:
      ```bash
-     docker run -d --name s10hook --network sender-module_default \
+     docker run -d --name s10hook --network byosmtp-module_default \
        -v "$(pwd -W)/tests/manual:/rcv:ro" python:3.12-alpine python /rcv/webhook-receiver.py
      # then: PUT /v1/admin/config/alert_webhook_url  {"value":"http://s10hook:9099/hook"}
      docker logs s10hook
@@ -816,7 +816,7 @@ The most valuable stage.
        poll, because that query reads live `boxes.status`, not an event log.
    - **Every payload is two-vocabulary clean, which is the security half of this step.** Verbatim:
      `{"condition":"box_death","severity":"critical","subject":{"type":"box","id":"2222…"},
-     "detail":{"box_id":"2222…","last_heartbeat_at":"…"},"fired_at":"…","module":"sender"}` — condition
+     "detail":{"box_id":"2222…","last_heartbeat_at":"…"},"fired_at":"…","module":"byosmtp"}` — condition
      code, subject id, timestamps. No credential, no ciphertext, no SQL, no SQLSTATE, no internal
      hostname, no internal reason string.
    - **The no-webhook half needs a FRESH rising edge, or it proves nothing.** Clearing
@@ -859,7 +859,7 @@ The most valuable stage.
        Jobs sat `queued` with `attempt_count` climbing and **`assigned_account_id` NULL** — requeued, never
        claimed as sent, so Rule 5 held (no invented outcome). **Mailpit `count: 0`** for that tag: zero
        mail escaped, so no plaintext went anywhere. The client `report` showed only
-       `state: "queued"` / `pending: 2` — grepping its body for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`
+       `state: "queued"` / `pending: 2` — grepping its body for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|byosmtp_module`
        found **0 matches**, and the internal reason stayed in the Brain log (Rule 5, both directions).
        The log itself leaked no key material either: **0 matches** for either key's hash, `cred-dek`,
        `ciphertext`, or `nonce`.
@@ -936,7 +936,7 @@ The most valuable stage.
      `docker compose up -d --no-deps --force-recreate brain`, then confirm with
      `docker exec <brain> printenv CREDENTIAL_KEY_ID`. A `restart` leaves the old label live and the
      rotation appears to do nothing.
-3. **Add a box** — provision a third identity (`tools/provision-box/bin/provision-box new --id dev-box-3`), seed its row into `sender.boxes`, and start a container with that `BOX_ID` + `BOX_TOKEN`. It can reuse the dev cert: the cert is transport, the token is the authority.
+3. **Add a box** — provision a third identity (`tools/provision-box/bin/provision-box new --id dev-box-3`), seed its row into `byosmtp.boxes`, and start a container with that `BOX_ID` + `BOX_TOKEN`. It can reuse the dev cert: the cert is transport, the token is the authority.
    - **Pass:** it registers, appears in health, and receives work with **no Brain reconfiguration**. This is your scaling path — confirm it is genuinely this simple.
    - A box needs its **own identity**, not just another container. Adding a replica that reuses an existing `BOX_ID` does not add capacity — the two connections evict each other.
    - **"No Brain reconfiguration" is the whole claim, so pin the Brain before you start.** Record its
@@ -946,7 +946,7 @@ The most valuable stage.
      box-1 material — so box 3 working is not explained by anything the Brain was told.
    - **Observed (live, 2026-07-29). PASS.** `provision-box new --id 33333333-3333-3333-3333-333333333333`
      printed `BOX_ID` / `BOX_TOKEN` (once) / `DEV_BOX_TOKEN_HASH`; the hash was seeded into
-     `sender.boxes`; the container started with the dev cert **reused**. It registered, health went to
+     `byosmtp.boxes`; the container started with the dev cert **reused**. It registered, health went to
      `active: 3`, and it received real work — 15 jobs split 4/9/2 across the three boxes, box 3's sends
      genuine (`provider_message_id` present, one `send_logs` row each, `sending→sent` written by actor
      **`box`**, not by the dispatcher).
@@ -971,9 +971,9 @@ The most valuable stage.
      test that never observes the state it claims to test is not a test. What works is a **blackhole
      listener** — accepts TCP, never speaks SMTP — pointed at from the account:
      ```bash
-     MSYS_NO_PATHCONV=1 docker run -d --name s11hole --network sender-module_default \
+     MSYS_NO_PATHCONV=1 docker run -d --name s11hole --network byosmtp-module_default \
        alpine sh -c 'while true; do nc -l -p 2525 -e sleep 300; done'
-     # then: UPDATE sender.accounts SET smtp_host='s11hole', smtp_port=2525 WHERE …
+     # then: UPDATE byosmtp.accounts SET smtp_host='s11hole', smtp_port=2525 WHERE …
      ```
      A **dead** port or the Brain's own mTLS port both fail *fast* instead (class `timeout`) and hold
      nothing. Assert the hold before stopping anything: state `sending`, a future `lease_expires_at`,
@@ -1014,7 +1014,7 @@ The most valuable stage.
    - **Restoring the stack:** point the accounts back at `smtp-sink:1025`, remove the blackhole and the
      box-3 container, `docker compose start box box2`, and return any `send_delay_*` /
      `smtp_operation_timeout_sec` you widened to their `default_value` (compare `value = default_value`
-     in `sender.config` rather than trusting memory — Rule 1 keeps the default alongside the live value
+     in `byosmtp.config` rather than trusting memory — Rule 1 keeps the default alongside the live value
      precisely so this check is one query).
 5. **Graceful shutdown** — `SIGTERM` the Brain mid-campaign
    - **Pass:** stops claiming, drains, leaves in-flight work recoverable; next boot recovers everything; no job stranded
@@ -1136,13 +1136,13 @@ The most valuable stage.
      them) plus one helper predicate. No table, column, constraint, enum, index, grant, or row is
      touched, so no fixture data from Stages 7–10 is at risk. A migration that *did* drop a column
      would need the fixtures rebuilt afterwards, or the whole stack reset.
-   - **Down is dev-gated and fails closed.** `sender-migrate down <NNNN>` requires
-     `SENDER_MIGRATE_ALLOW_DOWN=true` or it refuses with
-     `down is forbidden unless SENDER_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. It rolls back
+   - **Down is dev-gated and fails closed.** `byosmtp-migrate down <NNNN>` requires
+     `BYOSMTP_MIGRATE_ALLOW_DOWN=true` or it refuses with
+     `down is forbidden unless BYOSMTP_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. It rolls back
      **exactly one** version, and needs the version argument.
      ```bash
      MSYS_NO_PATHCONV=1 docker compose run --rm --no-deps \
-       -e SENDER_MIGRATE_ALLOW_DOWN=true -e MIGRATE_SKIP_PREFLIGHT=true \
+       -e BYOSMTP_MIGRATE_ALLOW_DOWN=true -e MIGRATE_SKIP_PREFLIGHT=true \
        migrate down 0022
      ```
      Use `--no-deps` — see Part 2 on how a bare `docker compose run` can recreate `postgres` and wipe
@@ -1169,7 +1169,7 @@ The most valuable stage.
        **none** of them a success or a forward transition.
      - **Up restored everything.** `applied 0022_job_events_error_context`, back to version `0022`,
        helper function present, both trigger bodies gated again, all functions still owned by
-       **`sender_owner`** (Rule 6 — a down/up must not quietly reassign ownership to the migrating
+       **`byosmtp_owner`** (Rule 6 — a down/up must not quietly reassign ownership to the migrating
        superuser, or `FORCE ROW LEVEL SECURITY` stops enforcing). The helper answers all six
        transition shapes correctly (genesis `f`, `queued→assigned` `f`, `sending→sent` `f`, requeue
        `t`, `failed` `t`, `bounced` `t`), and a fresh campaign's events came back **fully untagged** —
@@ -1250,7 +1250,7 @@ The most valuable stage.
      phantom.
 3. Send the same `job_id` twice
    - **Pass:** byte-identical (deterministic seeding)
-   - **Observed: PASS.** Re-queued the **same** `sender.jobs` row (id preserved ⇒ same variation
+   - **Observed: PASS.** Re-queued the **same** `byosmtp.jobs` row (id preserved ⇒ same variation
      seed: `prngFor(jobId, "comments")`), let it dispatch again, and compared the two Mailpit copies:
      475 bytes each, sha256 `ff52b48ed290…` both — **byte-identical**, under two different
      `provider_message_id`s (`0BAlDhnw…`, then `0NCrGb64…`).
@@ -1261,16 +1261,16 @@ The most valuable stage.
      `UPDATE`ing a `sent` job back to `queued` trips three guards in a row, and each is a feature:
      `attempt_token` is `NOT NULL` (do not null it — the dispatcher mints a fresh one on claim);
      `jobs_completed_at_valid_check` requires `completed_at IS NULL` for any non-terminal state; and
-     the state-change trigger aborts with `sender.actor GUC not set: cannot record state transition`.
+     the state-change trigger aborts with `byosmtp.actor GUC not set: cannot record state transition`.
      So the update must be wrapped:
      ```sql
      BEGIN;
-     SELECT set_config('sender.actor', 'admin', true);
-     UPDATE sender.jobs SET state='queued', lease_expires_at=NULL,
+     SELECT set_config('byosmtp.actor', 'admin', true);
+     UPDATE byosmtp.jobs SET state='queued', lease_expires_at=NULL,
             provider_message_id=NULL, completed_at=NULL WHERE id='<job>';
      COMMIT;
      ```
-     `sender.event_actor` is `dispatcher | box | reclaim_loop | admin | system` — there is **no**
+     `byosmtp.event_actor` is `dispatcher | box | reclaim_loop | admin | system` — there is **no**
      `operator` value; a manual edit is `admin`. This is a test-only manoeuvre: nothing in the
      product ever re-queues a `sent` job (§4.2 leave-in-place exists precisely so it cannot).
 4. Confirm zero-width insertion is **off** by default; enable and verify the rate
@@ -1395,7 +1395,7 @@ Do not deploy until every line is true.
 - [x] Full harness green from a clean slate, zero skips *(Stage 1; `58 passed, 0 failed` from `scripts/dev.sh reset` — `bc9b74e`. The first run reported `35 passed, 23 failed`, which was **two** root causes, not 23. (1) `sender_0022` was added without extending `TestRunnerLifecycle`'s `wantChain`; fixed, plus the anti-vacuity assertions the other migrations carry — 0022 is `CREATE OR REPLACE` of two existing function **bodies**, so no column/index/config check can see it, and its `sending→sent` = not-an-error DECISION is now asserted, proven both directions. (2) The 21-failure cascade in the live suites was ONE empty variable: `$DC up -d box` without `--no-deps` recreated the tmpfs postgres and wiped the DB out from under the live Brain mid-suite. `migration_lint` now blocks a new migration that is absent from `wantChain` — nothing caught 0022 because the chain on disk was contiguous, so the gate passed while the suite failed. **Zero skips confirmed by reading them**, not by an absent-SKIP grep: the only `SKIP` string in the log is a test NAME (`TestVariation_CSSSkipBelowPxZeroSurvivesJSONRoundTrip`), and postgres started once at 07:13:37 and was never recreated across the 07:13→07:19 run)*
 - [x] Both boxes `active` after a reset, each registered exactly once (no eviction churn) *(Stage 1; from `dev.sh reset` + `up2`: two `active` rows with non-null `registered_at`, `box registered id=` exactly **once** per box id, and **zero** `stream closed`/evict lines. Verified from a FRESH reset deliberately — a check run right after the harness shows box 1 registering **twice**, which is correct and not churn: `phase3_send.sh` T3 kills the box on purpose to prove no outcome can be invented, then restarts it. Counting registrations on a post-harness stack would have failed this line for the wrong reason)*
 - [x] All 6 CI gates green *(Stage 1; `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `drain_grace` all PASS. `migration_lint` gained the wantChain-coupling check in this pass, with paired positive/negative controls — its first version passed with `wantChain` reverted, because a bare `grep '"0022"'` matched the version named in the gate's own failure message; now scoped to the `wantChain` literal. `architecture-overview.md` said "all five CI gates" and is corrected — CI has run six for a while)*
-- [x] All Go and Node suites green; `gofmt`/`vet` clean *(Stage 1; `go test ./...` green on all four modules (brain: adminapi/boxlink/boxproto/credential/dispatch/platformapi, harness, sender-migrate, plus the box's Node suite at **78/78, 0 skipped**), `gofmt -l` empty, `go vet` clean. **No `t.Skip` fired anywhere** — the 8 `?` lines are packages with no test files of their own (`config`, `configordering`, `db`, `httpapi`, `kms`, `singleton`, `tlsutil`, `cmd/brain`), and each was checked to be covered behaviorally at the process level by the harness instead of taken on faith: singleton by SUITE 4 (a real second Brain exits, `readyz singleton_lock=true`), kms by SUITE 5 (the box container cannot read the key, and the control that the box FS is mounted at all), tlsutil/httpapi/boxlink by SUITE 3 (register/heartbeat over real mTLS + the wrong-token 401), configordering by the load-path rejection tests. That is Rule 3's preference, not a coverage gap — but note the state of it: for these seven packages a unit-level regression is caught only if it changes process behavior)*
+- [x] All Go and Node suites green; `gofmt`/`vet` clean *(Stage 1; `go test ./...` green on all four modules (brain: adminapi/boxlink/boxproto/credential/dispatch/platformapi, harness, byosmtp-migrate, plus the box's Node suite at **78/78, 0 skipped**), `gofmt -l` empty, `go vet` clean. **No `t.Skip` fired anywhere** — the 8 `?` lines are packages with no test files of their own (`config`, `configordering`, `db`, `httpapi`, `kms`, `singleton`, `tlsutil`, `cmd/brain`), and each was checked to be covered behaviorally at the process level by the harness instead of taken on faith: singleton by SUITE 4 (a real second Brain exits, `readyz singleton_lock=true`), kms by SUITE 5 (the box container cannot read the key, and the control that the box FS is mounted at all), tlsutil/httpapi/boxlink by SUITE 3 (register/heartbeat over real mTLS + the wrong-token 401), configordering by the load-path rejection tests. That is Rule 3's preference, not a coverage gap — but note the state of it: for these seven packages a unit-level regression is caught only if it changes process behavior)*
 - [x] Clean-slate reproduction completed from the docs alone, without deviation *(Stage 2; PASS on the **fourth** reset — the earlier three each hit a docs silence and are the deliverable of this stage, not a failure of it. Pass 4 ran `install-and-deploy.md` Steps 9–10 verbatim with zero improvisation: reset 46 s + Steps 9–10 in 10 s, ending at `report` → `{"state":"sent","provider_message_id":"6hLItpFlPk1CFuscrMQHFr","attempt_count":0}` and Mailpit `total: 1`. **Four docs bugs fixed in `install-and-deploy.md` in the same change**, all of them silences rather than wrong statements — the product answered correctly every time: (1) nothing named the bundled sink, so `smtp.example.com` was a hard stop; (2) Step 10 gave no request bodies and no contract link, and all three guesses were wrong (`quote` takes `recipient_count` only, `run` is singular `job_item_id`, `report` uses query params); (3) `UID=` is **readonly in bash**, so the assignment silently fails and `run` posts an empty `user_id` — shell-dependent, which is how it survived review; (4) `public.job_items` is empty after a reset and nothing in this repo seeds it, so the doc named a value the reader could not obtain. Bug 4's symptom actively misleads: `psql -tA` on a `RETURNING` insert prints the command tag `INSERT 0 1` as a second line, and the resulting malformed body makes `run` answer `400 validation_failed` naming `job_item_id: required` — which reads as a wrong field name and is not one. Cross-domain credential separation re-verified here with paired positive controls, since a cross-domain 401 proves nothing if the credential is merely broken)*
 - [x] Empty state tells an operator what is missing *(Stage 3, both steps; from a fresh reset with `pools=0`/`accounts=0`/`default_shared_pool_id={"v": null}` asserted as the precondition. A campaign run into that void returns `202 queued` and the job then sits `queued` with `attempt_count=0` and **exactly one** `job_events` row at both 12 s and 60 s — no churn, which is the half that could plausibly have failed, since a 1-second polling dispatcher facing an unservable job is exactly the shape that spins `queued→assigned→queued` forever. The operator is told three ways: `waiting_for_capacity: 1`, a Brain log line naming the condition + the exact config key + the fix (rate-limited: 3 lines in ~4 min, not one per tick), and a runbook triage path walked from the observed symptom to a section that names this case in words. `active_conditions[]` stays `[]` BY DESIGN — a never-configured system is a setup state, not an alert, and alerting would page during install)*
 - [x] Every admin lifecycle transition works and is audited *(Stage 4; refusals also made diagnosable — `12dade8`, `6004cd7`)*
@@ -1403,7 +1403,7 @@ Do not deploy until every line is true.
 - [x] Tenant isolation holds *(Stage 5; cross-tenant `report` is byte-identical to a nonexistent id — `b290953`)*
 - [x] Both config-ordering invariants rejected at the API boundary *(Stage 6; **all four directions** of both pairs → HTTP 400 `config_ordering_violation` naming the conflicting key and its current value, nothing landing in the DB, no clamping. Ordered two-step widening AND narrowing both succeed; the wrong order is refused. `default_value` never mutated)*
 - [x] An invalid config type does not wedge the Brain *(Stage 6; 13 type violations → 400 with the DB unchanged, and no wedge proven by a real job reaching `sent` — not merely a 200 from `/health`. Going past the API with a direct SQL write found a real defect: a type fault was misreported as `db outage DETECTED` against a healthy DB — fixed in `a617fda`)*
-- [x] quote → run → report cycle correct end to end *(Stage 7; `describe` pricing matches `sender.config` and its capability flags are honest — `sequences`/`open_tracking`/`click_tracking` all `false`; `quote` = N × unit for N ∈ {0,1,7,250,10000} and follows a live price retune with no redeploy; `run` returned 202 `state:queued` (never `sent`) so it did not block; `report` totals matched the DB at every sample and `fraction_complete` tracked 0.25→0.5→0.75→1; all messages in Mailpit with all 6 headers correct from the RAW source and Message-IDs distinct; jobs `sent` with `provider_message_id`, the `job_events` chain complete with the outcome attributed to `box` (never the dispatcher), `send_logs` written with the right TTL, and zero credential/ciphertext/nonce/key-id occurrences with the matcher proven non-vacuous. Reading `details[]` on quote's rejections rather than just the status code found two real defects — a supplied-but-negative count reported as `required`, and a wrong type naming no field at all — fixed in `fe27588`)*
+- [x] quote → run → report cycle correct end to end *(Stage 7; `describe` pricing matches `byosmtp.config` and its capability flags are honest — `sequences`/`open_tracking`/`click_tracking` all `false`; `quote` = N × unit for N ∈ {0,1,7,250,10000} and follows a live price retune with no redeploy; `run` returned 202 `state:queued` (never `sent`) so it did not block; `report` totals matched the DB at every sample and `fraction_complete` tracked 0.25→0.5→0.75→1; all messages in Mailpit with all 6 headers correct from the RAW source and Message-IDs distinct; jobs `sent` with `provider_message_id`, the `job_events` chain complete with the outcome attributed to `box` (never the dispatcher), `send_logs` written with the right TTL, and zero credential/ciphertext/nonce/key-id occurrences with the matcher proven non-vacuous. Reading `details[]` on quote's rejections rather than just the status code found two real defects — a supplied-but-negative count reported as `required`, and a wrong type naming no field at all — fixed in `fe27588`)*
 - [x] All three routing strategies distribute as specified *(Stage 8; distinguished by STRUCTURE, not count: `round_robin` 12 jobs → exactly 6/6 strictly alternating `ABABABABABAB`; `random` 20 jobs → 13/7 with runs of 5 (structurally impossible under round-robin); `one_by_one` 12/0 fully sticky at equal `daily_limit`s. Both accounts' scores healed to 100 after their successes. Walking this step found a docs defect — the runbook claimed the default order "exhausts" the leading account before moving on; it names the wrong default (`round_robin` is the default) and `one_by_one` actually hands over after ONE send when limits are unequal, because the score's `w_prox` term penalizes `daily_sent_count ÷ daily_limit`. Code is correct and locked; docs fixed and the asymmetry pinned by `onebyone_handover_test.go`)*
 - [x] Pacing matches `lanes ÷ delay`; doubling lanes roughly doubles throughput *(Stage 8; at delay 4–5s: 1 lane → 11.17 sends/min vs the ~13.3 ideal, the ~0.87s/send gap being real SMTP round-trip overhead; 2 lanes → 24.69/min (2.21×); 4 lanes → 50.47/min (2.04×). Near-linear across a 4× range, which is the per-lane-pacing proof — a global rate would be flat. All three config keys driven through `PUT /v1/admin/config/{key}` so the write serializer and validation ran, then restored to seeded defaults)*
 - [x] Dedicated-pool fallback fires only on genuine exhaustion *(Stage 8, both halves. "Only on exhaustion": dedicated account at `daily_limit=4` with 8 jobs → jobs 1–4 dedicated, 5–8 shared, in that order. "Not before": limit raised + `daily_reset_day` aged → all 5 of 5 jobs stayed dedicated, ZERO on shared. Plus the P4-3 kind policy — `fallback_pool_id` pointed at ANOTHER tenant's dedicated pool was ignored and routing fell through to `default_shared_pool_id` (3/3 on shared, zero on the other tenant's accounts), so one tenant's overflow never lands on another tenant's identities)*
@@ -1417,11 +1417,11 @@ Do not deploy until every line is true.
 - [x] Panic switch halts and resumes losslessly *(Stage 10 steps 1–2, both directions and both the mid-flight flip and the stronger "launch a campaign INTO the halt" case, since a local campaign drains fast enough that the flip alone can pass vacuously. Halt proven by the event log — last `job_events` row 3s before the flip, zero after — not by a state snapshot, which can read a pre-flip commit and look like a violation. 10 jobs launched into the halt stayed `queued`/unassigned/`attempt_count=0` with nothing failed; `report` read clean `queued` with no internal reason; health showed `dispatch_paused: true` with `waiting_for_capacity: 0`, distinguishing an intentional halt from a capacity fault. Re-enabled: **byte-identical** 10 ids all `sent`, `attempt_count` still 0, exactly 4 events each — **40 rows, zero requeues, zero reclaims**. Also confirmed a halt does not block outcome persistence for work already in flight, which is correct: refusing it would strand a real send)*
 - [x] Shadow mode logs without acting; enforce acts on the same condition *(Stage 10 steps 3–4, **live on the stack, not deferred to the unit suites** — a dead `smtp_port` (2599) makes the box report `connect_refused` → class `timeout`, which despite classify.go's "no penalty" comment (that means no *flag* action) is genuinely penalizing and drives the score. Needs a **never-succeeded** account: the formula `100 − 60·min(1,cf/5) − 15·prox − 25·recency` bottoms out near 40 for an account with a recent success, above the threshold of 30, so a warm account never trips. Shadow: score 100→27→15, `cf` to 10, **seven** `shadow_would_quarantine` rows all with `from_flags = to_flags`, `quarantined` false throughout, jobs requeuing normally. Third leg proven separately rather than assumed — a low score is only an ORDER BY term in `eligibility.go`, never a filter — and after restoring the port all 6 jobs `sent`, 1 Mailpit copy each, with **4 of 6 attributed to the score-15 account itself** (checked via `assigned_account_id`, because `default_shared_pool_id` puts a shared pool in every tenant's chain, so a job count alone does not say which account sent it). Enforce, second fresh account, identical condition: `quarantined=true` at `cf=4`/score 27 with a real `action='quarantine'`, `reason='score_below_threshold'`, `from_flags ≠ to_flags`, **exactly one** row — and the flag changed ROUTING, not just a boolean: all 6 of that tenant's jobs completed on the fallback accounts, **zero** on the quarantined one, which re-routed rather than failed. Enforce stopped at `cf=4` where shadow ran to `cf=10` — which is the point of the ladder)*
 - [x] Health endpoint reflects true state; all three alerts fire *(Stage 10 steps 6–7. Health: every field cross-checked against its own query (queue, accounts, boxes, all 5 pools' eligible counts, `errors_last_window` timeout:18/unknown:15, shadow count 9 with real score/threshold pairs), then **perturbed** — pause + disable moved `healthy` 6→4, `paused` 0→1, `disabled` 0→1 and flipped two pools to `headroom: "exhausted"`, so the numbers are live, not cached. Two apparent discrepancies checked before filing and both correct: `sends_last_window` 136 vs 152 `send_logs` rows reconciles exactly at `count(DISTINCT job_id)`=136 (per-job vs per-attempt), and `quarantined: 0` beside an `account_quarantined` condition is by design — that condition is window-scoped over `account_events` since a quarantine has no "still true" row state. Alerts: all three fired with deliveries to a receiver on the compose network, dedup proven (4 polls → 1 delivery), `pool_exhausted` needing a genuinely **waiting** job (a manual pause is terminal_blocked → `failed`, not queued; the daily limit is the self_recovering block that works) and firing once per pool in the chain, `box_death` at 6m51s and **auto-clearing** on reconnect. Payloads two-vocabulary clean: condition code, subject id, timestamps, nothing else. No-webhook half done on a FRESH edge, not a deduped repeat: HTTP 200, all conditions surfaced, delivery count unchanged, zero errors)*
-- [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|sender_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
+- [x] **KMS key restore drill passed** *(Stage 11 step 1, by the documented `disaster-recovery.md` §1 route. The working key was `shred -u`'d so the gpg backup was the ONLY copy; restore came back 32 bytes with a SHA-256 identical to the original. Proven by decryption, not by a clean start — and the **wrong-key negative control is what makes that distinction real**: a random 32-byte key starts perfectly cleanly (`kms dev key loaded`, `readyz` `ready`, container `healthy`), so length is all a clean boot proves. Under the wrong key two jobs failed `credential decrypt failed (authentication)` and were **requeued** with `assigned_account_id` NULL — no invented outcome — with **Mailpit `count: 0`** so no plaintext escaped, the client `report` showing only `queued`/`pending: 2` (0 matches for `decrypt|authentication|kms|key|cipher|nonce|SQLSTATE|byosmtp_module`), and no key material in the log either. After restore the **same two job ids** went `sent` with one Mailpit copy and one `send_logs` row each, then **all six** accounts' pre-drill credentials decrypted — 12 shared-pool jobs plus one per dedicated tenant via `CAMPAIGN_USER_ID` — with **zero** decrypt failures)*
 - [x] Credential rotation completed without interruption *(Stage 11 step 2, by the documented `disaster-recovery.md` §3 route, and "without interruption" proven non-vacuously — **4 real jobs were parked in the freeze and spanned the entire rotation**, since a drained queue would prove nothing. New key gpg-backed-up BEFORE use; `dispatch_paused: true` confirmed before the cutover. In the unreadable window the error is the **explicit** `cannot resolve credential_key_id "cred-dek-v1" (this Brain resolves "cred-dek-v2")` — `credential.go:57` checks the label before touching AES, so a rotation mistake is never a silent wrong-key attempt, provably distinct from the generic auth failure. Jobs requeued, Mailpit `count: 0`, nothing invented. Re-entry × 6 → `200`; §3's own verification queries returned `cred-dek-v2|6` and **empty** for rows off the new label, with **6 distinct nonces and 6 distinct ciphertexts** from 6 identical plaintexts. The same 4 parked job ids then went `sent` with **one `send_logs` row each despite `attempt_count = 3`** — no duplicate from the failed attempts — and all six accounts decrypted under v2 with zero failures, 6 audited writes under 6 distinct `request_id`s, and a clean leak grep. Both halves fail closed by **different** errors: right label + wrong key gives generic GCM auth failure (47 of them, Mailpit 0). §3's abandon path was exercised too and is symmetric as documented — rolled back to v1, which is the correct dev-stack end state since `scripts/dev.sh:63` rewrites `.env` to `cred-dek-v1`)*
 - [x] Adding a box requires no Brain reconfiguration *(Stage 11 steps 3–4. **Add:** a third identity provisioned, its `token_hash` seeded, container started reusing the dev cert — registered, health `active: 3`, and it received real work (15 jobs split 4/9/2, its sends carrying a `provider_message_id` and `sending→sent` written by actor `box`). The claim is proven by what did **not** change: the Brain's `StartedAt` and `restarts=0` were **identical before and after**, and its env held only box-1 material, so the token gate is DB-driven. Box-3's security envelope re-verified independently: no DB/KMS env, only `box.crt`/`box.key`/`ca.crt`, no `/secrets/kms/`, no `brain.key`/`ca.key`, 0 credential matches in its log. **Remove:** stopped cleanly (exit 0) with a job genuinely `sending` — held there by a blackhole listener, because polling cannot catch a fast send. The job stayed `sending` with `attempt_token` unchanged (nothing invented for an absent box), was requeued 5 s after its lease by **`reclaim_loop`** with `timeout`/"lease expired" — never by `box` — then sent on a surviving box with **one** Mailpit copy. All 13 box-3 jobs ended `sent`; the cluster-wide non-terminal sweep was empty. A fresh 12-job campaign then went 12/12 `sent` split 10/2 with **0** to the removed box. Box 3 aged `active`→`stale` with no operator action)*
 - [x] Graceful shutdown strands no job; second Brain exits cleanly *(Stage 11 steps 5 and 6. **Shutdown:** the §4.1 sequence observed in order (stop-claim → drain → leave-in-place); 7 jobs still `queued` at the signal **stayed `queued`** with the Brain down, boxes waited (`ENOTFOUND brain; retrying`) rather than inventing, and all 16 reached `sent` on restart with 16 Mailpit copies / 16 `send_logs` rows. The in-flight branch was **forced** with a blackhole, because an empty drain finishes in 1 ms and proves nothing: the in-flight job was left exactly as stored — `sending`, `attempt_token` and lease unchanged, no terminal event — even when SIGKILLed mid-drain, then recovered by the next boot's rescan (`extended 1 orphaned in-flight lease(s)`) with the **box replaying its own buffered outcome** (actor `box`, not `reclaim_loop`) and sent with exactly one copy. Cluster-wide non-terminal sweep empty. Forcing that branch also **found and fixed a real defect**: `shutdown_drain_timeout_sec` is 30 s but `docker-compose.yml` declared no `stop_grace_period`, so Docker's 10 s default SIGKILLed every drain (`exitcode=137`) — an invariant already documented in `config-reference.md`, the systemd unit, and the runbook, contradicted only by the dev file. `stop_grace_period: 90s` added and proven by a paired control: 137/truncated → **exit 0** with `drain complete in 18.076s — every in-flight job reported and resolved normally`. **Second Brain:** waited the bounded `1m0s` and exited **code 3** with the incumbent still `ready`. The separate mid-life lock-loss defect this item did NOT cover — `G11-OD-1` / ADR-0011 — was **ruled (option B) and fixed on 2026-07-29**: the three loops pause while the lock is unheld and the keeper re-acquires on the seeded `brain_singleton_reacquire_interval_sec`, covered by 7 real-Postgres tests in `internal/dispatch/leadership_test.go`)*
-- [x] The latest migration rolls down and back up with no data loss *(Stage 11 step 7. This line did not exist until step 7 was walked — the step was in Part 3 but had no sign-off counterpart, so a reversibility failure could not have blocked a deploy. `sender_0022` is trigger-bodies-only (two `CREATE OR REPLACE FUNCTION`s + one helper), so no fixture data was at risk; a migration that dropped a column would need the fixtures rebuilt instead. Measured, not eyeballed: a row-count fingerprint across all nine tables was **byte-identical** before and after the down (`accounts` 6, `jobs` 487, `job_events` 2535, `send_logs` 500, `pools` 5, `boxes` 3, `config` 53, `account_events` 62), with the only deltas being the deleted `schema_migrations` row and the dropped helper. Behavior reverted too, not just objects — both trigger bodies confirmed back to their `sender_0008` form, which deliberately reinstates the defect 0022 fixed, since a down that keeps half the up is not a reverse. The Brain kept serving on the downgraded schema and the down file's own compatibility claim was **verified rather than trusted**: a post-0022 Brain on a pre-0022 schema still reports a correct `errors_last_window` because the reader filters on transition shape in Go — every counted row was genuinely error-shaped. Up restored version `0022`, the helper, both gates, and `sender_owner` ownership on all four functions (Rule 6 — a down/up must not reassign ownership to the migrating superuser or `FORCE ROW LEVEL SECURITY` stops enforcing); a fresh campaign's `sending→sent` came back untagged. `up` idempotent, `status` `23 applied, 0 pending`, all 6 gates green)*
+- [x] The latest migration rolls down and back up with no data loss *(Stage 11 step 7. This line did not exist until step 7 was walked — the step was in Part 3 but had no sign-off counterpart, so a reversibility failure could not have blocked a deploy. `sender_0022` is trigger-bodies-only (two `CREATE OR REPLACE FUNCTION`s + one helper), so no fixture data was at risk; a migration that dropped a column would need the fixtures rebuilt instead. Measured, not eyeballed: a row-count fingerprint across all nine tables was **byte-identical** before and after the down (`accounts` 6, `jobs` 487, `job_events` 2535, `send_logs` 500, `pools` 5, `boxes` 3, `config` 53, `account_events` 62), with the only deltas being the deleted `schema_migrations` row and the dropped helper. Behavior reverted too, not just objects — both trigger bodies confirmed back to their `sender_0008` form, which deliberately reinstates the defect 0022 fixed, since a down that keeps half the up is not a reverse. The Brain kept serving on the downgraded schema and the down file's own compatibility claim was **verified rather than trusted**: a post-0022 Brain on a pre-0022 schema still reports a correct `errors_last_window` because the reader filters on transition shape in Go — every counted row was genuinely error-shaped. Up restored version `0022`, the helper, both gates, and `byosmtp_owner` ownership on all four functions (Rule 6 — a down/up must not reassign ownership to the migrating superuser or `FORCE ROW LEVEL SECURITY` stops enforcing); a fresh campaign's `sending→sent` came back untagged. `up` idempotent, `status` `23 applied, 0 pending`, all 6 gates green)*
 - [x] All-toggles-off is byte-identical; security holds with all toggles on *(Stage 12, all 7 steps. **Off:** `variation_enabled=false` and all-sub-toggles-at-default produce the same 454-byte message (sha `9db8dbd5…`) — the shipped default already **is** off. **On:** identical content to two recipients differs only in ±1px CSS and inert `_ref`/`_v` params; the same `job_id` re-sent is byte-identical (`ff52b48e…` twice) while a different id differs, so the seed is genuinely id-derived. Zero-width off by default across **all 497** messages Mailpit ever held, and its rate dial governs (112/236 draws at 0.5 vs 10/236 at 0.05, same body). Thread-Index emits nothing even ON — with a `User-Agent`-at-rate-1.0 positive control proving the sniffer is not blind. URL params 6/6 unique per recipient, one value per message, and mechanically asserted inert: 24 URLs keep the author's scheme+host+path and own query params, only `_ref`/`_v` added, no host the author did not write. **Security with all 14 dials at maximum**, after 3 genuinely SMTP-authenticated sends through the varied path: all seven Stage 5 checks re-pass — secret absent from reads and from 630 KB of service logs in **five** encodings (plaintext, base64, base64 `AUTH PLAIN`, unpadded, 24-char prefix) and from the delivered bodies; ciphertext+nonce byte-stable without `smtp_secret` and both changed with one; rotated secret still authenticates; cross-tenant `404` vs correct-tenant `200`; admin `401` for missing, wrong, **and Domain-A** credentials; 14 admin routes swept with `has_credential` the only credential signal. **The first log sweep's "clean" verdict was worthless** — its own positive control also came back clean because the glob matched zero files; both detectors now abort on an empty file list and are proven to go red on planted plaintext and planted base64. Step 7's cleanup found `G12-OD-1` / ADR-0012 (a used account could not be hard-deleted — wedged, not lossy; flagged rather than hot-fixed because the fix revises a ruled ADR, with the `/disable` workaround verified meanwhile). **RULED option A and FIXED 2026-07-29** by `sender_0024`: a per-nullable-FK-column carve-out on `job_events`' append-only trigger, so the delete returns `204` with the audit rows surviving (FK nulled, content byte-unchanged) — 5 behavioral tests on real Postgres, 3 anti-vacuity controls, and a paired migration-lifecycle probe that drives the trigger in both directions. All 14 dials restored to `default_value`, 0 drift)*
 - [x] Auto-quarantine returned to **shadow** before you finish *(verified at the Stage 12 close, together with the other three kill-switches, since Stage 10 step 4 drove it to `enforce` and an `enforce` left behind would let a later stage quarantine a real account unattended: `autoquarantine_mode = shadow`, `dispatch_enabled = true`, `autopause_enabled = true`, `variation_enabled = true`. Whole-table drift is the stronger check and is also clean — the **only** row differing from `default_value` is the intentional `default_shared_pool_id` fixture, with 0 non-terminal jobs cluster-wide)*
 

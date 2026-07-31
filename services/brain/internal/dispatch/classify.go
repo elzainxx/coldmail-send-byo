@@ -1,7 +1,7 @@
 // classify.go — Phase 5 Chunk 1: the Brain-side error classifier (§1). The box reports RAW
 // (an outcome, an internal error_reason slug, and the raw final smtp_response line — Phase 3
 // §2.4); the Brain — and ONLY the Brain — maps that raw report to exactly one
-// sender.error_class. This is the single classification point (§1, P5-1); no other component
+// byosmtp.error_class. This is the single classification point (§1, P5-1); no other component
 // classifies. It is DETERMINISTIC, code-side, first-match-wins, and adds NO enum value.
 //
 // Ordering rule (§1): evaluate the §1.1 table top-down, first match wins, using (1) the box
@@ -16,10 +16,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
-// The six locked sender.error_class values (Phase 1 sender_0003 enum — additive-only forever).
+// The six locked byosmtp.error_class values (Phase 1 sender_0003 enum — additive-only forever).
 // Phase 5 ASSIGNS these; it adds none.
 const (
 	classBouncePermanent = "bounce_permanent"

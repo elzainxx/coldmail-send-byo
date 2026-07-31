@@ -12,7 +12,7 @@ const (
 	sqlstateCheckViolation      = "23514"
 )
 
-// createJob creates one sender.jobs row in state 'queued' from the platform-owned job_item
+// createJob creates one byosmtp.jobs row in state 'queued' from the platform-owned job_item
 // (SELECT-only on public.job_items, Phase 1), with the actor='system' GUC so the genesis event
 // is written (§6.2). Returns (jobID, existing, err): existing=true when the job_item already has
 // a sender job (the jobs_job_item_id_unique constraint) — the run is idempotent, never a raw 23505.
@@ -42,7 +42,7 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', 'system', true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', 'system', true)"); err != nil {
 		return "", false, newErr(codeInternalError, "set_actor_failed")
 	}
 
@@ -50,7 +50,7 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	// on commit/rollback, no unlock call needed). hashtext() keeps the key namespace distinct from
 	// both the Brain singleton lock and the migration runner's lock (Docs/advisory-locks.md).
 	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('sender.campaign_start:' || $1::text))`, userID); err != nil {
+		`SELECT pg_advisory_xact_lock(hashtext('byosmtp.campaign_start:' || $1::text))`, userID); err != nil {
 		return "", false, newErr(codeInternalError, "advisory_lock_failed")
 	}
 
@@ -70,7 +70,7 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	}
 	var otherCampaignActive bool
 	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM sender.jobs
+		`SELECT EXISTS (SELECT 1 FROM byosmtp.jobs
 		                WHERE user_id = $1 AND campaign_id <> $2
 		                  AND state IN ('queued','assigned','sending'))`,
 		userID, campaignID).Scan(&otherCampaignActive); err != nil {
@@ -80,12 +80,12 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 		return "", false, newErr(codeConflict, "user_campaign_active")
 	}
 
-	// Freeze the denormalized copy from public.job_items into sender.jobs (Phase 1 shape), but ONLY
+	// Freeze the denormalized copy from public.job_items into byosmtp.jobs (Phase 1 shape), but ONLY
 	// if the job_item belongs to the calling tenant (`ji.user_id = $2`). A cross-tenant job_item
 	// matches 0 rows → job_item_not_found (404-style), identical to a non-existent job_item — the
 	// module never confirms another tenant's job_item exists.
 	err = tx.QueryRow(ctx,
-		`INSERT INTO sender.jobs
+		`INSERT INTO byosmtp.jobs
 		   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
 		 SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
 		        ji.rendered_subject, ji.rendered_body, ji.reply_to, 'queued', NOW()
@@ -122,7 +122,7 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 func (s *Server) jobIDByItem(ctx context.Context, jobItemID, userID string) (string, bool) {
 	var id string
 	err := s.db.QueryRow(ctx,
-		`SELECT id FROM sender.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).Scan(&id)
+		`SELECT id FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).Scan(&id)
 	if err != nil {
 		return "", false
 	}
@@ -133,7 +133,7 @@ func (s *Server) jobIDByItem(ctx context.Context, jobItemID, userID string) (str
 func (s *Server) jobStateByItem(ctx context.Context, jobItemID, userID string) (string, bool) {
 	var state string
 	err := s.db.QueryRow(ctx,
-		`SELECT state::text FROM sender.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).Scan(&state)
+		`SELECT state::text FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).Scan(&state)
 	if err != nil {
 		return "", false
 	}
@@ -162,12 +162,12 @@ func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string
 	if jobID != "" {
 		err = s.db.QueryRow(ctx,
 			`SELECT id, state::text, provider_message_id, completed_at, attempt_count
-			 FROM sender.jobs WHERE id = $1 AND user_id = $2`, jobID, userID).
+			 FROM byosmtp.jobs WHERE id = $1 AND user_id = $2`, jobID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount)
 	} else {
 		err = s.db.QueryRow(ctx,
 			`SELECT id, state::text, provider_message_id, completed_at, attempt_count
-			 FROM sender.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).
+			 FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount)
 	}
 	if err != nil {

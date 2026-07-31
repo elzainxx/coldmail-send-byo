@@ -16,15 +16,15 @@ import (
 	"log"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/configordering"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/configordering"
 )
 
-// Config holds the seeded sender.config values the dispatcher CONSUMES (config-not-code, §0).
+// Config holds the seeded byosmtp.config values the dispatcher CONSUMES (config-not-code, §0).
 // Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval, the per-user
 // concurrency ceiling, the daily-reset timezone, and the default shared pool id — ALL ALREADY
 // seeded in Phase 1's sender_0010 (Phase 4 adds NO new key, §0). Every value is read at runtime
-// from sender.config, never hardcoded.
+// from byosmtp.config, never hardcoded.
 type Config struct {
 	JobMaxProcessingTimeSec   int     // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
 	DebugLogRetentionDays     int     // debug_log_retention_days — send_logs.ttl_expires_at (§7)
@@ -182,7 +182,7 @@ func (b BackoffSchedule) backoffForAttempt(attemptCount int) int {
 	return d
 }
 
-// LoadConfig reads the dispatcher-consumed config keys from sender.config. Values are JSONB-wrapped
+// LoadConfig reads the dispatcher-consumed config keys from byosmtp.config. Values are JSONB-wrapped
 // {"v": ...}; this unwraps the scalar. A missing key is an error (the migration seeds them), not
 // a silent default — a hardcoded fallback would violate config-not-code. The dispatcher RE-READS
 // config each tick (Phase 2 OD-14, spec §0), so a change takes effect without a redeploy.
@@ -436,7 +436,7 @@ func badConfigValue(key, want string) error { return &configValueError{key: key,
 // — reject"), with the external code config_ordering_violation. A refused boot is loud and instantly
 // fixable; the duplicate the unsafe pair would cause is silent and unrecoverable after the fact.
 // This is now the BACKSTOP, not the only line of defense — the admin PUT boundary rejects the same
-// invariant before a bad value ever lands in sender.config (defense in depth: a value that somehow
+// invariant before a bad value ever lands in byosmtp.config (defense in depth: a value that somehow
 // reaches the DB by another path, e.g. a direct SQL write, is still caught here).
 func validateConfigOrdering(c Config) error {
 	if v := configordering.CheckSMTPTimeoutVsLease(c.SMTPOperationTimeoutSec, c.JobMaxProcessingTimeSec); v != nil {
@@ -454,7 +454,7 @@ func readBackoffSchedule(ctx context.Context, db *pgxpool.Pool) BackoffSchedule 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='retry_backoff_schedule'`).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='retry_backoff_schedule'`).Scan(&raw); err != nil {
 		log.Printf("dispatch: retry_backoff_schedule unreadable (%v) — using documented default", err)
 		return backoffScheduleDefault
 	}
@@ -482,7 +482,7 @@ func readScoreWeights(ctx context.Context, db *pgxpool.Pool) ScoreWeights {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='status_score_weights'`).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='status_score_weights'`).Scan(&raw); err != nil {
 		log.Printf("dispatch: status_score_weights unreadable (%v) — using documented default", err)
 		return scoreWeightsDefault
 	}
@@ -505,7 +505,7 @@ func readIntensityRates(ctx context.Context, db *pgxpool.Pool) IntensityRates {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='variation_comment_intensity_rates'`).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='variation_comment_intensity_rates'`).Scan(&raw); err != nil {
 		log.Printf("dispatch: variation_comment_intensity_rates unreadable (%v) — using documented default", err)
 		return intensityRatesDefault
 	}
@@ -527,7 +527,7 @@ func readCSSMicroParams(ctx context.Context, db *pgxpool.Pool) CSSMicroParams {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key='variation_css_micro_params'`).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='variation_css_micro_params'`).Scan(&raw); err != nil {
 		log.Printf("dispatch: variation_css_micro_params unreadable (%v) — using documented default", err)
 		return cssMicroParamsDefault
 	}
@@ -547,7 +547,7 @@ func readIntKey(ctx context.Context, db *pgxpool.Pool, key string) (int, error) 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return 0, fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {
@@ -564,7 +564,7 @@ func readBoolKey(ctx context.Context, db *pgxpool.Pool, key string) (bool, error
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return false, fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {
@@ -583,7 +583,7 @@ func readFloatKey(ctx context.Context, db *pgxpool.Pool, key string) (float64, e
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return 0, fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {
@@ -603,7 +603,7 @@ func readStringArrayKey(ctx context.Context, db *pgxpool.Pool, key string) ([]st
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {
@@ -620,7 +620,7 @@ func readStringKey(ctx context.Context, db *pgxpool.Pool, key string) (string, e
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return "", fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {
@@ -639,7 +639,7 @@ func readNullableStringKey(ctx context.Context, db *pgxpool.Pool, key string) (*
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var raw []byte
-	if err := db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("read config %q: %w", key, err)
 	}
 	var wrap struct {

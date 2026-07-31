@@ -1,4 +1,4 @@
-module github.com/sender-module/provision-box
+module github.com/byosmtp-module/provision-box
 
 go 1.23
 

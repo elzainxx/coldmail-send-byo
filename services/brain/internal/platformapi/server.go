@@ -30,7 +30,7 @@ import (
 // signals the dispatcher's run loop.
 type Kicker func()
 
-// Server is the platform API. It holds the DB pool (sender_module), the service-token
+// Server is the platform API. It holds the DB pool (byosmtp_module), the service-token
 // authenticator, and an async dispatcher kick.
 type Server struct {
 	db   *pgxpool.Pool

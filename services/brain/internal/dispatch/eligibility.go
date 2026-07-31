@@ -49,7 +49,7 @@ const randomAccountOrderBy = "RANDOM()"
 // no separate NULL-handling branch needed.
 const roundRobinAccountOrderBy = "($3::uuid IS NOT NULL AND a.id > $3::uuid) DESC, a.id ASC"
 
-// accountOrderByForStrategy maps sender.routing_strategy -> the ORDER BY fragment + whether it
+// accountOrderByForStrategy maps byosmtp.routing_strategy -> the ORDER BY fragment + whether it
 // needs the round-robin cursor bound as $3. An unrecognized strategy falls back to the locked
 // default rather than erroring — defensive against a future additive enum value this code doesn't
 // know about yet; never a hard failure in the dispatch hot path.
@@ -75,7 +75,7 @@ func accountOrderByForStrategy(strategy string) (orderBy string, needsCursor boo
 //
 // NOT YET BUILT (flagged, not silently assumed): the Phase 5 coordinated edit (P5-13) that
 // additionally admits an EXPIRED pause_reason='throttle' pause depends on
-// sender.accounts.throttle_paused_at and the throttle_pause_seconds config key — both introduced
+// byosmtp.accounts.throttle_paused_at and the throttle_pause_seconds config key — both introduced
 // by PHASE 5's own migrations (sender_0016/sender_0017), neither of which exists yet. Referencing
 // them now would be a runtime error against a column that does not exist. This predicate is
 // therefore exactly the §2.1 predicate MINUS the throttle OR-terms; the spec itself documents that
@@ -103,7 +103,7 @@ WITH today_calc AS (
 eligible_accounts AS (
     SELECT a.id,
            (a.paused = TRUE AND a.pause_reason = 'throttle') AS was_throttle
-    FROM sender.accounts a, today_calc
+    FROM byosmtp.accounts a, today_calc
     WHERE a.pool_id = $2
       AND ($3::uuid IS NULL OR $3::uuid IS NOT NULL) -- always true; keeps $3 (the optional
                                                         -- round_robin cursor) bound for every
@@ -130,7 +130,7 @@ eligible_accounts AS (
     FOR UPDATE SKIP LOCKED
 ),
 consumed AS (
-    UPDATE sender.accounts a
+    UPDATE byosmtp.accounts a
     SET daily_sent_count = CASE
             WHEN a.daily_reset_day < (SELECT today_in_tz FROM today_calc) THEN 1
             ELSE a.daily_sent_count + 1
@@ -173,7 +173,7 @@ throttle_unpause_audit AS (
     -- the row transitions throttle→daily_limit (now_paused=TRUE) and NO unpause event is written —
     -- the daily_limit pause writes no event either (Phase 1 behavior, §4.1), so the audit correctly
     -- shows no spurious "unpause" for an account that is still paused.
-    INSERT INTO sender.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
+    INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, from_flags, to_flags, reason)
     SELECT id, user_id, 'system', 'unpause',
            '{"paused":true,"pause_reason":"throttle","quarantined":false,"disabled":false}'::jsonb,
            '{"paused":false,"pause_reason":null,"quarantined":false,"disabled":false}'::jsonb,
@@ -191,7 +191,7 @@ FROM consumed`
 // resolvable shared target — e.g. default_shared_pool_id unset/invalid, §4.3) is a clean "not
 // found," never an error: the caller requeues, and the job stays legally claimable. cfg is the
 // caller's ALREADY-LOADED config (Tick loads it once per cycle, §0 OD-14 only requires per-tick
-// freshness) — this avoids re-reading all of sender.config once per claimed job.
+// freshness) — this avoids re-reading all of byosmtp.config once per claimed job.
 func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cfg Config) (selectedAccount, bool, error) {
 	pools, err := d.resolvePoolChain(ctx, job.userID, cfg)
 	if err != nil {
@@ -247,7 +247,7 @@ func (d *Dispatcher) poolRoutingStrategy(ctx context.Context, poolID string) (st
 	defer cancel()
 	var strategy string
 	if err := d.db.QueryRow(ctx,
-		`SELECT routing_strategy::text FROM sender.pools WHERE id = $1`, poolID).Scan(&strategy); err != nil {
+		`SELECT routing_strategy::text FROM byosmtp.pools WHERE id = $1`, poolID).Scan(&strategy); err != nil {
 		return "", err
 	}
 	return strategy, nil
@@ -295,7 +295,7 @@ SELECT EXISTS (
       SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $1)::date AS today_in_tz
   )
   SELECT 1
-  FROM sender.accounts a, today_calc
+  FROM byosmtp.accounts a, today_calc
   WHERE a.pool_id = $2
     AND a.quarantined = FALSE
     AND a.disabled = FALSE

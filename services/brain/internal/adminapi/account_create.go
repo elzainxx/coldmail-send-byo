@@ -134,7 +134,7 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(context.Background())
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO sender.accounts
+		`INSERT INTO byosmtp.accounts
 		   (id, user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce,
 		    from_address, from_name, daily_limit)
@@ -220,11 +220,11 @@ func (s *Server) duplicateInPool(ctx context.Context, poolID, host, username, ex
 	var err error
 	if excludeID == "" {
 		err = s.db.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM sender.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3)",
+			"SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3)",
 			poolID, host, username).Scan(&exists)
 	} else {
 		err = s.db.QueryRow(ctx,
-			"SELECT EXISTS(SELECT 1 FROM sender.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3 AND id<>$4)",
+			"SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE pool_id=$1 AND smtp_host=$2 AND smtp_username=$3 AND id<>$4)",
 			poolID, host, username, excludeID).Scan(&exists)
 	}
 	if err != nil {
@@ -236,7 +236,7 @@ func (s *Server) duplicateInPool(ctx context.Context, poolID, host, username, ex
 // poolDisabledWarning returns a pool_disabled warning if the pool is disabled, else nil.
 func (s *Server) poolDisabledWarning(ctx context.Context, poolID string) *warning {
 	var enabled bool
-	if err := s.db.QueryRow(ctx, "SELECT enabled FROM sender.pools WHERE id=$1", poolID).Scan(&enabled); err != nil {
+	if err := s.db.QueryRow(ctx, "SELECT enabled FROM byosmtp.pools WHERE id=$1", poolID).Scan(&enabled); err != nil {
 		return nil
 	}
 	if !enabled {

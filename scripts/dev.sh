@@ -27,7 +27,7 @@ gen_all_secrets() {
   # replicas evict each other in a permanent register/disconnect loop. Multi-box routing, box
   # death onto a SURVIVING box, and reclaim are only testable with two DISTINCT identities.
   # The mTLS cert is deliberately SHARED with box 1: the cert is transport only, and the Brain's
-  # authorizeBox() checks (id, token) against sender.boxes and never pins the cert CN to a box id.
+  # authorizeBox() checks (id, token) against byosmtp.boxes and never pins the cert CN to a box id.
   local prov2 token2 hash2 hash2_esc
   prov2="$(tools/provision-box/bin/provision-box new --id dev-box-2)"
   token2="$(echo "$prov2" | grep '^BOX_TOKEN=' | sed 's/^BOX_TOKEN=//; s/ .*//')"
@@ -48,8 +48,14 @@ gen_all_secrets() {
   admhash_esc="$(printf '%s' "$admhash" | sed 's/\$/$$/g')"
   plhash_esc="$(printf '%s' "$plhash" | sed 's/\$/$$/g')"
   cat > .env <<EOF
+# Host port bindings (M3-P0-OD-6): module 2's ports +1000, so both stacks can run at once.
+HOST_PORT_POSTGRES=6432
+HOST_PORT_BRAIN_HEALTH=9080
+HOST_PORT_BRAIN_BOXLINK=9443
+HOST_PORT_BRAIN_STREAM=9444
+HOST_PORT_MAILPIT=9025
 POSTGRES_SUPERPASS=devsuperpass
-SENDER_MODULE_PASSWORD=devmodulepass
+BYOSMTP_MODULE_PASSWORD=devmodulepass
 DEV_BOX_ID=dev-box-1
 DEV_BOX_UUID=11111111-1111-1111-1111-111111111111
 DEV_BOX_TOKEN=$token
@@ -71,7 +77,7 @@ EOF
 # `down -v` drops the volume that HELD these rows, so a reset without a re-seed leaves every box
 # unable to register (`register rejected: unauthenticated`) until it burns its retry budget and
 # exits 1. `up --wait` reports the box "healthy" moments before it dies, so the failure looks like
-# a green start. Found walking Docs/sender-module-local-test-guide.md Stage 0 as an operator.
+# a green start. Found walking Docs/byosmtp-module-local-test-guide.md Stage 0 as an operator.
 seed_rows() {
   # Read the values by grep (NOT `source .env`: bash would expand the '$' in the bcrypt
   # hash). Un-escape the compose '$$' back to '$' for the real hash the Brain compares.
@@ -86,11 +92,11 @@ seed_rows() {
   BOX2_HASH_UNESC="$(grep -E '^DEV_BOX2_TOKEN_HASH=' .env | cut -d= -f2- | sed 's/\$\$/$/g' || true)"
   $COMPOSE exec -T postgres psql -U postgres -d platform -v ON_ERROR_STOP=1 -q \
     -c "INSERT INTO public.users (id, email, is_active) VALUES ('00000000-0000-0000-0000-000000000000','system@sender.local', true) ON CONFLICT (id) DO NOTHING" \
-    -c "INSERT INTO sender.boxes (id, user_id, token_hash, status) VALUES ('${BOX_UUID}','00000000-0000-0000-0000-000000000000','${BOX_HASH_UNESC}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" \
+    -c "INSERT INTO byosmtp.boxes (id, user_id, token_hash, status) VALUES ('${BOX_UUID}','00000000-0000-0000-0000-000000000000','${BOX_HASH_UNESC}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" \
     && echo "seed: system user + dev box row (${BOX_UUID}) seeded; box can register on the send stream."
   if [[ -n "$BOX2_UUID" && -n "$BOX2_HASH_UNESC" ]]; then
     $COMPOSE exec -T postgres psql -U postgres -d platform -v ON_ERROR_STOP=1 -q \
-      -c "INSERT INTO sender.boxes (id, user_id, token_hash, status) VALUES ('${BOX2_UUID}','00000000-0000-0000-0000-000000000000','${BOX2_HASH_UNESC}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" \
+      -c "INSERT INTO byosmtp.boxes (id, user_id, token_hash, status) VALUES ('${BOX2_UUID}','00000000-0000-0000-0000-000000000000','${BOX2_HASH_UNESC}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" \
       && echo "seed: second dev box row (${BOX2_UUID}) seeded; run 'scripts/dev.sh up2' to start it."
   fi
 }
@@ -103,7 +109,7 @@ case "$cmd" in
            # single-box runs and the harness are unaffected until you ask for it).
            $COMPOSE --profile multibox up -d --wait box2;;
   seed)    # Phase 3: seed the system user + the dev box rows so a box can register on the
-           # send stream (token=authority, verified vs sender.boxes.token_hash). Account/send
+           # send stream (token=authority, verified vs byosmtp.boxes.token_hash). Account/send
            # fixtures are seeded programmatically by the behavioral harness (it holds the encrypt
            # helper + AAD), not here — this only makes the live stack's boxes connectable.
            seed_rows;;
@@ -112,7 +118,7 @@ case "$cmd" in
            # SURVIVES the teardown, so a "clean slate" silently keeps a box from the previous run.
   down)    $COMPOSE --profile multibox down -v;;
   reset)   # down -v drops the volume, so the box rows MUST be re-seeded before any box can register.
-           # Order is load-bearing: postgres (so we can connect) -> migrate (sender.boxes must EXIST
+           # Order is load-bearing: postgres (so we can connect) -> migrate (byosmtp.boxes must EXIST
            # before we insert into it) -> seed -> the rest. Seeding before migrate fails; seeding
            # after `up` is too late, because the box has already burned its retry budget and exited.
            $COMPOSE --profile multibox down -v

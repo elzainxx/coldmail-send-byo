@@ -1,8 +1,8 @@
 package adminapi
 
 // health_store.go — Phase 9.5 B3 (§3): the read-only queries backing GET /v1/admin/health. Every
-// field derives from COUNT/GROUP BY over existing tables (sender.jobs, sender.boxes,
-// sender.accounts, sender.job_events, sender.account_events) plus the live dispatch_enabled/
+// field derives from COUNT/GROUP BY over existing tables (byosmtp.jobs, byosmtp.boxes,
+// byosmtp.accounts, byosmtp.job_events, byosmtp.account_events) plus the live dispatch_enabled/
 // autoquarantine_mode config values — NO new persisted state, NO schema change (§3.1). Read-only:
 // no claim, no lock, no mutation anywhere in this file.
 
@@ -156,7 +156,7 @@ func perMinute(count, windowSec int) float64 {
 	return float64(count) * 60.0 / float64(windowSec)
 }
 
-// queryQueueCounts is COUNT(*) GROUP BY state on sender.jobs (§3.2 "queue"), plus
+// queryQueueCounts is COUNT(*) GROUP BY state on byosmtp.jobs (§3.2 "queue"), plus
 // waiting_for_capacity: queued jobs whose resolved pool chain currently has ZERO eligible accounts.
 // waiting_for_capacity reuses the IDENTICAL eligibility WHERE (inlined below, mirroring
 // internal/dispatch's poolHasEligible/eligible_accounts predicate byte-for-byte) so this read-only
@@ -165,7 +165,7 @@ func perMinute(count, windowSec int) float64 {
 // duplicated here as SQL, not shared as Go code across the package boundary.
 func queryQueueCounts(ctx context.Context, db *pgxpool.Pool) (queueCounts, error) {
 	var q queueCounts
-	rows, err := db.Query(ctx, `SELECT state::text, COUNT(*) FROM sender.jobs GROUP BY state`)
+	rows, err := db.Query(ctx, `SELECT state::text, COUNT(*) FROM byosmtp.jobs GROUP BY state`)
 	if err != nil {
 		return q, err
 	}
@@ -223,18 +223,18 @@ func queryWaitingForCapacity(ctx context.Context, db *pgxpool.Pool) (int, error)
 	}
 	const q = `
 WITH queued_users AS (
-    SELECT DISTINCT user_id FROM sender.jobs WHERE state = 'queued'
+    SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state = 'queued'
 ),
 user_pools AS (
     SELECT qu.user_id, p.id AS pool_id
     FROM queued_users qu
-    JOIN sender.pools p
+    JOIN byosmtp.pools p
       ON p.enabled = TRUE
      AND (p.owner_user_id = qu.user_id OR p.kind = 'shared')
 )
 SELECT COUNT(*) FROM (
     SELECT j.id
-    FROM sender.jobs j
+    FROM byosmtp.jobs j
     WHERE j.state = 'queued'
       AND NOT EXISTS (
           SELECT 1 FROM user_pools up
@@ -257,7 +257,7 @@ SELECT COUNT(*) FROM (
 // above (db.QueryRow(ctx, q, tz, throttleSec, hour)).
 const eligibleAccountsSubqueryUsingCTEPoolID = `
     SELECT 1
-    FROM sender.accounts a
+    FROM byosmtp.accounts a
     WHERE a.pool_id = up.pool_id
       AND a.quarantined = FALSE
       AND a.disabled = FALSE
@@ -280,7 +280,7 @@ const eligibleAccountsSubqueryUsingCTEPoolID = `
 func queryTerminalCountInWindow(ctx context.Context, db *pgxpool.Pool, state string, windowSec int) (int, error) {
 	var n int
 	err := db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM sender.jobs
+		`SELECT COUNT(*) FROM byosmtp.jobs
 		 WHERE state = $1 AND completed_at >= NOW() - INTERVAL '1 second' * $2`,
 		state, windowSec).Scan(&n)
 	return n, err
@@ -296,19 +296,19 @@ func queryDispatchTicksInWindow(ctx context.Context, db *pgxpool.Pool, windowSec
 	var n int
 	err := db.QueryRow(ctx,
 		`SELECT COUNT(DISTINCT date_trunc('second', created_at))
-		   FROM sender.job_events
+		   FROM byosmtp.job_events
 		  WHERE actor = 'dispatcher' AND to_state = 'assigned'
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1`,
 		windowSec).Scan(&n)
 	return n, err
 }
 
-// queryBoxCounts is COUNT(*) GROUP BY status on sender.boxes, plus the oldest ACTIVE box's
+// queryBoxCounts is COUNT(*) GROUP BY status on byosmtp.boxes, plus the oldest ACTIVE box's
 // heartbeat age (a liveness signal: a large value on an "active" box means it is close to the
 // stale threshold without having crossed it yet).
 func queryBoxCounts(ctx context.Context, db *pgxpool.Pool) (boxCounts, error) {
 	var b boxCounts
-	rows, err := db.Query(ctx, `SELECT status::text, COUNT(*) FROM sender.boxes GROUP BY status`)
+	rows, err := db.Query(ctx, `SELECT status::text, COUNT(*) FROM byosmtp.boxes GROUP BY status`)
 	if err != nil {
 		return b, err
 	}
@@ -334,7 +334,7 @@ func queryBoxCounts(ctx context.Context, db *pgxpool.Pool) (boxCounts, error) {
 	var ageSec *int
 	if err := db.QueryRow(ctx,
 		`SELECT EXTRACT(EPOCH FROM (NOW() - MIN(last_heartbeat_at)))::int
-		   FROM sender.boxes WHERE status = 'active'`).Scan(&ageSec); err != nil {
+		   FROM byosmtp.boxes WHERE status = 'active'`).Scan(&ageSec); err != nil {
 		return b, err
 	}
 	b.OldestActiveHeartbeatAgeSec = ageSec
@@ -365,7 +365,7 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 		   COUNT(*) FILTER (WHERE disabled = TRUE),
 		   COUNT(*) FILTER (WHERE daily_reset_day = ((NOW() - INTERVAL '1 hour' * $2) AT TIME ZONE $1)::date
 		                       AND daily_sent_count >= daily_limit)
-		 FROM sender.accounts`, tz, hour).
+		 FROM byosmtp.accounts`, tz, hour).
 		Scan(&a.Healthy, &a.Paused, &a.Quarantined, &a.Disabled, &a.AtDailyLimit)
 	return a, err
 }
@@ -404,8 +404,8 @@ SELECT p.id::text, p.kind::text,
                   AND a.daily_sent_count < a.daily_limit)
             )
        ) AS eligible
-FROM sender.pools p
-LEFT JOIN sender.accounts a ON a.pool_id = p.id
+FROM byosmtp.pools p
+LEFT JOIN byosmtp.accounts a ON a.pool_id = p.id
 WHERE p.enabled = TRUE
 GROUP BY p.id, p.kind
 ORDER BY p.created_at`
@@ -447,7 +447,7 @@ ORDER BY p.created_at`
 //	(1) HISTORY. Before sender_0022, sender_0008's triggers copied the job row's STICKY
 //	    last_error_class onto EVERY event, so one requeue left four tagged rows — the requeue plus
 //	    the following queued->assigned, assigned->sending, and sending->SENT. Observed live at
-//	    Stage 9 of Docs/sender-module-local-test-guide.md: errors_last_window read
+//	    Stage 9 of Docs/byosmtp-module-local-test-guide.md: errors_last_window read
 //	    {"unknown": 4} for a single failure. job_events is append-only (by REVOKE and by trigger),
 //	    so those rows were deliberately NOT rewritten; filtering here makes the metric correct
 //	    IMMEDIATELY on deploy instead of only after health_metrics_window_sec rolls them out.
@@ -455,14 +455,14 @@ ORDER BY p.created_at`
 //	    regardless of what any present or future writer stamps into the column: a success can never
 //	    be counted as an error, because `sending -> sent` is excluded by shape.
 //
-// The transition shape mirrors sender.fn_job_event_is_error_transition (sender_0022) — terminal
+// The transition shape mirrors byosmtp.fn_job_event_is_error_transition (sender_0022) — terminal
 // 'failed'/'bounced', plus a requeue (a non-genesis transition back to 'queued'). Kept in both
 // places on purpose: the trigger governs what is WRITTEN, this governs what is COUNTED, and the
 // counter must stay right over rows written by an older trigger.
 func queryErrorsInWindow(ctx context.Context, db *pgxpool.Pool, windowSec int) (map[string]int, error) {
 	rows, err := db.Query(ctx,
 		`SELECT error_class::text, COUNT(*)
-		   FROM sender.job_events
+		   FROM byosmtp.job_events
 		  WHERE error_class IS NOT NULL
 		    AND (to_state IN ('failed','bounced')
 		         OR (to_state = 'queued' AND from_state IS NOT NULL))
@@ -492,7 +492,7 @@ func queryShadowSummary(ctx context.Context, db *pgxpool.Pool, windowSec int, mo
 	s := shadowSummary{AutoquarantineMode: mode}
 	var count int
 	if err := db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM sender.account_events
+		`SELECT COUNT(*) FROM byosmtp.account_events
 		  WHERE actor = 'system' AND action = 'updated'
 		    AND reason LIKE 'shadow_would_quarantine:%'
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1`, windowSec).Scan(&count); err != nil {
@@ -502,7 +502,7 @@ func queryShadowSummary(ctx context.Context, db *pgxpool.Pool, windowSec int, mo
 
 	const recentLimit = 10
 	rows, err := db.Query(ctx,
-		`SELECT account_id::text, reason, created_at FROM sender.account_events
+		`SELECT account_id::text, reason, created_at FROM byosmtp.account_events
 		  WHERE actor = 'system' AND action = 'updated'
 		    AND reason LIKE 'shadow_would_quarantine:%'
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1

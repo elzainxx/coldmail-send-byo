@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // retention_test.go — Phase 7 §6 T3 (debug-log rollup/retention) + T5 part 1 (the P7-11 config
-// ordering invariant). REAL infra: every test runs against a real Postgres clone of sender_template
-// through the real sender_module pool, so the DELETE privilege, the write-once trigger, the RLS
+// ordering invariant). REAL infra: every test runs against a real Postgres clone of byosmtp_template
+// through the real byosmtp_module pool, so the DELETE privilege, the write-once trigger, the RLS
 // policy and the FK/CASCADE behavior are the real ones — nothing is mocked or asserted from a comment.
 
 // seedSendLog inserts one raw send_logs row for an existing job with an EXPLICIT ttl_expires_at
@@ -21,11 +21,11 @@ func (e *dispatchEnv) seedSendLog(t *testing.T, jobID string, ttlOffset time.Dur
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(context.Background(),
-		`INSERT INTO sender.send_logs
+		`INSERT INTO byosmtp.send_logs
 		   (job_id, user_id, recipient_email, subject, body, headers, smtp_response, ttl_expires_at)
 		 SELECT j.id, j.user_id, j.recipient_email, 'raw subject', 'raw body',
 		        '{"X-Test":"1"}'::jsonb, '250 2.0.0 OK', NOW() + make_interval(secs => $2)
-		   FROM sender.jobs j WHERE j.id = $1
+		   FROM byosmtp.jobs j WHERE j.id = $1
 		 RETURNING id`, jobID, int(ttlOffset.Seconds())).Scan(&id); err != nil {
 		t.Fatalf("seed send_log: %v", err)
 	}
@@ -35,7 +35,7 @@ func (e *dispatchEnv) seedSendLog(t *testing.T, jobID string, ttlOffset time.Dur
 func (e *dispatchEnv) sendLogTotal(t *testing.T) int {
 	t.Helper()
 	var n int
-	if err := e.admin.QueryRow(context.Background(), `SELECT count(*) FROM sender.send_logs`).Scan(&n); err != nil {
+	if err := e.admin.QueryRow(context.Background(), `SELECT count(*) FROM byosmtp.send_logs`).Scan(&n); err != nil {
 		t.Fatalf("send_logs total: %v", err)
 	}
 	return n
@@ -44,7 +44,7 @@ func (e *dispatchEnv) sendLogTotal(t *testing.T) int {
 func (e *dispatchEnv) sendLogExists(t *testing.T, id string) bool {
 	t.Helper()
 	var n int
-	if err := e.admin.QueryRow(context.Background(), `SELECT count(*) FROM sender.send_logs WHERE id=$1`, id).Scan(&n); err != nil {
+	if err := e.admin.QueryRow(context.Background(), `SELECT count(*) FROM byosmtp.send_logs WHERE id=$1`, id).Scan(&n); err != nil {
 		t.Fatalf("send_log exists: %v", err)
 	}
 	return n == 1
@@ -59,7 +59,7 @@ func (e *dispatchEnv) eventFingerprint(t *testing.T) (int, string) {
 	var fp string
 	if err := e.admin.QueryRow(context.Background(),
 		`SELECT count(*), COALESCE(string_agg(job_id::text||':'||COALESCE(from_state::text,'-')||'>'||to_state::text||':'||actor::text||':'||COALESCE(error_class::text,'-'), '|' ORDER BY created_at, id), '')
-		   FROM sender.job_events`).Scan(&n, &fp); err != nil {
+		   FROM byosmtp.job_events`).Scan(&n, &fp); err != nil {
 		t.Fatalf("event fingerprint: %v", err)
 	}
 	return n, fp
@@ -68,9 +68,9 @@ func (e *dispatchEnv) eventFingerprint(t *testing.T) (int, string) {
 // TestRetention_SweepDropsExpiredRawInBoundedBatchesAndKeepsOutcomes is T3 (§6). It proves the four
 // locked properties of §3/§3.1/§3.2 at once:
 //
-//	(1) EXPIRED raw send_logs content is DELETED — and by the sender_module app role, so the ADR-0008
+//	(1) EXPIRED raw send_logs content is DELETED — and by the byosmtp_module app role, so the ADR-0008
 //	    grant trap is genuinely closed (CONFIRMED, not assumed: sender_0012's
-//	    `GRANT SELECT, INSERT, DELETE ON sender.send_logs` is what makes this pass).
+//	    `GRANT SELECT, INSERT, DELETE ON byosmtp.send_logs` is what makes this pass).
 //	(2) It happens in BOUNDED BATCHES: with retention_delete_batch_size=2 and 7 expired rows, the
 //	    sweep issues multiple bounded DELETEs and drains — a single unbounded DELETE would be a
 //	    long-lock hazard (§3.1).
@@ -115,7 +115,7 @@ func TestRetention_SweepDropsExpiredRawInBoundedBatchesAndKeepsOutcomes(t *testi
 	}
 
 	var userID string
-	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM sender.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT user_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&userID); err != nil {
 		t.Fatalf("read job user: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func summaryStateCount(buckets []DaySummary, state string) int {
 }
 
 // TestRetention_ModuleRoleCanDeleteButStillCannotUpdate is the grant confirmation the phase demands,
-// stated as behavior rather than as a claim about a migration file. POSITIVE: the sender_module role
+// stated as behavior rather than as a claim about a migration file. POSITIVE: the byosmtp_module role
 // CAN DELETE a send_logs row (so the sweep is not silently a no-op behind a missing grant — the
 // ADR-0008 trap). NEGATIVE control: the same role STILL cannot UPDATE one, so send_logs remains
 // write-once and Phase 7 did not weaken the immutability property to get its DELETE.
@@ -264,20 +264,20 @@ func TestRetention_ModuleRoleCanDeleteButStillCannotUpdate(t *testing.T) {
 	keep := e.seedSendLog(t, job, +time.Hour)
 
 	// POSITIVE: the app role's own DELETE works.
-	tag, err := e.pool.Exec(ctx, `DELETE FROM sender.send_logs WHERE id=$1`, doomed)
+	tag, err := e.pool.Exec(ctx, `DELETE FROM byosmtp.send_logs WHERE id=$1`, doomed)
 	if err != nil {
-		t.Fatalf("sender_module DELETE on send_logs failed (%v) — the retention sweep would be a silent no-op; grants are the ADR-0008 trap", err)
+		t.Fatalf("byosmtp_module DELETE on send_logs failed (%v) — the retention sweep would be a silent no-op; grants are the ADR-0008 trap", err)
 	}
 	if tag.RowsAffected() != 1 {
-		t.Fatalf("sender_module DELETE affected %d rows, want 1 (RLS may be filtering it away)", tag.RowsAffected())
+		t.Fatalf("byosmtp_module DELETE affected %d rows, want 1 (RLS may be filtering it away)", tag.RowsAffected())
 	}
 	if e.sendLogExists(t, doomed) {
 		t.Fatal("row still present after a reportedly-successful DELETE")
 	}
 
 	// NEGATIVE CONTROL: write-once still holds — UPDATE is refused (REVOKE + BEFORE UPDATE trigger).
-	if _, err := e.pool.Exec(ctx, `UPDATE sender.send_logs SET subject='tampered' WHERE id=$1`, keep); err == nil {
-		t.Fatal("sender_module UPDATE on send_logs SUCCEEDED — send_logs must stay write-once (Phase 7 must not weaken it to gain DELETE)")
+	if _, err := e.pool.Exec(ctx, `UPDATE byosmtp.send_logs SET subject='tampered' WHERE id=$1`, keep); err == nil {
+		t.Fatal("byosmtp_module UPDATE on send_logs SUCCEEDED — send_logs must stay write-once (Phase 7 must not weaken it to gain DELETE)")
 	}
 	if e.sendLogSubject(t, keep) != "raw subject" {
 		t.Fatal("send_logs row was mutated despite the write-once guard")
@@ -287,7 +287,7 @@ func TestRetention_ModuleRoleCanDeleteButStillCannotUpdate(t *testing.T) {
 func (e *dispatchEnv) sendLogSubject(t *testing.T, id string) string {
 	t.Helper()
 	var s string
-	if err := e.admin.QueryRow(context.Background(), `SELECT subject FROM sender.send_logs WHERE id=$1`, id).Scan(&s); err != nil {
+	if err := e.admin.QueryRow(context.Background(), `SELECT subject FROM byosmtp.send_logs WHERE id=$1`, id).Scan(&s); err != nil {
 		t.Fatalf("read send_log subject: %v", err)
 	}
 	return s
@@ -360,7 +360,7 @@ func (e *dispatchEnv) configInt(t *testing.T, key string) int {
 	t.Helper()
 	var v int
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT (value->>'v')::int FROM sender.config WHERE key=$1`, key).Scan(&v); err != nil {
+		`SELECT (value->>'v')::int FROM byosmtp.config WHERE key=$1`, key).Scan(&v); err != nil {
 		t.Fatalf("read config %s: %v", key, err)
 	}
 	return v

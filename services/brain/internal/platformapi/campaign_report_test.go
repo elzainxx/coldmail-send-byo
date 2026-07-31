@@ -22,7 +22,7 @@ func (e *testEnv) seedPool(t *testing.T) string {
 	}
 	var poolID string
 	if err := e.admin.QueryRow(bgctx(),
-		`INSERT INTO sender.pools (user_id, kind, name) VALUES ($1,'shared','p9-campaign-pool') RETURNING id`,
+		`INSERT INTO byosmtp.pools (user_id, kind, name) VALUES ($1,'shared','p9-campaign-pool') RETURNING id`,
 		systemUserID).Scan(&poolID); err != nil {
 		t.Fatalf("seed pool: %v", err)
 	}
@@ -34,7 +34,7 @@ func (e *testEnv) seedEligibleAccount(t *testing.T, poolID string) string {
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(bgctx(),
-		`INSERT INTO sender.accounts
+		`INSERT INTO byosmtp.accounts
 		   (user_id, pool_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
 		 VALUES ($2,$1,'smtp-sink',587,'u@ourdomain.com',
@@ -45,7 +45,7 @@ func (e *testEnv) seedEligibleAccount(t *testing.T, poolID string) string {
 	return id
 }
 
-// campaignJobRow inserts one sender.jobs row directly under campaignID/userID, bypassing
+// campaignJobRow inserts one byosmtp.jobs row directly under campaignID/userID, bypassing
 // createJob (this test needs full control of the mix of states, including terminal ones
 // handleRun/handleReport never produce on their own). The genesis job_events row (sender_0008's
 // trg_job_events_on_insert) always writes to_state='queued' — job_events_from_state_check
@@ -61,12 +61,12 @@ func (e *testEnv) campaignJobRow(t *testing.T, campaignID, userID, state string)
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(bgctx())
-	if _, err := tx.Exec(bgctx(), `SELECT set_config('sender.actor', 'system', true)`); err != nil {
+	if _, err := tx.Exec(bgctx(), `SELECT set_config('byosmtp.actor', 'system', true)`); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	var jobID string
 	if err := tx.QueryRow(bgctx(),
-		`INSERT INTO sender.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
 		 VALUES ($1, $2, $3, 'x@example.com', 'S', '<p>b</p>', 'reply@ourdomain.com', 'queued', NOW())
 		 RETURNING id`, itemID, campaignID, userID).Scan(&jobID); err != nil {
 		t.Fatalf("insert genesis job: %v", err)
@@ -101,7 +101,7 @@ func (e *testEnv) campaignJobRow(t *testing.T, campaignID, userID, state string)
 		pmidExpr = "NULL"
 	}
 	e.actorExec(t, "dispatcher",
-		`UPDATE sender.jobs SET state=$1, lease_expires_at=`+leaseExpr+`, completed_at=`+completedExpr+`, provider_message_id=`+pmidExpr+` WHERE id=$2`,
+		`UPDATE byosmtp.jobs SET state=$1, lease_expires_at=`+leaseExpr+`, completed_at=`+completedExpr+`, provider_message_id=`+pmidExpr+` WHERE id=$2`,
 		state, jobID)
 }
 
@@ -180,7 +180,7 @@ func TestCampaignReport_WaitingForCapacityDistinctFromFailed(t *testing.T) {
 	pool := e.seedPool(t)
 	e.seedEligibleAccount(t, pool)
 	if _, err := e.admin.Exec(bgctx(),
-		`UPDATE sender.pools SET owner_user_id=$1, kind='dedicated' WHERE id=$2`, userWithPool, pool); err != nil {
+		`UPDATE byosmtp.pools SET owner_user_id=$1, kind='dedicated' WHERE id=$2`, userWithPool, pool); err != nil {
 		t.Fatalf("make pool dedicated to userWithPool: %v", err)
 	}
 	e.campaignJobRow(t, campaignWithPool, userWithPool, "queued")

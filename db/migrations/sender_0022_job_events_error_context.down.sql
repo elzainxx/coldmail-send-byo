@@ -19,29 +19,29 @@
 -- The two function bodies are restored with CREATE OR REPLACE (same signatures), so the triggers
 -- created by sender_0008 keep pointing at them and are not dropped/recreated.
 
-CREATE OR REPLACE FUNCTION sender.fn_job_events_on_insert()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_on_insert()
 RETURNS TRIGGER AS $$
 DECLARE
     v_actor TEXT;
 BEGIN
-    v_actor := current_setting('sender.actor', true);
+    v_actor := current_setting('byosmtp.actor', true);
     IF v_actor IS NULL OR v_actor = '' THEN
         v_actor := 'system'; -- lenient on genesis: job-creation paths are diverse
     END IF;
 
-    INSERT INTO sender.job_events (
+    INSERT INTO byosmtp.job_events (
         job_id, user_id, from_state, to_state, actor,
         account_id, box_id, error_class, error_message, metadata
     ) VALUES (
-        NEW.id, NEW.user_id, NULL, NEW.state, v_actor::sender.event_actor,
+        NEW.id, NEW.user_id, NULL, NEW.state, v_actor::byosmtp.event_actor,
         NEW.assigned_account_id, NEW.assigned_box_id, NEW.last_error_class, NEW.last_error_message, NULL
     );
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_on_insert() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_on_insert() OWNER TO byosmtp_owner;
 
-CREATE OR REPLACE FUNCTION sender.fn_job_events_on_state_change()
+CREATE OR REPLACE FUNCTION byosmtp.fn_job_events_on_state_change()
 RETURNS TRIGGER AS $$
 DECLARE
     v_actor TEXT;
@@ -50,24 +50,24 @@ BEGIN
         RETURN NEW; -- no state change, no event
     END IF;
 
-    v_actor := current_setting('sender.actor', true);
+    v_actor := current_setting('byosmtp.actor', true);
     IF v_actor IS NULL OR v_actor = '' THEN
-        RAISE EXCEPTION 'sender.actor GUC not set: cannot record state transition'
-            USING HINT = 'Call set_config(''sender.actor'', ''dispatcher'', true) before UPDATE';
+        RAISE EXCEPTION 'byosmtp.actor GUC not set: cannot record state transition'
+            USING HINT = 'Call set_config(''byosmtp.actor'', ''dispatcher'', true) before UPDATE';
     END IF;
 
-    INSERT INTO sender.job_events (
+    INSERT INTO byosmtp.job_events (
         job_id, user_id, from_state, to_state, actor,
         account_id, box_id, error_class, error_message, metadata
     ) VALUES (
-        NEW.id, NEW.user_id, OLD.state, NEW.state, v_actor::sender.event_actor,
+        NEW.id, NEW.user_id, OLD.state, NEW.state, v_actor::byosmtp.event_actor,
         NEW.assigned_account_id, NEW.assigned_box_id, NEW.last_error_class, NEW.last_error_message, NULL
     );
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-ALTER FUNCTION sender.fn_job_events_on_state_change() OWNER TO sender_owner;
+ALTER FUNCTION byosmtp.fn_job_events_on_state_change() OWNER TO byosmtp_owner;
 
-DROP FUNCTION IF EXISTS sender.fn_job_event_is_error_transition(sender.job_state, sender.job_state);
+DROP FUNCTION IF EXISTS byosmtp.fn_job_event_is_error_transition(byosmtp.job_state, byosmtp.job_state);
 
-DELETE FROM sender.schema_migrations WHERE version = '0022';
+DELETE FROM byosmtp.schema_migrations WHERE version = '0022';

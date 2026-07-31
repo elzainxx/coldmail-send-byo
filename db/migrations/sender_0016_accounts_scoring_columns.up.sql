@@ -1,5 +1,5 @@
 -- sender_0016_accounts_scoring_columns.up.sql — Phase 5 (§9, P5-6 + P5-8, APPROVED).
--- Two additive columns on the EXISTING sender.accounts table. Additive-only: each adds one
+-- Two additive columns on the EXISTING byosmtp.accounts table. Additive-only: each adds one
 -- column with a constant/NULL default; NO existing column, constraint, or enum is changed, so
 -- the locked jobs_attempt_count_check, accounts_daily_sent_check, the state machine, and the
 -- error_class enum are all untouched (CLAUDE.md Rule 5, additive-only).
@@ -9,7 +9,7 @@
 --                          throttle pause, cleared to NULL on un-pause. Expiry =
 --                          NOW() >= throttle_paused_at + throttle_pause_seconds (config).
 --
--- Grants (ADR-0008 trap): both columns land on sender.accounts, which sender_module already holds
+-- Grants (ADR-0008 trap): both columns land on byosmtp.accounts, which byosmtp_module already holds
 -- full SELECT/INSERT/UPDATE/DELETE on (sender_0012). Table-level DML covers all columns, so NO new
 -- GRANT is required and none is issued — but the schema-wide TestGrantsInvariant must STAY green
 -- (it enumerates table-class privileges, which an ADD COLUMN never changes). No new table, no new
@@ -21,7 +21,7 @@
 -- is throttle-paused at migration time — pause_reason='throttle' is only ever set by Phase 5, which
 -- also stamps the timestamp, so there is no back-fill gap).
 
-ALTER TABLE sender.accounts
+ALTER TABLE byosmtp.accounts
     ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN throttle_paused_at   TIMESTAMPTZ;              -- NULL when not throttle-paused
 
@@ -30,4 +30,4 @@ ALTER TABLE sender.accounts
 -- predicate already located by pool_id. Add later only if a score-sweep or throttle-expiry scan
 -- is ever introduced.
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0016');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0016');

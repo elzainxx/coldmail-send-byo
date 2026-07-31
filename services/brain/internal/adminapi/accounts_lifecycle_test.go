@@ -140,7 +140,7 @@ func TestT8b_ManualPauseUnpauseGuard(t *testing.T) {
 	}
 }
 
-// TestT9_AccountEventsAppendOnly — as sender_module, UPDATE and DELETE on account_events fail;
+// TestT9_AccountEventsAppendOnly — as byosmtp_module, UPDATE and DELETE on account_events fail;
 // INSERT/SELECT succeed; deleting the account THROUGH THE API leaves a 'deleted' audit row whose
 // account_id is nulled by the FK, and earlier lifecycle events also survive with nulled account_id.
 func TestT9_AccountEventsAppendOnly(t *testing.T) {
@@ -152,34 +152,34 @@ func TestT9_AccountEventsAppendOnly(t *testing.T) {
 
 	m := e.moduleConn(t)
 	var evID string
-	if err := m.QueryRow(bgCtx(), "SELECT id FROM sender.account_events WHERE account_id=$1 LIMIT 1", acc).Scan(&evID); err != nil {
+	if err := m.QueryRow(bgCtx(), "SELECT id FROM byosmtp.account_events WHERE account_id=$1 LIMIT 1", acc).Scan(&evID); err != nil {
 		t.Fatalf("read event id: %v", err)
 	}
 	// UPDATE fails (privilege 42501 or trigger).
-	if _, err := m.Exec(bgCtx(), "UPDATE sender.account_events SET action='x' WHERE id=$1", evID); err == nil {
+	if _, err := m.Exec(bgCtx(), "UPDATE byosmtp.account_events SET action='x' WHERE id=$1", evID); err == nil {
 		t.Fatal("UPDATE account_events succeeded, want rejection")
 	}
 	// Direct DELETE fails (42501).
-	if _, err := m.Exec(bgCtx(), "DELETE FROM sender.account_events WHERE id=$1", evID); err == nil {
+	if _, err := m.Exec(bgCtx(), "DELETE FROM byosmtp.account_events WHERE id=$1", evID); err == nil {
 		t.Fatal("direct DELETE account_events succeeded, want 42501")
 	}
 	// INSERT + SELECT succeed (anti-vacuity positive).
 	var freshUser string
 	_ = e.admin.QueryRow(bgCtx(), "INSERT INTO public.users (email,is_active) VALUES ('t9b@x.co',true) RETURNING id").Scan(&freshUser)
 	if _, err := m.Exec(bgCtx(),
-		"INSERT INTO sender.account_events (account_id,user_id,actor,action) VALUES ($1,$2,'admin','updated')", acc, freshUser); err != nil {
+		"INSERT INTO byosmtp.account_events (account_id,user_id,actor,action) VALUES ($1,$2,'admin','updated')", acc, freshUser); err != nil {
 		t.Fatalf("module INSERT account_events failed (should succeed): %v", err)
 	}
 
 	// The reject-trigger has teeth even for a PRIVILEGED (superuser) connection: a genuine
 	// CONTENT update is rejected (proves the OD-23 FK-aware trigger only permits account_id->NULL,
 	// not arbitrary mutation). A content change is forbidden regardless of the account_id value.
-	if _, err := e.admin.Exec(bgCtx(), "UPDATE sender.account_events SET action='tampered' WHERE id=$1", evID); err == nil {
+	if _, err := e.admin.Exec(bgCtx(), "UPDATE byosmtp.account_events SET action='tampered' WHERE id=$1", evID); err == nil {
 		t.Fatal("superuser content UPDATE on account_events succeeded — the append-only trigger has no teeth")
 	}
 	// And a content change that ALSO nulls account_id must still be rejected (not smuggled in via
 	// the FK-maintenance carve-out).
-	if _, err := e.admin.Exec(bgCtx(), "UPDATE sender.account_events SET account_id=NULL, action='tampered' WHERE id=$1", evID); err == nil {
+	if _, err := e.admin.Exec(bgCtx(), "UPDATE byosmtp.account_events SET account_id=NULL, action='tampered' WHERE id=$1", evID); err == nil {
 		t.Fatal("account_id->NULL bundled with a content change was permitted — carve-out too wide")
 	}
 
@@ -187,7 +187,7 @@ func TestT9_AccountEventsAppendOnly(t *testing.T) {
 	e.do(t, "DELETE", "/v1/admin/accounts/"+acc, nil).requireStatus(t, 204)
 	var deletedRows, nulledRows int
 	if err := e.admin.QueryRow(bgCtx(),
-		"SELECT count(*) FROM sender.account_events WHERE action='deleted' AND account_id IS NULL").Scan(&deletedRows); err != nil {
+		"SELECT count(*) FROM byosmtp.account_events WHERE action='deleted' AND account_id IS NULL").Scan(&deletedRows); err != nil {
 		t.Fatalf("count deleted audit: %v", err)
 	}
 	if deletedRows < 1 {
@@ -195,7 +195,7 @@ func TestT9_AccountEventsAppendOnly(t *testing.T) {
 	}
 	// The earlier events for this account now have account_id nulled too (FK SET NULL).
 	if err := e.admin.QueryRow(bgCtx(),
-		"SELECT count(*) FROM sender.account_events WHERE account_id=$1", acc).Scan(&nulledRows); err != nil {
+		"SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1", acc).Scan(&nulledRows); err != nil {
 		t.Fatalf("count remaining: %v", err)
 	}
 	if nulledRows != 0 {

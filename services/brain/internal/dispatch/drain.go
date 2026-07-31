@@ -64,7 +64,7 @@ func (d *Dispatcher) InFlightCount(ctx context.Context) (int, error) {
 	defer cancel()
 	var n int
 	err := d.db.QueryRow(ctx,
-		`SELECT count(*) FROM sender.jobs WHERE state IN ('assigned','sending')`).Scan(&n)
+		`SELECT count(*) FROM byosmtp.jobs WHERE state IN ('assigned','sending')`).Scan(&n)
 	return n, err
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestDispatch_HappyPath — the dispatcher claims a queued job, selects the eligible account,
@@ -93,7 +93,7 @@ func TestOutcome_AcceptedPersistsAndIdempotent(t *testing.T) {
 		t.Fatalf("send_log count=%d, want 1", n)
 	}
 	var dailyCount int
-	if err := e.admin.QueryRow(ctx, `SELECT daily_sent_count FROM sender.accounts WHERE pool_id=$1`, pool).Scan(&dailyCount); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT daily_sent_count FROM byosmtp.accounts WHERE pool_id=$1`, pool).Scan(&dailyCount); err != nil {
 		t.Fatalf("daily count: %v", err)
 	}
 	if dailyCount != 1 {
@@ -106,7 +106,7 @@ func TestOutcome_AcceptedPersistsAndIdempotent(t *testing.T) {
 		t.Fatalf("send_log count=%d after duplicate accept, want 1 (idempotent no-op)", n)
 	}
 	var pmid string
-	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM sender.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT provider_message_id FROM byosmtp.jobs WHERE id=$1`, job).Scan(&pmid); err != nil {
 		t.Fatalf("pmid: %v", err)
 	}
 	if pmid != "PROVIDER-XYZ-1" {
@@ -186,7 +186,7 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	}
 	// Phase 5 taxonomy: connect_refused → timeout (§1.1 row 6), not the Phase-3 'unknown' stub.
 	var ec *string
-	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM sender.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
 		t.Fatalf("error class: %v", err)
 	}
 	if ec == nil || *ec != "timeout" {
@@ -194,7 +194,7 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	}
 	// Backoff: timeout requeues with next_attempt_at in the FUTURE (§6.4), not NOW().
 	var future bool
-	if err := e.admin.QueryRow(ctx, `SELECT next_attempt_at > NOW() FROM sender.jobs WHERE id=$1`, job).Scan(&future); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT next_attempt_at > NOW() FROM byosmtp.jobs WHERE id=$1`, job).Scan(&future); err != nil {
 		t.Fatalf("next_attempt_at: %v", err)
 	}
 	if !future {
@@ -202,14 +202,14 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	}
 	// No account penalty for timeout: not paused/quarantined; NO account_events row written.
 	var paused, quarantined bool
-	if err := e.admin.QueryRow(ctx, `SELECT paused, quarantined FROM sender.accounts WHERE id=$1`, acct).Scan(&paused, &quarantined); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT paused, quarantined FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&paused, &quarantined); err != nil {
 		t.Fatalf("account flags: %v", err)
 	}
 	if paused || quarantined {
 		t.Fatalf("timeout penalized the account (paused=%v quarantined=%v) — transient must not (§2.1)", paused, quarantined)
 	}
 	var aev int
-	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM sender.account_events WHERE account_id=$1`, acct).Scan(&aev); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1`, acct).Scan(&aev); err != nil {
 		t.Fatalf("account_events: %v", err)
 	}
 	if aev != 0 {
@@ -221,7 +221,7 @@ func TestOutcome_ErrorRequeues(t *testing.T) {
 	// One sending→queued event exists with actor 'box'.
 	var evActor string
 	if err := e.admin.QueryRow(ctx,
-		`SELECT actor::text FROM sender.job_events WHERE job_id=$1 AND from_state='sending' AND to_state='queued'`, job).Scan(&evActor); err != nil {
+		`SELECT actor::text FROM byosmtp.job_events WHERE job_id=$1 AND from_state='sending' AND to_state='queued'`, job).Scan(&evActor); err != nil {
 		t.Fatalf("requeue event: %v", err)
 	}
 	if evActor != "box" {
@@ -262,7 +262,7 @@ func TestDispatch_HeaderInjectionRequeued(t *testing.T) {
 	// Positive control: a CLEAN job DOES push (the guard didn't wedge dispatch). Remove the
 	// poisoned job first so it isn't re-claimed ahead of the clean one (it is older; the claim
 	// orders by created_at). Deleting it is fine — this only proves the guard doesn't over-reject.
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.jobs WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.jobs WHERE id=$1`, job); err != nil {
 		t.Fatalf("cleanup poisoned job: %v", err)
 	}
 	clean := e.seedQueuedJob(t, "clean@example.com")

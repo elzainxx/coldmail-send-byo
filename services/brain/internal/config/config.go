@@ -1,7 +1,7 @@
 // Package config loads the Brain's runtime configuration.
 //
-// Config-not-code (CLAUDE.md Rule 1): behavioral tuning lives in sender.config, seeded by
-// migrations. Phase 0 predates sender.config (created in Phase 1 migration 0010), so the
+// Config-not-code (CLAUDE.md Rule 1): behavioral tuning lives in byosmtp.config, seeded by
+// migrations. Phase 0 predates byosmtp.config (created in Phase 1 migration 0010), so the
 // FEW values needed to bootstrap the process come from env — the same documented bootstrap
 // exception as the migration runner's timeouts. These are process-wiring values (addresses,
 // paths, credentials), not behavioral dials. See docs/open-decisions.md OD-18.
@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sender-module/brain/internal/boxlink"
-	"github.com/sender-module/brain/internal/tlsutil"
+	"github.com/byosmtp-module/brain/internal/boxlink"
+	"github.com/byosmtp-module/brain/internal/tlsutil"
 )
 
 // Config is the resolved Brain configuration.
@@ -79,7 +79,7 @@ func FromEnv() (*Config, error) {
 	}
 
 	// Phase-0 box registry: a single dev box id + token HASH from env. Phase 1 moves this
-	// to sender.boxes.token_hash. token=authority, cert=transport (P9-A). If unset, the
+	// to byosmtp.boxes.token_hash. token=authority, cert=transport (P9-A). If unset, the
 	// registry rejects all registrations (fail-closed).
 	c.BoxRegistry = boxlink.Registry{
 		BoxID:     env("DEV_BOX_ID", ""),

@@ -1,5 +1,5 @@
 -- sender_0021_operability_config.up.sql — Phase 9.5 (§6). The ONLY structural delta this phase
--- makes: eleven additive INSERTs into the EXISTING sender.config table (same pattern as
+-- makes: eleven additive INSERTs into the EXISTING byosmtp.config table (same pattern as
 -- sender_0010/0017/0018/0019). NO table structure change; NO column, constraint, enum, or index is
 -- added or altered — this migration is fully schema-neutral (§10: "No DDL. Config seeds only.").
 -- value is JSONB-wrapped {"v": ...}; default_value is never mutated (CLAUDE.md Rule 1). All eleven
@@ -51,11 +51,11 @@
 --                                          threshold, previously hardcoded +/-1px / skip <3px.
 --                                          Box-side, same delivery mechanism as above.
 --
--- Grants (ADR-0008 trap): all eleven rows land in sender.config, which sender_module already holds
+-- Grants (ADR-0008 trap): all eleven rows land in byosmtp.config, which byosmtp_module already holds
 -- SELECT on (sender_0010). No new table, no new grant; the schema-wide TestGrantsInvariant stays
 -- green (a config INSERT changes no table-class privilege). Phase 9.5 adds NO schema object, so
 -- there is no new grant to enumerate. No locked enum, column, or constraint is touched (§10).
-INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES
 ('dispatch_enabled', '{"v":true}', '{"v":true}',
  'Global dispatch panic switch. false = the tick claims/routes/pushes nothing; queued jobs stay queued, nothing lost. Reclaim/outcome/heartbeat/config-read all continue. Phase 9.5 B1 §1.',
  'boolean'),
@@ -90,4 +90,4 @@ INSERT INTO sender.config (key, value, default_value, description, value_type) V
  'CSS micro-variation pixel delta and skip-below threshold (variation_css_micro). Was hardcoded +/-1px / skip <3px; default unchanged. Box-consumed via push_job.variation. Phase 9.5 S11 §2.4.',
  'json');
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0021');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0021');

@@ -1,5 +1,5 @@
 {
-  "name": "@sender-module/box",
+  "name": "@byosmtp-module/box",
   "version": "0.0.0",
   "private": true,
   "description": "Phase-0 SKELETON Sender Box: pure mTLS relay client. NO DB, NO KMS, memory-only creds. Registers + heartbeats. No SMTP send (Phase 5+).",

@@ -116,7 +116,7 @@ func TestPanicSwitch_ReclaimStillRuns(t *testing.T) {
 		t.Fatalf("initial dispatch: pushed=%d err=%v, want 1/nil", pushed, err)
 	}
 	if _, err := e.admin.Exec(ctx,
-		`UPDATE sender.jobs SET lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id=$1`, job); err != nil {
+		`UPDATE byosmtp.jobs SET lease_expires_at = NOW() - INTERVAL '1 hour' WHERE id=$1`, job); err != nil {
 		t.Fatalf("force-expire lease: %v", err)
 	}
 

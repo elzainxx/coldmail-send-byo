@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // attempttoken_lockorder_test.go — Phase 8 CHUNK 1: the per-attempt identity under GENUINE
@@ -31,7 +31,7 @@ import (
 //	    ordering claim in markSending's doc comment is asserted rather than asserted-in-a-comment.
 
 // adminExecAsActor runs a setup statement on the admin connection inside a tx that sets
-// `sender.actor`. Required for any UPDATE that changes sender.jobs.state: the sender_0008
+// `byosmtp.actor`. Required for any UPDATE that changes byosmtp.jobs.state: the sender_0008
 // job_events trigger REJECTS a state transition when the GUC is unset (P0001), by design.
 func (e *dispatchEnv) adminExecAsActor(t *testing.T, actor, sql string, args ...any) {
 	t.Helper()
@@ -41,7 +41,7 @@ func (e *dispatchEnv) adminExecAsActor(t *testing.T, actor, sql string, args ...
 		t.Fatalf("begin admin tx: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor',$1,true)`, actor); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor',$1,true)`, actor); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	if _, err := tx.Exec(ctx, sql, args...); err != nil {
@@ -87,7 +87,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	ctx := context.Background()
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -124,12 +124,12 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 		t.Fatalf("begin dispatch tx: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', 'dispatcher', true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', 'dispatcher', true)"); err != nil {
 		t.Fatalf("set actor: %v", err)
 	}
 	var token2 int64
 	if err := tx.QueryRow(ctx,
-		`UPDATE sender.jobs SET attempt_token = attempt_token + 1, updated_at=NOW()
+		`UPDATE byosmtp.jobs SET attempt_token = attempt_token + 1, updated_at=NOW()
 		  WHERE id=$1 AND state='sending'
 		  RETURNING attempt_token`, job).Scan(&token2); err != nil {
 		t.Fatalf("re-dispatch token mint: %v", err)
@@ -148,7 +148,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	var cfBefore int
 	var scoreBefore float64
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 		Scan(&cfBefore, &scoreBefore); err != nil {
 		t.Fatalf("read account before: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
 		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
-		    AND query ILIKE '%sender.jobs%SET state=''sent''%'`).Scan(&blocked); err != nil {
+		    AND query ILIKE '%byosmtp.jobs%SET state=''sent''%'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -214,7 +214,7 @@ func TestAttemptToken_StaleReplayRacingLiveDispatch(t *testing.T) {
 	var cfAfter int
 	var scoreAfter float64
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 		Scan(&cfAfter, &scoreAfter); err != nil {
 		t.Fatalf("read account after: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	ctx := context.Background()
 	pool := e.seedPool(t)
 	acct := e.seedAccount(t, pool, "sec")
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -289,13 +289,13 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	e.dispatchToSending(t, jobA) // gives us a real box id; then reset to 'assigned' for the mark below
 	boxID := e.jobBox(t, jobA)
 	e.adminExecAsActor(t, "dispatcher",
-		`UPDATE sender.jobs SET state='assigned', lease_expires_at=NOW() + INTERVAL '120 seconds' WHERE id=$1`, jobA)
+		`UPDATE byosmtp.jobs SET state='assigned', lease_expires_at=NOW() + INTERVAL '120 seconds' WHERE id=$1`, jobA)
 
 	holdTx, err := pHold.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin hold tx: %v", err)
 	}
-	if _, err := holdTx.Exec(ctx, `SELECT 1 FROM sender.accounts WHERE id=$1 FOR UPDATE`, acct); err != nil {
+	if _, err := holdTx.Exec(ctx, `SELECT 1 FROM byosmtp.accounts WHERE id=$1 FOR UPDATE`, acct); err != nil {
 		holdTx.Rollback(ctx)
 		t.Fatalf("hold account FOR UPDATE: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
 		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
-		    AND query ILIKE '%sender.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
+		    AND query ILIKE '%byosmtp.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
 		holdTx.Rollback(ctx)
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	defer jobTx.Rollback(ctx)
 	// Hold the JOB row with the same mark-shaped write (a no-op transition guarded on 'sending' would
 	// match 0 rows, so lock the row explicitly — the lock is what the counterparty must wait on).
-	if _, err := jobTx.Exec(ctx, `SELECT 1 FROM sender.jobs WHERE id=$1 FOR UPDATE`, jobB); err != nil {
+	if _, err := jobTx.Exec(ctx, `SELECT 1 FROM byosmtp.jobs WHERE id=$1 FOR UPDATE`, jobB); err != nil {
 		t.Fatalf("hold job row: %v", err)
 	}
 
@@ -387,7 +387,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
 		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
-		    AND query ILIKE '%sender.jobs%SET state=''queued''%'`).Scan(&blocked); err != nil {
+		    AND query ILIKE '%byosmtp.jobs%SET state=''queued''%'`).Scan(&blocked); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	if blocked == 0 {
@@ -417,7 +417,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	e.dispatchToSending(t, jobC) // gives us a real box id + a queued job to reset to 'assigned'
 	boxC := e.jobBox(t, jobC)
 	e.adminExecAsActor(t, "dispatcher",
-		`UPDATE sender.jobs SET state='assigned', lease_expires_at=NOW() + INTERVAL '120 seconds' WHERE id=$1`, jobC)
+		`UPDATE byosmtp.jobs SET state='assigned', lease_expires_at=NOW() + INTERVAL '120 seconds' WHERE id=$1`, jobC)
 
 	jobTxC, err := pHold.Begin(ctx)
 	if err != nil {
@@ -428,7 +428,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	// markSending's own guarded UPDATE would take on this row, so this genuinely stands in the way of
 	// the real call below (no KEY SHARE/trigger involved; this is the plain row-level lock every
 	// UPDATE takes on its own target row).
-	if _, err := jobTxC.Exec(ctx, `SELECT 1 FROM sender.jobs WHERE id=$1 FOR UPDATE`, jobC); err != nil {
+	if _, err := jobTxC.Exec(ctx, `SELECT 1 FROM byosmtp.jobs WHERE id=$1 FOR UPDATE`, jobC); err != nil {
 		t.Fatalf("hold job row (c): %v", err)
 	}
 
@@ -448,7 +448,7 @@ func TestAttemptToken_MarkSendingVsAccountLockNoDeadlock(t *testing.T) {
 	if err := e.admin.QueryRow(ctx,
 		`SELECT count(*) FROM pg_stat_activity
 		  WHERE datname = current_database() AND wait_event_type='Lock' AND state='active'
-		    AND query ILIKE '%sender.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
+		    AND query ILIKE '%byosmtp.jobs%SET state=''sending''%'`).Scan(&blocked); err != nil {
 		jobTxC.Rollback(ctx)
 		t.Fatalf("read pg_stat_activity (c): %v", err)
 	}

@@ -96,8 +96,8 @@ recovered from afterward.
 ### Step 1 — Get the code onto the Brain host
 
 ```bash
-git clone <your-repo-url> sender-module
-cd sender-module
+git clone <your-repo-url> byosmtp-module
+cd byosmtp-module
 ```
 
 ### Step 2 — Confirm the database connection
@@ -106,8 +106,8 @@ You need two distinct Postgres roles. This separation is load-bearing, not a sty
 
 | Role | Used by | Capability |
 |---|---|---|
-| **migration admin** | `tools/sender-migrate` only | admin/owner-capable: must `CREATE ROLE`, `CREATE SCHEMA`, and assign ownership to `sender_owner` |
-| **`sender_module`** | the Brain, at runtime | login-only, non-superuser, holds only enumerated grants. Never runs DDL. |
+| **migration admin** | `tools/byosmtp-migrate` only | admin/owner-capable: must `CREATE ROLE`, `CREATE SCHEMA`, and assign ownership to `byosmtp_owner` |
+| **`byosmtp_module`** | the Brain, at runtime | login-only, non-superuser, holds only enumerated grants. Never runs DDL. |
 
 The migration admin credential comes from your secret store and is used only during migration runs.
 Confirm which real role it is before going live (go-live checklist item 3).
@@ -141,10 +141,10 @@ checkable from code (go-live checklist item 4).
 control the host):
 
 ```bash
-sudo mkdir -p /etc/sender/kms
-sudo openssl rand -out /etc/sender/kms/master.key 32
-sudo chmod 400 /etc/sender/kms/master.key
-sudo chown <brain-user>:<brain-user> /etc/sender/kms/master.key
+sudo mkdir -p /etc/byosmtp/kms
+sudo openssl rand -out /etc/byosmtp/kms/master.key 32
+sudo chmod 400 /etc/byosmtp/kms/master.key
+sudo chown <brain-user>:<brain-user> /etc/byosmtp/kms/master.key
 ```
 
 Then **back it up off-host immediately**, before storing any credential. See
@@ -208,10 +208,10 @@ Build the runner image once and run it directly. This is the whole of Step 5:
 
 ```bash
 # Build the migration-runner image (context is the repo root — the Dockerfile copies the module):
-docker build -f tools/sender-migrate/Dockerfile -t sender-migrate:local .
+docker build -f tools/byosmtp-migrate/Dockerfile -t byosmtp-migrate:local .
 
 MIGRATE_DATABASE_URL='postgres://<admin-role>:<pw>@<host>:5432/<db>'
-SENDER_MODULE_PASSWORD='<a strong password for the app role>'
+BYOSMTP_MODULE_PASSWORD='<a strong password for the app role>'
 
 # Inspect first — read-only, shows applied vs pending, changes nothing:
 docker run --rm \
@@ -219,16 +219,16 @@ docker run --rm \
   -e MIGRATIONS_DIR=/db/migrations \
   -e PREFLIGHT_SQL=/db/preflight/check_platform_tables.sql \
   -v "$PWD/db:/db:ro" \
-  sender-migrate:local status
+  byosmtp-migrate:local status
 
 # Apply the chain, then set the app role's password out-of-band:
 docker run --rm \
   -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" \
-  -e SENDER_MODULE_PASSWORD="$SENDER_MODULE_PASSWORD" \
+  -e BYOSMTP_MODULE_PASSWORD="$BYOSMTP_MODULE_PASSWORD" \
   -e MIGRATIONS_DIR=/db/migrations \
   -e PREFLIGHT_SQL=/db/preflight/check_platform_tables.sql \
   -v "$PWD/db:/db:ro" \
-  sender-migrate:local up-and-set-password
+  byosmtp-migrate:local up-and-set-password
 ```
 
 `--network` may be needed depending on where your database lives: add `--network host` for a
@@ -244,9 +244,9 @@ database reachable over the public internet needs neither.
 > Either way: `status` is read-only, so run it first, always.
 
 What that does: runs the preflight (platform tables exist?), applies every pending
-`sender_NNNN_*.up.sql` in order, records each in `sender.schema_migrations`, creates the
-non-login `sender_owner` (schema owner, so `FORCE ROW LEVEL SECURITY` actually enforces) and the
-login-only `sender_module` app role, and seeds every config key with its documented default
+`sender_NNNN_*.up.sql` in order, records each in `byosmtp.schema_migrations`, creates the
+non-login `byosmtp_owner` (schema owner, so `FORCE ROW LEVEL SECURITY` actually enforces) and the
+login-only `byosmtp_module` app role, and seeds every config key with its documented default
 (the authoritative key set is [`config-reference.md`](./config-reference.md) — the one file the
 `config_drift` gate checks; a count restated here would be a number nothing verifies).
 
@@ -254,7 +254,7 @@ The role password is set via `set-app-password` rather than in SQL specifically 
 in a migration file or the DB's statement logs.
 
 **Migrations are forward-only in production.** `down` refuses to run unless you explicitly set
-`SENDER_MIGRATE_ALLOW_DOWN=true`. Do not casually override that — see the rollback section (Part 5).
+`BYOSMTP_MIGRATE_ALLOW_DOWN=true`. Do not casually override that — see the rollback section (Part 5).
 
 Confirm: re-run the `status` command above — every version applied, none pending.
 
@@ -264,12 +264,12 @@ Set the Brain's environment (Part 4 has a complete systemd unit; the full variab
 `.env.example`). The essentials:
 
 ```bash
-DATABASE_URL=postgres://sender_module:<pw>@<host>:5432/<db>   # the app role, NOT the admin role
-KMS_DEV_KEY_FILE=/etc/sender/kms/master.key                   # or your KMS wiring
+DATABASE_URL=postgres://byosmtp_module:<pw>@<host>:5432/<db>   # the app role, NOT the admin role
+KMS_DEV_KEY_FILE=/etc/byosmtp/kms/master.key                   # or your KMS wiring
 CREDENTIAL_KEY_ID=cred-dek-v1
-MTLS_SERVER_CERT=/etc/sender/certs/brain.crt
-MTLS_SERVER_KEY=/etc/sender/certs/brain.key
-MTLS_CA_CERT=/etc/sender/certs/ca.crt
+MTLS_SERVER_CERT=/etc/byosmtp/certs/brain.crt
+MTLS_SERVER_KEY=/etc/byosmtp/certs/brain.key
+MTLS_CA_CERT=/etc/byosmtp/certs/ca.crt
 BRAIN_HEALTH_ADDR=:8080
 BRAIN_BOXLINK_ADDR=:8443
 BRAIN_BOXLINK_STREAM_ADDR=:8444
@@ -346,7 +346,7 @@ cd tools/provision-box && go build -o bin/provision-box .
 cannot be recovered after this step. It goes into that box's own secret config.
 
 ```bash
-# 2. Emit the SQL that seeds the sender.boxes row:
+# 2. Emit the SQL that seeds the byosmtp.boxes row:
 ./bin/provision-box seed --id <box-uuid> --token-hash '<hash>'
 ```
 
@@ -358,7 +358,7 @@ given box id, run an `INSERT` instead, as the migration-admin role:
 
 ```bash
 psql "$MIGRATE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
-  INSERT INTO sender.boxes (id, user_id, token_hash, status)
+  INSERT INTO byosmtp.boxes (id, user_id, token_hash, status)
   VALUES ('<box-uuid>', '<owning-user-uuid>', '<hash>', 'active')
   ON CONFLICT (id) DO UPDATE SET token_hash = EXCLUDED.token_hash, status = 'active';"
 ```
@@ -376,11 +376,11 @@ an obvious one:
 
 ```bash
 psql "$MIGRATE_DATABASE_URL" -tAc \
-  "SELECT id, status, token_hash IS NOT NULL FROM sender.boxes WHERE id='<box-uuid>';"
+  "SELECT id, status, token_hash IS NOT NULL FROM byosmtp.boxes WHERE id='<box-uuid>';"
 # expect exactly one row:  <box-uuid>|active|t
 ```
 
-Note `sender.boxes.id` is a **UUID**. The token is the authority (verified against `token_hash`);
+Note `byosmtp.boxes.id` is a **UUID**. The token is the authority (verified against `token_hash`);
 the cert CN is transport only.
 
 For **rotating** an already-seeded box's token later, `provision-box seed`'s `UPDATE` is exactly
@@ -397,9 +397,9 @@ BRAIN_STREAM_PORT=8444          # the box connects on the send stream only
 BRAIN_SERVER_NAME=<the name in the Brain cert's SAN>
 BOX_ID=<the box uuid you seeded>
 BOX_TOKEN=<the plaintext token from step 7>
-MTLS_CLIENT_CERT=/etc/sender/certs/box.crt
-MTLS_CLIENT_KEY=/etc/sender/certs/box.key
-MTLS_CA_CERT=/etc/sender/certs/ca.crt
+MTLS_CLIENT_CERT=/etc/byosmtp/certs/box.crt
+MTLS_CLIENT_KEY=/etc/byosmtp/certs/box.key
+MTLS_CA_CERT=/etc/byosmtp/certs/ca.crt
 ```
 
 **There is no `DATABASE_URL` and no KMS variable here, and there never will be.** The box ships no
@@ -410,7 +410,7 @@ Confirm registration in the Brain's log: `box registered id="<id>"`.
 
 If the box exits instead: it has a **bounded** register-retry budget and deliberately exits for the
 supervisor to restart rather than hammering a Brain that is not ready. A box that exits during
-first-time setup usually means the Brain was not up yet, or the `sender.boxes` row was not seeded.
+first-time setup usually means the Brain was not up yet, or the `byosmtp.boxes` row was not seeded.
 See the runbook.
 
 ### Step 9 — Create a pool, add an account, set the default pool
@@ -577,7 +577,7 @@ are a different thing entirely and live in the database — see
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | The **`sender_module`** app role. Not the migration admin role. |
+| `DATABASE_URL` | The **`byosmtp_module`** app role. Not the migration admin role. |
 | `KMS_DEV_KEY_FILE` | Path to the master key file (or your KMS wiring). **Brain only.** |
 | `CREDENTIAL_KEY_ID` | Write-key version label, stamped into `credential_key_id`. Rotation depends on this. |
 | `MTLS_SERVER_CERT` / `MTLS_SERVER_KEY` / `MTLS_CA_CERT` | The Brain's mTLS server identity + trust root. |
@@ -589,7 +589,7 @@ are a different thing entirely and live in the database — see
 | `PLATFORM_TOKEN_HASHES` | Domain A platform service token hashes. **Empty = platform API off.** |
 | `DEV_BOX_TOKEN_HASH` | Token hash for the register/heartbeat route. |
 
-**Not in this table on purpose:** `SENDER_ALERT_WEBHOOK_URL` appears in `.env.example` but **no code
+**Not in this table on purpose:** `BYOSMTP_ALERT_WEBHOOK_URL` appears in `.env.example` but **no code
 reads it** — it is inert. The webhook destination comes only from the `alert_webhook_url` config row.
 Setting the env var and expecting alerts is a silent no-op; see [`monitoring.md`](./monitoring.md).
 
@@ -599,7 +599,7 @@ Setting the env var and expecting alerts is a silent no-op; see [`monitoring.md`
 |---|---|
 | `BRAIN_HOST`, `BRAIN_STREAM_PORT` | Where to connect (private network). `BRAIN_STREAM_PORT` defaults to `8444`. |
 | `BRAIN_SERVER_NAME` | Must match the Brain cert's SAN, or TLS verification fails. |
-| `BOX_ID` | The UUID seeded into `sender.boxes`. |
+| `BOX_ID` | The UUID seeded into `byosmtp.boxes`. |
 | `BOX_TOKEN` | The plaintext registration token — **the box's actual authority**. |
 | `MTLS_CLIENT_CERT` / `MTLS_CLIENT_KEY` / `MTLS_CA_CERT` | This box's own leaf + trust root. Never the CA key. |
 | `BOX_HEARTBEAT_INTERVAL_SEC`, `BOX_SMTP_TIMEOUT_MS` | Liveness cadence; SMTP socket timeout. Both are **bootstrap defaults only** — the Brain overrides them from seeded config on `register_ack`. |
@@ -615,10 +615,10 @@ any of these, that is a security incident, not a misconfiguration —
 
 ### Migration runner
 
-`MIGRATE_DATABASE_URL` (admin role), `MIGRATIONS_DIR`, `PREFLIGHT_SQL`, `SENDER_MODULE_PASSWORD`,
+`MIGRATE_DATABASE_URL` (admin role), `MIGRATIONS_DIR`, `PREFLIGHT_SQL`, `BYOSMTP_MODULE_PASSWORD`,
 and optionally `MIGRATE_LOCK_TIMEOUT` / `MIGRATE_STATEMENT_TIMEOUT` (the one documented exception to
-config-not-code: `sender.config` does not exist yet when the bootstrap migration runs) and
-`SENDER_MIGRATE_ALLOW_DOWN`.
+config-not-code: `byosmtp.config` does not exist yet when the bootstrap migration runs) and
+`BYOSMTP_MIGRATE_ALLOW_DOWN`.
 
 ---
 
@@ -679,7 +679,7 @@ providers on 587/465.
 >   Migrations must run as a deliberate step before the Brain deploys, not implicitly on boot — see
 >   Part 6.
 > - **Split brain and box into separate files**, since they run on separate hosts.
-> - **Point volume mounts at real paths** (`/etc/sender/certs/...`, `/etc/sender/kms/...`) instead of
+> - **Point volume mounts at real paths** (`/etc/byosmtp/certs/...`, `/etc/byosmtp/kms/...`) instead of
 >   `./secrets/dev/...`.
 > - **Keep the least-privilege mounts exactly as they are.** The box mounts only its own leaf + the
 >   CA cert; the Brain alone mounts the KMS key. Do not "simplify" by mounting a shared secrets
@@ -697,7 +697,7 @@ providers on 587/465.
 
 ### systemd units
 
-**Brain** (`/etc/systemd/system/sender-brain.service`):
+**Brain** (`/etc/systemd/system/byosmtp-brain.service`):
 
 ```ini
 [Unit]
@@ -707,8 +707,8 @@ Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/sender-module
-EnvironmentFile=/etc/sender/brain.env
+WorkingDirectory=/opt/byosmtp-module
+EnvironmentFile=/etc/byosmtp/brain.env
 ExecStartPre=-/usr/bin/docker compose -f docker-compose.prod.yml rm -f brain
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up brain
 ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml stop -t 90 brain
@@ -733,7 +733,7 @@ but pointless. Keep it above `shutdown_drain_timeout_sec`.
 A SIGKILL is still safe: the singleton advisory lock is session-level, so Postgres releases it
 automatically. There is no stale-lock recovery step.
 
-**Box** (`/etc/systemd/system/sender-box.service`):
+**Box** (`/etc/systemd/system/byosmtp-box.service`):
 
 ```ini
 [Unit]
@@ -743,8 +743,8 @@ Requires=docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/sender-module
-EnvironmentFile=/etc/sender/box.env
+WorkingDirectory=/opt/byosmtp-module
+EnvironmentFile=/etc/byosmtp/box.env
 ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up box
 ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml stop -t 60 box
 # A box EXITS on purpose when it cannot register within its retry budget.
@@ -757,13 +757,13 @@ TimeoutStopSec=90
 WantedBy=multi-user.target
 ```
 
-Secure the env files: `sudo chmod 600 /etc/sender/*.env`. They hold the DB password, the token, and
+Secure the env files: `sudo chmod 600 /etc/byosmtp/*.env`. They hold the DB password, the token, and
 the key path.
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now sender-brain    # on the Brain host
-sudo systemctl enable --now sender-box      # on each box host
+sudo systemctl enable --now byosmtp-brain    # on the Brain host
+sudo systemctl enable --now byosmtp-box      # on each box host
 ```
 
 ---
@@ -777,11 +777,11 @@ Boxes are additive and need no Brain restart.
 > **Every box needs its OWN id and token.** Identity is the authorization subject, so running a
 > second box with an existing box's `BOX_ID` adds no capacity: the Brain closes the previous
 > connection whenever an id re-registers (correct for a reconnect), so two same-id boxes evict each
-> other in a permanent register/disconnect loop while `sender.boxes` still shows one row. Adding a
+> other in a permanent register/disconnect loop while `byosmtp.boxes` still shows one row. Adding a
 > *replica* is not adding a box. Certs may be shared — the cert is transport, the token is authority.
 
 1. On the Brain host: `provision-box new --id <id>` → record the token.
-2. Insert the `sender.boxes` row as the migration admin. **A new box needs the `INSERT` from
+2. Insert the `byosmtp.boxes` row as the migration admin. **A new box needs the `INSERT` from
    [Step 7](#step-7--provision-the-first-box), not `provision-box seed`'s `UPDATE`** — the `UPDATE`
    matches zero rows for an id that does not exist yet and silently reports success. Verify the row
    with the `SELECT` in Step 7 before continuing.
@@ -797,7 +797,7 @@ A box coming online kicks the dispatcher, so queued work starts flowing to it im
 ./bin/provision-box revoke --id <id>    # emits SQL: clears token_hash, status='disabled'
 ```
 
-Run that SQL, then stop the box (`sudo systemctl disable --now sender-box`).
+Run that SQL, then stop the box (`sudo systemctl disable --now byosmtp-box`).
 
 **Both steps are required, and the second is the one that takes effect now.** The token/status check
 runs only in the register handshake, so the SQL refuses the box's *next* connect but does not tear
@@ -817,16 +817,16 @@ the box's secret, restart it.
 Ordinary code change, no migration:
 
 ```bash
-cd /opt/sender-module && git pull
+cd /opt/byosmtp-module && git pull
 docker compose -f docker-compose.prod.yml build brain
-sudo systemctl restart sender-brain      # drains, then restarts
+sudo systemctl restart byosmtp-brain      # drains, then restarts
 curl -fsS http://localhost:8080/readyz
 ```
 
 Restarting the Brain is safe by design: it drains in-flight work, buffered outcomes replay on
 reconnect, and anything still in flight is reclaimed. Boxes reconnect on their own.
 
-**Config changes are not deploys.** Every dial lives in `sender.config` and takes effect on the next
+**Config changes are not deploys.** Every dial lives in `byosmtp.config` and takes effect on the next
 tick — `PUT /v1/admin/config/{key}` and you are done. Restarting the Brain to change a timeout means
 something is wrong with your mental model, not with the Brain.
 
@@ -836,7 +836,7 @@ something is wrong with your mental model, not with the Brain.
 additive-only: an older Brain against a newer schema does not see columns it does not know about.
 
 **Schema rollback is not the tool you want.** `down` is refused unless
-`SENDER_MIGRATE_ALLOW_DOWN=true`, deliberately: contracts here are additive-only, so a forward fix
+`BYOSMTP_MIGRATE_ALLOW_DOWN=true`, deliberately: contracts here are additive-only, so a forward fix
 is nearly always available and nearly always cheaper. Reverting a migration that has been live can
 destroy data an older binary cannot see.
 
@@ -844,7 +844,7 @@ If you genuinely must:
 
 1. Take a database backup first. Not optional.
 2. Stop the Brain (do not leave it running against a schema being changed underneath it).
-3. `docker run --rm -e SENDER_MIGRATE_ALLOW_DOWN=true -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" -e MIGRATIONS_DIR=/db/migrations -v "$PWD/db:/db:ro" sender-migrate:local down <version>` — one version at
+3. `docker run --rm -e BYOSMTP_MIGRATE_ALLOW_DOWN=true -e MIGRATE_DATABASE_URL="$MIGRATE_DATABASE_URL" -e MIGRATIONS_DIR=/db/migrations -v "$PWD/db:/db:ro" byosmtp-migrate:local down <version>` — one version at
    a time, verifying between.
 4. Deploy the matching older Brain **before** starting anything.
 
@@ -864,7 +864,7 @@ The order is:
 3. deploy boxes        (independently, whenever — see below)
 ```
 
-**Why this direction and not the other:** the Brain reads its config keys from `sender.config` at
+**Why this direction and not the other:** the Brain reads its config keys from `byosmtp.config` at
 startup and again on every tick, and a key it expects but cannot find is a **hard error** — startup
 fails fatally (`FATAL send-path config load`), and a tick that cannot load config does not dispatch.
 So a new Brain against an old schema does not degrade gracefully; it does not run. Migrating first
@@ -910,7 +910,7 @@ failures**: some sends get the new treatment, some don't, until the roll complet
 
 **Rolling boxes safely**, one at a time:
 
-1. Revoke nothing. Just stop the box: `sudo systemctl stop sender-box`.
+1. Revoke nothing. Just stop the box: `sudo systemctl stop byosmtp-box`.
 2. In-flight jobs on that box are reclaimed automatically (dead-box detection + lease expiry) and
    re-dispatched to the remaining boxes. Nothing is lost and the account is not penalized.
 3. Deploy and start the new box; confirm it registers.

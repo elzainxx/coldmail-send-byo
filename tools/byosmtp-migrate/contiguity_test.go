@@ -35,23 +35,23 @@ func TestUp_ContiguityGap(t *testing.T) {
 		}
 	}
 	// Minimal, side-effect-free migrations: each only self-records its version into a scratch
-	// table we create in 0001, so applying them can't collide with the real sender schema.
-	write("sender_0001_probe.up.sql", "CREATE SCHEMA IF NOT EXISTS migtest_probe; CREATE TABLE IF NOT EXISTS migtest_probe.v(version text); INSERT INTO sender.schema_migrations(version) VALUES('0001');")
-	write("sender_0001_probe.down.sql", "DELETE FROM sender.schema_migrations WHERE version='0001';")
-	write("sender_0003_probe.up.sql", "INSERT INTO sender.schema_migrations(version) VALUES('0003');")
-	write("sender_0003_probe.down.sql", "DELETE FROM sender.schema_migrations WHERE version='0003';")
+	// table we create in 0001, so applying them can't collide with the real byosmtp schema.
+	write("sender_0001_probe.up.sql", "CREATE SCHEMA IF NOT EXISTS migtest_probe; CREATE TABLE IF NOT EXISTS migtest_probe.v(version text); INSERT INTO byosmtp.schema_migrations(version) VALUES('0001');")
+	write("sender_0001_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0001';")
+	write("sender_0003_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0003');")
+	write("sender_0003_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0003';")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// The runner needs sender.schema_migrations to exist (normally created by the bootstrap).
+	// The runner needs byosmtp.schema_migrations to exist (normally created by the bootstrap).
 	// Ensure it exists for this focused contiguity test without depending on prior state.
 	setup := mustConnectMig(t, dsn)
-	_, _ = setup.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS sender")
-	_, _ = setup.Exec(ctx, "CREATE TABLE IF NOT EXISTS sender.schema_migrations (version text primary key, applied_at timestamptz default now())")
+	_, _ = setup.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS byosmtp")
+	_, _ = setup.Exec(ctx, "CREATE TABLE IF NOT EXISTS byosmtp.schema_migrations (version text primary key, applied_at timestamptz default now())")
 	// Start clean so the gap logic is deterministic.
 	for _, v := range []string{"0001", "0002", "0003"} {
-		_, _ = setup.Exec(ctx, "DELETE FROM sender.schema_migrations WHERE version=$1", v)
+		_, _ = setup.Exec(ctx, "DELETE FROM byosmtp.schema_migrations WHERE version=$1", v)
 	}
 	_, _ = setup.Exec(ctx, "DROP SCHEMA IF EXISTS migtest_probe CASCADE")
 	setup.Close(ctx)
@@ -67,14 +67,14 @@ func TestUp_ContiguityGap(t *testing.T) {
 	}
 
 	// Fill the gap: with 0002 present, the contiguity check must pass (guard doesn't over-reject).
-	write("sender_0002_probe.up.sql", "INSERT INTO sender.schema_migrations(version) VALUES('0002');")
-	write("sender_0002_probe.down.sql", "DELETE FROM sender.schema_migrations WHERE version='0002';")
+	write("sender_0002_probe.up.sql", "INSERT INTO byosmtp.schema_migrations(version) VALUES('0002');")
+	write("sender_0002_probe.down.sql", "DELETE FROM byosmtp.schema_migrations WHERE version='0002';")
 	// Clean any rows a prior partial run left, so this is deterministic.
 	cleanup := func() {
 		c := mustConnectMig(t, dsn)
 		defer c.Close(context.Background())
 		for _, v := range []string{"0001", "0002", "0003"} {
-			_, _ = c.Exec(context.Background(), "DELETE FROM sender.schema_migrations WHERE version=$1", v)
+			_, _ = c.Exec(context.Background(), "DELETE FROM byosmtp.schema_migrations WHERE version=$1", v)
 		}
 		_, _ = c.Exec(context.Background(), "DROP SCHEMA IF EXISTS migtest_probe CASCADE")
 	}

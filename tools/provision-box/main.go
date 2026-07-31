@@ -4,7 +4,7 @@
 //
 //	new    — mint a box id + a one-time token; print the plaintext token ONCE and the
 //	         bcrypt HASH to seed. Plaintext is never stored.
-//	seed   — emit the SQL to store the token HASH (Phase 1: into sender.boxes.token_hash;
+//	seed   — emit the SQL to store the token HASH (Phase 1: into byosmtp.boxes.token_hash;
 //	         Phase 0: into the Brain's DEV_BOX_TOKEN_HASH env — the box table arrives in
 //	         Phase 1's sender_0006). Never stores the plaintext.
 //	revoke — emit the SQL to clear/rotate token_hash; a decommissioned box is refused on
@@ -38,7 +38,7 @@ func main() {
 		fmt.Printf("# box provisioned (P9-A). token=authority, cert=transport.\n")
 		fmt.Printf("BOX_ID=%s\n", id)
 		fmt.Printf("BOX_TOKEN=%s        # SHOWN ONCE — copy to the box's env; never stored\n", token)
-		fmt.Printf("DEV_BOX_TOKEN_HASH=%s   # seed into the Brain env (Phase 0) / sender.boxes (Phase 1)\n", hash)
+		fmt.Printf("DEV_BOX_TOKEN_HASH=%s   # seed into the Brain env (Phase 0) / byosmtp.boxes (Phase 1)\n", hash)
 	case "hash":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: provision-box hash <token>")
@@ -61,10 +61,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: provision-box seed --id <id> --token-hash <bcrypt-hash>")
 			os.Exit(2)
 		}
-		// Phase 1 form (sender.boxes exists then). Emitted for reference/CI. Single quotes in
+		// Phase 1 form (byosmtp.boxes exists then). Emitted for reference/CI. Single quotes in
 		// id/hash are escaped ('') so a stray quote in --id can't produce broken/dangerous SQL.
-		fmt.Printf("-- Phase 1+ (requires sender.boxes from sender_0006):\n")
-		fmt.Printf("UPDATE sender.boxes SET token_hash='%s' WHERE id='%s';\n", sqlLit(h), sqlLit(id))
+		fmt.Printf("-- Phase 1+ (requires byosmtp.boxes from sender_0006):\n")
+		fmt.Printf("UPDATE byosmtp.boxes SET token_hash='%s' WHERE id='%s';\n", sqlLit(h), sqlLit(id))
 		fmt.Printf("-- Phase 0: instead set DEV_BOX_ID=%s and DEV_BOX_TOKEN_HASH=%s in the Brain env.\n", id, h)
 	case "revoke":
 		id := flagVal("--id", "")
@@ -73,7 +73,7 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Printf("-- decommission: refused on next connect regardless of cert.\n")
-		fmt.Printf("UPDATE sender.boxes SET token_hash=NULL, status='disabled' WHERE id='%s';\n", sqlLit(id))
+		fmt.Printf("UPDATE byosmtp.boxes SET token_hash=NULL, status='disabled' WHERE id='%s';\n", sqlLit(id))
 	default:
 		usage()
 		os.Exit(2)

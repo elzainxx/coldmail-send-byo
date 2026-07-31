@@ -90,14 +90,14 @@ done
 wait
 
 # Provision + launch N real box CONTAINERS, each with its own UUID identity + token (mirrors
-# tools/provision-box's normal flow; seeds sender.boxes directly since Phase 1 owns that table).
+# tools/provision-box's normal flow; seeds byosmtp.boxes directly since Phase 1 owns that table).
 declare -a BOX_NAMES=()
 for i in $(seq 1 "$N_BOXES"); do
   BOX_UUID="$(PSQL1 "SELECT gen_random_uuid()")"
   PROV="$(tools/provision-box/bin/provision-box new --id "e11-box-$i")"
   TOKEN="$(echo "$PROV" | grep '^BOX_TOKEN=' | sed 's/^BOX_TOKEN=//; s/ .*//')"
   HASH="$(echo "$PROV" | grep '^DEV_BOX_TOKEN_HASH=' | sed 's/^DEV_BOX_TOKEN_HASH=//; s/ .*//')"
-  PSQL "INSERT INTO sender.boxes (id,user_id,token_hash,status) VALUES ('$BOX_UUID','$SYSUSER','$HASH','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" >/dev/null
+  PSQL "INSERT INTO byosmtp.boxes (id,user_id,token_hash,status) VALUES ('$BOX_UUID','$SYSUSER','$HASH','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" >/dev/null
   NAME="e11-box-$i"
   BOX_NAMES+=("$NAME")
   $DC run --rm -d --name "$NAME" --no-deps \
@@ -157,7 +157,7 @@ for LANES in "${LANES_STEPS[@]}"; do
         FROM new_users nu, generate_series(1,$M) j
       RETURNING id, user_id, campaign_id, recipient_email
     )
-    INSERT INTO sender.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at)
+    INSERT INTO byosmtp.jobs (job_item_id,campaign_id,user_id,recipient_email,rendered_subject,rendered_body,state,next_attempt_at)
     SELECT id, campaign_id, user_id, recipient_email, 'E11 load', '<p>load</p>', 'queued', NOW() FROM items
   " >/dev/null
 
@@ -194,7 +194,7 @@ for LANES in "${LANES_STEPS[@]}"; do
   # evidence, logged rather than hung on forever.
   drained=0
   for _ in $(seq 1 60); do
-    Q="$(PSQL1 "SELECT count(*) FROM sender.jobs WHERE state IN ('queued','assigned','sending')")"
+    Q="$(PSQL1 "SELECT count(*) FROM byosmtp.jobs WHERE state IN ('queued','assigned','sending')")"
     if [[ "${Q:-0}" -le 0 ]]; then drained=1; break; fi
     sleep 2
   done

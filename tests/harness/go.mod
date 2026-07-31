@@ -1,4 +1,4 @@
-module github.com/sender-module/harness
+module github.com/byosmtp-module/harness
 
 go 1.23
 

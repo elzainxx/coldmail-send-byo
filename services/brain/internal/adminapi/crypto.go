@@ -14,7 +14,7 @@ import (
 // read existing ones back — a structural property, not just an IAM promise.
 //
 // AES-256-GCM, 12-byte random nonce per encryption, 128-bit tag APPENDED inside the ciphertext
-// (combined mode — the exact layout sender.accounts.credential_ciphertext stores). AAD =
+// (combined mode — the exact layout byosmtp.accounts.credential_ciphertext stores). AAD =
 // account.id (raw 16 bytes) ‖ credential_key_id (utf8) binds the ciphertext to its row so it
 // cannot be transplanted to another account (OD-3, LOCKED-ADOPTED). The key lives OUTSIDE the
 // DB (Brain-held dev key file in Phase 0/2; a real KMS DEK in prod).

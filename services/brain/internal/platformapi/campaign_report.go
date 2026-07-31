@@ -1,7 +1,7 @@
 package platformapi
 
 // campaign_report.go — Phase 9 Chunk 4 (B8, §2 of phase-9-contract-and-doc-completions.md): the
-// campaign-scoped GET /v1/report?campaign_id= response. Derives ENTIRELY from sender.jobs state
+// campaign-scoped GET /v1/report?campaign_id= response. Derives ENTIRELY from byosmtp.jobs state
 // counts + existing per-job fields — no new state, no schema change. report remains a read/poll
 // of existing data (§2 ruling).
 //
@@ -9,7 +9,7 @@ package platformapi
 // waiting_for_capacity (still pending, no eligible account right now — NEVER shown as failed),
 // failed (terminal, true pool exhaustion — refundable, platform's policy), bounced (terminal,
 // recipient-permanent — billable). All three, plus plain pending, are surfaced as aggregate COUNTS
-// in totals — the per-item state stays exactly the sender.job_state enum value (queued/assigned/
+// in totals — the per-item state stays exactly the byosmtp.job_state enum value (queued/assigned/
 // sending/sent/failed/bounced); waiting_for_capacity is an AGGREGATE distinction, not a new
 // per-job state (§2.3).
 
@@ -131,12 +131,12 @@ func (s *Server) campaignTotals(ctx context.Context, campaignID, userID string) 
 	const q = `
 WITH scoped AS (
     SELECT j.id, j.state, j.user_id
-    FROM sender.jobs j
+    FROM byosmtp.jobs j
     WHERE j.campaign_id = $1 AND j.user_id = $2
 ),
 user_pools AS (
     SELECT p.id AS pool_id
-    FROM sender.pools p
+    FROM byosmtp.pools p
     WHERE p.enabled = TRUE
       AND (p.owner_user_id = $2::uuid OR p.kind = 'shared')
 )
@@ -173,7 +173,7 @@ FROM scoped`
 // (this query's parameter numbering, distinct from health_store.go's).
 const campaignEligibleAccountsSubquery = `
     SELECT 1
-    FROM sender.accounts a
+    FROM byosmtp.accounts a
     WHERE a.pool_id = up.pool_id
       AND a.quarantined = FALSE
       AND a.disabled = FALSE
@@ -205,7 +205,7 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	limitParam := len(args)
 	q := `SELECT j.job_item_id::text, j.state::text, j.provider_message_id, j.completed_at, j.attempt_count,
 	             j.created_at, j.id::text
-	      FROM sender.jobs j ` + where + `
+	      FROM byosmtp.jobs j ` + where + `
 	      ORDER BY j.created_at ASC, j.id ASC
 	      LIMIT $` + strconv.Itoa(limitParam)
 
@@ -249,7 +249,7 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 // name/semantics are unchanged (CLAUDE.md Rule 1 — no shadow constant, this is a fresh read).
 func (s *Server) readDispatchPaused(ctx context.Context) (bool, error) {
 	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = 'dispatch_enabled'`).Scan(&raw); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = 'dispatch_enabled'`).Scan(&raw); err != nil {
 		return false, err
 	}
 	var wrap struct {
@@ -261,13 +261,13 @@ func (s *Server) readDispatchPaused(ctx context.Context) (bool, error) {
 	return !*wrap.V, nil
 }
 
-// readConfigStringLocal/readConfigIntLocal are minimal local sender.config readers (mirroring
+// readConfigStringLocal/readConfigIntLocal are minimal local byosmtp.config readers (mirroring
 // readUnitPriceCredits's own pattern) scoped to exactly the keys campaignTotals needs, falling back
 // to the seeded default on any read/parse failure — report is a read-mostly endpoint and a
 // transient config blip must not 500 every poll in flight.
 func (s *Server) readConfigStringLocal(ctx context.Context, key, fallback string) (string, error) {
 	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return fallback, nil
 	}
 	var wrap struct {
@@ -281,7 +281,7 @@ func (s *Server) readConfigStringLocal(ctx context.Context, key, fallback string
 
 func (s *Server) readConfigIntLocal(ctx context.Context, key string, fallback int) (int, error) {
 	var raw []byte
-	if err := s.db.QueryRow(ctx, `SELECT value FROM sender.config WHERE key = $1`, key).Scan(&raw); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
 		return fallback, nil
 	}
 	var wrap struct {

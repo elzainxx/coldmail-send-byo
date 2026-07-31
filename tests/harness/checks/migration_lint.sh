@@ -2,7 +2,7 @@
 # migration_lint — BLOCKING CI gate. Enforces the locked migration convention:
 #   - every migration is a sender_NNNN_<desc>.up.sql + matching .down.sql pair
 #   - versions are contiguous ascending (no gaps, no dupes)
-#   - every UP self-records: INSERT INTO sender.schema_migrations(version) VALUES('NNNN')
+#   - every UP self-records: INSERT INTO byosmtp.schema_migrations(version) VALUES('NNNN')
 #   - every DOWN self-removes: DELETE ... WHERE version='NNNN' (or documented no-op for
 #     enum ADD VALUE, which is forward-only)
 set -euo pipefail
@@ -39,12 +39,12 @@ for up in $ups; do
   prev="$ver"
 
   # self-record in UP
-  grep -Eq "INSERT +INTO +sender\.schema_migrations.*'${ver}'" "$up" \
+  grep -Eq "INSERT +INTO +byosmtp\.schema_migrations.*'${ver}'" "$up" \
     || { echo "migration_lint FAIL: $base does not self-record version '$ver'"; fail=1; }
 
   # self-remove in DOWN (allow a documented forward-only no-op comment for enum ADD VALUE)
   if [[ -f "$down" ]]; then
-    if ! grep -Eq "DELETE +FROM +sender\.schema_migrations.*'${ver}'" "$down"; then
+    if ! grep -Eq "DELETE +FROM +byosmtp\.schema_migrations.*'${ver}'" "$down"; then
       grep -Eiq "forward-only|no-op|cannot safely remove" "$down" \
         || { echo "migration_lint FAIL: $(basename "$down") neither DELETEs version '$ver' nor documents a forward-only no-op"; fail=1; }
     fi
@@ -64,7 +64,7 @@ done
 # or in the `if v == "0022"` down-check — so the first version of this check reported OK with
 # wantChain reverted to its pre-fix state. Caught by its own negative control; the extraction below
 # reads only the bracketed wantChain value.
-LIFECYCLE_TEST="tools/sender-migrate/runner_integration_test.go"
+LIFECYCLE_TEST="tools/byosmtp-migrate/runner_integration_test.go"
 if [[ -n "$prev" && -f "$LIFECYCLE_TEST" ]]; then
   want_literal="$(sed -n '/wantChain := \[\]string{/,/}/p' "$LIFECYCLE_TEST")"
   if [[ -z "$want_literal" ]]; then

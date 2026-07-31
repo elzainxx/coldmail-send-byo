@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/sender-module/brain/internal/adminapi"
+	"github.com/byosmtp-module/brain/internal/adminapi"
 )
 
 // TestDecrypt_RoundTrip — the send-path Decryptor reverses exactly what the admin Encryptor

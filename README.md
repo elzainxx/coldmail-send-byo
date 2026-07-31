@@ -17,7 +17,7 @@ advisory lock. It claims queued jobs, picks a healthy sending account, decrypts 
 credential, and pushes the job over mutual TLS to a **sender box** (Node.js) — a dumb SMTP relay
 that ships no database driver and no KMS SDK, holds the credential in memory only, zeroes it on
 every exit from the send path, and reports the outcome back. Boxes scale horizontally and are never publicly
-reachable. Everything tunable — 53 keys — is a seeded row in `sender.config`, changeable at
+reachable. Everything tunable — 53 keys — is a seeded row in `byosmtp.config`, changeable at
 runtime with no redeploy; there are no hardcoded tuning constants. Full shape in
 [`Docs/architecture-overview.md`](./Docs/architecture-overview.md).
 
@@ -71,7 +71,7 @@ services/brain/           Go orchestrator — the ONLY DB client, the SOLE decry
 services/box/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
 db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.down.sql)
 db/preflight/             platform-table existence checks, run before migrating
-tools/                    sender-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
+tools/                    byosmtp-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
 tests/harness/checks/     the 5 blocking CI gates
 Docs/                     living documentation (operate + extend)

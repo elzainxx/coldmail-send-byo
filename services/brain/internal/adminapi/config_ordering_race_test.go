@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sender-module/brain/internal/configordering"
+	"github.com/byosmtp-module/brain/internal/configordering"
 )
 
 // TestConfigOrdering_ConcurrentPUTsBlockOnTheWriteLock proves the serialization is REAL: while one
@@ -174,8 +174,8 @@ func TestConfigOrdering_ConcurrentPUTsCannotInvertPair_NegativeControl(t *testin
 	}
 
 	// Both writes then land — the state no single check ever saw.
-	mustExec(t, e, `UPDATE sender.config SET value=jsonb_build_object('v',100) WHERE key='smtp_operation_timeout_sec'`)
-	mustExec(t, e, `UPDATE sender.config SET value=jsonb_build_object('v',50)  WHERE key='job_max_processing_time_sec'`)
+	mustExec(t, e, `UPDATE byosmtp.config SET value=jsonb_build_object('v',100) WHERE key='smtp_operation_timeout_sec'`)
+	mustExec(t, e, `UPDATE byosmtp.config SET value=jsonb_build_object('v',50)  WHERE key='job_max_processing_time_sec'`)
 
 	timeout := configIntFromDB(t, e, "smtp_operation_timeout_sec")
 	lease := configIntFromDB(t, e, "job_max_processing_time_sec")
@@ -190,7 +190,7 @@ func configIntFromDB(t *testing.T, e *testEnv, key string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(bgCtx(),
-		`SELECT (value->>'v')::int FROM sender.config WHERE key=$1`, key).Scan(&n); err != nil {
+		`SELECT (value->>'v')::int FROM byosmtp.config WHERE key=$1`, key).Scan(&n); err != nil {
 		t.Fatalf("read %s from DB: %v", key, err)
 	}
 	return n

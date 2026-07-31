@@ -8,8 +8,8 @@ import (
 )
 
 // Audit sink (§7.4): every audited operation — a lifecycle transition, account create/update/
-// delete — writes EXACTLY ONE sender.account_events row in the SAME transaction as its data
-// write, performed EXPLICITLY here (NOT via a trigger on sender.accounts, so the audit stays
+// delete — writes EXACTLY ONE byosmtp.account_events row in the SAME transaction as its data
+// write, performed EXPLICITLY here (NOT via a trigger on byosmtp.accounts, so the audit stays
 // scoped to admin actions and never fires on the dispatcher's future writes). actor is always
 // 'admin' in Phase 2. The audit row commits iff the operation commits.
 
@@ -59,7 +59,7 @@ func writeAuditEvent(ctx context.Context, tx pgx.Tx, accountID, userID, action s
 		toJSON = b
 	}
 	_, err := tx.Exec(ctx,
-		`INSERT INTO sender.account_events
+		`INSERT INTO byosmtp.account_events
 		   (account_id, user_id, actor, action, from_flags, to_flags, reason, request_id)
 		 VALUES ($1, $2, 'admin', $3, $4, $5, $6, $7)`,
 		accountID, userID, action, fromJSON, toJSON, reason, requestID)

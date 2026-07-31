@@ -29,18 +29,18 @@ for key in variation_html_minify variation_comment_injection variation_css_micro
            variation_unique_url_params variation_zero_width variation_encoding_rotation \
            variation_mime_boundary_rotation variation_dynamic_preheader \
            variation_user_agent_injection variation_thread_index; do
-  V="$(curl -s "http://localhost:8080/v1/admin/config/$key" -H "Authorization: Bearer $ADMKEY" | grep -oE '"value":(true|false)' | cut -d: -f2)"
+  V="$(curl -s "http://localhost:9080/v1/admin/config/$key" -H "Authorization: Bearer $ADMKEY" | grep -oE '"value":(true|false)' | cut -d: -f2)"
   [[ "$V" == "false" ]] || DEFAULTS_OK=0
 done
 [[ "$DEFAULTS_OK" == "1" ]] && ok "P8 T1: every boolean toggle reads false via the live admin API (seeded defaults intact)" \
   || bad "P8 T1: a boolean toggle is NOT false on the live stack — precondition for the byte-identity check failed"
 
 JI8T1="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','p8t1@example.com','Phase 8 T1','<p>Hello Phase 8 T1</p>','pending') RETURNING id" || true)"
-RUN8T1="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI8T1\",\"user_id\":\"$SYSUSER\"}")"
+RUN8T1="$(curl -s -w '\n%{http_code}' -X POST http://localhost:9080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI8T1\",\"user_id\":\"$SYSUSER\"}")"
 JOB8T1="$(echo "$RUN8T1" | head -1 | grep -oE '"job_id":"[0-9a-f-]+"' | cut -d'"' -f4 || true)"
 sent=0
 for _ in $(seq 1 30); do
-  st="$(PSQL "SELECT state FROM sender.jobs WHERE id='$JOB8T1'" || true)"
+  st="$(PSQL "SELECT state FROM byosmtp.jobs WHERE id='$JOB8T1'" || true)"
   [[ "$st" == "sent" ]] && { sent=1; break; }
   sleep 1
 done
@@ -48,9 +48,9 @@ done
 
 # Pull the RAW message Mailpit actually received for this job and assert it has exactly the Phase 3
 # shape: no injected comments, no zero-width, no reordered/added headers, single-part MIME.
-MP8T1_ID="$(curl -s "http://localhost:8025/api/v1/messages?query=to:p8t1@example.com" | grep -oE '"ID":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
+MP8T1_ID="$(curl -s "http://localhost:9025/api/v1/messages?query=to:p8t1@example.com" | grep -oE '"ID":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
 if [[ -n "$MP8T1_ID" ]]; then
-  RAW8T1="$(curl -s "http://localhost:8025/api/v1/message/$MP8T1_ID/raw" || true)"
+  RAW8T1="$(curl -s "http://localhost:9025/api/v1/message/$MP8T1_ID/raw" || true)"
   BASELINE_OK=1
   echo "$RAW8T1" | grep -qE '^MIME-Version: 1\.0$' || BASELINE_OK=0
   echo "$RAW8T1" | grep -qE '^Content-Type: text/html; charset="utf-8"$' || BASELINE_OK=0
@@ -65,10 +65,10 @@ else
 fi
 
 # --- T3/T7 (live): flip a representative real profile on, send, observe the ACTUAL bytes ---
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_html_minify" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_unique_url_params" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_injection" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_intensity" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"high"}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_html_minify" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_unique_url_params" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_comment_injection" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":true}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_comment_intensity" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"high"}'
 
 # RICH_BODY must contain MANY closing tags, and that is load-bearing rather than cosmetic.
 # injectComments makes an INDEPENDENT seeded draw per closing tag at the bucket's rate (high = 0.30,
@@ -80,19 +80,19 @@ curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_com
 # regression in CI output, which is the failure mode CLAUDE.md Rule 10 exists to close.
 RICH_BODY='<p>Hello Phase 8 T3</p><a href="https://example.com/landing">landing page</a><div><span>a</span><span>b</span><span>c</span><span>d</span></div><div><span>e</span><span>f</span><span>g</span><span>h</span></div><ul><li>one</li><li>two</li><li>three</li><li>four</li></ul>'
 JI8T3="$(PSQL1 "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('00000000-0000-0000-0000-000000000000','00000000-0000-0000-0000-000000000000','p8t3@example.com','Phase 8 T3',$(printf '%s' "$RICH_BODY" | sed "s/'/''/g;s/^/'/;s/$/'/"),'pending') RETURNING id" || true)"
-RUN8T3="$(curl -s -w '\n%{http_code}' -X POST http://localhost:8080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI8T3\",\"user_id\":\"$SYSUSER\"}")"
+RUN8T3="$(curl -s -w '\n%{http_code}' -X POST http://localhost:9080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$JI8T3\",\"user_id\":\"$SYSUSER\"}")"
 JOB8T3="$(echo "$RUN8T3" | head -1 | grep -oE '"job_id":"[0-9a-f-]+"' | cut -d'"' -f4 || true)"
 sent3=0
 for _ in $(seq 1 30); do
-  st="$(PSQL "SELECT state FROM sender.jobs WHERE id='$JOB8T3'" || true)"
+  st="$(PSQL "SELECT state FROM byosmtp.jobs WHERE id='$JOB8T3'" || true)"
   [[ "$st" == "sent" ]] && { sent3=1; break; }
   sleep 1
 done
 [[ "$sent3" == "1" ]] && ok "P8 T3: variation-on job reached sent" || bad "P8 T3: variation-on job never reached sent"
 
-MP8T3_ID="$(curl -s "http://localhost:8025/api/v1/messages?query=to:p8t3@example.com" | grep -oE '"ID":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
+MP8T3_ID="$(curl -s "http://localhost:9025/api/v1/messages?query=to:p8t3@example.com" | grep -oE '"ID":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
 if [[ -n "$MP8T3_ID" ]]; then
-  RAW8T3="$(curl -s "http://localhost:8025/api/v1/message/$MP8T3_ID/raw" || true)"
+  RAW8T3="$(curl -s "http://localhost:9025/api/v1/message/$MP8T3_ID/raw" || true)"
   # T3: the delivered bytes differ from the all-off baseline — variation genuinely fired live.
   if [[ "$RAW8T3" != "$RAW8T1" ]]; then ok "P8 T3: variation-on delivered bytes differ from the all-off baseline (variation fired on the live stack)"
   else bad "P8 T3: variation-on delivered bytes are IDENTICAL to the all-off baseline — variation did not fire"; fi
@@ -138,14 +138,14 @@ if canary_b64_in "$RAW8T3"; then
 else
   ok "P8 S1: canary absent from the delivered message (base64)"
 fi
-DBLEAK8="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY}%' OR smtp_response LIKE '%${CANARY}%' OR headers::text LIKE '%${CANARY}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY}%')" || true)"
+DBLEAK8="$(PSQL "SELECT (SELECT count(*) FROM byosmtp.send_logs WHERE body LIKE '%${CANARY}%' OR smtp_response LIKE '%${CANARY}%' OR headers::text LIKE '%${CANARY}%') + (SELECT count(*) FROM byosmtp.jobs WHERE last_error_message LIKE '%${CANARY}%')" || true)"
 [[ "${DBLEAK8:-0}" == "0" ]] && ok "P8 S1: canary absent from send_logs/jobs with variation ON" || bad "P8 S1: canary leaked into send_logs/jobs with variation ON ($DBLEAK8 hits)"
-DBLEAK8B64="$(PSQL "SELECT (SELECT count(*) FROM sender.send_logs WHERE body LIKE '%${CANARY_B64}%' OR smtp_response LIKE '%${CANARY_B64}%' OR headers::text LIKE '%${CANARY_B64}%' OR body LIKE '%${CANARY_PLAIN_B64}%' OR headers::text LIKE '%${CANARY_PLAIN_B64}%') + (SELECT count(*) FROM sender.jobs WHERE last_error_message LIKE '%${CANARY_B64}%' OR last_error_message LIKE '%${CANARY_PLAIN_B64}%')" || true)"
+DBLEAK8B64="$(PSQL "SELECT (SELECT count(*) FROM byosmtp.send_logs WHERE body LIKE '%${CANARY_B64}%' OR smtp_response LIKE '%${CANARY_B64}%' OR headers::text LIKE '%${CANARY_B64}%' OR body LIKE '%${CANARY_PLAIN_B64}%' OR headers::text LIKE '%${CANARY_PLAIN_B64}%') + (SELECT count(*) FROM byosmtp.jobs WHERE last_error_message LIKE '%${CANARY_B64}%' OR last_error_message LIKE '%${CANARY_PLAIN_B64}%')" || true)"
 [[ "${DBLEAK8B64:-0}" == "0" ]] && ok "P8 S1: canary absent from send_logs/jobs with variation ON (base64)" || bad "P8 S1: canary leaked BASE64-ENCODED into send_logs/jobs with variation ON ($DBLEAK8B64 hits)"
 
 # --- restore every toggle flipped above to its seeded default, so a later harness run (or another
 # suite reading these same keys) is not left with variation silently ON. ---
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_html_minify" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_unique_url_params" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_injection" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
-curl -s -o /dev/null -X PUT "http://localhost:8080/v1/admin/config/variation_comment_intensity" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"low"}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_html_minify" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_unique_url_params" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_comment_injection" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":false}'
+curl -s -o /dev/null -X PUT "http://localhost:9080/v1/admin/config/variation_comment_intensity" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"low"}'

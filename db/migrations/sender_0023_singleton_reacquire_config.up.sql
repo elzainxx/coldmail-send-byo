@@ -1,5 +1,5 @@
 -- sender_0023_singleton_reacquire_config.up.sql — G11-OD-1 / ADR-0011 remediation (option B, ruled
--- by the user 2026-07-29). ONE additive INSERT into the EXISTING sender.config table (same pattern
+-- by the user 2026-07-29). ONE additive INSERT into the EXISTING byosmtp.config table (same pattern
 -- as sender_0010/0017/0018/0019/0021). NO table structure change; NO column, constraint, enum, or
 -- index is added or altered — this migration is schema-neutral, config seed only.
 -- value is JSONB-wrapped {"v": ...}; default_value is never mutated (CLAUDE.md Rule 1). The key is
@@ -21,9 +21,9 @@
 -- taking anyway. A single pg_try_advisory_lock is non-blocking and cheap; the cost of the retry is
 -- bounded by this interval, not by any lock wait.
 
-INSERT INTO sender.config (key, value, default_value, description, value_type) VALUES
+INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES
 ('brain_singleton_reacquire_interval_sec', '{"v":5}', '{"v":5}',
  'How often (seconds) a Brain that LOST the singleton advisory lock mid-life re-attempts pg_try_advisory_lock. While the lock is not held the dispatch/reclaim/retention loops are PAUSED (no claim, no push, no reclaim, no sweep) and readyz reports not_ready; the outcome path stays live so a box can still report an in-flight send. 0 = never re-acquire (the Brain stays paused until restarted). Distinct from brain_singleton_acquire_timeout_sec, which bounds the STARTUP wait. G11-OD-1 / ADR-0011 option B.',
  'integer');
 
-INSERT INTO sender.schema_migrations (version) VALUES ('0023');
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0023');

@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sender-module/brain/internal/db"
-	"github.com/sender-module/brain/internal/singleton"
+	"github.com/byosmtp-module/brain/internal/db"
+	"github.com/byosmtp-module/brain/internal/singleton"
 )
 
 // HealthServer answers /healthz and /readyz, and (Phase 2) mounts the operator admin surface

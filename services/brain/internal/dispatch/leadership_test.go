@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sender-module/brain/internal/singleton"
+	"github.com/byosmtp-module/brain/internal/singleton"
 )
 
 // leadership_test.go — G11-OD-1 / ADR-0011 (option B, ruled by the user 2026-07-29).
@@ -170,7 +170,7 @@ func TestLeadershipGate_ReclaimAndRetentionAlsoPause(t *testing.T) {
 	}
 	ret := NewRetentionRunner(env.d)
 	if wait := ret.tick(ctx); wait != notLeaderRetryInterval {
-		t.Fatalf("retention tick as non-leader returned wait %s, want %s — the retention sweep is NOT gated on leadership, so a lockless Brain DELETEs sender.* rows", wait, notLeaderRetryInterval)
+		t.Fatalf("retention tick as non-leader returned wait %s, want %s — the retention sweep is NOT gated on leadership, so a lockless Brain DELETEs byosmtp.* rows", wait, notLeaderRetryInterval)
 	}
 
 	// Paired positive control: both loops run normally as leader. Otherwise a permanently-broken

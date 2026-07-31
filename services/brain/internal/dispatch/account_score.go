@@ -114,7 +114,7 @@ func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accoun
 	// Bookkeeping UPDATE returns the post-update signals + today-in-tz (computed from the config tz)
 	// so the score is computed from exactly the row state after this outcome.
 	row := tx.QueryRow(ctx,
-		`UPDATE sender.accounts
+		`UPDATE byosmtp.accounts
 		    SET `+setClause+`
 		  WHERE id = $1
 		  RETURNING consecutive_failures, daily_sent_count, daily_limit, daily_reset_day,
@@ -127,7 +127,7 @@ func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accoun
 
 	score := computeScore(in, cfg.ScoreWeights)
 	if _, err := tx.Exec(ctx,
-		`UPDATE sender.accounts SET account_status_score = $2, updated_at = NOW() WHERE id = $1`,
+		`UPDATE byosmtp.accounts SET account_status_score = $2, updated_at = NOW() WHERE id = $1`,
 		accountID, score); err != nil {
 		return 0, err
 	}

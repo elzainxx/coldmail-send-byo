@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // dispatchToSending claims + pushes the one queued job and asserts it reached sending, returning
@@ -23,7 +23,7 @@ func (e *dispatchEnv) dispatchToSending(t *testing.T, job string) {
 func (e *dispatchEnv) accountFlagsNow(t *testing.T, acctID string) (paused, quarantined bool, pauseReason *string) {
 	t.Helper()
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT paused, quarantined, pause_reason FROM sender.accounts WHERE id=$1`, acctID).
+		`SELECT paused, quarantined, pause_reason FROM byosmtp.accounts WHERE id=$1`, acctID).
 		Scan(&paused, &quarantined, &pauseReason); err != nil {
 		t.Fatalf("read flags: %v", err)
 	}
@@ -36,7 +36,7 @@ func (e *dispatchEnv) accountFlagsNow(t *testing.T, acctID string) (paused, quar
 func (e *dispatchEnv) systemAccountEvents(t *testing.T, acctID string) [][2]string {
 	t.Helper()
 	rows, err := e.admin.Query(context.Background(),
-		`SELECT action, COALESCE(reason,'') FROM sender.account_events
+		`SELECT action, COALESCE(reason,'') FROM byosmtp.account_events
 		 WHERE account_id=$1 AND actor='system' ORDER BY created_at`, acctID)
 	if err != nil {
 		t.Fatalf("read system events: %v", err)
@@ -74,7 +74,7 @@ func TestPolicy_AuthFailureQuarantines(t *testing.T) {
 		t.Fatalf("job state=%s leaseNull=%v, want queued/true", state, leaseNull)
 	}
 	var ec *string
-	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM sender.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
 		t.Fatalf("class: %v", err)
 	}
 	if ec == nil || *ec != "auth_failure" {
@@ -90,7 +90,7 @@ func TestPolicy_AuthFailureQuarantines(t *testing.T) {
 		t.Fatalf("auth_failure also paused the account — quarantine must not touch paused (§4.1)")
 	}
 	var disabled bool
-	if err := e.admin.QueryRow(ctx, `SELECT disabled FROM sender.accounts WHERE id=$1`, acct).Scan(&disabled); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT disabled FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&disabled); err != nil {
 		t.Fatalf("disabled: %v", err)
 	}
 	if disabled {
@@ -124,7 +124,7 @@ func TestPolicy_ThrottlePauses(t *testing.T) {
 		t.Fatalf("job state=%s leaseNull=%v, want queued/true", state, leaseNull)
 	}
 	var ec *string
-	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM sender.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&ec); err != nil {
 		t.Fatalf("class: %v", err)
 	}
 	if ec == nil || *ec != "throttle" {
@@ -140,7 +140,7 @@ func TestPolicy_ThrottlePauses(t *testing.T) {
 		t.Fatalf("throttle quarantined the account — throttle only pauses (§4.1/§4.3)")
 	}
 	var stamped bool
-	if err := e.admin.QueryRow(ctx, `SELECT throttle_paused_at IS NOT NULL FROM sender.accounts WHERE id=$1`, acct).Scan(&stamped); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT throttle_paused_at IS NOT NULL FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&stamped); err != nil {
 		t.Fatalf("throttle_paused_at: %v", err)
 	}
 	if !stamped {
@@ -168,7 +168,7 @@ func TestPolicy_AttemptCountSaturates(t *testing.T) {
 	// from auto-quarantine (§4.2b), which is exercised separately in the Chunk 4 tests. Without a
 	// recent success the never-succeeded recency penalty would (correctly) push the score < 30 and
 	// quarantine the account, ending the job's ability to reach 'sending'.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at = NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at = NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed last_success_at: %v", err)
 	}
 	job := e.seedQueuedJob(t, "c@example.com")
@@ -176,7 +176,7 @@ func TestPolicy_AttemptCountSaturates(t *testing.T) {
 	// max_attempts defaults to 3 (locked). Drive 6 transient (timeout) requeues — well past the cap.
 	for i := 0; i < 6; i++ {
 		// Reset next_attempt_at so the claim can re-pick it despite backoff, and re-dispatch.
-		if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next_attempt_at: %v", err)
 		}
 		e.dispatchToSending(t, job)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sender-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
 // TestStaleReplay_NotAttributedToADifferentBoxesAttempt (Phase 7 §1.3 — the hazard the outcome
@@ -41,7 +41,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 
 	// Which box got the first attempt (B1)? Read it rather than assume the pusher's ordering.
 	var b1 string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&b1); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&b1); err != nil {
 		t.Fatalf("read assigned box: %v", err)
 	}
 
@@ -60,7 +60,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	e.px.inFlightBy[b1] = true
 	e.px.mu.Unlock()
 	// Clear the backoff the reclaim set so the re-dispatch can claim it now.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 		t.Fatalf("clear backoff: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 		t.Fatalf("re-dispatch: %v", err)
 	}
 	var b2 string
-	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&b2); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT assigned_box_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&b2); err != nil {
 		t.Fatalf("read re-assigned box: %v", err)
 	}
 	// Not a skip: B1 was pinned in-flight above, so a same-box re-dispatch would mean the one-job-per-box
@@ -81,7 +81,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	// covers the DIFFERENT-box case, which is all the box-attribution guard can decide. The SAME-box
 	// case — a re-dispatch landing on the box that already holds a superseded outcome — was P7-OD-6's
 	// open half: the Brain had no per-attempt identity, so such a replay was indistinguishable from the
-	// live attempt's report and WAS applied. It is now guarded by sender.jobs.attempt_token
+	// live attempt's report and WAS applied. It is now guarded by byosmtp.jobs.attempt_token
 	// (sender_0020), minted in markSending, echoed on push_job, verified in Handle, and covered by
 	// attempttoken_test.go (TestAttemptToken_StaleReplaySameBoxRejected, plus the deterministic
 	// two-connection interleave in attempttoken_lockorder_test.go). The box-side half of the hazard was
@@ -97,7 +97,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	var cfBefore int
 	var scoreBefore float64
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 		Scan(&cfBefore, &scoreBefore); err != nil {
 		t.Fatalf("read account before: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 	var cfAfter int
 	var scoreAfter float64
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures, account_status_score FROM sender.accounts WHERE id=$1`, acct).
+		`SELECT consecutive_failures, account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).
 		Scan(&cfAfter, &scoreAfter); err != nil {
 		t.Fatalf("read account after: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestStaleReplay_NotAttributedToADifferentBoxesAttempt(t *testing.T) {
 		t.Errorf("positive control: send_logs %d→%d, want +1 (the owning box's outcome must be logged)", logsBefore, got)
 	}
 	if err := e.admin.QueryRow(ctx,
-		`SELECT consecutive_failures FROM sender.accounts WHERE id=$1`, acct).Scan(&cfAfter); err != nil {
+		`SELECT consecutive_failures FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&cfAfter); err != nil {
 		t.Fatalf("read account after control: %v", err)
 	}
 	if cfAfter != cfBefore+1 {

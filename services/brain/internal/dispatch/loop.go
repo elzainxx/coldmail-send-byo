@@ -20,13 +20,13 @@ import (
 // both assigned_account_id and assigned_box_id NULL between TXN 1 and TXN 2.
 const claimForUserQuery = `
 WITH claimed AS (
-    SELECT id FROM sender.jobs
+    SELECT id FROM byosmtp.jobs
     WHERE state = 'queued' AND next_attempt_at <= NOW() AND user_id = $1
     ORDER BY next_attempt_at ASC, created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT $2
 )
-UPDATE sender.jobs
+UPDATE byosmtp.jobs
 SET state = 'assigned',
     lease_expires_at = NOW() + make_interval(secs => $3),
     updated_at = NOW()
@@ -234,7 +234,7 @@ func (d *Dispatcher) snapshotInFlight(ctx context.Context) (map[string]int, erro
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := d.db.Query(ctx,
-		`SELECT user_id, COUNT(*) FROM sender.jobs WHERE state IN ('assigned','sending') GROUP BY user_id`)
+		`SELECT user_id, COUNT(*) FROM byosmtp.jobs WHERE state IN ('assigned','sending') GROUP BY user_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +257,7 @@ func (d *Dispatcher) snapshotActiveUsers(ctx context.Context) ([]string, error) 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := d.db.Query(ctx,
-		`SELECT DISTINCT user_id FROM sender.jobs WHERE state='queued' AND next_attempt_at <= NOW()`)
+		`SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state='queued' AND next_attempt_at <= NOW()`)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (d *Dispatcher) claimForUser(ctx context.Context, userID string, grant, job
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', 'dispatcher', true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', 'dispatcher', true)"); err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, claimForUserQuery, userID, grant, jobMaxProcessingTimeSec)

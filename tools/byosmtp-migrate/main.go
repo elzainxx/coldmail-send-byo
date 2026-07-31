@@ -1,12 +1,12 @@
-// Command sender-migrate is the thin, self-tracking migration runner (ADR-0003, OD-4).
+// Command byosmtp-migrate is the thin, self-tracking migration runner (ADR-0003, OD-4).
 //
 // It keeps the LOCKED convention: every sender_NNNN_*.up.sql self-records into
-// sender.schema_migrations via its own INSERT, and the .down.sql DELETEs it. This runner
+// byosmtp.schema_migrations via its own INSERT, and the .down.sql DELETEs it. This runner
 // does NOT write the tracking row — it only ORDERS and APPLIES pending files. It does not
 // adopt golang-migrate/dbmate (which would require editing locked migration bodies).
 //
 // Config-not-code exception (CLAUDE.md Rule 1): the runner's own lock_timeout /
-// statement_timeout are CLI-flag defaults because sender.config does not exist until the
+// statement_timeout are CLI-flag defaults because byosmtp.config does not exist until the
 // bootstrap migration creates the schema. This exception is the runner only.
 package main
 
@@ -22,8 +22,8 @@ import (
 
 const (
 	// Advisory lock held only for the duration of an up/down/status run. Distinct from the
-	// Brain singleton key (9_200_000_001). Registered in docs/advisory-locks.md.
-	migrateAdvisoryLockID   int64 = 9_100_000_001
+	// Brain singleton key (8_200_000_001). Registered in docs/advisory-locks.md.
+	migrateAdvisoryLockID   int64 = 8_100_000_001
 	defaultLockTimeout            = "10s"
 	defaultStatementTimeout       = "300s"
 )
@@ -51,7 +51,7 @@ func main() {
 		PreflightPath:    preflightPath,
 		LockTimeout:      firstNonEmpty(os.Getenv("MIGRATE_LOCK_TIMEOUT"), defaultLockTimeout),
 		StatementTimeout: firstNonEmpty(os.Getenv("MIGRATE_STATEMENT_TIMEOUT"), defaultStatementTimeout),
-		AllowDown:        os.Getenv("SENDER_MIGRATE_ALLOW_DOWN") == "true",
+		AllowDown:        os.Getenv("BYOSMTP_MIGRATE_ALLOW_DOWN") == "true",
 		SkipPreflight:    os.Getenv("MIGRATE_SKIP_PREFLIGHT") == "true",
 	}
 
@@ -61,19 +61,19 @@ func main() {
 		err = r.Up(ctx)
 	case "down":
 		if len(os.Args) < 3 {
-			fatal("down requires a version, e.g. sender-migrate down 0001")
+			fatal("down requires a version, e.g. byosmtp-migrate down 0001")
 		}
 		err = r.Down(ctx, os.Args[2])
 	case "status":
 		err = r.Status(ctx)
 	case "set-app-password":
-		// Sets sender_module's password out-of-band from SENDER_MODULE_PASSWORD. Never logs
+		// Sets byosmtp_module's password out-of-band from BYOSMTP_MODULE_PASSWORD. Never logs
 		// the value. This keeps role passwords OUT of migration SQL (CLAUDE.md Rule 6).
-		err = r.SetAppPassword(ctx, os.Getenv("SENDER_MODULE_PASSWORD"))
+		err = r.SetAppPassword(ctx, os.Getenv("BYOSMTP_MODULE_PASSWORD"))
 	case "up-and-set-password":
 		// Convenience for the compose one-shot: apply the chain, then set the app password.
 		if err = r.Up(ctx); err == nil {
-			err = r.SetAppPassword(ctx, os.Getenv("SENDER_MODULE_PASSWORD"))
+			err = r.SetAppPassword(ctx, os.Getenv("BYOSMTP_MODULE_PASSWORD"))
 		}
 	case "-h", "--help", "help":
 		usage()
@@ -86,27 +86,27 @@ func main() {
 
 	if err != nil {
 		if errors.Is(err, errDownForbidden) {
-			fatal("down is forbidden unless SENDER_MIGRATE_ALLOW_DOWN=true (forward-only in prod)")
+			fatal("down is forbidden unless BYOSMTP_MIGRATE_ALLOW_DOWN=true (forward-only in prod)")
 		}
 		fatal(err.Error())
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `sender-migrate — thin self-tracking migration runner
+	fmt.Fprint(os.Stderr, `byosmtp-migrate — thin self-tracking migration runner
 
 usage:
-  sender-migrate up                 apply all pending sender_NNNN_*.up.sql in order
-  sender-migrate down <NNNN>        roll back exactly one version (dev only; needs
-                                    SENDER_MIGRATE_ALLOW_DOWN=true)
-  sender-migrate status             show applied vs pending
+  byosmtp-migrate up                 apply all pending sender_NNNN_*.up.sql in order
+  byosmtp-migrate down <NNNN>        roll back exactly one version (dev only; needs
+                                    BYOSMTP_MIGRATE_ALLOW_DOWN=true)
+  byosmtp-migrate status             show applied vs pending
 
 env:
   MIGRATE_DATABASE_URL / DATABASE_URL   (required) admin/owner-capable DSN (OD-1)
   MIGRATIONS_DIR                        default db/migrations
   PREFLIGHT_SQL                         default db/preflight/check_platform_tables.sql
   MIGRATE_SKIP_PREFLIGHT=true           skip the external-table existence check
-  SENDER_MIGRATE_ALLOW_DOWN=true        permit down (forward-only in prod otherwise)
+  BYOSMTP_MIGRATE_ALLOW_DOWN=true        permit down (forward-only in prod otherwise)
   MIGRATE_LOCK_TIMEOUT / _STATEMENT_TIMEOUT   runner bootstrap timeouts (CLI defaults)
 `)
 }
@@ -121,7 +121,7 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func fatal(msg string) {
-	fmt.Fprintf(os.Stderr, "sender-migrate: FATAL: %s\n", msg)
+	fmt.Fprintf(os.Stderr, "byosmtp-migrate: FATAL: %s\n", msg)
 	os.Exit(1)
 }
 

@@ -4,7 +4,7 @@ package adminapi
 // (CLAUDE.md Rule 1; Phase 7 §5.3; Phase 9 §4.6/E4). P9-OD-2 (RULED-AND-CLOSED, Docs/
 // open-decisions.md): before this file, only the config-LOAD path (internal/dispatch/config.go,
 // read on the Brain's own tick cadence) enforced these invariants — a PUT of a value that would
-// invert either pair returned a clean 200, the bad value landed in sender.config, and the
+// invert either pair returned a clean 200, the bad value landed in byosmtp.config, and the
 // violation surfaced only later, as a LATENT tick error far from the change that caused it (the
 // exact "false promise of control" defect class the 9.5 consumption sweep already closed twice).
 // This closes the gap at the point of the mistake: reject the WRITE, don't let it land.
@@ -17,7 +17,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sender-module/brain/internal/configordering"
+	"github.com/byosmtp-module/brain/internal/configordering"
 )
 
 // checkConfigOrderingOnWrite validates the RESULTING pair for a PUT to key with candidate value
@@ -95,7 +95,7 @@ func counterpartReadErr(counterpartKey string, err error) *apiError {
 	return newErr(codeInternalError, "config_ordering_counterpart_read_failed key="+counterpartKey+": "+err.Error())
 }
 
-// readConfigIntDirect reads one integer-typed sender.config key's CURRENT value, unwrapping the
+// readConfigIntDirect reads one integer-typed byosmtp.config key's CURRENT value, unwrapping the
 // {"v": N} envelope. Distinct from getConfig's caller-facing configRow because this needs only
 // the raw int, and must read fresh inside the SAME TRANSACTION as the write it is guarding — never
 // a cached value, and never on a separate connection (see handleConfigPut on why the transaction,

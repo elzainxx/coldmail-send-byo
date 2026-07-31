@@ -1,4 +1,4 @@
-module github.com/sender-module/sender-migrate
+module github.com/byosmtp-module/byosmtp-migrate
 
 go 1.23
 

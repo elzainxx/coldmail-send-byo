@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // setAccountDailyState directly overwrites an account's daily-limit bookkeeping (daily_limit,
@@ -26,7 +26,7 @@ import (
 func (e *dispatchEnv) setAccountDailyState(t *testing.T, acctID string, limit, sent int, resetDay string, paused bool, reason *string) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.accounts
+		`UPDATE byosmtp.accounts
 		   SET daily_limit=$2, daily_sent_count=$3, daily_reset_day=$4::date, paused=$5, pause_reason=$6
 		 WHERE id=$1`, acctID, limit, sent, resetDay, paused, reason); err != nil {
 		t.Fatalf("setAccountDailyState: %v", err)
@@ -36,7 +36,7 @@ func (e *dispatchEnv) setAccountDailyState(t *testing.T, acctID string, limit, s
 func (e *dispatchEnv) setAccountFlags(t *testing.T, acctID string, quarantined, disabled bool) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		`UPDATE sender.accounts SET quarantined=$2, disabled=$3 WHERE id=$1`, acctID, quarantined, disabled); err != nil {
+		`UPDATE byosmtp.accounts SET quarantined=$2, disabled=$3 WHERE id=$1`, acctID, quarantined, disabled); err != nil {
 		t.Fatalf("setAccountFlags: %v", err)
 	}
 }
@@ -45,7 +45,7 @@ func (e *dispatchEnv) accountDailySentCount(t *testing.T, acctID string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT daily_sent_count FROM sender.accounts WHERE id=$1`, acctID).Scan(&n); err != nil {
+		`SELECT daily_sent_count FROM byosmtp.accounts WHERE id=$1`, acctID).Scan(&n); err != nil {
 		t.Fatalf("accountDailySentCount: %v", err)
 	}
 	return n
@@ -367,7 +367,7 @@ func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 	var paused bool
 	var reason *string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT daily_sent_count, daily_reset_day, paused, pause_reason::text FROM sender.accounts WHERE id=$1`, stale).
+		`SELECT daily_sent_count, daily_reset_day, paused, pause_reason::text FROM byosmtp.accounts WHERE id=$1`, stale).
 		Scan(&sent, &resetDay, &paused, &reason); err != nil {
 		t.Fatalf("read back: %v", err)
 	}

@@ -2,16 +2,16 @@ package dispatch
 
 // job_events_fk_carveout_test.go — sender_0024 / ADR-0012 / G12-OD-1 (ruled option A).
 //
-// WHY THIS EXISTS. sender.job_events declares two `ON DELETE SET NULL` FKs (account_id → accounts,
+// WHY THIS EXISTS. byosmtp.job_events declares two `ON DELETE SET NULL` FKs (account_id → accounts,
 // box_id → boxes). Postgres implements SET NULL as an internal `UPDATE ONLY … SET <col> = NULL`, and
 // sender_0008's BEFORE UPDATE reject-trigger raised on EVERY update with no carve-out — so the FK's
 // own maintenance statement aborted and took the parent DELETE with it:
 //
 //	code=internal_error reason=account_write_error:
-//	  ERROR: sender.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)
-//	CONTEXT: SQL statement "UPDATE ONLY "sender"."job_events" SET "account_id" = NULL WHERE …"
+//	  ERROR: byosmtp.job_events is append-only: UPDATE forbidden (SQLSTATE 23000)
+//	CONTEXT: SQL statement "UPDATE ONLY "byosmtp"."job_events" SET "account_id" = NULL WHERE …"
 //
-// Found walking Stage 12 step 7 of Docs/sender-module-local-test-guide.md, on real infra: cleaning up
+// Found walking Stage 12 step 7 of Docs/byosmtp-module-local-test-guide.md, on real infra: cleaning up
 // a throwaway account that had actually SENT mail returned 500 from an endpoint api-contract.md
 // documents as "hard delete (audit row survives)" → 204. An account with no job_events rows returned
 // 204, because SET NULL then matches no row and issues no UPDATE — which is exactly why the defect
@@ -23,7 +23,7 @@ package dispatch
 // happily against a tree with the trigger DROPPED ALTOGETHER — which would be a far worse bug (a
 // silently mutable audit log). So every positive here is paired with the negative that distinguishes
 // a narrow carve-out from no trigger at all, and all negatives are driven as the ADMIN/superuser
-// connection: sender_module has UPDATE revoked (sender_0008), so a rejection observed as that role
+// connection: byosmtp_module has UPDATE revoked (sender_0008), so a rejection observed as that role
 // would prove only the REVOKE and would pass with no trigger present. The negatives must fail on the
 // TRIGGER, so they must run as a role privileged enough to reach it.
 //
@@ -60,7 +60,7 @@ func (e *dispatchEnv) jobEventFingerprint(t *testing.T, jobID string) (content m
 		        COALESCE(error_class::text,'~') || '|' || COALESCE(error_message,'~') || '|' ||
 		        COALESCE(metadata::text,'~') || '|' || created_at::text,
 		        account_id::text, box_id::text
-		   FROM sender.job_events WHERE job_id=$1 ORDER BY seq`, jobID)
+		   FROM byosmtp.job_events WHERE job_id=$1 ORDER BY seq`, jobID)
 	if err != nil {
 		t.Fatalf("fingerprint job_events: %v", err)
 	}
@@ -94,7 +94,7 @@ func (e *dispatchEnv) oneEventIDWithBothFKs(t *testing.T, jobID string) string {
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT id::text FROM sender.job_events
+		`SELECT id::text FROM byosmtp.job_events
 		   WHERE job_id=$1 AND account_id IS NOT NULL AND box_id IS NOT NULL
 		   ORDER BY seq LIMIT 1`, jobID).Scan(&id); err != nil {
 		t.Fatalf("no job_events row with both FKs set for job %s: %v (the dispatch path should have stamped assigned_account_id and assigned_box_id)", jobID, err)
@@ -140,13 +140,13 @@ func TestFKCarveout_AccountDeleteWithJobHistory(t *testing.T) {
 
 	var acctID string
 	if err := e.admin.QueryRow(ctx,
-		`SELECT assigned_account_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
+		`SELECT assigned_account_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
 
-	// THE DELETE. Before sender_0024 this failed with "sender.job_events is append-only: UPDATE
+	// THE DELETE. Before sender_0024 this failed with "byosmtp.job_events is append-only: UPDATE
 	// forbidden" and took the whole statement with it.
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.accounts WHERE id=$1`, acctID); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("DELETE account with job history failed: %v — this is ADR-0012's wedge; sender_0024's carve-out is missing or too narrow", err)
 	}
 
@@ -201,9 +201,9 @@ func TestFKCarveout_BoxDeleteWithJobHistory(t *testing.T) {
 	}
 
 	boxID := e.jobBox(t, job)
-	// sender.jobs.assigned_box_id is ALSO ON DELETE SET NULL, and that table's state trigger is not
+	// byosmtp.jobs.assigned_box_id is ALSO ON DELETE SET NULL, and that table's state trigger is not
 	// involved (assigned_box_id is not `state`), so the box delete reaches job_events directly.
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.boxes WHERE id=$1`, boxID); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.boxes WHERE id=$1`, boxID); err != nil {
 		t.Fatalf("DELETE box with job history failed: %v — ADR-0012's second SET NULL FK is still wedged", err)
 	}
 
@@ -249,7 +249,7 @@ func TestFKCarveout_AccountAndBoxDeletedTogether(t *testing.T) {
 
 	var acctID string
 	if err := e.admin.QueryRow(ctx,
-		`SELECT assigned_account_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
+		`SELECT assigned_account_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
 	boxID := e.jobBox(t, job)
@@ -259,10 +259,10 @@ func TestFKCarveout_AccountAndBoxDeletedTogether(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	if _, err := tx.Exec(ctx, `DELETE FROM sender.accounts WHERE id=$1`, acctID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("DELETE account (combined tx): %v", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM sender.boxes WHERE id=$1`, boxID); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM byosmtp.boxes WHERE id=$1`, boxID); err != nil {
 		t.Fatalf("DELETE box (combined tx) failed: %v — the SECOND per-constraint SET NULL was rejected, which is the NULL-vs-`=` trap the carve-out's IS NOT DISTINCT FROM exists to avoid", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -286,7 +286,7 @@ func TestFKCarveout_AccountAndBoxDeletedTogether(t *testing.T) {
 }
 
 // TestFKCarveout_NegativeControls — THE TEETH. Everything the carve-out must still reject, driven as
-// the ADMIN (superuser) connection so the rejection can only come from the TRIGGER: sender_module has
+// the ADMIN (superuser) connection so the rejection can only come from the TRIGGER: byosmtp_module has
 // UPDATE revoked, so observing a failure as that role would prove the REVOKE and would pass against a
 // tree with no trigger at all.
 //
@@ -317,47 +317,47 @@ func TestFKCarveout_NegativeControls(t *testing.T) {
 
 	// (a) A plain content mutation. The core immutability guarantee, unchanged by sender_0024.
 	mustReject("content UPDATE (actor)",
-		`UPDATE sender.job_events SET actor='admin' WHERE id=$1`, evID)
+		`UPDATE byosmtp.job_events SET actor='admin' WHERE id=$1`, evID)
 	mustReject("content UPDATE (error_message)",
-		`UPDATE sender.job_events SET error_message='tampered' WHERE id=$1`, evID)
+		`UPDATE byosmtp.job_events SET error_message='tampered' WHERE id=$1`, evID)
 
 	// (b) A content change SMUGGLED IN alongside a legitimate null-out. This is the case the
 	// account_events carve-out was written to block (ADR-0009) and the reason the predicate compares
 	// every content column rather than trusting the FK change.
 	mustReject("account_id->NULL bundled with a content change",
-		`UPDATE sender.job_events SET account_id=NULL, actor='admin' WHERE id=$1`, evID)
+		`UPDATE byosmtp.job_events SET account_id=NULL, actor='admin' WHERE id=$1`, evID)
 	mustReject("box_id->NULL bundled with a content change",
-		`UPDATE sender.job_events SET box_id=NULL, to_state='failed' WHERE id=$1`, evID)
+		`UPDATE byosmtp.job_events SET box_id=NULL, to_state='failed' WHERE id=$1`, evID)
 
 	// (c) A bare no-op UPDATE. Nothing changes, so no referential action performs it — it is just an
 	// UPDATE on an append-only table and must still raise. Without the "at least one FK actually
 	// nulled" clause this would be silently blessed.
 	mustReject("no-op UPDATE (nothing changes)",
-		`UPDATE sender.job_events SET actor=actor WHERE id=$1`, evID)
+		`UPDATE byosmtp.job_events SET actor=actor WHERE id=$1`, evID)
 
 	// (d) Re-pointing a nulled FK back at a real row — rewriting provenance to blame an account that
 	// was never involved. Null it legitimately first (via a real parent delete, the only permitted
 	// path), then try to restore it.
 	var acctID string
 	if err := e.admin.QueryRow(ctx,
-		`SELECT assigned_account_id::text FROM sender.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
+		`SELECT assigned_account_id::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&acctID); err != nil {
 		t.Fatalf("read assigned account: %v", err)
 	}
 	pool := e.seedPool(t)
 	other := e.seedAccount(t, pool, "s3cret-other")
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.accounts WHERE id=$1`, acctID); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id=$1`, acctID); err != nil {
 		t.Fatalf("legitimate account delete (setup for case d): %v", err)
 	}
 	var nowNull bool
 	if err := e.admin.QueryRow(ctx,
-		`SELECT account_id IS NULL FROM sender.job_events WHERE id=$1`, evID).Scan(&nowNull); err != nil {
+		`SELECT account_id IS NULL FROM byosmtp.job_events WHERE id=$1`, evID).Scan(&nowNull); err != nil {
 		t.Fatalf("re-read event: %v", err)
 	}
 	if !nowNull {
 		t.Fatal("account_id is not NULL after the parent delete — case (d) would test nothing")
 	}
 	mustReject("NULL account_id -> non-NULL (history rewrite)",
-		`UPDATE sender.job_events SET account_id=$1 WHERE id=$2`, other, evID)
+		`UPDATE byosmtp.job_events SET account_id=$1 WHERE id=$2`, other, evID)
 }
 
 // TestFKCarveout_NoHistoryAccountStillDeletes — the regression guard, so sender_0024 is not credited
@@ -373,13 +373,13 @@ func TestFKCarveout_NoHistoryAccountStillDeletes(t *testing.T) {
 
 	var n int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM sender.job_events WHERE account_id=$1`, fresh).Scan(&n); err != nil {
+		`SELECT count(*) FROM byosmtp.job_events WHERE account_id=$1`, fresh).Scan(&n); err != nil {
 		t.Fatalf("count events: %v", err)
 	}
 	if n != 0 {
 		t.Fatalf("the 'no history' account has %d job_events rows, want 0 — this control is not testing the no-UPDATE path", n)
 	}
-	if _, err := e.admin.Exec(ctx, `DELETE FROM sender.accounts WHERE id=$1`, fresh); err != nil {
+	if _, err := e.admin.Exec(ctx, `DELETE FROM byosmtp.accounts WHERE id=$1`, fresh); err != nil {
 		t.Fatalf("DELETE account with NO job history failed: %v — sender_0024 broke a path that already worked", err)
 	}
 }

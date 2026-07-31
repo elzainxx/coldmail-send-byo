@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
 )
 
 // TestConcurrentOutcomes_QuarantineSurvivesThrottle (R4 HIGH regression) — two concurrent outcome
@@ -23,7 +23,7 @@ func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 	acct := e.seedAccount(t, pool, "sec")
 	// Give a recent success so the score stays high — we want the quarantine to come ONLY from the
 	// auth_failure trigger (§4.2a), not from a score dip, so the test isolates the flag race.
-	if _, err := e.admin.Exec(ctx, `UPDATE sender.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
 
@@ -38,15 +38,15 @@ func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `SELECT set_config('sender.actor','dispatcher',true)`); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor','dispatcher',true)`); err != nil {
 			t.Fatalf("set actor: %v", err)
 		}
 		if _, err := tx.Exec(ctx,
-			`UPDATE sender.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
+			`UPDATE byosmtp.jobs SET state='assigned', assigned_account_id=$2, assigned_box_id=$3,
 			   lease_expires_at=NOW()+INTERVAL '120 seconds' WHERE id=$1`, j, acct, e.px.boxID); err != nil {
 			t.Fatalf("assign: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE sender.jobs SET state='sending' WHERE id=$1`, j); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE byosmtp.jobs SET state='sending' WHERE id=$1`, j); err != nil {
 			t.Fatalf("sending: %v", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -82,7 +82,7 @@ func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 
 	// The auth_failure quarantine MUST have survived the concurrent throttle outcome.
 	var quarantined bool
-	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM sender.accounts WHERE id=$1`, acct).Scan(&quarantined); err != nil {
+	if err := e.admin.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&quarantined); err != nil {
 		t.Fatalf("read quarantined: %v", err)
 	}
 	if !quarantined {
@@ -92,7 +92,7 @@ func TestConcurrentOutcomes_QuarantineSurvivesThrottle(t *testing.T) {
 	// Exactly one system quarantine event exists (idempotent; the race did not produce two or zero).
 	var quarEvents int
 	if err := e.admin.QueryRow(ctx,
-		`SELECT count(*) FROM sender.account_events WHERE account_id=$1 AND actor='system' AND action='quarantine'`, acct).Scan(&quarEvents); err != nil {
+		`SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1 AND actor='system' AND action='quarantine'`, acct).Scan(&quarEvents); err != nil {
 		t.Fatalf("count quar events: %v", err)
 	}
 	if quarEvents != 1 {

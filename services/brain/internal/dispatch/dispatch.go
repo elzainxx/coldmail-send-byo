@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/boxproto"
+	"github.com/byosmtp-module/brain/internal/credential"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sender-module/brain/internal/boxproto"
-	"github.com/sender-module/brain/internal/credential"
 )
 
 // Pusher is what the dispatcher needs from the box channel: deliver one push_job to a named box,
@@ -183,14 +183,14 @@ func (d *Dispatcher) logDispatchPausedByOperator() {
 // assigned box. The actor GUC ('dispatcher') must be set in the same tx (the trigger enforces it).
 const claimQuery = `
 WITH claimed AS (
-    SELECT id FROM sender.jobs
+    SELECT id FROM byosmtp.jobs
     WHERE state = 'queued' AND next_attempt_at <= NOW()
       AND provider_message_id IS NULL
     ORDER BY next_attempt_at ASC, created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
-UPDATE sender.jobs
+UPDATE byosmtp.jobs
 SET state = 'assigned',
     assigned_box_id = $1,
     lease_expires_at = NOW() + make_interval(secs => $2),
@@ -286,7 +286,7 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 // pushed nothing is (false, nil). This is the per-job handoff shared by TryDispatch (Phase 3) and
 // the tick loop (Phase 4, §1.3 RESOLVE_AND_PUSH). cfg is the caller's already-loaded config,
 // threaded through to selectAccountForJob so a job-loop of N claimed jobs does not re-read
-// sender.config N times in a single tick.
+// byosmtp.config N times in a single tick.
 func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID string, cfg Config) (bool, error) {
 	// 2) Resolve the job's pool chain (Chunk 4 wires dedicated-first/shared-fallback; Chunks 1-3
 	// use the trivial single-pool chain below) and atomically CONSUME an eligible account from the
@@ -433,7 +433,7 @@ func (d *Dispatcher) claimOne(ctx context.Context, boxID string, jobMaxProcessin
 		return claimedJob{}, false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', 'dispatcher', true)"); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', 'dispatcher', true)"); err != nil {
 		return claimedJob{}, false, err
 	}
 	var j claimedJob
@@ -479,7 +479,7 @@ func (d *Dispatcher) markSending(ctx context.Context, jobID, accountID, boxID st
 	var token int64
 	err := d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx,
-			`UPDATE sender.jobs SET state='sending', assigned_account_id=$2, assigned_box_id=$3,
+			`UPDATE byosmtp.jobs SET state='sending', assigned_account_id=$2, assigned_box_id=$3,
 			        attempt_token = attempt_token + 1, updated_at=NOW()
 			 WHERE id=$1 AND state='assigned'
 			 RETURNING attempt_token`, jobID, accountID, boxID).Scan(&token)
@@ -516,7 +516,7 @@ func (d *Dispatcher) requeue(ctx context.Context, jobID, reason string) {
 		// again (e.g. its only account was auto-quarantined). Job failure is decoupled from
 		// attempt_count; only pool exhaustion fails a job (Chunk 5).
 		_, err := tx.Exec(ctx,
-			`UPDATE sender.jobs
+			`UPDATE byosmtp.jobs
 			   SET state='queued',
 			       assigned_box_id=NULL,
 			       lease_expires_at=NULL,
@@ -537,7 +537,7 @@ func (d *Dispatcher) readLease(ctx context.Context, jobID string) (time.Time, bo
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	var t *time.Time
-	if err := d.db.QueryRow(ctx, `SELECT lease_expires_at FROM sender.jobs WHERE id=$1`, jobID).Scan(&t); err != nil {
+	if err := d.db.QueryRow(ctx, `SELECT lease_expires_at FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&t); err != nil {
 		log.Printf("dispatch: readLease(%s) query failed: %v — pushing without an echoed lease deadline", jobID, err)
 		return time.Time{}, false
 	}
@@ -557,7 +557,7 @@ func (d *Dispatcher) inActorTx(ctx context.Context, actor string, fn func(tx pgx
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SELECT set_config('sender.actor', $1, true)", actor); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor', $1, true)", actor); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {

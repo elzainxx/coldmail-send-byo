@@ -36,7 +36,7 @@ func (e *testEnv) seedSystemUser(t *testing.T) {
 func (e *testEnv) rawCredential(t *testing.T, accID string) (ct, nonce []byte, keyID string) {
 	t.Helper()
 	if err := e.admin.QueryRow(context.Background(),
-		"SELECT credential_ciphertext, credential_nonce, credential_key_id FROM sender.accounts WHERE id=$1", accID).
+		"SELECT credential_ciphertext, credential_nonce, credential_key_id FROM byosmtp.accounts WHERE id=$1", accID).
 		Scan(&ct, &nonce, &keyID); err != nil {
 		t.Fatalf("read raw credential: %v", err)
 	}
@@ -61,7 +61,7 @@ func (e *testEnv) decrypt(accID [16]byte, keyID string, ct, nonce []byte) ([]byt
 func (e *testEnv) setDailySentCount(t *testing.T, accID string, n int) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		"UPDATE sender.accounts SET daily_sent_count=$2 WHERE id=$1", accID, n); err != nil {
+		"UPDATE byosmtp.accounts SET daily_sent_count=$2 WHERE id=$1", accID, n); err != nil {
 		t.Fatalf("set daily_sent_count: %v", err)
 	}
 }
@@ -70,7 +70,7 @@ func (e *testEnv) setDailySentCount(t *testing.T, accID string, n int) {
 func (e *testEnv) setPauseDaily(t *testing.T, accID string) {
 	t.Helper()
 	if _, err := e.admin.Exec(context.Background(),
-		"UPDATE sender.accounts SET paused=true, pause_reason='daily_limit' WHERE id=$1", accID); err != nil {
+		"UPDATE byosmtp.accounts SET paused=true, pause_reason='daily_limit' WHERE id=$1", accID); err != nil {
 		t.Fatalf("set pause daily_limit: %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func (e *testEnv) eventCount(t *testing.T, accID string) int {
 	t.Helper()
 	var n int
 	if err := e.admin.QueryRow(context.Background(),
-		"SELECT count(*) FROM sender.account_events WHERE account_id=$1", accID).Scan(&n); err != nil {
+		"SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1", accID).Scan(&n); err != nil {
 		t.Fatalf("event count: %v", err)
 	}
 	return n
@@ -91,7 +91,7 @@ func (e *testEnv) eventCount(t *testing.T, accID string) int {
 func (e *testEnv) latestEvent(t *testing.T, accID string) (action, actor string, fromFlags, toFlags []byte, requestID *string) {
 	t.Helper()
 	if err := e.admin.QueryRow(context.Background(),
-		`SELECT action, actor, from_flags, to_flags, request_id FROM sender.account_events
+		`SELECT action, actor, from_flags, to_flags, request_id FROM byosmtp.account_events
 		 WHERE account_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1`, accID).
 		Scan(&action, &actor, &fromFlags, &toFlags, &requestID); err != nil {
 		t.Fatalf("latest event: %v", err)
@@ -99,10 +99,10 @@ func (e *testEnv) latestEvent(t *testing.T, accID string) (action, actor string,
 	return
 }
 
-// moduleConn opens a sender_module connection to the clone (for the append-only T9 checks).
+// moduleConn opens a byosmtp_module connection to the clone (for the append-only T9 checks).
 func (e *testEnv) moduleConn(t *testing.T) *pgx.Conn {
 	t.Helper()
-	dsn := withUserPass(e.cloneDSN, "sender_module", modulePassword())
+	dsn := withUserPass(e.cloneDSN, "byosmtp_module", modulePassword())
 	c, err := pgx.Connect(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("module connect: %v", err)
