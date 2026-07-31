@@ -1,11 +1,15 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-07-31): ALL 80 ITEMS ARE CLOSED. The needs-user queue is EMPTY and the plan set is
-implementation-ready.** The 79 original open decisions across the build plan and phases 0–8 are
-disposed of — 15 closed by an earlier ruling, 2 merged into the decision they depend on, and **62 ruled
-on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled individually). The 80th,
-[M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3 sweep and **ruled the same
-day**.
+**Status (2026-07-31): 80 OF 81 PLANNING/RULING ITEMS ARE CLOSED.** The 79 original open decisions
+across the build plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into
+the decision they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12
+ruled individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the
+Chunk 3 sweep and **ruled the same day**. All 80 of those are ruling-queue items and are genuinely
+empty (needs-user: 0). **[M3-P0-OD-12](#m3-p0-od-12--raised-during-phase-0-execution-2026-07-31-build-time-not-planning-time)
+is a different kind of item** — a build-time finding raised during Phase 0's actual execution, not a
+ruling that needs the user's judgment call. It is flagged (Rule 2) and assigned to a later phase, not
+"closed," because there is nothing to rule on: the disposition is already decided by CLAUDE.md's own
+rules (Phase 0 does not change inherited behavior).
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -333,6 +337,47 @@ them. Applied in the phase docs; see [`plan-revision-log.md`](plan-revision-log.
 5. **The recipient domain gets a column.** M3-P7-OD-6 ruled (a), so Phase 7's migration carries a
    denormalized domain column and the throttle aggregation stops reading `send_logs`. No third
    config-ordering invariant is created.
+
+---
+
+## M3-P0-OD-12 — RAISED during Phase 0 execution 2026-07-31 (build-time, not planning-time)
+
+Everything above this line was written and ruled before Phase 0 was executed. This item was found
+**during** the fork/rename/verify execution itself (Gate A's evidence-gathering pass), not during
+planning — flagged per Rule 2 rather than silently patched, because fixing it would be a behavior
+change to inherited code and Phase 0 changes identity only.
+
+**The finding.** `tests/harness/run.sh` invokes a host-built `tools/byosmtp-migrate/bin/byosmtp-migrate`
+binary three times to build migrated template databases gating 141 tests across
+`tests/harness`, `internal/adminapi`, `internal/dispatch`, and `internal/platformapi`
+(`TEST_TEMPLATE_DB`). **No script builds that binary** — not `scripts/dev.sh certs` (which *does*
+auto-build `provision-box` inline), not `scripts/dev.sh test`, not `.github/workflows/real-infra.yml`.
+On a fresh checkout with no binary present, all three `up-and-set-password` calls fail silently
+(`>/dev/null 2>&1 || true`), `TEST_TEMPLATE_DB=""`, and all 141 gated tests execute `t.Skip(...)`.
+Because `go test` exits 0 on an all-skip package, and `run.sh`'s `go_suite()` helper judges pass/fail
+only by grepping for a `FAIL` line — never checking for `SKIP` — the harness still prints **"58
+passed, 0 failed."** The same helper's echo filter (`grep -E "^(ok|FAIL|--- (PASS|FAIL))"`) also drops
+`SKIP` lines from the log a human reads, so nothing in the printed output hints at it either.
+
+**Confirmed reproducible in the CI shape, not just locally.** `.github/workflows/real-infra.yml`
+runs `gofmt`/`go vet`, `scripts/dev.sh certs`, `scripts/dev.sh up`, then `scripts/dev.sh test` directly
+— it never builds `tools/byosmtp-migrate`. Reproduced by hand: deleting `tools/byosmtp-migrate/bin/`
+and re-running `scripts/dev.sh test` on the live Chunk 4 stack reproduces all three
+`template create failed` lines and still reports `HARNESS RESULT: 58 passed, 0 failed`. Building the
+binary by hand (`go build`, no file changed) made all 141 tests run and pass with zero regressions —
+proving this is a missing build step, not a defect in the tested code, and pre-existing in module 2
+(inherited unchanged by the fork, not introduced by the rename).
+
+**Disposition.** Not fixed here — Phase 0 does not patch inherited scripts or CI workflows; that is a
+behavior change, and the corollary in `phase-0-fork-and-baseline.md` §6 is explicit: *"a red harness
+at Gate A or Gate B is never fixed by changing behaviour... flagged under Rule 2 and assigned to the
+phase that owns it."* Every harness run performed during Phase 0's own verification built the binary
+by hand first, so Phase 0's own Gate A/Gate B evidence is not vacuous (`Docs/fork-point.md` records
+this explicitly). The fix — have `scripts/dev.sh certs` or `test` build the migrate binary inline, the
+way `provision-box` already is — belongs to whichever phase first touches `scripts/dev.sh` or the CI
+workflow for an unrelated reason, or to the all-modules polish pass if none does first. Also register
+in `Docs/shared-code-manifest.md`'s bug log as a module-2 finding once that phase runs, since the gap
+is inherited, not module-3-specific.
 
 ---
 
