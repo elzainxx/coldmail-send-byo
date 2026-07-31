@@ -1,0 +1,41 @@
+stateDiagram-v2
+    direction TB
+
+    [*] --> Verifying: user adds SMTP
+
+    Verifying --> Rejected: AUTH fails<br/>or From misaligned + p=reject
+    Rejected --> [*]: never created
+
+    Verifying --> Active: connect + STARTTLS + AUTH<br/>+ DNS gate passes
+
+    Active --> Paused: throttle<br/>or daily limit reached
+    Paused --> Active: auto-clears<br/>(reason-scoped)
+
+    Active --> Quarantined: auth_failure
+    Active --> Quarantined: N consecutive failures
+    Active --> Quarantined: failure rate over window<br/>(min ~20 samples)
+
+    Quarantined --> Active: credential updated<br/><b>auto-clears</b>
+    Quarantined --> Active: user un-quarantine<br/><i>rate limited ~3/day</i>
+    Quarantined --> Active: test button verifies<br/><b>bypasses rate limit</b>
+
+    Active --> Suspended: operator suspends user<br/>or subscription lapses
+    Quarantined --> Suspended: same
+    Paused --> Suspended: same
+    Suspended --> Active: reinstated<br/>(lossless, same jobs resume)
+
+    Active --> Deleted: user deletes
+    Quarantined --> Deleted: user deletes
+    Deleted --> [*]: purged after retention window
+
+    note right of Quarantined
+        User-resettable circuit breaker,
+        not module 2's operator-only lockout.
+        Excluded from routing while here.
+    end note
+
+    note right of Deleted
+        Credential still exists during
+        the retention window, so routing
+        MUST exclude deleted accounts.
+    end note

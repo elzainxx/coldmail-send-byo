@@ -170,3 +170,12 @@ Fixes flow **module 3 → module 2 only**, and in practice **rarely** — module
 drift from module 3 without reconciliation. Reconciliation happens at the all-modules polish pass, not
 continuously. `Docs/shared-code-manifest.md` (§5, this phase) is the checking aid for this; it is not a
 sync promise.
+
+## Deferred: git remote for disaster recovery
+
+Phase 0's own instruction ("add a git remote — local git protects against edit mistakes, not disk
+failure") is **deliberately not done yet**, by explicit user instruction during Chunk 3
+("skip pushing for now"). This repo currently has **no remote**, unlike module 3's planning-docs
+repo (`zexSites/codmailling-module-3-docs`, private). Recorded here so it is a known, named gap
+rather than a silent omission — `git remote add origin <url> && git push -u origin master` when
+ready. Until then, this working tree is the only copy.

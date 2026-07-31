@@ -7,7 +7,7 @@
 #
 # It is a TEST DRIVER, not product code: it writes public.job_items (the PLATFORM's table, which the
 # real platform owns and Module 2 only reads) and then calls the real Domain-A endpoint with the real
-# service token. It touches nothing in the `sender` schema — the Brain does all of that, which is the
+# service token. It touches nothing in the `byosmtp` schema — the Brain does all of that, which is the
 # point: the campaign has to arrive the way a real caller sends it.
 #
 # Usage:

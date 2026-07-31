@@ -58,7 +58,7 @@ Read these first; they will each cost you an hour otherwise.
 3. `docker compose ... ps -a` — confirm every container is up and **nothing has exited**. Use `-a`: a plain `ps` omits exited containers, which is exactly how a dead box hides.
 4. Confirm both boxes registered: `SELECT id, status FROM byosmtp.boxes` shows **two** `active` rows, and the Brain logged `box registered id=...` exactly twice with no `stream closed` churn
 5. Open the Mailpit UI; confirm it is reachable and empty
-6. Connect with `psql`; confirm the `sender` schema exists (owner `byosmtp_owner`) and `byosmtp.config` holds **53** rows
+6. Connect with `psql`; confirm the `byosmtp` schema exists (owner `byosmtp_owner`) and `byosmtp.config` holds **53** rows
 
 **Pass:** every container up and stable, both boxes `active`, Mailpit empty, schema present.
 

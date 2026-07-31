@@ -876,7 +876,7 @@ process is alive and answering, it simply no longer holds the right to dispatch.
 
 **What the Brain does about it (you usually need to do nothing).** Since 2026-07-29 (G11-OD-1 /
 ADR-0011) a lockless Brain **pauses**: the dispatch, reclaim and retention loops stop claiming,
-pushing, reclaiming, and sweeping — no job is claimed, no credential is pushed, no `sender.*` row is
+pushing, reclaiming, and sweeping — no job is claimed, no credential is pushed, no `byosmtp.*` row is
 written by that process. Meanwhile the keeper re-attempts `pg_try_advisory_lock` every
 `brain_singleton_reacquire_interval_sec` (default **5s**). A transient loss therefore self-heals within
 seconds, with no restart and no reconciliation, and dispatch resumes from stored state.

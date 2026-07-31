@@ -1,16 +1,62 @@
-# CLAUDE.md — Operating Rules (Module 2, Email Sender)
+# CLAUDE.md — Operating Rules (Module 3, BYOSMTP)
 
 This file is the /init anchor and the single source of build discipline for this
-repository (one repo; Go "Brain" orchestrator + Node.js "Sender Boxes" + centrally
+repository (one repo; Go "Brain" orchestrator + Node.js sender boxes + centrally
 owned SQL migrations). Read it before writing code, tests, migrations, or docs.
 These rules are NON-NEGOTIABLE and outlive any individual phase. If a task appears
 to require breaking one, STOP and file an Open Decision (Rule 2) — do not proceed.
 
-> **Status (2026-07-28, Phase 10 close):** all eleven phases (0, 1–9, 9.5, 10) are implemented,
-> tested on real infra, and closed. The locked phase specs live under `Docs/history/` and MUST NOT
-> be edited as part of any build work. Living operational + reference docs are the top level of
-> `Docs/` — see `Docs/README.md`. Deferred work is registered in `Docs/future-work.md`, not left
-> open. Rules below are unchanged and outlive the build.
+**Users control their own assets. The operator controls the shared substrate.** Users set
+their own daily limits, choose their own From address, restart their own paused accounts,
+see the full technical error text, and are notified about everything actionable. The
+operator controls queue depth, per-user suspension, and **pacing** — the one dial that could
+damage shared infrastructure, deliberately kept out of users' hands. When a new question
+arises, answer it with that line.
+
+> **Status (2026-07-31, Phase 0 baseline green):** forked from module 2 at
+> `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo).
+> Gate A (byte-identical inheritance) and Gate B (identity rename, nothing else) both passed on
+> real infra — see `Docs/fork-point.md`. Module 3 is under active development: Phases 1–8 are
+> planned (`Docs/module-3-build-plan.md`, `Docs/phase-*.md`) but not yet built. This status block
+> will be updated as phases close; it is NOT a "sealed" claim like module 2's was. The locked phase
+> specs inherited from module 2 live under `Docs/history/` and MUST NOT be edited as part of any
+> build work. Living operational + reference docs are the top level of `Docs/` — see
+> `Docs/README.md`. Deferred work is registered in `Docs/future-work.md` (module 2's register,
+> inherited, with module 3's own entries appended at §9 — not a second file). Rules below are
+> unchanged from module 2 except where §4.2 below names an explicit change, and outlive the build.
+
+## 0. Inherited from module 2 — fork it, keep it, do not redesign it
+
+The following are carried across unchanged and are NOT phase work to revisit: the real-infra
+harness and its 10-suite structure, the six CI gates (`config_drift`, `contract_drift`,
+`migration_lint`, `config_consumption`, `drain_grace`, `no_secret_leak`), the migration runner's
+self-tracking convention, the box's SMTP session handling (STARTTLS-before-AUTH, memory-only
+credentials, zeroize-on-every-exit), the box↔Brain mTLS channel and its register/heartbeat/send-
+stream protocol, the credential encryption scheme (AES-256-GCM, AAD-bound, key-id label check),
+the job lifecycle and append-only event log, idempotency via `provider_message_id`/`attempt_token`,
+the error taxonomy and requeue-only re-dispatch, the reclaim loop and dead-box detection, the
+Brain singleton guard (including the ADR-0011 pause-and-reacquire amendment), content variation (12
+toggles, all-off byte-identical), and the `docker-compose`-based dev==CI loop. Fork it, keep it, do
+not redesign it — divergence is Phase work, tracked per-area in `Docs/shared-code-manifest.md`.
+
+## 0a. Deleted from module 2 — in scope for Phases 1–2, not before
+
+Module 3's Phase 1+2 sequence removes: the shared pool concept and pool assignment, fallback
+chains and `MAX_FALLBACK_HOPS`, cross-user contention handling (module 3 is one account per user,
+so structural no-contention replaces it — proven, not assumed), operator-owned accounts (accounts
+become user-owned), and pools as a data-model concept entirely. Phase 0 deletes NONE of this — the
+pools table, pool assignment, and every pool-dependent test or gate stay green as inherited until
+the phase that owns the deletion runs.
+
+## 0b. Standing invariants carried across every future phase
+
+Five of these restate Rules 1, 6, and 9 in a phase-facing form; two are new lines because they are
+cheap to violate: a Brain-declared reclaim never scores the account; bounce never penalises the
+account; wait-vs-fail ordering — empty and self-recovering chains WAIT, evaluated before the fail
+branch; account→job lock ordering per Rule 9; every autonomous subsystem obeys its kill-switch per
+Rule 7; and **any new table needs explicit grants** — ADR-0008's trap: default privileges do not
+fire for a table an admin created then reowned, so a new table is not done until its grants are
+verified, not assumed.
 
 ## 1. Config not code
 - Every tunable — timeout, window, limit, batch size, interval, mode — is a seeded
@@ -33,8 +79,9 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 
 ## 2. Flag, don't silently fix
 - Contradictions, ambiguities, and locked-fact conflicts are NOT resolved by
-  inventing an answer. Record them in the Open Decisions log (`Docs/history/open-decisions.md`
-  + an ADR in `Docs/history/decisions/`) and await the user's ruling.
+  inventing an answer. Record them in the Open Decisions log (`Docs/open-decisions.md` — module
+  3's own fresh ledger, not `Docs/history/open-decisions.md`, which is module 2's sealed
+  provenance) plus an ADR in `Docs/decisions/` when one is warranted, and await the user's ruling.
 - Never resolve a locked contradiction on your own authority. "Locked" means locked.
 - An Open Decision blocks only the ambiguous slice; keep unrelated work moving.
 
@@ -58,6 +105,12 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
   under `Docs/`. Follow it.
 
 ## 5. Contracts, errors, and honesty
+> **M3-P0-OD-7 (flagged, not resolved here):** this rule's enum sentence, inherited verbatim
+> below, names `pool_kind` as additive-only-forever — but module 3's Phase 1 drops pools
+> entirely, which the rule as written would forbid. Phase 0 leaves the text below untouched and
+> does not resolve the contradiction on its own authority (Rule 2); the ruling belongs to
+> Phase 1, which is where the reset-baseline reading (module 3 has no deployed history yet, so
+> the clock resets to its own six surviving enums) is actually decided and recorded.
 - Contracts (API request/response shapes, event/message schemas, DB columns, enums)
   are ADDITIVE-ONLY and VERSIONED. Never rename; never repurpose; never remove.
   The 7 enums (job_state, error_class, pool_kind, routing_strategy, box_status,
@@ -93,7 +146,7 @@ to require breaking one, STOP and file an Open Decision (Rule 2) — do not proc
 - Auth domains never share a credential: Domain A = platform service token
   (quote/run/report/describe); Domain B = operator platform_admin bearer key
   (stored hashed, constant-time compared) for /v1/admin/*.
-- The `sender` schema is owned by a dedicated NON-LOGIN, NON-SUPERUSER role
+- The `byosmtp` schema is owned by a dedicated NON-LOGIN, NON-SUPERUSER role
   (`byosmtp_owner`) so that `FORCE ROW LEVEL SECURITY` on `byosmtp.accounts` actually
   enforces. The app role `byosmtp_module` is login-only and holds the enumerated grants,
   never ownership.

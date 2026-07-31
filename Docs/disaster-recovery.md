@@ -72,11 +72,11 @@ test -s "$KEY_PATH" || { echo "FATAL: no key at [$KEY_PATH]"; exit 1; }
 test "$(wc -c < "$KEY_PATH")" -eq 32 || echo "WARNING: key is not 32 bytes — check before trusting this backup"
 
 # 1. Wrap it in something you can actually restore from, with a passphrase you have separately.
-gpg --symmetric --cipher-algo AES256 --output /tmp/sender-master-key.$(hostname).gpg "$KEY_PATH"
+gpg --symmetric --cipher-algo AES256 --output /tmp/byosmtp-master-key.$(hostname).gpg "$KEY_PATH"
 
 # 2. Record what it is, so a stranger restoring it in two years knows what they hold.
-cat > /tmp/sender-master-key.README <<'EOF'
-Sender module credential master key (AES-256, 32 raw bytes).
+cat > /tmp/byosmtp-master-key.README <<'EOF'
+byosmtp module credential master key (AES-256, 32 raw bytes).
 Pairs with CREDENTIAL_KEY_ID=<value>  <-- fill this in; a mismatch fails AAD authentication.
 Restore to the path named by KMS_DEV_KEY_FILE on the Brain host, mode 0400, owned by the brain user.
 Losing this file makes every SMTP credential in byosmtp.accounts permanently unrecoverable.
@@ -84,7 +84,7 @@ EOF
 
 # 3. Move both OFF this host, then shred the temporary copies.
 #    (scp/rclone/your secrets manager — see "Where the backup lives" below.)
-shred -u /tmp/sender-master-key.*.gpg /tmp/sender-master-key.README
+shred -u /tmp/byosmtp-master-key.*.gpg /tmp/byosmtp-master-key.README
 ```
 
 Non-negotiables:
@@ -103,7 +103,7 @@ backup: at 3am nobody knows where to look.
 
 | Copy | Location | Access controlled by | Last verified |
 |---|---|---|---|
-| Primary | *(e.g. the org password manager, "Sender module — master key" item)* | *(who)* | *(date)* |
+| Primary | *(e.g. the org password manager, "byosmtp module — master key" item)* | *(who)* | *(date)* |
 | Secondary | *(e.g. offline encrypted media in a physical safe)* | *(who)* | *(date)* |
 | Passphrase | *(separate from both of the above)* | *(who)* | *(date)* |
 
@@ -186,14 +186,14 @@ risk, not a corruption risk — decide deliberately whether to hold dispatch aft
    during a deliberate restore.
 2. Restore the database by your provider's procedure (`pg_restore`, Supabase PITR, snapshot
    rollback). This module does not prescribe one.
-3. **Re-verify roles and ownership.** A restore into a fresh cluster can land the `sender` schema
+3. **Re-verify roles and ownership.** A restore into a fresh cluster can land the `byosmtp` schema
    under the wrong owner, which silently breaks a load-bearing property: `FORCE ROW LEVEL SECURITY`
    on `byosmtp.accounts` only enforces because the schema is owned by the non-login, non-superuser
    `byosmtp_owner` role. Confirm it (read-only):
 
    ```sql
    SELECT n.nspname, pg_get_userbyid(n.nspowner) AS owner
-     FROM pg_namespace n WHERE n.nspname = 'sender';                 -- expect byosmtp_owner
+     FROM pg_namespace n WHERE n.nspname = 'byosmtp';                -- expect byosmtp_owner
    SELECT relname, relrowsecurity, relforcerowsecurity
      FROM pg_class WHERE relname = 'accounts';                       -- expect t, t
    SELECT rolcanlogin, rolsuper FROM pg_roles WHERE rolname = 'byosmtp_owner';  -- expect f, f

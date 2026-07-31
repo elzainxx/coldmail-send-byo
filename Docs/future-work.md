@@ -1,5 +1,13 @@
 # Future work — what is deliberately not built
 
+**Inherited from module 2 at the fork (`module3-fork-point`,
+`21b65e65eba8f2cc16a84408bac6e018511ec46b`), verbatim below through §8.** This is module 2's own
+register, carried across by the clone per `Docs/phase-0-fork-and-baseline.md` §1.2 — its entries
+describe module 2's build, not module 3's, and are left as-written (identifiers renamed to `byosmtp`
+by Gate B; no content rewritten). **§9 is module 3's own entry**, appended here rather than kept in a
+second file, because two deferred-work registers is exactly the staleness CLAUDE.md Rule 4 exists to
+prevent — module 3's own planning doc said as much before the fork happened and is honored here.
+
 This is the register of work that was **considered and consciously deferred** across eleven build
 phases. It exists so that "we have zero open items" can be an honest statement rather than a
 bookkeeping trick: deferred work does not disappear, it moves here, labelled, with the reason.
@@ -169,3 +177,49 @@ Full ledger with every ruling: [`Docs/history/open-decisions.md`](./history/open
 | [`operator-runbook.md`](./operator-runbook.md) | Working within these limits today. |
 | [`Docs/history/open-decisions.md`](./history/open-decisions.md) | Every decision ruled across eleven phases, with its disposition. |
 | [`CLAUDE.md`](../CLAUDE.md) | The rules any of this work must not break. Read before picking an item up. |
+
+---
+
+# Module 3's own register begins here
+
+Everything above this line is module 2's inherited register, unchanged in content. Module 3's own
+deferred work is registered below, appended at the fork rather than kept as a second file — see the
+note at the top of this document.
+
+## 9. Module 3's own deferred work
+
+### FW-M3-1 — Ground-truth From verification via `Authentication-Results`
+
+**Registered:** 2026-07-29, by M3-P4-OD-1's ruling (Phase 4 §1.6).
+**Status:** deferred, not V1. No owner yet.
+
+**What it is.** Verify a From address by *actually sending* a message through the user's own
+account to a mailbox this system controls, then parsing the receiving MTA's
+`Authentication-Results` header for the real SPF/DKIM/DMARC verdicts.
+
+**Why it is the only real answer.** DMARC passes on SPF-aligned **OR** DKIM-aligned (RFC 7489
+§4.2), so DNS inspection can never prove a failure — it can only fail to find evidence of one
+leg. That disjunction is what forced the ruling: it is why the default verdict downgraded from
+BLOCK to warn-plus-acknowledgment, and it is a permanent property of the protocol, not a gap in
+Phase 4's implementation. A test send is the only mechanism that can ever move a verdict from
+*"we couldn't verify this will authenticate"* to *"verified"*, because it observes what a real
+receiver concluded instead of guessing from records.
+
+**Why it is not V1.** It needs a receiving mailbox with header access, inbound-side
+infrastructure Phase 4 does not have, and a verdict-freshness model (a test send is a point-in-time
+observation, and the account's DNS can change afterwards — so it inherits the whole re-verification
+question §2.5 answers for the DNS check). That is a phase, not an addition to one.
+
+**Why it is cheaper than it looks, when it is taken up.** Phase 3's *"send a test to myself"*
+already carries the send-through-the-user's-account machinery; what is missing is the receiving and
+parsing side. The ruling names this explicitly.
+
+**Trigger to revisit.** Either (a) the warn-plus-acknowledgment default proves too permissive in
+practice — users acknowledging past real misconfigurations and then blaming deliverability on the
+platform — or (b) inbound infrastructure arrives for another reason and the receiving mailbox
+becomes free.
+
+**Interaction to preserve.** If this is built, it does **not** re-enable the old BLOCK rule. It adds
+a *stronger positive* (`verified` on observed evidence) rather than a stronger negative; the ruling's
+design line — *"users control their own assets… make the failure visible and let them choose"* —
+survives, and the acknowledgment path stays for every address that has not been test-sent.

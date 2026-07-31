@@ -26,7 +26,7 @@ platform table shapes) that this guide assumes are settled.
 | **A VPS for the Brain** | 2 vCPU / 2 GB RAM is comfortable for V1 volumes. The Brain is a single process and is not memory-hungry; see [`capacity-planning.md`](./capacity-planning.md) before sizing for scale. |
 | **One or more VPSes for boxes** | 1 vCPU / 512 MB each is sufficient — a box is a thin SMTP relay. Start with one. |
 | **A private network between them** | Essential. See Part 4 — the box↔Brain channel must not traverse the public internet, and no box port is ever publicly reachable. |
-| **PostgreSQL 16+** | Managed (Supabase, RDS, etc.) or self-hosted. The module owns the `sender` schema; the platform owns `public`. |
+| **PostgreSQL 16+** | Managed (Supabase, RDS, etc.) or self-hosted. The module owns the `byosmtp` schema; the platform owns `public`. |
 | **A 32-byte master encryption key** | Wraps SMTP credentials. In production this should be a real KMS key. See Part 3 and the key-backup section of [`disaster-recovery.md`](./disaster-recovery.md) **before you create it** — losing this key is unrecoverable. |
 | **SMTP account credentials** | At least one working account (host, port, username, password). |
 | **`public.users` and `public.job_items`** | Platform-owned tables the module reads. They must exist before migrating; the preflight fails loudly if they do not. |

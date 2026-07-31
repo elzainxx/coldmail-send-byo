@@ -19,7 +19,7 @@ Single repository, multiple deployable services:
   surfaces and the mTLS box-link.
 - **Sender boxes** (`services/box/`, Node.js) — pure SMTP relays. NO DB, NO KMS; credentials
   held in memory only and zeroed on every exit from the send path. Scale by adding box containers.
-- **Shared Postgres/Supabase** — the module owns the `sender` schema (owned by the non-login
+- **Shared Postgres/Supabase** — the module owns the `byosmtp` schema (owned by the non-login
   `byosmtp_owner` role); the platform owns `public`. The module reads exactly two platform
   tables (`public.users`, `public.job_items`) read-only.
 
@@ -81,7 +81,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Brain is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Brain role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
 | Box holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every **send-path** exit (not on shutdown — `security-posture.md` §3.12) | `services/box` (structural) |
 | Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (box token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
-| Tenant isolation | `user_id` on every table; RLS on all `sender.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `byosmtp_owner` | DB |
+| Tenant isolation | `user_id` on every table; RLS on all `byosmtp.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `byosmtp_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
 | Every tunable is config, not code | 53 seeded `byosmtp.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
 

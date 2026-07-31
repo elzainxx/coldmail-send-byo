@@ -328,7 +328,7 @@ The codebase cannot check these; they are the deployment's half of the posture.
 - [ ] No box host has `DATABASE_URL`, any KMS variable, `ca.key`, or `brain.key`. Presence is an incident, not a misconfiguration.
 - [ ] Boxes have **no** public ingress; box↔Brain traffic is on a private network.
 - [ ] `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each rotatable, each held by the smallest possible set.
-- [ ] `sender` schema owner is `byosmtp_owner` (non-login, non-superuser) and `byosmtp.accounts` shows `relforcerowsecurity = t`.
+- [ ] `byosmtp` schema owner is `byosmtp_owner` (non-login, non-superuser) and `byosmtp.accounts` shows `relforcerowsecurity = t`.
 - [ ] `debug_log_retention_days` reflects a deliberate privacy decision (§3.2), not a default nobody looked at.
 - [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on nothing).
 - [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content besides retention).
