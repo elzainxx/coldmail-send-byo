@@ -132,7 +132,7 @@ func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, c
 // failExhaustedJobs transitions a user's READY queued jobs (next_attempt_at <= NOW()) to terminal
 // `failed` (§5.1 FAIL branch). queued→failed (actor='dispatcher'), completed_at=NOW(), lease stays
 // NULL (the job was queued). last_error_class is left as the job's most recent real class (NOT
-// overwritten with a made-up value — pool_exhausted is NOT an error_class enum value, §5.2 P5-14);
+// overwritten with a made-up value — accounts_exhausted is NOT an error_class enum value, §5.2 P5-14);
 // the internal reason is recorded in last_error_message + job_events.metadata. The platform report
 // shows only state:"failed" (two-vocabulary). Only READY jobs are failed — a job whose
 // next_attempt_at is still in the future (mid-backoff) is not yet due, so it is left to a later tick.
@@ -144,7 +144,7 @@ func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error
 			`UPDATE byosmtp.jobs
 			   SET state='failed',
 			       completed_at=NOW(),
-			       last_error_message='pool_exhausted: all eligible accounts terminal_blocked (§5.1)',
+			       last_error_message='accounts_exhausted: all eligible accounts terminal_blocked (§5.1)',
 			       updated_at=NOW()
 			 WHERE user_id=$1 AND state='queued' AND next_attempt_at <= NOW()`, userID)
 		return err

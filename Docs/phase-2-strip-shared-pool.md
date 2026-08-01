@@ -1084,6 +1084,30 @@ proving the fix's effect is caused by `deleted_at` specifically:
 **Verified:** clean-slate reset, full harness 56/56 (including both new behavioral tests and the
 static consolidation check), all six CI gates green. No schema change — this commit is Go-only.
 
+### 8.7 Post-G4 closeout finding — M3-P2-OD-3's `pool_exhausted` → `accounts_exhausted` rename was ruled but never executed
+
+Found while confirming M3-P2-OD-10 landed (Phase 3 kickoff's own first check). M3-P2-OD-3 ruled the
+rename lands "at G3, with `api-contract.md` and the report test in the same commit" (§8.3 above),
+but G3's own closeout checklist (§8.5, criteria 12-19) never listed it as a criterion, so it fell
+through: `exhaustion.go:147`'s `last_error_message` literal still read `pool_exhausted: all eligible
+accounts terminal_blocked (§5.1)` after G4 closed.
+
+**Confirmed safe to fix now, standalone, no new migration or contract surface:** this string is
+`jobs.last_error_message`, an internal-only column with **zero readers in `platformapi`**
+(`grep -rn "last_error_message" services/brain/internal/platformapi/` → no matches, re-verified
+live) — Phase 7's own §1.4/T7 gate already requires and enforces this. The rename is therefore pure
+internal renaming, not a client-visible contract change; `pool_exhausted` was never an `error_class`
+enum value either, so Rule 5's additive-only guarantee was never in play.
+
+**Fixed:** `exhaustion.go`'s `last_error_message` literal and its neighboring comment now read
+`accounts_exhausted`. `api-contract.md`'s `/v1/report` row (which already documented the pending
+rename parenthetically) updated to describe it as done rather than pending. No test asserted the old
+literal string (`exhaustion_test.go` asserts job state and event shape, never the message text), so
+no test changed.
+
+**Verified:** clean-slate reset, full harness green, all six CI gates green — same verification
+bar as every other closeout in this file.
+
 ---
 
 ## 9. What this phase does NOT touch

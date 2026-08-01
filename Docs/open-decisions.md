@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 86 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 87 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -27,7 +27,12 @@ follow-up, not just the four originally named. The 86th,
 was raised while doing G4's predicate consolidation: `exhaustion.go`'s self-recovering classifier and
 `health_store.go`'s healthy-count query never got G3's `deleted_at IS NULL` term, so a user whose only
 account is soft-deleted was misclassified as self-recovering (WAIT forever) instead of terminal_blocked
-— ruled the same day.
+— ruled the same day. The 87th,
+[M3-P2-OD-14](#m3-p2-od-14--ruled-2026-08-01-m3-p2-od-3s-pool_exhausted--accounts_exhausted-rename-was-ruled-but-never-executed),
+is a fourth build-time finding, raised at the start of Phase 3's kickoff while confirming M3-P2-OD-10
+landed: M3-P2-OD-3 ruled the `last_error_message` literal renames `pool_exhausted` →
+`accounts_exhausted` at G3, but G3's own closeout checklist never listed it as a criterion and it was
+never done — ruled and fixed the same day it was found.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -630,6 +635,41 @@ infra-fault/recipient-fault split) rather than silently starved.
 for every site that shares it). Landed in the same commit as the consolidation itself, not as a
 separate patch — the whole point of consolidating is that this class of gap becomes mechanically
 harder to reintroduce.
+
+---
+
+## M3-P2-OD-14 — RULED 2026-08-01: M3-P2-OD-3's `pool_exhausted` → `accounts_exhausted` rename was ruled but never executed
+
+Found at the start of Phase 3's kickoff, while confirming M3-P2-OD-10 (the deferred pool-coupled
+health/alerting code) had actually landed — it had. Checking it turned up a different, adjacent gap:
+M3-P2-OD-3 ruled that `failExhaustedJobs`'s `last_error_message` literal renames from
+`pool_exhausted: all eligible accounts terminal_blocked (§5.1)` to `accounts_exhausted: …` "at G3,
+with `api-contract.md` and the report test in the same commit" (§8.3 of
+`Docs/phase-2-strip-shared-pool.md`). G3 landed (`67ae8c3`) without it — its own closeout checklist
+(§8.5, criteria 12-19) never listed the rename as one of the nine criteria, so it fell through
+silently rather than being deferred deliberately. `exhaustion.go:147` still read the old string after
+both G3 and G4 closed.
+
+**Confirmed before fixing (Rule 2 — checking a ruled item isn't the same as re-opening it):** is this
+safe to fix standalone, outside any gate, with no new migration or contract-visible change? Verified
+live: `grep -rn "last_error_message" services/brain/internal/platformapi/` returns zero matches —
+Phase 7's own §1.4/T7 gate already requires and enforces that this column has no reader on the
+platform-facing surface, so the string is genuinely internal-only (two-vocabulary rule already
+satisfied regardless of its contents). `pool_exhausted` was never an `error_class` enum value either
+(exhaustion.go's own comment already noted this), so Rule 5's additive-only enum guarantee was never
+in play. No test in the tree asserted the literal string — `exhaustion_test.go`'s assertions are all
+on job state, `completed_at`, and event shape, never message text.
+
+**RULED: fix now, standalone.** Same reasoning as every other build-time finding this session
+(M3-P2-OD-10/11/12/13, M3-P4-OD-11): a ruled decision that was never executed is a gap to close on
+discovery, not a new ambiguity to defer into Phase 3.
+
+**Fix:** `exhaustion.go`'s `last_error_message` literal and its neighboring comment renamed to
+`accounts_exhausted`. `api-contract.md`'s `/v1/report` row updated from "pending a rename... at G3"
+to describing the rename as done. `Docs/phase-2-strip-shared-pool.md` gets a new §8.7 recording this
+closeout, mirroring §8.5/§8.6's shape. No migration, no test change (none asserted the old string).
+
+**Verified:** clean-slate reset, full harness green, all six CI gates green.
 
 ---
 
