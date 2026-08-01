@@ -13,26 +13,28 @@ operator controls queue depth, per-user suspension, and **pacing** — the one d
 damage shared infrastructure, deliberately kept out of users' hands. When a new question
 arises, answer it with that line.
 
-> **Status (2026-08-01, Phase 1's G1→G3 landed):** forked from module 2 at
+> **Status (2026-08-01, Phase 1's G1→G4 landed):** forked from module 2 at
 > `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo).
 > Gate A (byte-identical inheritance) and Gate B (identity rename, nothing else) both passed on
 > real infra — see `Docs/fork-point.md`. Phase 1's build sequence (`Docs/phase-2-strip-shared-pool.md`
-> §1) is three internal gates: **G1** (dispatch-side pool logic stripped, schema untouched) and
-> **G2** (pool schema dropped + the account write-path rewritten to `user_id`-owned) are both
-> committed and verified on real infra. **G3** (migrations `0029`-`0034`: `user_settings`,
+> §1) is four internal gates, all committed and verified on real infra: **G1** (dispatch-side pool
+> logic stripped, schema untouched); **G2** (pool schema dropped + the account write-path
+> rewritten to `user_id`-owned); **G3** (migrations `0029`-`0034`: `user_settings`,
 > `user_config_overrides`, `user_suspensions`, `campaigns`, `notifications`, the `account_events`
 > action-CHECK widen; `accountConsume`/`userHasEligible` gain `deleted_at IS NULL`;
 > `userRoutingStrategy` reads `user_settings` for real; Test A renamed + Test B added per
-> `Docs/phase-2-strip-shared-pool.md` §5) is also committed and verified — clean-slate reset,
-> full harness green, all six CI gates green. **G4** (consolidate the eligibility predicate,
-> M3-P4-OD-3) remains. Phases 2–8 beyond this Phase-1 delta are planned
-> (`Docs/module-3-build-plan.md`, `Docs/phase-*.md`) but not yet built. This status block will be
-> updated as gates/phases close; it is NOT a "sealed" claim like module 2's was. The locked phase
-> specs inherited from module 2 live under `Docs/history/` and MUST NOT be edited as part of any
-> build work. Living operational + reference docs are the top level of `Docs/` — see
-> `Docs/README.md`. Deferred work is registered in `Docs/future-work.md` (module 2's register,
-> inherited, with module 3's own entries appended at §9 — not a second file). Rules below are
-> unchanged from module 2 except where §4.2 below names an explicit change, and outlive the build.
+> `Docs/phase-2-strip-shared-pool.md` §5); **G4** (M3-P4-OD-3's eligibility-predicate consolidation
+> — one shared `accountBaseEligibilityFilter` constant instead of hand-copied WHERE fragments,
+> which surfaced and fixed a real drift bug, M3-P4-OD-11: a soft-deleted account's only account was
+> misclassified self-recovering instead of terminal_blocked). Phase 1's own gate sequence is
+> therefore CLOSED. Phases 2–8 are planned (`Docs/module-3-build-plan.md`, `Docs/phase-*.md`) but
+> not yet built. This status block will be updated as gates/phases close; it is NOT a "sealed"
+> claim like module 2's was. The locked phase specs inherited from module 2 live under
+> `Docs/history/` and MUST NOT be edited as part of any build work. Living operational + reference
+> docs are the top level of `Docs/` — see `Docs/README.md`. Deferred work is registered in
+> `Docs/future-work.md` (module 2's register, inherited, with module 3's own entries appended at §9
+> — not a second file). Rules below are unchanged from module 2 except where §4.2 below names an
+> explicit change, and outlive the build.
 
 ## 0. Inherited from module 2 — fork it, keep it, do not redesign it
 

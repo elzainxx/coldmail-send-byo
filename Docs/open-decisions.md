@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 85 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 86 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -22,7 +22,12 @@ own migrations drop, so G2 must stub them rather than leave them broken — rule
 85th, [M3-P2-OD-13](#m3-p2-od-13--ruled-2026-08-01-the-docs-dependents-sweep-names-four-more-docs-phase-1-2-1-missed),
 found four more docs Phase 1 §2.1's own inventory missed (capacity-planning.md, monitoring.md,
 security-posture.md, smoke-test-real-provider.md) — ruled the same day: fix all eight docs in one
-follow-up, not just the four originally named.
+follow-up, not just the four originally named. The 86th,
+[M3-P4-OD-11](#m3-p4-od-11--ruled-2026-08-01-a-soft-deleted-accounts-only-account-fails-not-waits),
+was raised while doing G4's predicate consolidation: `exhaustion.go`'s self-recovering classifier and
+`health_store.go`'s healthy-count query never got G3's `deleted_at IS NULL` term, so a user whose only
+account is soft-deleted was misclassified as self-recovering (WAIT forever) instead of terminal_blocked
+— ruled the same day.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -577,6 +582,54 @@ facts (M3-P2-OD-3's G3-deferred rename, M3-P2-OD-12's G2 stubs). Fixed in the sa
 with a repo-wide sweep after the fix: every remaining `pool` hit in `Docs/*.md` is either a
 already-annotated G2-stub/removal note or legitimate historical/planning-doc content — none describe
 pools as a live, current-behavior concept.
+
+---
+
+## M3-P4-OD-11 — RULED 2026-08-01: a soft-deleted account's only account FAILS, not WAITs
+
+Found while executing G4's predicate consolidation (M3-P4-OD-3). `dispatch/eligibility.go`'s
+`accountConsume` and `userHasEligible` both gained `AND a.deleted_at IS NULL` at G3
+(Docs/phase-2-strip-shared-pool.md §5.4). Two other sites that classify the SAME underlying
+condition never got the matching term:
+
+- `dispatch/exhaustion.go`'s `userHasSelfRecovering` — checks whether a non-eligible account will
+  become eligible automatically (daily-limit/throttle pause). A soft-deleted account with, say,
+  `pause_reason='daily_limit'` matched this query's `WHERE` (no `deleted_at` filter at all), so
+  `evaluateChain` classified it `self_recovering` → **WAIT**. But a soft-deleted account has no
+  timer that clears `deleted_at` — only an explicit admin `PATCH … {"deleted_at": null}` (or the
+  Phase-3 undelete path) does. A user whose only account is deleted would therefore WAIT
+  *forever*, silently, with the queue never draining and no operator signal beyond
+  `queue.queued` staying non-zero — exactly the "spinning dispatcher" failure class Rule 10 and
+  this consolidation exist to close, and a fifth confirmed instance of the same drift bug
+  (Phase 1's `deleted_at`, Phase 4's `from_verification_state`, and now this).
+- `adminapi/health_store.go`'s `queryAccountCounts` `Healthy` `COUNT(*) FILTER`. Missing the same
+  term, so a soft-deleted account with headroom and no other blocking flag was counted as
+  `accounts.healthy` on the operator health endpoint — a real account nobody can send through
+  reported as fine.
+- `dispatch/exhaustion.go`'s `userHasAnyAccount` (the zero-accounts empty-chain check) was
+  correctly UNCHANGED by this finding — it deliberately counts a deleted row (§2.3's "does this
+  user have any account row at all," independent of eligibility), so a user with one deleted
+  account is NOT re-routed into the "provision an account" WAIT branch by mistake; they proceed to
+  the self-recovering/terminal_blocked classification, which is exactly where this fix belongs.
+
+**The question this raises, asked before fixing it (Rule 2):** once a soft-deleted account is
+correctly excluded from `self_recovering`, `evaluateChain`'s remaining branches make it
+`terminal_blocked` → **FAIL** by construction (§5.1's branch order: not eligible, not
+self-recovering, ≥1 account exists → FAIL). Is FAIL the right verdict for a deleted account, or
+should deletion instead be re-classified as a fourth "zero accounts"-like WAIT condition?
+
+**RULED: FAIL (terminal_blocked).** Deletion is a deliberate action with no automatic timer — the
+same shape as quarantine/disable/manual-pause, all of which are already `terminal_blocked`.
+Treating it as WAIT would mean the queue holds jobs open indefinitely against an account the user
+themselves removed, with no automatic path back and no operator-visible distinction from a genuine
+transient dip. FAIL means the platform is told promptly (refundable, per the existing
+infra-fault/recipient-fault split) rather than silently starved.
+
+**Fix:** `userHasSelfRecovering`'s query and `queryAccountCounts`'s `Healthy` filter both gain
+`AND a.deleted_at IS NULL` (or, post-consolidation, the shared base-predicate constant absorbs it
+for every site that shares it). Landed in the same commit as the consolidation itself, not as a
+separate patch — the whole point of consolidating is that this class of gap becomes mechanically
+harder to reintroduce.
 
 ---
 

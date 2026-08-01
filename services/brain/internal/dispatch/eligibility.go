@@ -23,6 +23,28 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// accountBaseEligibilityFilter is the "is this account row a candidate for anything at all" base
+// filter — quarantined/disabled/deleted are STRUCTURAL exclusions, distinct from the daily-limit/
+// throttle CYCLE logic that differs per consumer (consume admits an expired throttle pause;
+// self-recovering treats one as still-blocked-but-timed; health's healthy-count wants neither).
+// Consolidated per M3-P4-OD-3 (Docs/phase-2-strip-shared-pool.md/phase-4-from-gate.md §8.1):
+// before this, accountConsume's CTE and userHasEligible's WHERE each carried this fragment as a
+// separately hand-copied literal, and exhaustion.go's userHasSelfRecovering carried NEITHER —
+// which is exactly how M3-P4-OD-11 was found: G3 added deleted_at IS NULL to the first two sites
+// and never propagated it to the third, so a user whose only account was soft-deleted was
+// misclassified self_recovering (WAIT forever) instead of terminal_blocked (FAIL). A term added
+// here now reaches every production site in this package that shares it, by construction, not by
+// remembering to grep for the other copies.
+//
+// adminapi/health_store.go's queryAccountCounts needs the IDENTICAL filter but CANNOT reference
+// this constant — adminapi deliberately does not import internal/dispatch (structural package
+// isolation, OD-7's precedent) — so it carries its own literal copy, fixed in the same commit as
+// this consolidation and cross-referenced here so a future term addition is visible in review even
+// though it cannot be enforced by the compiler across that boundary.
+const accountBaseEligibilityFilter = `a.quarantined = FALSE
+      AND a.disabled = FALSE
+      AND a.deleted_at IS NULL`
+
 // defaultAccountOrderBy is the one_by_one / fallback ORDER BY (§3, RULED — see P4-OD-1 below):
 // score DESC, then a DETERMINISTIC id ASC tiebreak — NOT RANDOM(). §3's literal SQL
 // (`account_status_score DESC, RANDOM()`) does not produce its own documented behavior: RANDOM()
@@ -112,9 +134,7 @@ eligible_accounts AS (
                                                         -- strategy, since Postgres' extended query
                                                         -- protocol requires every supplied
                                                         -- parameter to appear in the query text
-      AND a.quarantined = FALSE
-      AND a.disabled = FALSE
-      AND a.deleted_at IS NULL
+      AND %[2]s
       AND (
             (a.daily_reset_day < today_calc.today_in_tz
                 AND (a.paused = FALSE
@@ -128,7 +148,7 @@ eligible_accounts AS (
                          AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4))
                 AND a.daily_sent_count < a.daily_limit)
           )
-    ORDER BY %s
+    ORDER BY %[1]s
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 ),
@@ -269,19 +289,10 @@ func (d *Dispatcher) accountConsume(ctx context.Context, userID, orderBy string,
 	return a, true, nil
 }
 
-// userHasEligible is the read-only EXISTS form of the eligibility predicate (§4.1
-// USER_HAS_ELIGIBLE, renamed from poolHasEligible per Docs/phase-2-strip-shared-pool.md §3.1),
-// used by the pre-claim gate (Chunk 5) to test exhaustion WITHOUT consuming. Defining exhaustion as
-// "would the consume affect zero rows" via the IDENTICAL WHERE (not a separately-maintained
-// predicate) makes it impossible for the exhaustion test to drift from the real selection logic.
-func (d *Dispatcher) userHasEligible(ctx context.Context, userID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	// IDENTICAL predicate to the consume's eligible_accounts CTE, incl. the P5-13 expired-throttle
-	// admission ($3 = throttle_pause_seconds) and the daily_reset_hour boundary offset ($4) — so the
-	// pre-claim gate and the §5 exhaustion classifier can never drift from the real selection logic.
-	// Read-only (EXISTS), no consume.
-	const q = `
+// userHasEligibleQueryTmpl is userHasEligible's read-only EXISTS form of the eligibility
+// predicate, rendered once with accountBaseEligibilityFilter (M3-P4-OD-3) so it can never diverge
+// from accountConsumeQueryTmpl's copy of the same structural filter.
+const userHasEligibleQueryTmpl = `
 SELECT EXISTS (
   WITH today_calc AS (
       SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $1)::date AS today_in_tz
@@ -289,9 +300,7 @@ SELECT EXISTS (
   SELECT 1
   FROM byosmtp.accounts a, today_calc
   WHERE a.user_id = $2
-    AND a.quarantined = FALSE
-    AND a.disabled = FALSE
-    AND a.deleted_at IS NULL
+    AND %s
     AND (
           (a.daily_reset_day < today_calc.today_in_tz
               AND (a.paused = FALSE
@@ -306,16 +315,36 @@ SELECT EXISTS (
               AND a.daily_sent_count < a.daily_limit)
         )
 )`
+
+// userHasEligibleQuery is userHasEligibleQueryTmpl rendered with accountBaseEligibilityFilter,
+// computed once at package init rather than per call — the filter is a compile-time constant, not
+// a value that can ever vary across calls.
+var userHasEligibleQuery = fmt.Sprintf(userHasEligibleQueryTmpl, accountBaseEligibilityFilter)
+
+// userHasEligible is the read-only EXISTS form of the eligibility predicate (§4.1
+// USER_HAS_ELIGIBLE, renamed from poolHasEligible per Docs/phase-2-strip-shared-pool.md §3.1),
+// used by the pre-claim gate (Chunk 5) to test exhaustion WITHOUT consuming. Defining exhaustion as
+// "would the consume affect zero rows" via the IDENTICAL WHERE (not a separately-maintained
+// predicate) makes it impossible for the exhaustion test to drift from the real selection logic.
+func (d *Dispatcher) userHasEligible(ctx context.Context, userID, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// IDENTICAL predicate to the consume's eligible_accounts CTE, incl. the P5-13 expired-throttle
+	// admission ($3 = throttle_pause_seconds) and the daily_reset_hour boundary offset ($4), AND
+	// the consolidated base filter (M3-P4-OD-3) — so the pre-claim gate and the §5 exhaustion
+	// classifier can never drift from the real selection logic. Read-only (EXISTS), no consume.
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, dailyResetTimezone, userID, throttlePauseSeconds, dailyResetHour).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, userHasEligibleQuery, dailyResetTimezone, userID, throttlePauseSeconds, dailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
 }
 
-// accountConsumeQuery renders the template with the ORDER BY fragment. orderBy is ALWAYS one of
-// this package's own constants (defaultAccountOrderBy today; Chunk 3 adds the per-strategy set) —
-// never derived from user/request input — so formatting it into the query is safe, not injection.
+// accountConsumeQuery renders the template with the ORDER BY fragment AND the consolidated base
+// eligibility filter (M3-P4-OD-3). Both are ALWAYS this package's own constants — orderBy is
+// defaultAccountOrderBy or one of the per-strategy set (accountOrderByForStrategy), the filter is
+// accountBaseEligibilityFilter — never derived from user/request input, so formatting them into
+// the query is safe, not injection.
 func accountConsumeQuery(orderBy string) string {
-	return fmt.Sprintf(accountConsumeQueryTmpl, orderBy)
+	return fmt.Sprintf(accountConsumeQueryTmpl, orderBy, accountBaseEligibilityFilter)
 }

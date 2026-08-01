@@ -295,6 +295,17 @@ func queryBoxCounts(ctx context.Context, db *pgxpool.Pool) (boxCounts, error) {
 // buckets OVERLAP by design with at_daily_limit (a paused-for-daily_limit account counts in BOTH
 // "paused" and "at_daily_limit" — the spec's example values are consistent with this: 14 paused,
 // 9 at_daily_limit, not disjoint totals summing to the account count).
+//
+// Healthy's filter carries "AND deleted_at IS NULL" (M3-P4-OD-11): a soft-deleted account with
+// headroom and no other blocking flag must never read as healthy on this endpoint — the operator
+// would see a real send-capable-looking account that cannot actually route. This is the SAME
+// structural exclusion internal/dispatch's accountBaseEligibilityFilter applies (M3-P4-OD-3's
+// consolidation), duplicated here as a literal because adminapi does not import internal/dispatch
+// (OD-7's package-isolation precedent) — cross-reference this comment if that filter ever gains a
+// new term, since this copy will not follow automatically. The other four buckets (paused/
+// quarantined/disabled/at_daily_limit) are deliberately UNCHANGED by this fix: they answer "why is
+// this account not sending," which stays meaningful for a deleted account's PRIOR flags, and no
+// finding named them.
 func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, error) {
 	tz, err := readConfigString(ctx, db, "daily_reset_timezone")
 	if err != nil {
@@ -308,7 +319,7 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 	err = db.QueryRow(ctx,
 		`SELECT
 		   COUNT(*) FILTER (WHERE paused = FALSE AND quarantined = FALSE AND disabled = FALSE
-		                       AND daily_sent_count < daily_limit),
+		                       AND deleted_at IS NULL AND daily_sent_count < daily_limit),
 		   COUNT(*) FILTER (WHERE paused = TRUE),
 		   COUNT(*) FILTER (WHERE quarantined = TRUE),
 		   COUNT(*) FILTER (WHERE disabled = TRUE),

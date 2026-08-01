@@ -51,6 +51,18 @@ func (e *testEnv) seedHealthAccount(t *testing.T, paused, quarantined, disabled 
 	return id
 }
 
+// seedHealthAccountDeleted seeds a healthy, full-headroom account and then soft-deletes it —
+// M3-P4-OD-11's fixture: an account that would otherwise read as healthy, deleted.
+func (e *testEnv) seedHealthAccountDeleted(t *testing.T) string {
+	t.Helper()
+	id := e.seedHealthAccount(t, false, false, false, 0, 100)
+	if _, err := e.admin.Exec(bgCtx(),
+		`UPDATE byosmtp.accounts SET deleted_at=NOW(), purge_after=NOW() + INTERVAL '30 days' WHERE id=$1`, id); err != nil {
+		t.Fatalf("soft-delete account: %v", err)
+	}
+	return id
+}
+
 // seedHealthBox seeds a real box row with the given status and heartbeat age.
 func (e *testEnv) seedHealthBox(t *testing.T, status string, heartbeatAgeSec int) string {
 	t.Helper()
@@ -296,6 +308,52 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 	}
 	if paused, _ := dispatch2["dispatch_paused"].(bool); paused {
 		t.Fatalf("dispatch.dispatch_paused=true with dispatch_enabled=true, want false: %+v", dispatch2)
+	}
+}
+
+// TestHealth_DeletedAccountNeverCountsHealthy (M3-P4-OD-11) — a soft-deleted account with full
+// headroom and no other blocking flag must NOT count in accounts.healthy: an operator reading this
+// endpoint must never see a real, send-capable-looking account that actually cannot route.
+func TestHealth_DeletedAccountNeverCountsHealthy(t *testing.T) {
+	e := newTestEnv(t, "healthdel")
+	ctx := context.Background()
+
+	healthy := e.seedHealthAccount(t, false, false, false, 0, 100)
+	deleted := e.seedHealthAccountDeleted(t)
+
+	resp := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
+
+	var wantHealthy int
+	if err := e.admin.QueryRow(ctx,
+		`SELECT COUNT(*) FROM byosmtp.accounts
+		 WHERE paused=FALSE AND quarantined=FALSE AND disabled=FALSE
+		   AND deleted_at IS NULL AND daily_sent_count < daily_limit`).Scan(&wantHealthy); err != nil {
+		t.Fatalf("direct healthy count: %v", err)
+	}
+	if wantHealthy != 1 {
+		t.Fatalf("fixture sanity: direct healthy count=%d, want exactly 1 (only %s, not the deleted %s)", wantHealthy, healthy, deleted)
+	}
+
+	accounts, ok := resp.body["accounts"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing accounts object: %s", resp.raw)
+	}
+	if got := intField(t, accounts, "healthy"); got != 1 {
+		t.Fatalf("accounts.healthy=%d, want 1 — the deleted account %s must not be counted alongside the real healthy account %s", got, deleted, healthy)
+	}
+
+	// Negative control: undelete, and the count becomes 2 — proving the exclusion above is caused
+	// by deleted_at specifically, not some other property of the fixture.
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET deleted_at=NULL, purge_after=NULL WHERE id=$1`, deleted); err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	resp2 := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
+	accounts2, ok := resp2.body["accounts"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing accounts object (2nd): %s", resp2.raw)
+	}
+	if got := intField(t, accounts2, "healthy"); got != 2 {
+		t.Fatalf("negative control: accounts.healthy=%d after undelete, want 2 — if this doesn't rise to 2, the exclusion above proves nothing about deleted_at specifically", got)
 	}
 }
 

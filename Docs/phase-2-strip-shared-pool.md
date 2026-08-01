@@ -1035,6 +1035,55 @@ green, `TestRunnerLifecycle`'s up/idempotent-up/down-to-`0000` cycle covering `0
 per-migration up/down anti-vacuity checks for `0029`-`0034` were added in the same commit as the
 migrations themselves.
 
+### 8.6 G4 closeout — M3-P4-OD-3's consolidation, executed as its own commit before either new term
+
+Per M3-P4-OD-3's ruling (§8.1 above; `phase-4-from-gate.md` §8.1 carries the identical ruling and
+build order), the eligibility predicate is consolidated to ONE shared definition before Phase 3's
+`credential_verification_state` or Phase 4's `from_verification_state` lands — this is that
+commit, and only that commit; no new term is added here.
+
+**What was actually duplicated, re-inventoried against the real G3-era tree** (the original §8.1
+five-site list predates G2/G3, which changed the shape): `dispatch/eligibility.go`'s
+`accountConsume` CTE and `userHasEligible`'s `EXISTS` carried a byte-identical
+`quarantined = FALSE / disabled = FALSE / deleted_at IS NULL` fragment; `dispatch/exhaustion.go`'s
+`userHasSelfRecovering` carried a **hand-copied, already-diverged** partial version (quarantined/
+disabled only, no `deleted_at`); `adminapi/health_store.go`'s `queryAccountCounts` carried the
+same partial version. `platformapi/campaign_report.go` carries none today (G2 stubbed it empty).
+
+**The consolidation:** a single Go constant, `accountBaseEligibilityFilter`
+(`dispatch/eligibility.go`), holding exactly the structural-exclusion fragment
+(`quarantined = FALSE AND disabled = FALSE AND deleted_at IS NULL`) — the part that is identical
+across every consumer. The daily-limit/throttle CYCLE logic (which genuinely differs per
+consumer — the consume admits an expired throttle pause, self-recovering treats one as
+still-blocked, health's healthy-count wants neither) is deliberately left inline, not folded into
+the same constant, because consolidating logic that is supposed to differ would be the opposite
+mistake. `accountConsumeQueryTmpl` and the new `userHasEligibleQueryTmpl` both interpolate the
+constant via `fmt.Sprintf`; `exhaustion.go`'s query does the same. `adminapi/health_store.go`
+cannot import `internal/dispatch` (OD-7's package-isolation precedent) so it keeps its own literal
+copy, now fixed and cross-referenced in a comment pointing at the shared constant.
+
+**Acceptance criterion, made mechanically checkable, not merely asserted:** new test
+`TestConsolidation_BaseEligibilityFilterHasOneDefinitionSite`
+(`dispatch/consolidation_test.go`) greps the package's own non-test source for the constant's
+distinguishing literal and fails if it appears anywhere but the one definition site, with a
+positive control proving `exhaustion.go` references the constant BY NAME rather than a
+re-diverged copy.
+
+**A real bug found while inventorying the duplication, not invented to justify the work:**
+`userHasSelfRecovering` and `queryAccountCounts` never received G3's `deleted_at IS NULL` term
+when it was added to the other two sites — a soft-deleted account was misclassified
+`self_recovering` (the dispatcher would **WAIT forever**, since deletion has no automatic-clear
+timer) and counted as `accounts.healthy` on the operator health endpoint. Recorded and ruled as
+**M3-P4-OD-11** (Docs/open-decisions.md): FAIL (terminal_blocked), matching
+quarantine/disable/manual-pause — all deliberate actions with no automatic timer. Fixed in the
+same commit as the consolidation, with two new behavioral tests, each carrying a negative control
+proving the fix's effect is caused by `deleted_at` specifically:
+`TestExhaustion_DeletedAccountFailsNotWaits` (`dispatch/exhaustion_test.go`) and
+`TestHealth_DeletedAccountNeverCountsHealthy` (`adminapi/health_test.go`).
+
+**Verified:** clean-slate reset, full harness 56/56 (including both new behavioral tests and the
+static consolidation check), all six CI gates green. No schema change — this commit is Go-only.
+
 ---
 
 ## 9. What this phase does NOT touch

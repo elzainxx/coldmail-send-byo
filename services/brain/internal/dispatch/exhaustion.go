@@ -7,6 +7,7 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -87,25 +88,23 @@ func (d *Dispatcher) userHasAnyAccount(ctx context.Context, userID string) (bool
 //   - paused with pause_reason='throttle' whose window has NOT yet expired (clears at the throttle
 //     timer — an EXPIRED throttle pause is already `eligible` via P5-13, so it never reaches here).
 //
-// An account that is quarantined / disabled / manually-paused is terminal_blocked (manual recovery
-// only) and does NOT count as self_recovering. A stale daily_limit-paused / at-limit account also
+// An account that is quarantined / disabled / manually-paused / soft-deleted is terminal_blocked
+// (manual recovery only) and does NOT count as self_recovering — the structural exclusions are
+// accountBaseEligibilityFilter (M3-P4-OD-3), the SAME constant accountConsume/userHasEligible use,
+// so a term added there reaches this classifier too. Before the consolidation this query carried
+// its own hand-copied quarantined/disabled pair and had NO deleted_at term at all — the exact gap
+// M3-P4-OD-11 found: a soft-deleted account was misclassified self_recovering (WAIT forever)
+// instead of terminal_blocked (FAIL), since deletion has no automatic timer, the same as
+// quarantine/disable/manual-pause. A stale daily_limit-paused / at-limit account also
 // self-recovers (the lazy reset re-opens it) — but if its reset day is already past it would be
 // eligible (handled by the CLAIM branch), so here we scope to the current cycle.
-func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, cfg Config) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	// One query across the user's whole account set. An account is self_recovering iff it is not
-	// quarantined/disabled AND (daily_limit-paused OR at-limit-this-cycle OR
-	// throttle-paused-still-in-window). Manual pauses and quarantine/disable are excluded → they are
-	// terminal_blocked. today_in_tz uses the config daily-reset tz to match the eligibility notion.
-	const q = `
+var userHasSelfRecoveringQuery = fmt.Sprintf(`
 WITH today_calc AS (SELECT ((NOW() - INTERVAL '1 hour' * $4) AT TIME ZONE $2)::date AS today_in_tz)
 SELECT EXISTS (
   SELECT 1
   FROM byosmtp.accounts a, today_calc
   WHERE a.user_id = $1
-    AND a.quarantined = FALSE
-    AND a.disabled = FALSE
+    AND %s
     AND (
           -- daily_limit pause (clears at reset)
           (a.paused = TRUE AND a.pause_reason = 'daily_limit')
@@ -118,9 +117,13 @@ SELECT EXISTS (
           (a.paused = TRUE AND a.pause_reason = 'throttle'
              AND NOW() < a.throttle_paused_at + INTERVAL '1 second' * $3)
         )
-)`
+)`, accountBaseEligibilityFilter)
+
+func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, cfg Config) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	var exists bool
-	if err := d.db.QueryRow(ctx, q, userID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds, cfg.DailyResetHour).Scan(&exists); err != nil {
+	if err := d.db.QueryRow(ctx, userHasSelfRecoveringQuery, userID, cfg.DailyResetTimezone, cfg.ThrottlePauseSeconds, cfg.DailyResetHour).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil

@@ -70,6 +70,47 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 	}
 }
 
+// TestExhaustion_DeletedAccountFailsNotWaits (M3-P4-OD-11) — a user whose ONLY account is
+// soft-deleted (deleted_at set) but otherwise self-recovering-SHAPED (paused for daily_limit,
+// which would self-clear at the reset if the account weren't deleted) must FAIL, not WAIT.
+// Deletion has no automatic timer — the same shape as quarantine/disable/manual-pause, all
+// terminal_blocked — so a deleted account waiting for a reset that will never make it eligible
+// again is exactly the silent-forever-WAIT bug this item found and fixed: before the fix,
+// userHasSelfRecovering had no deleted_at term at all, so this fixture's account matched its
+// daily_limit-pause branch and evaluateChain returned WAIT, never FAIL.
+func TestExhaustion_DeletedAccountFailsNotWaits(t *testing.T) {
+	e := newDispatchEnv(t, "exhaustdel")
+	ctx := context.Background()
+	acct := e.seedAccount(t, "sec")
+	// Shaped exactly like TestExhaustion_SelfRecoveringWaits's daily_limit case — paused for
+	// daily_limit on the CURRENT cycle, which self-clears at the reset for a non-deleted account.
+	e.setAccountDailyState(t, acct, 10, 10, todayUTC(), true, strPtr("daily_limit"))
+	e.setAccountDeleted(t, acct, true)
+	job := e.seedQueuedJob(t, "y@example.com")
+
+	if _, _, err := e.d.Tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if s := e.jobStateStr(t, job); s != "failed" {
+		t.Fatalf("job state=%s, want failed — a soft-deleted account has no automatic recovery timer, so it must be terminal_blocked, not self_recovering (M3-P4-OD-11)", s)
+	}
+
+	// Negative control: the SAME fixture, undeleted, is self_recovering and WAITS (this is
+	// literally TestExhaustion_SelfRecoveringWaits's shape) — proving the FAIL above is caused by
+	// deletion specifically, not by some other property of this fixture.
+	e2 := newDispatchEnv(t, "exhaustdelctrl")
+	acct2 := e2.seedAccount(t, "sec2")
+	e2.setAccountDailyState(t, acct2, 10, 10, todayUTC(), true, strPtr("daily_limit"))
+	job2 := e2.seedQueuedJob(t, "z@example.com")
+	if _, _, err := e2.d.Tick(ctx); err != nil {
+		t.Fatalf("control tick: %v", err)
+	}
+	if s := e2.jobStateStr(t, job2); s != "queued" {
+		t.Fatalf("negative control: job state=%s, want queued (undeleted daily_limit-paused account self-recovers and WAITs) — if this fails too, the FAIL above proves nothing about deletion specifically", s)
+	}
+}
+
 // TestExhaustion_SelfRecoveringWaits (T6) — a job whose only accounts are self-recovering
 // (daily_limit-paused / at-limit / in-window throttle) STAYS queued across several ticks, with NO
 // job_events beyond genesis (no fail, no churn) — capacity may return, so it waits, never fails.
