@@ -26,6 +26,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const testKeyID = "cred-dek-test"
+
 type testEnv struct {
 	baseURL string
 	token   string // the platform service token (plaintext) accepted by the server
@@ -58,7 +60,16 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	}
 	auth := NewAuthenticator([]string{string(hash)})
 
-	srv := NewServer(pool, auth, nil) // kick=nil: run only needs to INSERT + return
+	encKey := make([]byte, 32)
+	if _, err := rand.Read(encKey); err != nil {
+		t.Fatalf("test encryptor key: %v", err)
+	}
+	enc, err := NewEncryptor(encKey, testKeyID)
+	if err != nil {
+		t.Fatalf("test encryptor: %v", err)
+	}
+
+	srv := NewServer(pool, auth, nil, enc) // kick=nil: run only needs to INSERT + return
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

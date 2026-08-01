@@ -402,6 +402,31 @@ means the last page.
 > the existing keys' already-established delivery mechanism, and leave the two duplicate parameters
 > unconsumed rather than introduce a second, competing source of truth for the same box behavior.
 
+## Module 3 Phase 3 served routes — user-owned accounts (Domain A, `/v1/byosmtp/accounts...`)
+
+The namespaced extension path (M3-P3-OD-1: prefix token `byosmtp`, matching the schema name),
+declared by `describe`. Same auth domain, envelope, and tenant-scoping pattern as the routes
+above — the platform passes tenant identity explicitly; the module enforces it (§1.1 of
+`Docs/phase-3-user-owned-accounts.md`). A cross-tenant id returns the SAME `404 not_found` as a
+nonexistent one — no existence disclosure, matching the `/v1/report` pattern above.
+
+The operator admin surface (`/v1/admin/accounts...`, Domain B) is **NOT removed** — both surfaces
+remain, on two auth domains, over the same table (module 2 §4.5's separation, re-affirmed here).
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/v1/byosmtp/accounts` | create an account for the caller's tenant — body `{user_id, smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}`. `user_id` is the tenant selector; there is no move/re-tenancy path (an account never changes owner). Duplicate `(user_id, smtp_host, smtp_username)` → clean `409 conflict` (`duplicate_account_for_user`) from an app-level pre-check, with the unique index as the race backstop — never a raw `23505`. Exceeding `account_count_cap_per_user` (non-deleted accounts, global-only dial) → `409 conflict` (`account_cap_reached`). Returns `201` with the account object, including a `verification` block (`state` starts `"unverified"` until a later chunk wires the mandatory verify-on-add call) |
+| GET | `/v1/byosmtp/accounts` | list the caller's OWN accounts — `?user_id=<uuid>` is MANDATORY and SERVER-ENFORCED (never an optional filter, unlike the admin list). Cursor-paginated on `(created_at, id)`, same keyset shape as the admin list |
+| GET | `/v1/byosmtp/accounts/{id}` | read one account, scoped to `?user_id=<uuid>`. Never includes the secret/ciphertext/nonce/key id — `has_credential` is the only credential-related field |
+| PATCH | `/v1/byosmtp/accounts/{id}` | update, scoped to `?user_id=<uuid>`. Omit = unchanged (structural for `smtp_secret`: the credential columns are absent from the SET list entirely when the field is omitted). `user_id` is NOT a patchable field — it does not exist in the request schema, so an attempt to send it is rejected by the strict decoder before any handler logic runs |
+| GET | `/v1/byosmtp/accounts/{id}/events` | the account's own audit trail, scoped to `user_id` (not `account_id` alone — a purged account's events row has `account_id` nulled, so scoping by `user_id` keeps it reachable and keeps a cross-tenant probe against a foreign account id from returning anything) |
+| POST | `/v1/byosmtp/accounts/{id}/disable`, `/v1/byosmtp/accounts/{id}/enable`, `/v1/byosmtp/accounts/{id}/pause`, `/v1/byosmtp/accounts/{id}/unpause` | re-scoped lifecycle transitions (module 2's engine, unchanged logic). `unpause` refuses to clear a non-`manual` pause (`pause_reason` is not `'manual'`) — the one piece of user-safety logic that makes exposing it to users safe at all. `quarantine`/`unquarantine` are **NOT exposed here** — they stay operator-only; a user-facing un-quarantine is Phase 5's (its own rate limit + test-verified bypass) |
+
+**Not yet wired at this commit** (later chunks of the same phase; tracked as they land): verify-on-add
+(mandatory on create), the test button (`.../test`, `.../test-send`), bulk add (`.../bulk`), and
+soft-delete (`DELETE /v1/byosmtp/accounts/{id}`, which stamps `deleted_at`/`purge_after` rather than
+hard-deleting — the operator's `DELETE /v1/admin/accounts/{id}` remains a hard delete).
+
 ## What is NOT part of the public REST contract
 
 The box↔Brain protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/`report`/

@@ -30,6 +30,14 @@ type resp struct {
 
 func (e *testEnv) do(t *testing.T, method, path string, body any) resp {
 	t.Helper()
+	return e.doRaw(t, method, path, body, e.token)
+}
+
+// doRaw is do with an explicit bearer (empty string = no Authorization header at all — for
+// TestTenancy_Unauthenticated-style checks that need a genuinely missing token, not just a
+// different one).
+func (e *testEnv) doRaw(t *testing.T, method, path string, body any, bearer string) resp {
+	t.Helper()
 	var rdr io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -39,7 +47,9 @@ func (e *testEnv) do(t *testing.T, method, path string, body any) resp {
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+e.token)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

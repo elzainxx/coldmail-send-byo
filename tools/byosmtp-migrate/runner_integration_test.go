@@ -101,11 +101,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	// user_id-owned (drops pool_id), 0028 drops byosmtp.pools/pool_kind/default_shared_pool_id,
 	// then G3's own additions 0029-0034: 0029 user_settings, 0030 user_config_overrides, 0031
 	// user_suspensions, 0032 campaigns, 0033 notifications, 0034 widens
-	// account_events_action_check. This is the executable expectation of the migration chain.
+	// account_events_action_check; then Phase 3's own 0035 (credential_verification_state enum +
+	// accounts columns) and 0036 (the six account-surface config seeds). This is the executable
+	// expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
-		"0029", "0030", "0031", "0032", "0033", "0034"}
+		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -140,11 +142,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// migration-filename deviation, Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from 14 to 17,
 	// P8-OD-1 RULED-WIDEN) + Phase 9.5's 11 (sender_0021: B1-B5 operability controls + S10/S11
 	// completeness dials) + G11-OD-1's 1 (sender_0023: brain_singleton_reacquire_interval_sec) = 54,
-	// MINUS 1 at G2 (default_shared_pool_id deleted by 0028, M3-P2-OD-1) = 53. Phase 4 added NO
-	// config key (§0); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral (config seeds
-	// only, no table); module 3's 0025-0027 add no config key either.
-	if n := configKeyCount(t, admin); n != 53 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 53 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2)", n)
+	// MINUS 1 at G2 (default_shared_pool_id deleted by 0028, M3-P2-OD-1) = 53, PLUS Phase 3's 6
+	// (0036: account_test_rate_limit_per_day, account_count_cap_per_user,
+	// account_retention_window_sec, bulk_add_verify_interval_ms, account_purge_sweep_interval_ms,
+	// account_purge_delete_batch_size) = 59. Phase 4 added NO config key (§0); Phase 7, Phase 9.5
+	// and sender_0023 are fully schema-neutral (config seeds only, no table); module 3's
+	// 0025-0027, 0029-0035 add no config key either.
+	if n := configKeyCount(t, admin); n != 59 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 59 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 6 Phase 3)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -306,6 +311,24 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 	}
 
+	// --- Phase 3's own migrations, 0035-0036 (Docs/phase-3-user-owned-accounts.md §2.4/§7) ---
+	if !enumTypeExists(t, admin, "credential_verification_state") {
+		t.Fatal("after Up: byosmtp.credential_verification_state enum type missing (0035 not applied)")
+	}
+	for _, col := range []string{"credential_verification_state", "credential_verified_at",
+		"credential_verify_at", "credential_verify_code", "credential_verify_response"} {
+		if !columnExists(t, admin, "accounts", col) {
+			t.Fatalf("after Up: byosmtp.accounts.%s missing (0035 not applied)", col)
+		}
+	}
+	for _, key := range []string{"account_test_rate_limit_per_day", "account_count_cap_per_user",
+		"account_retention_window_sec", "bulk_add_verify_interval_ms",
+		"account_purge_sweep_interval_ms", "account_purge_delete_batch_size"} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: byosmtp.config missing %q (0036 not applied)", key)
+		}
+	}
+
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: byosmtp.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -356,6 +379,26 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
+		}
+		if v == "0036" {
+			for _, key := range []string{"account_test_rate_limit_per_day", "account_count_cap_per_user",
+				"account_retention_window_sec", "bulk_add_verify_interval_ms",
+				"account_purge_sweep_interval_ms", "account_purge_delete_batch_size"} {
+				if configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0036: byosmtp.config still has %q (down did not delete it)", key)
+				}
+			}
+		}
+		if v == "0035" {
+			for _, col := range []string{"credential_verification_state", "credential_verified_at",
+				"credential_verify_at", "credential_verify_code", "credential_verify_response"} {
+				if columnExists(t, admin, "accounts", col) {
+					t.Fatalf("after Down 0035: byosmtp.accounts.%s still present (down did not drop it)", col)
+				}
+			}
+			if enumTypeExists(t, admin, "credential_verification_state") {
+				t.Fatal("after Down 0035: byosmtp.credential_verification_state enum type still present (down did not drop it)")
+			}
 		}
 		if v == "0034" && accountEventsActionAllowed(t, admin, "purged") {
 			t.Fatal("after Down 0034: account_events_action_check still permits 'purged' — down did not restore the 0014 CHECK")

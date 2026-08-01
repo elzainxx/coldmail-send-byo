@@ -31,18 +31,22 @@ import (
 type Kicker func()
 
 // Server is the platform API. It holds the DB pool (byosmtp_module), the service-token
-// authenticator, and an async dispatcher kick.
+// authenticator, an async dispatcher kick, and (Module 3 Phase 3) the account-surface's OWN
+// Encrypt-only credential primitive — a separate instance from adminapi.Encryptor (OD-7
+// isolation), sharing only the underlying KMS key material main.go loads once.
 type Server struct {
 	db   *pgxpool.Pool
 	auth *Authenticator
 	kick Kicker
+	enc  *Encryptor
 	mux  *http.ServeMux
 }
 
 // NewServer wires the Domain-A routes. kick may be nil (run still succeeds; the dispatcher's own
-// loop will pick the job up) but is normally the dispatcher nudge.
-func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker) *Server {
-	s := &Server{db: db, auth: auth, kick: kick, mux: http.NewServeMux()}
+// loop will pick the job up) but is normally the dispatcher nudge. enc may be nil ONLY in tests
+// that never exercise the account-create/update paths — production always supplies one (main.go).
+func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor) *Server {
+	s := &Server{db: db, auth: auth, kick: kick, enc: enc, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -50,13 +54,28 @@ func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker) *Server {
 // Handler exposes the mux for mounting under /v1/* on the Brain's HTTP server.
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// routes registers the four Phase-3 platform routes (Go 1.22+ method+path patterns), each behind
-// the service-token gate. Additive-only; the served set must match Docs/api-contract.md.
+// routes registers the platform routes (Go 1.22+ method+path patterns), each behind the
+// service-token gate. Additive-only; the served set must match Docs/api-contract.md.
+//
+// Module 3 Phase 3 (§1.2) adds the user-owned account surface under the namespaced
+// /v1/byosmtp/accounts... path (M3-P3-OD-1: the prefix token is `byosmtp`, matching the schema
+// name). quarantine/unquarantine are DROPPED from this surface (§1.2) — Phase 5 owns the
+// user-facing un-quarantine bypass; only its hook (§2.4's verification columns) ships here.
 func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/quote", s.requireAuth(s.handleQuote))
 	s.mux.HandleFunc("POST /v1/run", s.requireAuth(s.handleRun))
 	s.mux.HandleFunc("GET /v1/report", s.requireAuth(s.handleReport))
 	s.mux.HandleFunc("GET /v1/describe", s.requireAuth(s.handleDescribe))
+
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts", s.requireAuth(s.handleAccountCreate))
+	s.mux.HandleFunc("GET /v1/byosmtp/accounts", s.requireAuth(s.handleAccountList))
+	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountGet))
+	s.mux.HandleFunc("PATCH /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountUpdate))
+	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}/events", s.requireAuth(s.handleAccountEvents))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/disable", s.requireAuth(s.handleAccountDisable))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
 }
 
 // dbCtx bounds a per-request DB operation.

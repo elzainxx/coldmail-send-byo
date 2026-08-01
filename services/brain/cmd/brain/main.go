@@ -217,12 +217,26 @@ func main() {
 
 	// Platform API (Domain A, Phase 3). Service-token auth (distinct credential from the operator
 	// admin key). run kicks the dispatcher asynchronously; it never blocks on the send.
+	//
+	// Module 3 Phase 3 (§1.1): the user-owned account surface mounts HERE, not on adminapi — it is
+	// Domain A work (a user-facing route), inheriting the service-token gate and the tenant-scoping
+	// pattern platformapi already proved (OD-25). Its Encryptor is a SEPARATE instance from
+	// adminapi's (OD-7 isolation: platformapi cannot import internal/adminapi) built from the SAME
+	// KMS entry point (LoadEncryptKey re-reads the file; Encrypt-only, never Decrypt).
 	var platformHandler http.Handler
 	if cfg.PlatformEnabled {
+		platEncKey, err := kms.LoadEncryptKey(cfg.KMSDevKeyFile)
+		if err != nil {
+			log.Fatalf("FATAL platform credential key load: %v", err)
+		}
+		platEnc, err := platformapi.NewEncryptor(platEncKey, cfg.CredentialKeyID)
+		if err != nil {
+			log.Fatalf("FATAL platform encryptor init: %v", err)
+		}
 		pauth := platformapi.NewAuthenticator(cfg.PlatformTokenHashes)
-		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick)
+		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick, platEnc)
 		platformHandler = psrv.Handler()
-		log.Printf("platform API mounted under /v1/{quote,run,report,describe} (service-token auth; %d token(s) configured)", len(cfg.PlatformTokenHashes))
+		log.Printf("platform API mounted under /v1/{quote,run,report,describe,byosmtp/accounts...} (service-token auth; %d token(s) configured)", len(cfg.PlatformTokenHashes))
 	} else {
 		log.Printf("platform API NOT mounted (PLATFORM_TOKEN_HASHES unset — Domain A surface disabled, fail-closed)")
 	}

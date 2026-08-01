@@ -1383,3 +1383,43 @@ Per Rule 2, each blocks only its own slice.
   its state; it does not notify.
 - **Credential encryption, key rotation, break-glass operator read** — inherited, unchanged.
 - **The operator admin surface** — all twelve routes remain under Domain B.
+
+---
+
+## 14. Chunk closeouts
+
+Each chunk's landing is recorded here against its real commit, verified on real infra — mirroring
+`Docs/phase-2-strip-shared-pool.md`'s §8.5-§8.7 closeout pattern for Phase 1's own internal gates.
+
+### 14.1 C1 closeout — account CRUD, user-scoped, under `/v1/byosmtp/accounts...`
+
+**What landed:** `internal/platformapi` gained its own account surface (§1's re-scope of the ten
+inherited CRUD/lifecycle routes, quarantine/unquarantine dropped per §1.2) plus the per-user
+uniqueness pre-check + index backstop (§5.1) and the account count cap (§5.2, advisory-locked
+against the create-path race, M3-P3-OD-9). Migrations `0035` (the `credential_verification_state`
+enum + accounts columns, §2.4) and `0036` (the six Phase 3 config dials, §7) — `account_count_cap_per_user`
+ships CONSUMED from this commit; the other five carry a time-boxed `RESERVED / NOT-YET-CONSUMED`
+marker (expiry `Phase 3`) cleared as C2-C5 wire their own consumers, mirroring the exact hatch
+M3-P2-OD-8 proved at G1.
+
+**A real bug found and fixed before it shipped, not merely a clean pass:** `internal/httpapi`'s
+`NewHealthServer` mounted the platform handler on four EXPLICIT literal paths
+(`/v1/quote`,`/v1/run`,`/v1/report`,`/v1/describe`) with no prefix mount — so the new
+`/v1/byosmtp/accounts...` routes, though correctly registered inside `platformapi.Server`'s own
+mux, were never reachable at all (a bare Go-mux 404, not even this package's own JSON error
+envelope). Found by `contract_drift.sh` (extended per M3-P3-OD-11, §9.4) failing every new route
+with "served as 404, want 401" immediately after rebuilding — exactly the class of gap that gate
+exists to catch. Fixed with one added `mux.Handle("/v1/byosmtp/", platformHandler)` line.
+
+**Second gap found the same way:** migration `0036`'s `.down.sql` was missing entirely (only the
+`.up.sql` was written), caught by `TestRunnerLifecycle`'s down-to-`0000` pass — "no down file for
+version 0036". Fixed by adding it (six `DELETE`s + the tracking-row delete, mirroring `0021`'s
+shape for its eleven-key seed).
+
+**Verified:** clean-slate reset, full harness 56/56 (including the new
+`TestAccountCRUD_*`/`TestAccountTenancy_*`/`TestAccountUniqueness_*`/`TestAccountCap_*` tests — T8's
+cross-tenant proof across GET/PATCH/disable/events with real post-state assertions, not just status
+codes; T9's three controls minus the soft-delete one, which needs C5), all six CI gates green
+(`config_drift`: 59 keys; `config_consumption`: 59 keys, one consumed + five RESERVED-with-expiry;
+`contract_drift`: 12 platform routes gated, quarantine correctly absent; `migration_lint`;
+`drain_grace`; `no_secret_leak`).

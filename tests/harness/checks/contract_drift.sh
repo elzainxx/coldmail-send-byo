@@ -75,15 +75,30 @@ fi
 pf() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${HOST_PORT_BRAIN_HEALTH}$2" 2>/dev/null || echo 000; }
 pf_probe="$(pf POST /v1/run)"
 if [[ "$pf_probe" == "401" ]]; then
+  # M3-P3-OD-11 (RULED): the platform-surface account routes (Module 3 Phase 3 §1.2) are
+  # enumerated here too — a route no gate enumerates is a route whose auth nobody checks, the
+  # same class of gap as module 2's own off-by-one (§9.4, not back-ported).
   declare -A PLATFORM_ROUTES=(
     ["POST /v1/quote"]=1 ["POST /v1/run"]=1 ["GET /v1/report"]=1 ["GET /v1/describe"]=1
+    ["GET /v1/byosmtp/accounts"]=1 ["POST /v1/byosmtp/accounts"]=1
+    ["GET /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["PATCH /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/events"]=1
+    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/disable"]=1
+    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/enable"]=1
+    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/pause"]=1
+    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/unpause"]=1
   )
   for spec in "${!PLATFORM_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
     rc="$(pf "$m" "$p")"
     [[ "$rc" == "401" ]] || { echo "contract_drift FAIL: $m $p served as $rc, want 401 (platform route missing or not gated)"; fail=1; }
   done
-  echo "contract_drift: Phase 3 platform surface mounted — 4 routes gated (401)."
+  # quarantine/unquarantine are DROPPED from the user surface (§1.2) — this route must NOT exist
+  # here at all, so an unauthenticated probe 404s (no handler), never 401 (gated-but-present).
+  und_pf="$(pf POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
+  [[ "$und_pf" == "404" ]] || { echo "contract_drift FAIL: .../quarantine on the platform surface returned $und_pf, want 404 — this route must not exist on Domain A"; fail=1; }
+  echo "contract_drift: Phase 3 platform surface mounted — 12 routes gated (401), quarantine correctly absent (404)."
 else
   echo "contract_drift: platform surface not mounted (POST /v1/run -> $pf_probe); skipping Phase 3 route checks (set PLATFORM_TOKEN_HASHES to enable)."
 fi
@@ -97,7 +112,10 @@ for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/admin/accounts" "/v1/admin/config" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
          "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
-         "/v1/quote" "/v1/run" "/v1/report" "/v1/describe"; do
+         "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
+         "/v1/byosmtp/accounts" "/v1/byosmtp/accounts/{id}" \
+         "/v1/byosmtp/accounts/{id}/events" "/v1/byosmtp/accounts/{id}/disable" \
+         "/v1/byosmtp/accounts/{id}/pause" "/v1/byosmtp/accounts/{id}/unpause"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 

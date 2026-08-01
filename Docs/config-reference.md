@@ -142,6 +142,27 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 | `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_zero_width_rate` (P8-OD-1, fraction 0–1); that key remains the sole source of truth for this rate to avoid two competing dials driving the same box behavior. Phase 9.5 §2.4. |
 | `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). `skip_below_px` is box-consumed via `push_job.variation` (P9.5-OD-3) — that sub-field is CONSUMED. `delta_px` is **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_css_magnitude_px` (P8-OD-1), which remains the sole source of truth for the CSS magnitude. Phase 9.5 §2.4. |
 
+## Module 3 Phase 3 state (+6 keys, `byosmtp_0036`)
+
+The user-owned account surface's own dials — the account count cap, the test-button rate limit,
+the deletion retention window, bulk-add's verification pacing, and the purge loop's own interval +
+batch size. Seeded together in Phase 3's second (and last) allotted migration number, before every
+consumer exists — see `byosmtp_0036_account_config_seeds.up.sql`'s own header for why. FOUR of the
+six carry a time-boxed **RESERVED / NOT-YET-CONSUMED** marker (expiry `Phase 3` — the same
+time-boxed hatch M3-P2-OD-8 proved at G1 for `default_shared_pool_id`) until their own chunk's
+commit wires the real consumer; each is cleared in the same commit that lands its consumer, not
+left to expire. `account_count_cap_per_user` ships CONSUMED from this commit (C1's create-path
+check, `platformapi/account_create.go`'s `readAccountCountCap`).
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `account_test_rate_limit_per_day` | `{"v":5}` | integer | byosmtp_0036 | Max verify-only test-button attempts per ACCOUNT per day (`429 rate_limited` beyond it) — IP-reputation protection for the box IPs shared across all tenants. **RESERVED / NOT-YET-CONSUMED** until C3 wires the test-button route. Phase 3 §3.3. |
+| `account_count_cap_per_user` | `{"v":20}` | integer | byosmtp_0036 | Max non-deleted accounts a single user may hold (`409 account_cap_reached` beyond it). **GLOBAL ONLY** — not per-user overridable in V1 (M3-P6-OD-5 declined it; `user_config_overrides` has no such column). Enforced on create and bulk-add. Phase 3 §5.2. |
+| `account_retention_window_sec` | `{"v":2592000}` | integer | byosmtp_0036 | Seconds a soft-deleted account's record and credential are retained before the purge loop hard-deletes it. Stamped into `purge_after` AT DELETE TIME. Default 30 days. **RESERVED / NOT-YET-CONSUMED** until C5 wires the soft-delete handler. Phase 3 §6.1. |
+| `bulk_add_verify_interval_ms` | `{"v":2000}` | integer | byosmtp_0036 | Delay (ms) the bulk-add pacer waits BETWEEN verification attempts. Concurrency is 1 (strictly serial, M3-P3-OD-7) — distinct from `dispatch/loop.go`'s per-user SEND pacing. **RESERVED / NOT-YET-CONSUMED** until C4 wires the bulk-add pacer. Phase 3 §4.1. |
+| `account_purge_sweep_interval_ms` | `{"v":3600000}` | integer | byosmtp_0036 | How often (ms) the account-purge loop ticks. Mirrors `retention_sweep_interval_ms` (1 hour). **RESERVED / NOT-YET-CONSUMED** until C5 wires the purge loop. Phase 3 §6.3. |
+| `account_purge_delete_batch_size` | `{"v":100}` | integer | byosmtp_0036 | Max accounts hard-deleted per purge-loop tick. Mirrors `retention_delete_batch_size`. `<= 0` disables the sweep. **RESERVED / NOT-YET-CONSUMED** until C5 wires the purge loop. Phase 3 §6.3. |
+
 ## Both config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**
