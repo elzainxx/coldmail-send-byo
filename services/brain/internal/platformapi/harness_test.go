@@ -69,7 +69,7 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 		t.Fatalf("test encryptor: %v", err)
 	}
 
-	srv := NewServer(pool, auth, nil, enc, nil) // kick=nil: run only needs to INSERT + return; verifier=nil: no box in these tests
+	srv := NewServer(pool, auth, nil, enc, nil, nil) // kick=nil: run only needs to INSERT + return; verifier/testSender=nil: no box in these tests
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

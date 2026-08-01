@@ -278,7 +278,7 @@ Its own phase because it is the single biggest product risk.
   **OR** DKIM-aligned, so DNS evidence alone can never *prove* failure — only absence of evidence.
 - **Default is WARN + EXPLICIT ACKNOWLEDGMENT**, not block: *"a checkbox the user must tick, not a
   dismissible toast."* The acknowledgment is **persisted state, not UI** — columns land in Phase 4's own
-  `0038` (M3-P4-OD-10) — and is **re-required when the verdict changes**.
+  `0039` (M3-P4-OD-10) — and is **re-required when the verdict changes**.
 - **BLOCK survives only on near-certain evidence:** `p=reject` **AND** no SPF record at all **AND** no
   DKIM at any common selector. Providers with unguessable per-identity selectors (SES, SendGrid,
   Postmark) are **exempt from block entirely** (M3-P4-OD-2) — "cannot look" is not evidence of absence.

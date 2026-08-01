@@ -80,3 +80,60 @@ fi
 # --- account_events audit: a 'verified' row exists for the successful account ---
 VERIFIED_EVENT="$(PSQL "SELECT count(*) FROM byosmtp.account_events WHERE account_id='$GOODACCT' AND action='verified'" || true)"
 [[ "$VERIFIED_EVENT" == "1" ]] && ok "audit: exactly one 'verified' account_events row for the live-verified account" || bad "audit: verified event count=$VERIFIED_EVENT, want 1"
+
+# --- C3: the test button reuses the SAME push_verify path (§3.1) ---
+TESTBTN_JSON="$(curl -s -X POST "http://localhost:9080/v1/byosmtp/accounts/$GOODACCT/test?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+echo "$TESTBTN_JSON" | grep -q '"state":"verified"' && ok "C3 test button: reused push_verify path re-verified the already-good account live" || bad "C3 test button: unexpected response: $TESTBTN_JSON"
+
+# --- C3 T5 (live): the test button is genuinely rate-limited, and a refused click produces NO
+# SMTP connection at the sink (otherwise the limit is cosmetic and the auth attempt it exists to
+# prevent still happened) ---
+RATELIMIT_ACCT_JSON="$(curl -s -X POST http://localhost:9080/v1/byosmtp/accounts -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"testbtn-rl@ourdomain.com\",\"smtp_secret\":\"canary-testbtn-rl-9Z\",\"from_address\":\"testbtn-rl@ourdomain.com\"}")"
+RATELIMIT_ACCT="$(echo "$RATELIMIT_ACCT_JSON" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 1::int) WHERE key='account_test_rate_limit_per_day'" >/dev/null
+# The account create above already consumed the account's ONE allotted attempt (verify-on-add IS a
+# 'verified' row) — so the very next test-button click must already be refused.
+RL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:9080/v1/byosmtp/accounts/$RATELIMIT_ACCT/test?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+[[ "$RL_CODE" == "429" ]] && ok "C3 T5 (live): test button refused with 429 after the daily limit (1) was reached by verify-on-add's own attempt" || bad "C3 T5 (live): test button returned $RL_CODE, want 429"
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 5::int) WHERE key='account_test_rate_limit_per_day'" >/dev/null
+
+# --- C3: test-send is a REAL send, forced to the account (M3-P3-OD-16), own from_address only ---
+TESTSEND_RESP="$(curl -s -w '\n%{http_code}' -X POST "http://localhost:9080/v1/byosmtp/accounts/$GOODACCT/test-send?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+TESTSEND_CODE="$(echo "$TESTSEND_RESP" | tail -1)"
+TESTSEND_JSON="$(echo "$TESTSEND_RESP" | head -1)"
+TESTSEND_JOB="$(echo "$TESTSEND_JSON" | grep -oE '"job_id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+[[ "$TESTSEND_CODE" == "202" ]] && ok "C3 test-send: returned 202 (async kickoff)" || bad "C3 test-send: status=$TESTSEND_CODE, want 202: $TESTSEND_JSON"
+[[ -n "$TESTSEND_JOB" ]] && ok "C3 test-send: returned a real job_id" || bad "C3 test-send: no job_id in response: $TESTSEND_JSON"
+
+sent=0
+for _ in $(seq 1 20); do
+  st="$(PSQL "SELECT state FROM byosmtp.jobs WHERE id='$TESTSEND_JOB'" || true)"
+  [[ "$st" == "sent" ]] && { sent=1; break; }
+  sleep 1
+done
+[[ "$sent" == "1" ]] && ok "C3 test-send: job reached state=sent via the REAL push_job/report path" || bad "C3 test-send: job never reached sent (last state: $(PSQL "SELECT state FROM byosmtp.jobs WHERE id='$TESTSEND_JOB'"))"
+
+# The job's recipient must be the account's OWN from_address (M3-P3-OD-5) — never an arbitrary one.
+TS_RECIPIENT="$(PSQL "SELECT recipient_email FROM byosmtp.jobs WHERE id='$TESTSEND_JOB'" || true)"
+[[ "$TS_RECIPIENT" == "verify-good@ourdomain.com" ]] && ok "C3 test-send: recipient forced to the account's own from_address (M3-P3-OD-5)" || bad "C3 test-send: recipient=$TS_RECIPIENT, want the account's own from_address"
+
+# The job's assigned_account_id must be the CLICKED account (M3-P3-OD-16), never re-selected.
+TS_ACCT="$(PSQL "SELECT assigned_account_id FROM byosmtp.jobs WHERE id='$TESTSEND_JOB'" || true)"
+[[ "$TS_ACCT" == "$GOODACCT" ]] && ok "C3 test-send: assigned_account_id is the CLICKED account (M3-P3-OD-16), never re-selected" || bad "C3 test-send: assigned_account_id=$TS_ACCT, want $GOODACCT"
+
+# A real job_events chain exists (Rule 5: an unreported real send is as dishonest as a fabricated one).
+TS_EVENTS="$(PSQL "SELECT count(*) FROM byosmtp.job_events WHERE job_id='$TESTSEND_JOB'" || true)"
+[[ "${TS_EVENTS:-0}" -ge 1 ]] && ok "C3 test-send: real job_events row(s) exist for the test-send job" || bad "C3 test-send: no job_events rows for the test-send job"
+
+# --- C3: test-send against an INELIGIBLE clicked account fails outright (never substitutes
+# a different account, M3-P3-OD-16) ---
+INELIGIBLE_JSON="$(curl -s -X POST http://localhost:9080/v1/byosmtp/accounts -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"testsend-ineligible@ourdomain.com\",\"smtp_secret\":\"canary-ts-ineligible-9Z\",\"from_address\":\"testsend-ineligible@ourdomain.com\"}")"
+INELIGIBLE_ACCT="$(echo "$INELIGIBLE_JSON" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+PSQL "UPDATE byosmtp.accounts SET quarantined=TRUE, quarantine_reason='manual' WHERE id='$INELIGIBLE_ACCT'" >/dev/null
+BEFORE_JOB_COUNT="$(PSQL "SELECT count(*) FROM byosmtp.jobs WHERE user_id='$SYSUSER'" || true)"
+INELIGIBLE_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:9080/v1/byosmtp/accounts/$INELIGIBLE_ACCT/test-send?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+AFTER_JOB_COUNT="$(PSQL "SELECT count(*) FROM byosmtp.jobs WHERE user_id='$SYSUSER'" || true)"
+[[ "$INELIGIBLE_CODE" == "409" ]] && ok "C3 test-send: an ineligible (quarantined) clicked account is refused outright (409)" || bad "C3 test-send: ineligible account returned $INELIGIBLE_CODE, want 409"
+[[ "$BEFORE_JOB_COUNT" == "$AFTER_JOB_COUNT" ]] && ok "C3 test-send: no job row created for the refused ineligible-account attempt" || bad "C3 test-send: job count changed ($BEFORE_JOB_COUNT->$AFTER_JOB_COUNT) despite the refusal — a job leaked through"

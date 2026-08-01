@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 88 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 92 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -37,7 +37,34 @@ never done — ruled and fixed the same day it was found. The 88th,
 was raised while wiring C2 (verify-on-add): the spec never states what happens when account
 creation is requested but no box is currently connected to run the verification at all, distinct
 from a real, reachable provider rejecting the credential. Ruled the same day: treat it as an
-ordinary verify failure (`verify_connection_lost`), not a blocked create.
+ordinary verify failure (`verify_connection_lost`), not a blocked create. The 89th,
+[M3-P3-OD-15](#m3-p3-od-15--ruled-2026-08-01-the-test-button-rate-limit-counts-every-attempt-not-just-successes),
+was raised while wiring C3 (the test button): §3.3's own reasoning ("each click is a real auth
+attempt against a live provider") means both a success and a failure must count against the daily
+limit, but the schema's only audit action for this (`'verified'`, migration `0034`) has no failure
+counterpart and Phase 3 has no more migration slots. Ruled the same day: write the audit row on
+every attempt, success or failure, distinguished by the row's existing free-text `reason` column
+rather than a new schema object. The 90th,
+[M3-P3-OD-16](#m3-p3-od-16--ruled-2026-08-01-test-send-forces-the-clicked-account-not-normal-dispatcher-selection),
+was raised in the same chunk: §3.2 describes test-send as "subject to the account's eligibility
+exactly as a campaign send is," but a campaign send goes through the dispatcher's normal
+cross-account SELECTION, which does not target one specific account — "test THIS account" and "go
+through normal routing" can disagree about which account actually sends. Ruled the same day: force
+the clicked account, still enforcing its own eligibility. The 91st,
+[M3-P3-OD-17](#m3-p3-od-17--ruled-2026-08-01-test-send-needs-an-insert-grant-on-a-platform-owned-table-that-does-not-exist),
+found while implementing test-send: `byosmtp.jobs.job_item_id` is `NOT NULL` + `UNIQUE`,
+referencing `public.job_items` — a platform-owned table `byosmtp_module` holds SELECT-only on
+(verified live: `has_table_privilege('byosmtp_module','public.job_items','INSERT')` returns
+`false`). Test-send has no natural job_item and the spec never addresses this. Ruled the same day:
+grant `byosmtp_module` a narrow `INSERT`-only privilege on `public.job_items`, via a new migration
+— test-send creates a genuine job_item row every time, the same shape a platform-initiated single
+send would produce. The 92nd,
+[M3-P3-OD-18](#m3-p3-od-18--ruled-2026-08-01-phase-3-takes-migration-0037-phase-4-renumbers-to-00380039),
+is the direct consequence: Phase 3 has already spent both its allotted migration numbers (`0035`,
+`0036`), but Phase 4's own doc firmly claims `0037`/`0038` for unrelated work (12 references
+throughout `phase-4-from-gate.md`). Ruled the same day: Phase 3 takes `0037` for the grant; Phase
+4's doc is renumbered to `0038`/`0039` now, while the numbers are still planning text and before
+Phase 4 starts building against them.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -719,6 +746,157 @@ inside the same function rather than a second write path. The caller (`platforma
 account-create handler) sees an ordinary `VerifyResult{Verified: false, ExternalCode:
 "verify_connection_lost", ...}` and never needs to distinguish "no box" from "box that failed
 mid-handshake" — by design, per the ruling above.
+
+---
+
+## M3-P3-OD-15 — RULED 2026-08-01: the test-button rate limit counts every attempt, not just successes
+
+Found while wiring C3 (the test button, `Docs/phase-3-user-owned-accounts.md` §3.3). §3.3's own
+reasoning for the limit is explicit: *"Each click is a real auth attempt against a live provider
+from our box IPs. The limit is therefore not politeness — it is IP-reputation protection."* A
+failed AUTH attempt costs the shared box IPs' reputation identically to a successful one — the
+provider sees the same connect+AUTH regardless of outcome. So the rate limit's own stated purpose
+requires counting both.
+
+**The problem:** the mechanism available for counting is `account_events` rows, and the schema's
+only audit action for a verification event is `'verified'` (migration `0034`, whose own inline
+comment already says *"verify-on-add / test button (Phase 3, 4)"* — confirming the schema was
+built anticipating this reuse). There is no `'verify_failed'` action, and Phase 3 has spent both
+of its allotted migration numbers (`0035`, `0036`) — widening `account_events_action_check` again
+would need a new migration this phase does not have.
+
+**RULED: write the `'verified'` audit row on EVERY test-button attempt, success or failure**,
+carrying the outcome in the row's existing `reason` TEXT column (`"verify: success"` /
+`"verify: failure (verify_auth_failed)"`) — DELIBERATELY NOT `to_flags`/`from_flags`: both
+`platformapi`'s and `adminapi`'s events-read handlers decode those two columns everywhere else in
+the codebase as a FIXED `flagsSnapshot{paused,pause_reason,quarantined,disabled}` shape (found
+while implementing, before it shipped — a differently-shaped JSONB payload there would silently
+decode to a zero-value snapshot on read, corrupting rather than carrying the outcome). `reason` is
+free TEXT with no fixed decode shape anywhere, and is already the audit trail's designated note
+field. The action name (`'verified'`) is repurposed to mean "a verification attempt happened," not
+"it succeeded" — `reason` is what distinguishes the two. The rate-limit query counts ALL
+`'verified'` rows for the account in the trailing 24h (or the configured window), regardless of
+outcome.
+
+**Rejected alternatives and why:**
+- *Only count successes* — rejected because it directly contradicts §3.3's own stated reason for
+  the limit; a user could hammer a wrong password indefinitely against the shared box IPs without
+  ever tripping the guard the limit exists to provide.
+- *An in-memory counter, no DB row* — rejected because a Brain restart would silently reopen every
+  account's daily quota, which is not a real IP-reputation guarantee, just a guarantee between
+  restarts.
+
+**Consequence for C2's already-shipped code:** `dispatch.Verifier.applyVerifyReport`'s failure
+branch (the box-reported case) and the no-box synthetic case (M3-P3-OD-14, above) both gain the
+same audit write the success branch already has — one shared helper, called from all three sites,
+not three separately-maintained INSERTs.
+
+---
+
+## M3-P3-OD-16 — RULED 2026-08-01: test-send forces the clicked account, not normal dispatcher selection
+
+Found in the same chunk (§3.2). The spec says test-send "is subject to the account's eligibility
+exactly as a campaign send is" — but a campaign send does not target one specific account: the
+dispatcher's `selectAccountForJob`/`accountConsume` machinery picks WHICHEVER of the user's
+eligible accounts the routing strategy selects next. "Test THIS account" (the whole point of a
+per-account test button) and "go through the same selection a campaign send uses" are two
+different behaviors whenever the user has more than one eligible account — the clicked account and
+the account that actually sends could disagree.
+
+**RULED: test-send targets the CLICKED account specifically**, bypassing the cross-account
+selection machinery entirely. It still enforces that SPECIFIC account's own eligibility (not
+disabled, not quarantined, not paused, not deleted, under its daily limit) before sending — a test
+against an ineligible account is refused with a clean error naming why, never silently redirected
+to a different account the user did not ask to test. "Subject to the account's eligibility exactly
+as a campaign send is" is satisfied by reusing the SAME predicate (the consolidated
+`accountBaseEligibilityFilter` plus the daily-limit check) against the one named account, not by
+reusing the cross-account selection query itself.
+
+**Consequence for the job it creates:** the `byosmtp.jobs` row this writes carries
+`assigned_account_id` pre-set to the clicked account (skipping the normal claim-time selection),
+and the dispatcher's push path must accept a pre-assigned account rather than re-selecting one —
+implemented as a distinct code path from the normal claim, not a flag threaded through it, since
+the two have different eligibility failure modes (a campaign send with the clicked account
+ineligible tries a DIFFERENT account; a test-send with the clicked account ineligible must FAIL,
+because testing a substitute account answers a question the user did not ask).
+
+---
+
+## M3-P3-OD-17 — RULED 2026-08-01: test-send needs an INSERT grant on a platform-owned table that does not exist
+
+Found while implementing test-send (§3.2), one level deeper than M3-P3-OD-16's routing question.
+§3.2 itself is unambiguous that test-send "writes a real `job` row and real `job_events`" — Rule
+5's "never invent an outcome the box did not report" cuts both ways, so a real send that goes
+unrecorded is as dishonest as a fabricated one. But `byosmtp.jobs.job_item_id` is `NOT NULL` +
+`UNIQUE`, referencing `public.job_items` — a platform-owned table under the Phase 0 bootstrap's own
+locked rule (`byosmtp_0000_bootstrap.up.sql`'s comment: *"The ONLY two operations permitted on
+platform-owned tables: read-only SELECT"*). Verified live before concluding this was a real
+blocker, not an assumption: `SELECT has_table_privilege('byosmtp_module', 'public.job_items',
+'INSERT')` returns `false` on the running stack. Test-send has no natural campaign/job_item to
+attach to — it is a standalone credential-check action, not part of any campaign — and the spec
+never anticipates this collision between §3.2's own recording requirement and Phase 0's own
+platform-table boundary.
+
+**The question, asked before implementing (Rule 2):** does test-send (a) get a narrow `INSERT`
+grant on `public.job_items` so the module can create a genuine, minimal job_item row for itself, or
+(b) ship without the real jobs/job_events row, reporting the outcome only in the HTTP response?
+
+**RULED: (a) — grant `byosmtp_module` `INSERT`-only on `public.job_items`.** Reasoning:
+
+- **§3.2's own locked requirement is unambiguous and was not re-opened by this finding** — a real
+  send with no `job`/`job_events` row is exactly the "unreported real outcome" Rule 5 forbids, and
+  the `daily_sent_count` consumption a test-send causes would have no audit trail explaining it.
+  Option (b) would not merely be a smaller feature; it would ship a documented violation of a rule
+  this same spec section states as load-bearing.
+- **The grant is additive and narrow** — `INSERT` only, never `UPDATE`/`DELETE`/`SELECT` beyond
+  what the module already holds; it does not touch the existing `SELECT`-only boundary for reads,
+  and no other module code path gains write access to any platform table by virtue of this change.
+- **Every job_item the grant lets the module create is a genuine row**, not a synthetic placeholder
+  — the same shape a platform-initiated single send targeting this account would itself produce
+  (recipient = the account's own `from_address`, per M3-P3-OD-5's ruling restricting test-send to
+  that address; a fixed marker subject/body identifying it as a test). The platform's own
+  campaign-tracking table gains real rows describing real actions, not fabricated data.
+
+**RULED alongside, sequencing consequence — see M3-P3-OD-18.**
+
+---
+
+## M3-P3-OD-18 — RULED 2026-08-01: Phase 3 takes migration `0037`; Phase 4 renumbers to `0038`/`0039`
+
+The direct numbering consequence of M3-P3-OD-17's grant, which needs its own migration. Phase 3's
+own inventory (§0.2) claimed exactly two migration numbers, `0035` and `0036`, both already spent
+(the verification-state columns/enum, and the six config-dial seeds). But `Docs/phase-4-from-gate.md`
+already firmly claims `0037` (config seeds) and `0038` (the routing-predicate change +
+`from_verification_state` backfill) for its own, unrelated work — 12 separate references to those
+two numbers throughout that document.
+
+**The question:** does Phase 3's third migration (a) take `0037`, forcing Phase 4's doc to
+renumber to `0038`/`0039` now, or (b) take a later number (`0039`) and leave `0037`/`0038` reserved
+for Phase 4, accepting a numbering gap?
+
+**RULED: (a) — Phase 3 takes `0037`; Phase 4's doc is renumbered to `0038`/`0039` in the same
+change.** Reasoning: Phase 4 has not started building yet — its migration numbers exist only as
+planning text in a doc, not as files on disk or rows in `schema_migrations` — so renumbering now
+costs a doc edit and nothing else. The alternative (a numbering gap, `0037`/`0038` skipped by
+Phase 3 and reused later by Phase 4) would be a permanent, unexplained-looking discontinuity in the
+migration chain that every future reader would have to independently discover is deliberate. This
+mirrors the session's own established precedent for build-time discoveries: fix the gap where it
+is found, while it is still cheap to fix, rather than defer it and let it calcify.
+
+**The cascade turned out wider than the one-doc edit first assumed, and was verified rather than
+guessed at before executing:** `Docs/phase-5-autonomous-behaviour-and-limits.md` opens by stating
+*"Phase 4 ended at `0038`"* and numbers its OWN migrations from that claim, and
+`Docs/plan-revision-log.md` documents the FULL chain across Phases 1–7 (`0025`–`0041`) with
+explicit per-phase ranges that assume Phase 4 ends at `0038`. Shifting Phase 4 by +1 without also
+shifting Phases 5/6/7 would leave a self-contradicting chain across four docs — worse than the
+single-phase gap this ruling exists to avoid. **Confirmed before executing: full cascade, Phases
+4–7 shifted by +1 throughout every affected doc**, since none of those phases has started building
+(no files on disk, no rows in `schema_migrations`) and each shift is a mechanical +1 relabel with
+no semantic content change.
+
+**Applied:** `phase-4-from-gate.md` (12 references), `phase-5-autonomous-behaviour-and-limits.md`,
+and `plan-revision-log.md`'s chain table all updated to the shifted numbering in the same change.
+Phase 3's own migration is `byosmtp_0037_test_send_job_items_grant`.
 
 ---
 

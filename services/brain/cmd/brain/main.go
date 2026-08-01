@@ -242,7 +242,7 @@ func main() {
 			log.Fatalf("FATAL platform encryptor init: %v", err)
 		}
 		pauth := platformapi.NewAuthenticator(cfg.PlatformTokenHashes)
-		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick, platEnc, verifierAdapter{verifier})
+		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick, platEnc, verifierAdapter{verifier}, testSenderAdapter{dispatcher, database.Pool})
 		platformHandler = psrv.Handler()
 		log.Printf("platform API mounted under /v1/{quote,run,report,describe,byosmtp/accounts...} (service-token auth; %d token(s) configured)", len(cfg.PlatformTokenHashes))
 	} else {
@@ -390,4 +390,33 @@ func (a verifierAdapter) Verify(ctx context.Context, accountID, userID string, o
 		Message:      r.Message,
 		SMTPResponse: r.SMTPResponse,
 	}, nil
+}
+
+// testSenderAdapter satisfies platformapi.TestSender by wrapping *dispatch.Dispatcher. It loads
+// dispatch.Config FRESH on every call (config-not-code freshness — mirrors every other Dispatcher
+// entry point, TryDispatch/Tick/Verify) and maps dispatch's two sentinel errors onto platformapi's
+// own (OD-7: platformapi never imports internal/dispatch, so it cannot compare against dispatch's
+// error values directly).
+type testSenderAdapter struct {
+	d  *dispatch.Dispatcher
+	db *pgxpool.Pool
+}
+
+func (a testSenderAdapter) SendTest(ctx context.Context, userID, accountID, recipient string) (string, error) {
+	cfg, err := dispatch.LoadConfig(ctx, a.db)
+	if err != nil {
+		return "", err
+	}
+	result, err := a.d.SendTest(ctx, userID, accountID, recipient, cfg)
+	if err != nil {
+		switch {
+		case errors.Is(err, dispatch.ErrAccountIneligibleForTestSend):
+			return "", platformapi.ErrAccountIneligible
+		case errors.Is(err, dispatch.ErrNoBoxForTestSend):
+			return "", platformapi.ErrNoBoxAvailable
+		default:
+			return "", err
+		}
+	}
+	return result.JobID, nil
 }

@@ -191,7 +191,13 @@ func (v *Verifier) Verify(ctx context.Context, accountID, userID string, operati
 	}
 }
 
-// applyVerifyReport writes the outcome (§2.4) and returns the client-facing result.
+// applyVerifyReport writes the outcome (§2.4) and returns the client-facing result. Writes the
+// 'verified' audit row on EVERY attempt, success or failure (M3-P3-OD-15, RULED) — the row's
+// to_flags JSONB carries {"outcome":"success"} or {"outcome":"failure","code":"verify_..."} so the
+// audit trail still distinguishes the two, and §3.3's rate limit (which counts every attempt, not
+// just successes — "each click is a real auth attempt against a live provider") has a real signal
+// to count regardless of which of Verify's THREE callers produced it (a genuine box report, the
+// no-box synthetic case above, or C3's test-button route calling this same function).
 func (v *Verifier) applyVerifyReport(ctx context.Context, acct accountForVerify, rep boxproto.VerifyReport) (VerifyResult, error) {
 	if rep.Outcome == boxproto.OutcomeAccepted {
 		if _, err := v.db.Exec(ctx,
@@ -206,7 +212,7 @@ func (v *Verifier) applyVerifyReport(ctx context.Context, acct accountForVerify,
 			acct.id, truncateVerifyResponse(rep.SMTPResponse)); err != nil {
 			return VerifyResult{}, fmt.Errorf("apply verified state: %w", err)
 		}
-		if err := writeVerifyAuditEvent(ctx, v.db, acct.id, acct.userID, "verified"); err != nil {
+		if err := writeVerifyAuditEvent(ctx, v.db, acct.id, acct.userID, true, ""); err != nil {
 			return VerifyResult{}, fmt.Errorf("audit verified: %w", err)
 		}
 		return VerifyResult{Verified: true, State: "verified", SMTPResponse: rep.SMTPResponse}, nil
@@ -224,6 +230,9 @@ func (v *Verifier) applyVerifyReport(ctx context.Context, acct accountForVerify,
 		acct.id, code, truncateVerifyResponse(rep.SMTPResponse)); err != nil {
 		return VerifyResult{}, fmt.Errorf("apply failed state: %w", err)
 	}
+	if err := writeVerifyAuditEvent(ctx, v.db, acct.id, acct.userID, false, code); err != nil {
+		return VerifyResult{}, fmt.Errorf("audit failed: %w", err)
+	}
 	return VerifyResult{Verified: false, State: "failed", ExternalCode: code, Message: msg, SMTPResponse: rep.SMTPResponse}, nil
 }
 
@@ -235,13 +244,36 @@ func truncateVerifyResponse(s string) string {
 	return s[:2000]
 }
 
-// writeVerifyAuditEvent records the 'verified' account_events row (0034's widened CHECK). No
-// from_flags/to_flags — verification is not a status-flag transition.
-func writeVerifyAuditEvent(ctx context.Context, db *pgxpool.Pool, accountID, userID, action string) error {
+// writeVerifyAuditEvent records ONE 'verified' account_events row per attempt (M3-P3-OD-15,
+// RULED) — the action name means "an attempt happened," not "it succeeded". The outcome goes in
+// `reason` (free TEXT, ≤2000 chars, already the audit trail's own note field — module 2's own
+// comment on it: "the operator's internal note... bridges to the audit read") — DELIBERATELY NOT
+// to_flags/from_flags: both platformapi's and adminapi's events-read handlers decode those two
+// columns as a FIXED flagsSnapshot{paused,pause_reason,quarantined,disabled} shape everywhere else
+// in the codebase, so a differently-shaped JSONB payload there would silently decode to a
+// zero-value snapshot on read — corrupting, not carrying, the very outcome this write exists to
+// record. No from_flags either way — verification is not a status-flag transition.
+func writeVerifyAuditEvent(ctx context.Context, db *pgxpool.Pool, accountID, userID string, success bool, externalCode string) error {
+	reason := "verify: success"
+	if !success {
+		reason = "verify: failure (" + externalCode + ")"
+	}
 	_, err := db.Exec(ctx,
-		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action) VALUES ($1, $2, 'user', $3)`,
-		accountID, userID, action)
+		`INSERT INTO byosmtp.account_events (account_id, user_id, actor, action, reason) VALUES ($1, $2, 'user', 'verified', $3)`,
+		accountID, userID, reason)
 	return err
+}
+
+// verifyAttemptCountToday counts ALL 'verified' account_events rows for accountID in the trailing
+// windowSec — every attempt, success or failure (M3-P3-OD-15) — the §3.3 test-button rate limit's
+// own signal.
+func verifyAttemptCountToday(ctx context.Context, db *pgxpool.Pool, accountID string, windowSec int) (int, error) {
+	var n int
+	err := db.QueryRow(ctx,
+		`SELECT count(*) FROM byosmtp.account_events
+		  WHERE account_id = $1 AND action = 'verified' AND created_at >= NOW() - INTERVAL '1 second' * $2`,
+		accountID, windowSec).Scan(&n)
+	return n, err
 }
 
 // externalCodeFor maps the box's internal error_reason slug to the §2.3 published verify code +

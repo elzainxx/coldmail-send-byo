@@ -667,11 +667,11 @@ a new one.
 > 1. **The `'blocked'` enum comment was wrong — FIXED IN PLACE, above.** It read *"fails, p=reject or
 >    p=quarantine"*; post-ruling, BLOCK requires `p=reject` **AND** no SPF record at all **AND** no DKIM
 >    at any common selector, so `p=quarantine` no longer blocks. Corrected here rather than deferred to
->    `0038` because **it is a doc fix, not a schema change** (the user's ruling, 2026-07-30) — the two
+>    `0039` because **it is a doc fix, not a schema change** (the user's ruling, 2026-07-30) — the two
 >    enum *values* are untouched and, being enum values, could not be changed anyway (additive-only,
 >    Rule 5). Only the prose describing what reaches them moved. Phase 4 §1.6's table remains
 >    authoritative for the condition; the comment now points at it instead of restating it.
-> 2. **The missing acknowledgment columns — RULED: they land in Phase 4's own `0038`, NOT here.**
+> 2. **The missing acknowledgment columns — RULED: they land in Phase 4's own `0039`, NOT here.**
 >    `from_warning_acknowledged_at` + `from_warning_acknowledged_for`, specified in **Phase 4 §4.6**.
 >    This phase is **not amended and stays closed.** The reasoning, which generalizes to any future
 >    phase that discovers a schema need: *"Phase 1 locked the schema as understood then. My Phase 4

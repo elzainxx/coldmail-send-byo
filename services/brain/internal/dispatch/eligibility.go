@@ -348,3 +348,38 @@ func (d *Dispatcher) userHasEligible(ctx context.Context, userID, dailyResetTime
 func accountConsumeQuery(orderBy string) string {
 	return fmt.Sprintf(accountConsumeQueryTmpl, orderBy, accountBaseEligibilityFilter)
 }
+
+// accountConsumeSpecificQuery renders the SAME consume template, scoped to ONE named account
+// (Module 3 Phase 3 §3.2/§8.4, M3-P3-OD-16 RULED: test-send targets the CLICKED account
+// specifically, never the cross-account selection a campaign send uses). The extra
+// "AND a.id = $6" clause is appended to accountBaseEligibilityFilter's slot, so it composes with
+// the SAME structural exclusions (quarantined/disabled/deleted_at) and the SAME daily-limit/
+// throttle self-clear logic every other consumer gets — a test-send that finds the account
+// ineligible fails outright rather than falling through to a different account, exactly the
+// consequence the ruling names. orderBy is irrelevant here (the id filter admits at most one row)
+// but the template requires one, so defaultAccountOrderBy is passed for a stable, harmless value.
+func accountConsumeSpecificQuery() string {
+	return fmt.Sprintf(accountConsumeQueryTmpl, defaultAccountOrderBy, accountBaseEligibilityFilter+" AND a.id = $6")
+}
+
+// accountConsumeSpecific runs the atomic consume against exactly ONE account (scoped to userID for
+// tenancy), for test-send (§3.2). found=false means that SPECIFIC account is not eligible right
+// now (quarantined/disabled/deleted, or paused at its daily limit with no self-clear available) —
+// the caller must FAIL, never substitute a different account. Called by TestSender (send_test.go),
+// this package's own OD-7-respecting seam for platformapi.
+func (d *Dispatcher) accountConsumeSpecific(ctx context.Context, userID, accountID string, dailyResetTimezone string, dailyResetHour, throttlePauseSeconds int) (selectedAccount, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	query := accountConsumeSpecificQuery()
+	var a selectedAccount
+	err := d.db.QueryRow(ctx, query, dailyResetTimezone, userID, (*string)(nil), throttlePauseSeconds, dailyResetHour, accountID).Scan(
+		&a.id, &a.smtpHost, &a.smtpPort, &a.smtpUser, &a.fromAddress, &a.fromName,
+		&a.ciphertext, &a.nonce, &a.keyID)
+	if err == pgx.ErrNoRows {
+		return selectedAccount{}, false, nil
+	}
+	if err != nil {
+		return selectedAccount{}, false, err
+	}
+	return a, true, nil
+}

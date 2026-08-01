@@ -421,6 +421,8 @@ remain, on two auth domains, over the same table (module 2 §4.5's separation, r
 | PATCH | `/v1/byosmtp/accounts/{id}` | update, scoped to `?user_id=<uuid>`. Omit = unchanged (structural for `smtp_secret`: the credential columns are absent from the SET list entirely when the field is omitted). `user_id` is NOT a patchable field — it does not exist in the request schema, so an attempt to send it is rejected by the strict decoder before any handler logic runs |
 | GET | `/v1/byosmtp/accounts/{id}/events` | the account's own audit trail, scoped to `user_id` (not `account_id` alone — a purged account's events row has `account_id` nulled, so scoping by `user_id` keeps it reachable and keeps a cross-tenant probe against a foreign account id from returning anything) |
 | POST | `/v1/byosmtp/accounts/{id}/disable`, `/v1/byosmtp/accounts/{id}/enable`, `/v1/byosmtp/accounts/{id}/pause`, `/v1/byosmtp/accounts/{id}/unpause` | re-scoped lifecycle transitions (module 2's engine, unchanged logic). `unpause` refuses to clear a non-`manual` pause (`pause_reason` is not `'manual'`) — the one piece of user-safety logic that makes exposing it to users safe at all. `quarantine`/`unquarantine` are **NOT exposed here** — they stay operator-only; a user-facing un-quarantine is Phase 5's (its own rate limit + test-verified bypass) |
+| POST | `/v1/byosmtp/accounts/{id}/test` | connect + STARTTLS + AUTH only (the SAME `push_verify` path as create's verify-on-add — not a copy). **Available WHILE quarantined** (§3.4: the predicate is `user_id` + not-deleted only, deliberately not gated on quarantined/disabled/paused, since a user cannot produce the un-quarantine evidence if the evidence-producing endpoint is itself gated on not being quarantined). Rate-limited PER ACCOUNT (`account_test_rate_limit_per_day`) — refused with `429 rate_limited` beyond it, counting every attempt (success or failure alike, M3-P3-OD-15). Returns `200` with `{"verification": {"state", "smtp_response", "code"?}}` — a FAILED test is still a successful API call (the caller asked "does this work" and got a real answer) |
+| POST | `/v1/byosmtp/accounts/{id}/test-send` | a REAL send (full `push_job`, MAIL FROM/RCPT TO/DATA) to the account's OWN `from_address` only (M3-P3-OD-5: an arbitrary recipient would make this a one-message open relay). FORCES the clicked account specifically (M3-P3-OD-16) — never the cross-account selection a campaign send uses; an ineligible clicked account fails outright (`409 conflict`, `account_not_eligible_for_test_send`) rather than silently substituting a different one. `409 conflict` (`no_box_available`) if no box is connected. Writes a real `job`/`job_events` row (Rule 5: an unreported real send is as dishonest as a fabricated one) and consumes a `daily_sent_count` unit. Returns `202` with `{job_id, state:"sending"}` — poll `/v1/report?job_id=...` for the outcome, exactly like any other async send |
 
 **Verify-on-add's external code vocabulary** (§2.3 of `Docs/phase-3-user-owned-accounts.md`,
 `verification.code` on a `"failed"` state) — additive-only forever (Rule 5), and deliberately
@@ -438,10 +440,10 @@ user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both c
 | `verify_protocol_error` | The server did not speak SMTP as expected |
 | `verify_connection_lost` | The connection dropped mid-handshake |
 
-**Not yet wired at this commit** (later chunks of the same phase; tracked as they land): the test
-button (`.../test`, `.../test-send`), bulk add (`.../bulk`), and soft-delete (`DELETE
-/v1/byosmtp/accounts/{id}`, which stamps `deleted_at`/`purge_after` rather than hard-deleting — the
-operator's `DELETE /v1/admin/accounts/{id}` remains a hard delete).
+**Not yet wired at this commit** (later chunks of the same phase; tracked as they land): bulk add
+(`.../bulk`), and soft-delete (`DELETE /v1/byosmtp/accounts/{id}`, which stamps
+`deleted_at`/`purge_after` rather than hard-deleting — the operator's `DELETE
+/v1/admin/accounts/{id}` remains a hard delete).
 
 ## What is NOT part of the public REST contract
 

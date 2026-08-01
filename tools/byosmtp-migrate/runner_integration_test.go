@@ -102,12 +102,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	// then G3's own additions 0029-0034: 0029 user_settings, 0030 user_config_overrides, 0031
 	// user_suspensions, 0032 campaigns, 0033 notifications, 0034 widens
 	// account_events_action_check; then Phase 3's own 0035 (credential_verification_state enum +
-	// accounts columns) and 0036 (the six account-surface config seeds). This is the executable
-	// expectation of the migration chain.
+	// accounts columns), 0036 (the six account-surface config seeds), and 0037 (M3-P3-OD-17/18: a
+	// narrow INSERT-only grant on public.job_items so test-send can create its own job_item row).
+	// This is the executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
-		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036"}
+		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -124,8 +125,11 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertRole(t, admin, "byosmtp_owner", false /*login*/, false /*super*/)
 	assertRole(t, admin, "byosmtp_module", true /*login*/, false /*super*/)
 	assertSchemaOwner(t, admin, "byosmtp", "byosmtp_owner")
-	assertPlatformGrant(t, admin, "users")
-	assertPlatformGrant(t, admin, "job_items")
+	assertPlatformGrant(t, admin, "users", "SELECT")
+	// job_items gains INSERT at 0037 (M3-P3-OD-17) — checked again, post-0037, further below; this
+	// EARLY assertion runs right after Up() reaches head, so it must already reflect 0037's grant
+	// rather than the pre-0037 SELECT-only shape.
+	assertPlatformGrant(t, admin, "job_items", "INSERT,SELECT")
 	// Prove the Phase-1 feature objects exist and are owned by byosmtp_owner (so FORCE RLS on
 	// byosmtp.accounts genuinely enforces — ADR-0004). "pools" removed at G2 — 0028 drops the
 	// table, so by the time Up() reaches head it no longer exists to own-check. G3 adds the five
@@ -328,6 +332,10 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatalf("after Up: byosmtp.config missing %q (0036 not applied)", key)
 		}
 	}
+	// 0037 (M3-P3-OD-17/18): the narrow INSERT-only grant on public.job_items for test-send.
+	if !hasTablePrivilege(t, admin, "byosmtp_module", "public.job_items", "INSERT") {
+		t.Fatal("after Up: byosmtp_module lacks INSERT on public.job_items (0037 not applied)")
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -379,6 +387,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0023" && configKeyExists(t, admin, "brain_singleton_reacquire_interval_sec") {
 			t.Fatal("after Down 0023: brain_singleton_reacquire_interval_sec is still present (down did not delete the seed)")
+		}
+		if v == "0037" && hasTablePrivilege(t, admin, "byosmtp_module", "public.job_items", "INSERT") {
+			t.Fatal("after Down 0037: byosmtp_module still has INSERT on public.job_items (down did not revoke it)")
 		}
 		if v == "0036" {
 			for _, key := range []string{"account_test_rate_limit_per_day", "account_count_cap_per_user",
@@ -577,6 +588,18 @@ func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
 
 // enumTypeExists reports whether an enum (or any) type of the given name exists in the byosmtp
 // schema (module 3's 0025/0028 anti-vacuity — Docs/phase-1-schema-delta.md §6).
+// hasTablePrivilege reports whether role holds the given privilege on qualifiedTable (e.g.
+// "public.job_items") — the anti-vacuity check for 0037's narrow INSERT-only grant (M3-P3-OD-17).
+func hasTablePrivilege(t *testing.T, c *pgx.Conn, role, qualifiedTable, privilege string) bool {
+	t.Helper()
+	var ok bool
+	if err := c.QueryRow(context.Background(),
+		`SELECT has_table_privilege($1, $2, $3)`, role, qualifiedTable, privilege).Scan(&ok); err != nil {
+		t.Fatalf("table privilege lookup %s on %s for %s: %v", privilege, qualifiedTable, role, err)
+	}
+	return ok
+}
+
 func enumTypeExists(t *testing.T, c *pgx.Conn, name string) bool {
 	t.Helper()
 	var ok bool
@@ -839,17 +862,20 @@ func assertSchemaOwner(t *testing.T, c *pgx.Conn, schema, owner string) {
 	}
 }
 
-func assertPlatformGrant(t *testing.T, c *pgx.Conn, table string) {
+// assertPlatformGrant asserts byosmtp_module's exact privilege set on a public.* (platform-owned)
+// table. want is comma-joined, alphabetically sorted to match information_schema's own
+// string_agg ordering (e.g. "INSERT,SELECT") — callers must pass privileges in that order.
+func assertPlatformGrant(t *testing.T, c *pgx.Conn, table, want string) {
 	t.Helper()
 	var priv string
 	err := c.QueryRow(context.Background(),
-		`SELECT string_agg(privilege_type, ',') FROM information_schema.role_table_grants
+		`SELECT string_agg(privilege_type, ',' ORDER BY privilege_type) FROM information_schema.role_table_grants
 		 WHERE grantee='byosmtp_module' AND table_schema='public' AND table_name=$1`, table).Scan(&priv)
 	if err != nil {
 		t.Fatalf("grant lookup public.%s: %v", table, err)
 	}
-	if priv != "SELECT" {
-		t.Fatalf("public.%s grants to byosmtp_module = %q, want exactly SELECT", table, priv)
+	if priv != want {
+		t.Fatalf("public.%s grants to byosmtp_module = %q, want exactly %q", table, priv, want)
 	}
 }
 

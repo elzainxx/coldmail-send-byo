@@ -55,9 +55,15 @@ seeds (§7) and one nullable-column addition for verification results (§2.4, fl
 
 **Migration numbers.** Phase 1 claims `0025`–`0034` (its §9 table). Phase 3 therefore takes
 **`0035`** (§2.4's `ALTER TABLE` + enum) and **`0036`** (§7's six config seeds, which must land with
-their consumers, not in Phase 1's block). Phase 4 starts at `0037`. An earlier draft of this section
-numbered the verification-state migration `0031`, which is Phase 1's `user_suspensions` — corrected
-here rather than left to collide at `migration_lint`.
+their consumers, not in Phase 1's block). An earlier draft of this section numbered the
+verification-state migration `0031`, which is Phase 1's `user_suspensions` — corrected here rather
+than left to collide at `migration_lint`.
+
+**Amended (C3, M3-P3-OD-17/18, RULED):** Phase 3 needed a THIRD migration, discovered only while
+implementing test-send — `0037`, the narrow `INSERT`-only grant on `public.job_items` the
+job_item row test-send itself creates needs (§3.2). Phase 4's doc, which had claimed `0037`/`0038`
+for unrelated work, is renumbered to `0038`/`0039` in the same change (M3-P3-OD-18) — see
+`Docs/phase-4-from-gate.md`'s own updated numbering.
 
 | State | Where | Phase 1 §|
 |---|---|---|
@@ -1471,3 +1477,53 @@ fix.
 **Verified:** clean-slate reset, full harness 66/66 (Node box units 87/87 — T2/T2-control/T3/
 T3-control/T3-structural-corroboration/§0.5-switch-coverage/T3b/T3b-control/T3b-negative-control-
 on-the-bug, 9 new; the new live SUITE 11, 10 assertions), all six CI gates green.
+
+### 14.3 C3 closeout — the test button (`.../test`, `.../test-send`)
+
+**What landed:** `POST .../test` (`handleAccountTest`) reuses C2's `Verifier.Verify` unchanged —
+not a copy, the same call — gated by a per-account rolling-24h rate limit
+(`account_test_rate_limit_per_day`) and available while quarantined (§3.4: the predicate is
+`user_id` + not-deleted only, no quarantined/disabled/paused check). `POST .../test-send`
+(`dispatch.Dispatcher.SendTest`) is a genuinely new send path: a new `accountConsumeSpecific`
+query variant (reusing `accountConsumeQueryTmpl` with an added `AND a.id = $6`) forces the
+eligibility-consume onto exactly the clicked account, never the cross-account
+`selectAccountForJob` a campaign send uses. The job is born directly in `'assigned'` (there is
+nothing to claim — the account is already forced) and pushed through the SAME `markSending`/
+`push_job` primitives every other send uses.
+
+**Three real gaps found while implementing, none anticipated by the spec, all ruled the same day:**
+
+1. **M3-P3-OD-15** — the rate limit's own stated purpose ("each click is a real auth attempt")
+   requires counting failures too, but the only audit action for this (`'verified'`) had no
+   failure counterpart and no migration slot remained. Ruled: write the audit row on every
+   attempt, outcome carried in the existing free-text `reason` column — deliberately NOT
+   `to_flags`/`from_flags`, which this session's own implementation pass discovered both
+   `platformapi`'s and `adminapi`'s events-read handlers decode as a FIXED
+   `flagsSnapshot{paused,...}` shape everywhere else, so a differently-shaped JSONB payload there
+   would have silently corrupted on read rather than carrying the outcome — caught before it
+   shipped, not after.
+2. **M3-P3-OD-16** — §3.2 describes test-send as "subject to the account's eligibility exactly as
+   a campaign send is," but a campaign send's own eligibility step is a cross-account SELECTION,
+   which doesn't target one account. Ruled: force the clicked account; an ineligible clicked
+   account fails outright, never substitutes a different one.
+3. **M3-P3-OD-17/18** — test-send's own real job row (§3.2's own requirement) needs
+   `byosmtp.jobs.job_item_id`, which references a platform-owned table `byosmtp_module` holds
+   SELECT-only on (verified live before concluding this was a real blocker:
+   `has_table_privilege('byosmtp_module','public.job_items','INSERT')` returned `false`). Ruled: a
+   narrow `INSERT`-only grant, migration `0037` — Phase 3's THIRD migration, discovered only
+   during C3. The consequence cascaded further than a single doc: Phase 4's doc claimed `0037`/
+   `0038` already, and Phases 5/6/7's own docs number themselves relative to where Phase 4 ends —
+   all four docs (`phase-4-from-gate.md`, `phase-5-autonomous-behaviour-and-limits.md`,
+   `phase-6-per-user-config-and-routing.md`, `phase-7-visibility-notifications-contract.md`) plus
+   `Docs/plan-revision-log.md`'s own chain table were shifted +1 in the same change, verified by a
+   sweep confirming no stale reference survived anywhere in `Docs/`.
+
+**Verified:** clean-slate reset, full harness green (`migration_lint` covers `0037`'s up/down
+anti-vacuity via a new `hasTablePrivilege` helper), all six CI gates green (`contract_drift`: 14
+platform routes now gated). New tests: `TestAccountTest_RateLimitedPerAccount` (T5 — per-account
+scope control, window-reset control), `TestAccountTest_AvailableWhileQuarantined`,
+`TestAccountTestSend_Unavailable`, `TestAccountTestSend_CrossTenantIsNotFound`, plus
+`tests/harness/phase3_verify.sh`'s new LIVE assertions: the test button re-verifying a real
+account, the rate limit genuinely refusing a live click, and test-send's real send reaching `sent`
+with the recipient forced to the account's own `from_address` and `assigned_account_id` forced to
+the clicked account — never a different one.

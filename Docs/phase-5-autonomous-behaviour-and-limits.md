@@ -3,8 +3,8 @@
 **Status:** PLAN ONLY. No implementation. Rule 2 applies throughout: every contradiction found while
 writing this is registered in §15, not resolved.
 
-**Migration numbers:** `0039` (config seeds, with their consumers) then `0040` (the one index the
-failure-rate window needs). Phase 4 ended at `0038`.
+**Migration numbers:** `0040` (config seeds, with their consumers) then `0041` (the one index the
+failure-rate window needs). Phase 4 ended at `0039`.
 
 **What this phase is.** Module 2's quarantine was an operator-only lockout protecting the operator's
 pool. Module 3's is a **user-resettable circuit breaker on the user's own account**. Same machinery,
@@ -196,7 +196,7 @@ SELECT count(*)                                  AS attempts,
   enqueued `quarantine_min_sample` recipients. The two filters are not redundant with each other, and
   a test asserts each independently (§12, T2c/T2d).
 
-**The index this needs (`0040`).** `job_events` has five indexes (`sender_0008:79-83`) and **none** on
+**The index this needs (`0041`).** `job_events` has five indexes (`sender_0008:79-83`) and **none** on
 `account_id`. Without one, the query is a full scan on the largest table in the schema, executed on
 every failure, inside a transaction holding an exclusive account lock. So:
 
@@ -777,7 +777,7 @@ them.
 
 ### 10.1 The keys
 
-Seeded in `0039`, in the `sender_0017` template shape (JSONB `{"v": …}`, documented `default_value`,
+Seeded in `0040`, in the `sender_0017` template shape (JSONB `{"v": …}`, documented `default_value`,
 `value_type` hint). **Every one has a live consumer in the same commit** — no `RESERVED` marker is
 introduced by this phase.
 
@@ -807,7 +807,7 @@ bug. Flagged as an addition rather than silently expanded.
 `quarantine_failure_rate_pct` is an integer percent, not a float ratio, to match the inherited
 `variation_*_rate_pct` convention rather than introducing a second way to spell a rate.
 
-**`0039` also DROPS one inherited key — `quarantine_threshold`** (M3-P5-OD-1, RULED 2026-07-31: split
+**`0040` also DROPS one inherited key — `quarantine_threshold`** (M3-P5-OD-1, RULED 2026-07-31: split
 it). Its consumer branch dies in §4, so the key and its `config-consumers.txt` line go in the same
 migration, with the ADR that extends M3-P1-OD-3's removal exemption **narrowly** — for a key that never
 had a module 3 consumer — and states it does not reopen generally. Its replacement
@@ -861,7 +861,7 @@ is dropped, and module 3's additive-only clock runs from its own `0025` baseline
 removal exemption **expired at Phase 1's close** (M3-P1-OD-3).
 
 **One config ROW is deleted, and that is a different thing from a schema removal** — reconciled with
-§10.1 on 2026-07-31, which previously contradicted this section outright. `0039` drops the inherited
+§10.1 on 2026-07-31, which previously contradicted this section outright. `0040` drops the inherited
 `quarantine_threshold` **row** per M3-P5-OD-1's ruling. A `config` row is data in an inherited table,
 not a contract object: no client codes against it, nothing references it by FK, and its deletion is a
 plain `DELETE`. That is why it needs the narrow ADR extending the removal exemption (§10.1) rather than
@@ -870,11 +870,11 @@ a Rule 5 waiver — and why "Phase 5 removes nothing" was the wrong sentence eve
 
 | Version | File | Contents | Down |
 |---|---|---|---|
-| `0039` | `..._seed_phase5_config.{up,down}.sql` | Ten `INSERT INTO byosmtp.config` rows (§10.1), **plus `DELETE FROM byosmtp.config WHERE key = 'quarantine_threshold'`** and the removal of its `config-consumers.txt` line (M3-P5-OD-1) | `DELETE` the ten keys **and re-`INSERT` `quarantine_threshold`** with its inherited `default_value` and description — `default_value` is never mutated (Rule 1), so the down file restores it verbatim from its seed site, `sender_0010:31` — `('quarantine_threshold', '{"v": 30}', '{"v": 30}', 'account_status_score below which account is auto-quarantined', 'integer')` |
-| `0040` | `..._job_events_account_window_idx.{up,down}.sql` | `job_events_account_id_created_at_idx` (§1.3) | `DROP INDEX` |
+| `0040` | `..._seed_phase5_config.{up,down}.sql` | Ten `INSERT INTO byosmtp.config` rows (§10.1), **plus `DELETE FROM byosmtp.config WHERE key = 'quarantine_threshold'`** and the removal of its `config-consumers.txt` line (M3-P5-OD-1) | `DELETE` the ten keys **and re-`INSERT` `quarantine_threshold`** with its inherited `default_value` and description — `default_value` is never mutated (Rule 1), so the down file restores it verbatim from its seed site, `sender_0010:31` — `('quarantine_threshold', '{"v": 30}', '{"v": 30}', 'account_status_score below which account is auto-quarantined', 'integer')` |
+| `0041` | `..._job_events_account_window_idx.{up,down}.sql` | `job_events_account_id_created_at_idx` (§1.3) | `DROP INDEX` |
 
 Both reverse cleanly, so Phase 5 adds **no** new one-way door to the chain. `sender_0017` is the
-template for `0039`; `sender_0011` for `0040`.
+template for `0040`; `sender_0011` for `0041`.
 
 **No new table ⇒ no new grants**, so ADR-0008's grants invariant has nothing to gain here — but
 `TestGrantsInvariant` must be green regardless, and §14 requires it. **No new enum value**: §1.4's four
@@ -882,7 +882,7 @@ reasons are Phase 1 `0025`'s four `quarantine_reason` values, §2.5's actor is P
 §3.2's audit action is Phase 1 `0034`'s `'credential_updated'`. That Phase 1 anticipated all three
 is the reason this phase is two files.
 
-The chain-lint `wantChain` literal gains `0039` and `0040`
+The chain-lint `wantChain` literal gains `0040` and `0041`
 (`tests/harness/checks/migration_lint.sh` extracts it from `runner_integration_test.go`).
 
 ---
@@ -1217,7 +1217,7 @@ items).
 10. **Every config key has a real consumer at its seeding commit** — `config_consumption` and
     `config_drift` both green, no `RESERVED` marker introduced. Conditional on **M3-P5-OD-1**.
 11. **Ordering invariants rejected, not clamped** — T10, both directions.
-12. **Migrations apply, are idempotent, and reverse cleanly**; `wantChain` gains `0039`/`0040`;
+12. **Migrations apply, are idempotent, and reverse cleanly**; `wantChain` gains `0040`/`0041`;
     `TestGrantsInvariant` green.
 13. **Docs updated in the same change** — `config-reference.md` (ten rows),
     `config-consumers.txt` (ten lines), the account-state doc, and the operator runbook's shadow-review
@@ -1240,7 +1240,7 @@ Rule 2: recorded, not resolved. Each blocks only its own slice.
 | **M3-P5-OD-1** ✅ **RULED 2026-07-31** | §4 removes the score-as-quarantine-trigger, which leaves **`quarantine_threshold`** (seeded `sender_0010:31`, ledger line `quarantine_threshold\|QuarantineThreshold`) with no runtime consumer. The blocking `config_consumption` gate fails a seeded key with no consumer. Every fix violates something locked: **(a)** drop the key — but the fork-time removal exemption **expired at Phase 1's close** (M3-P1-OD-3) and Rule 5 forbids removal; **(b)** repurpose it as the score's *display*-warning threshold — Rule 5 forbids repurposing, and it is a genuine semantic change ("quarantine at" → "warn at"); **(c)** mark it `RESERVED` — Phase 2 §1.2.1 requires a named expiry gate, and there is no future phase that will consume it, so the marker could never expire honestly; **(d)** leave it consumed by a vestigial branch — a literal governing nothing, which Rule 1 calls a bug | Three locked rules collide (Rule 5 additive-only, Rule 1 no-unconsumed-dials, the M3-P1-OD-3 expiry) and the user ruled the exemption is fork-time only. Resolving it locally would either weaken Rule 5 or write a dishonest `RESERVED` expiry | **(b) with an explicit ADR**, on the grounds that the key's *name* still describes its subject and the score genuinely still exists — but the user should rule, because it is a repurpose and Rule 5 says never repurpose. Second choice: **(a)**, on the grounds that module 3 still has no external consumer of a config key, extending M3-P1-OD-3's own reasoning past its expiry — which is itself a ruling only the user can make. **RULED: none of (a)–(d) — SPLIT IT.** DROP `quarantine_threshold` here; ADD `score_alert_threshold` as a new key with a real consumer in Phase 7 §3.1's warnings. Repurposing *"leaves a lying name — an operator sets `quarantine_threshold` and gets an alert."* The expired-exemption objection does not apply: the exemption *"turned on module 3 having no consumers, and this key never had a consumer in module 3 at any point; deleting it is removing dead inheritance, not breaking a live contract."* ADR extends the exemption **narrowly on exactly that basis** and states it **does not reopen generally**. Applied in §4, §10.1; Phase 7 §8 seeds the new key |
 | **M3-P5-OD-2** ✅ **RULED 2026-07-31** | §5.4: `chainHasSelfRecovering`'s split rests on a premise Phase 5 falsifies. `exhaustion.go:76-78` says quarantine is `terminal_blocked` **because** *"manual recovery only"*. Phase 5 makes quarantine user-clearable but **rate-limited**, and the binary has no bucket for "the user could clear it, but not yet / not today." `self_recovering` ⇒ WAIT ⇒ spins to expiry, defeating exit criterion 4 for the commonest new case. `terminal_blocked` ⇒ FAIL ⇒ jobs die while the user is one button-press from fixing it | Changes observable behaviour for the phase's headline scenario, and re-scopes a locked module 2 predicate (m2 §5.1) that four inherited tests assert. Rule 2 forbids picking one on my own authority | **`terminal_blocked`, i.e. keep the inherited classification**, for two reasons: it preserves every inherited §5.1 test unchanged, and failing fast surfaces the problem to the user (who then fixes the account and re-runs) rather than silently burning a week of campaign clock. The cost — jobs failed while a fix was available — is mitigated by the notification, which is Phase 7's and fires on quarantine, i.e. **before** the FAIL. **RULED: `terminal_blocked`.** The deciding reason, recorded: *"the un-quarantine rate limit exists to stop the spin loop, so classifying a rate-limited quarantine as `self_recovering` reintroduces precisely what the limit was built to prevent."* This is the argument that must stop a later phase from "fixing" the classification. Applied in §5.4 |
 | **M3-P5-OD-3** ✅ **RULED-ACCEPTED 2026-07-31** | §9.3: `doTransition` evaluates `spec.precondition` against an **unlocked** `readFlags` (`account_store.go:91-100`, plain SELECT) then UPDATEs with a constant `setClause`. Two concurrent admin calls can both pass the precondition and both write ⇒ **two `account_events` rows where one should have been refused**. Inherited from module 2; Phase 5 adds a second actor (`'user'`) and a counter to that surface | It is a pre-existing module 2 defect, not something Phase 5 introduces, and fixing it silently inside a Phase 5 change would be exactly the "claimed fix nobody re-verified" pattern Rule 11 exists to stop | **Fix it in Phase 5, in its own commit, with its own two-connection test** — add `FOR UPDATE` to `readFlags`. It is one clause, the lock order is unaffected (`doTransition` writes no job row, so Rule 9 does not apply), and Phase 5 is the phase that makes the surface concurrent. Flagged rather than done because it is out of the brief's scope and the user may prefer it deferred to Future Work |
-| **M3-P5-OD-4** ✅ **RULED-ACCEPTED 2026-07-31** | §10.1 seeds **ten** keys where the brief names eight. Two are additions I am making, not dials the brief asked for: `unquarantine_evidence_ttl_sec` (§2.4's second recency bound) and `campaign_expiry_sweep_interval_ms` (§5.3's loop cadence) | Rule 1 says a literal governing runtime behaviour is a bug, so both must be keys — but adding dials the brief did not authorise is scope expansion, and the brief said each key needs *"a real consumer at its seeding commit"* | **Adopt both.** Each has a live consumer in `0039`'s commit and each would otherwise be a hardcoded constant. Recorded so the count discrepancy against the brief is deliberate and visible rather than discovered later |
+| **M3-P5-OD-4** ✅ **RULED-ACCEPTED 2026-07-31** | §10.1 seeds **ten** keys where the brief names eight. Two are additions I am making, not dials the brief asked for: `unquarantine_evidence_ttl_sec` (§2.4's second recency bound) and `campaign_expiry_sweep_interval_ms` (§5.3's loop cadence) | Rule 1 says a literal governing runtime behaviour is a bug, so both must be keys — but adding dials the brief did not authorise is scope expansion, and the brief said each key needs *"a real consumer at its seeding commit"* | **Adopt both.** Each has a live consumer in `0040`'s commit and each would otherwise be a hardcoded constant. Recorded so the count discrepancy against the brief is deliberate and visible rather than discovered later |
 | **M3-P5-OD-5** ✅ **RULED-ACCEPTED 2026-07-31** | §5.3 adds a **fifth** single-Brain housekeeping loop (the expiry sweep). CLAUDE.md Rule 7 makes Brain a singleton under a session advisory lock and forbids a second dispatch path; a fifth loop is not a dispatch path, but it is a fifth thing that must honour the drain, the DB-outage gate, and the singleton | Not a contradiction — a scope confirmation. Recorded because "add a loop" is exactly the kind of change that quietly skips one of the three gates the other four honour | **Adopt**, wired in `main.go` alongside the existing four, sharing `dbhealth.go`'s outage gate and the drain flag. A test asserts it pauses under a simulated DB outage, in the shape of `config_typefault_test.go:128`'s existing shared-gate assertion |
 
 **Inherited and still open, touching this phase:**

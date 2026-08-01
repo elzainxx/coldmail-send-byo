@@ -19,6 +19,7 @@ package platformapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -51,27 +52,49 @@ type VerifyResult struct {
 	SMTPResponse string
 }
 
+// TestSender is the seam through which the test-send handler triggers a real send FORCED to a
+// specific account (§3.2, M3-P3-OD-16). main.go's testSenderAdapter wraps *dispatch.Dispatcher
+// and loads dispatch.Config itself (config-not-code freshness stays sourced fresh per call,
+// mirroring every other Dispatcher entry point) — platformapi cannot import internal/dispatch
+// (OD-7 isolation), so it never sees dispatch.Config at all, only this narrow signature.
+// ErrAccountIneligible/ErrNoBoxAvailable are this package's own sentinel errors the adapter maps
+// dispatch's onto, so the handler can distinguish them from a generic internal error without
+// importing dispatch's error values either.
+type TestSender interface {
+	SendTest(ctx context.Context, userID, accountID, recipient string) (jobID string, err error)
+}
+
+// ErrAccountIneligible/ErrNoBoxAvailable are the two distinguishable TestSender failure modes a
+// handler must render differently (a clean 409/422-shaped refusal vs an operational error) — the
+// adapter (main.go) maps dispatch.ErrAccountIneligibleForTestSend/ErrNoBoxForTestSend onto these.
+var (
+	ErrAccountIneligible = fmt.Errorf("account not eligible for test-send")
+	ErrNoBoxAvailable    = fmt.Errorf("no connected box available for test-send")
+)
+
 // Server is the platform API. It holds the DB pool (byosmtp_module), the service-token
 // authenticator, an async dispatcher kick, and (Module 3 Phase 3) the account-surface's OWN
 // Encrypt-only credential primitive — a separate instance from adminapi.Encryptor (OD-7
 // isolation), sharing only the underlying KMS key material main.go loads once — plus the
 // AccountVerifier seam for verify-on-add.
 type Server struct {
-	db       *pgxpool.Pool
-	auth     *Authenticator
-	kick     Kicker
-	enc      *Encryptor
-	verifier AccountVerifier
-	mux      *http.ServeMux
+	db         *pgxpool.Pool
+	auth       *Authenticator
+	kick       Kicker
+	enc        *Encryptor
+	verifier   AccountVerifier
+	testSender TestSender
+	mux        *http.ServeMux
 }
 
 // NewServer wires the Domain-A routes. kick may be nil (run still succeeds; the dispatcher's own
 // loop will pick the job up) but is normally the dispatcher nudge. enc may be nil ONLY in tests
 // that never exercise the account-create/update paths — production always supplies one (main.go).
 // verifier may be nil in tests that don't exercise verify-on-add; handleAccountCreate treats a nil
-// verifier as "verification unavailable" (a clean internal_error), never a silent skip.
-func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor, verifier AccountVerifier) *Server {
-	s := &Server{db: db, auth: auth, kick: kick, enc: enc, verifier: verifier, mux: http.NewServeMux()}
+// verifier as "verification unavailable" (a clean internal_error), never a silent skip. testSender
+// may be nil in tests that don't exercise test-send.
+func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor, verifier AccountVerifier, testSender TestSender) *Server {
+	s := &Server{db: db, auth: auth, kick: kick, enc: enc, verifier: verifier, testSender: testSender, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -101,6 +124,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test", s.requireAuth(s.handleAccountTest))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test-send", s.requireAuth(s.handleAccountTestSend))
 }
 
 // dbCtx bounds a per-request DB operation.

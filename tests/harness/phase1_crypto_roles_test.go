@@ -135,9 +135,16 @@ func TestT4_CredentialRoundTripNoPlaintextTamperAAD(t *testing.T) {
 }
 
 // TestT5_ModuleRoleDeniedPlatformWrite — as byosmtp_module: SELECT on public.job_items/users
-// succeeds, but INSERT/UPDATE/DELETE fail with 42501; writes to byosmtp.jobs succeed. Proves the
-// one-writer boundary with a REAL failed write (anti-vacuity: the paired SELECT + sender write
-// succeed).
+// succeeds; UPDATE/DELETE on public.job_items and any write to public.users fail with 42501;
+// writes to byosmtp.jobs succeed. Proves the one-writer boundary with a REAL failed write
+// (anti-vacuity: the paired SELECT + sender write succeed).
+//
+// AMENDED (Module 3 Phase 3, M3-P3-OD-17/18, RULED, migration 0037): byosmtp_module now holds a
+// NARROW, DELIBERATE INSERT-only grant on public.job_items — test-send (§3.2) creates its own
+// genuine job_item row for a standalone credential-check send that has no natural campaign to
+// attach to. This is the ONE exception to the platform-table SELECT-only boundary, ruled
+// explicitly rather than discovered as a silent widening; UPDATE/DELETE on job_items and every
+// operation on public.users remain denied — verified below, not merely assumed.
 func TestT5_ModuleRoleDeniedPlatformWrite(t *testing.T) {
 	adminDSN := AdminDSN(t)
 	template := requireTemplate(t)
@@ -162,15 +169,29 @@ func TestT5_ModuleRoleDeniedPlatformWrite(t *testing.T) {
 		t.Fatalf("module SELECT returned %d rows, want 1", n)
 	}
 
-	// INSERT / UPDATE / DELETE on platform tables MUST fail 42501.
-	assertInsufficientPrivilege(t, m, "INSERT public.job_items",
-		"INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, status) VALUES ($1,$1,'x','s','b','pending')", uid)
+	// UPDATE / DELETE on public.job_items and any write to public.users MUST fail 42501.
 	assertInsufficientPrivilege(t, m, "UPDATE public.job_items",
 		"UPDATE public.job_items SET status='compromised' WHERE id=$1", itemID)
 	assertInsufficientPrivilege(t, m, "DELETE public.job_items",
 		"DELETE FROM public.job_items WHERE id=$1", itemID)
 	assertInsufficientPrivilege(t, m, "UPDATE public.users",
 		"UPDATE public.users SET is_active=false WHERE id=$1", uid)
+	assertInsufficientPrivilege(t, m, "INSERT public.users",
+		"INSERT INTO public.users (email, is_active) VALUES ($1, true)", "should-fail@example.com")
+
+	// INSERT public.job_items now SUCCEEDS — the ONE deliberate exception (M3-P3-OD-17, migration
+	// 0037): test-send creates its own genuine job_item row. Positive control proving the grant is
+	// real, narrow, and does not silently extend to UPDATE/DELETE (already asserted denied above).
+	var grantedItem string
+	if err := m.QueryRow(ctx,
+		"INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, status) VALUES ($1,$1,'x','s','b','pending') RETURNING id",
+		uid).Scan(&grantedItem); err != nil {
+		t.Fatalf("module INSERT public.job_items failed (should succeed — M3-P3-OD-17's narrow grant, migration 0037): %v", err)
+	}
+	// The row the module inserted is still bound by the SAME UPDATE/DELETE denial as any other —
+	// the grant is INSERT-only, not a blanket write grant on the table.
+	assertInsufficientPrivilege(t, m, "UPDATE public.job_items (module-inserted row)",
+		"UPDATE public.job_items SET status='compromised' WHERE id=$1", grantedItem)
 
 	// Anti-vacuity positive: the module CAN write its own table (byosmtp.jobs) via the sanctioned
 	// path. Use a fresh job_item to satisfy the UNIQUE FK.

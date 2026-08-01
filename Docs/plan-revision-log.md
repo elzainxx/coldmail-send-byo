@@ -20,7 +20,7 @@ per-phase registers, which remain the authoritative statement of each decision's
 
 **Sequence worth preserving, because it is the process working rather than a tidy outcome.** At the
 close of Chunk 4 this table read *1 open, Phase 7 not ready*. The sweep had found that Phase 1's `0033`
-and Phase 7's `0041` both created `byosmtp.notifications` — a build-stopper, since the chain would not
+and Phase 7's `0042` both created `byosmtp.notifications` — a build-stopper, since the chain would not
 apply at all — and reconciling them meant choosing which design survives, which is a **meaning change**
 the brief routes to the ledger. So it was reported open rather than silently merged. It was then **ruled
 (b)**: Phase 7's shape wins, `0033` is the single create site. The item was surfaced as a blocker
@@ -106,7 +106,7 @@ corrected, and M3-P1-OD-2 confirmed closed.
 | Change | Driver |
 |---|---|
 | §5.4 `chainHasSelfRecovering` → **`terminal_blocked`**, with the deciding reason recorded verbatim | M3-P5-OD-2 |
-| §4/§10.1 own the **drop half** of the key split: `0039` deletes `quarantine_threshold` + its consumers line, with the narrow ADR extending the removal exemption on the "never had a module 3 consumer" basis, stating it does not reopen generally | M3-P5-OD-1 |
+| §4/§10.1 own the **drop half** of the key split: `0040` deletes `quarantine_threshold` + its consumers line, with the narrow ADR extending the removal exemption on the "never had a module 3 consumer" basis, stating it does not reopen generally | M3-P5-OD-1 |
 | §11 reconciled with §10.1: no *schema object* is removed, but one **config row** is; the down cell restores it from `sender_0010:31` | Sweep — §11 said "removes nothing" twelve lines after §10.1 said it drops a key |
 | §5.4's "exit criterion 1" → **4** | Sweep — matches its own §14 list |
 
@@ -126,11 +126,11 @@ corrected, and M3-P1-OD-2 confirmed closed.
 | §1.1/§1.3 sequenced: the scrub extension is a **prerequisite commit** to the send-surface widening | M3-P7-OD-1 (a), conditional on -2 |
 | §1.3 + T1: scrub extended to **all three base64 alignments plus the full PLAIN blob**, each with a paired control; the grep-count-guard branch **not** built | M3-P7-OD-2 (a) |
 | §7 gained `job_events.destination_domain` + partial index; §9.1/T10 gained the throwing `scrubSecret` | M3-P7-OD-6, -8 |
-| §8's `0041` gained the DDL **and the writer** — `CREATE OR REPLACE fn_job_events_on_state_change`, based on **`0022`'s** body, not `0008`'s | Sweep. `job_events` has no other writer, so `ADD COLUMN` alone leaves it NULL forever; and `0008`'s body would have silently reverted `0022`'s errors_last_window fix |
+| §8's `0042` gained the DDL **and the writer** — `CREATE OR REPLACE fn_job_events_on_state_change`, based on **`0022`'s** body, not `0008`'s | Sweep. `job_events` has no other writer, so `ADD COLUMN` alone leaves it NULL forever; and `0008`'s body would have silently reverted `0022`'s errors_last_window fix |
 | Exit criteria: **new criterion 14** for T11; criterion 13 rewritten from the pre-ruling "no-ops" to the ruled **throws** (T10) | Sweep — T11 was specified but required by no criterion |
-| **§8's `0041` marked ⛔ BLOCKED; M3-P7-OD-9 raised in §13** | Sweep — duplicate of Phase 1's `0033` |
-| **Then RESOLVED: banner rewritten to ✅, the DDL re-headed as `0033`'s, `0041` re-scoped to three `ALTER`s + two indexes + one function replacement (and its filename corrected — "_notifications_and_visibility" would now misdescribe it). Two Phase 1 constraints carried in; `occurrence_count`/`digest_id` dropped; the grants note reassigned to Phase 1. New exit criterion 15** | **M3-P7-OD-9 RULED (b)** — the shape wins on the merits (§3.3's dedup reads `notified_at`; the tier dial needs severity and tier independent), `0033` stays the single create site because the runner hard-errors on a chain gap |
-| `0041`'s FK `byosmtp.users(id)` → **`public.users(id)`** | Sweep — no such table; every inherited FK uses `public.users` |
+| **§8's `0042` marked ⛔ BLOCKED; M3-P7-OD-9 raised in §13** | Sweep — duplicate of Phase 1's `0033` |
+| **Then RESOLVED: banner rewritten to ✅, the DDL re-headed as `0033`'s, `0042` re-scoped to three `ALTER`s + two indexes + one function replacement (and its filename corrected — "_notifications_and_visibility" would now misdescribe it). Two Phase 1 constraints carried in; `occurrence_count`/`digest_id` dropped; the grants note reassigned to Phase 1. New exit criterion 15** | **M3-P7-OD-9 RULED (b)** — the shape wins on the merits (§3.3's dedup reads `notified_at`; the tier dial needs severity and tier independent), `0033` stays the single create site because the runner hard-errors on a chain gap |
+| `0042`'s FK `byosmtp.users(id)` → **`public.users(id)`** | Sweep — no such table; every inherited FK uses `public.users` |
 
 ### `phase-8-polish-docs-close.md`
 | Change | Driver |
@@ -154,7 +154,7 @@ corrected, and M3-P1-OD-2 confirmed closed.
 **85 under both framings**, and both are stated because they answer different questions:
 
 - **Phase 8's self-check form** (the one that had drifted): `54 − 2 + 6 + 7 + 10 + 0 + 10` = **85**, where
-  the two deletions are `default_shared_pool_id` (Phase 2) and `quarantine_threshold` (Phase 5, `0039`)
+  the two deletions are `default_shared_pool_id` (Phase 2) and `quarantine_threshold` (Phase 5, `0040`)
 - **Chain form** (what the DB actually holds at each point): 54 inherited → 53 after Phase 2's drop →
   59 → 66 → 76 then −1 = 75 → 75 → **85**
 
@@ -204,9 +204,9 @@ than accepted:
 
 | Axis | Verified state |
 |---|---|
-| Migration chain | `0025`–`0041`, contiguous, no gaps, no `0042`. Phase 1 `0025`–`0034`, P3 `0035`–`0036`, P4 `0037`–`0038`, P5 `0039`–`0040`, P6 `0041` **only if needed** (§10 says an empty migration is chain noise and Phase 7 should plan on `0041` being free), P7 `0041`. **Every doc's "Migration numbers:" header agrees with every other doc's claim about it.** The two multi-doc numbers are legitimate: `0028` is Phase 1's file that Phase 2's G2 *applies*, and `0033`/`0041` is the collision below |
-| The consolidation commit | Carries **no migration** — it is a Go-side refactor plus making `accounts_eligibility_idx`'s `WHERE` adjacent. The index's term changes land in commits 2 and 3, i.e. in Phase 3's `0035` and Phase 4's `0038`. Nothing needed a number reserved for it |
-| P7-OD-6's new column | Rides in Phase 7's existing `0041`, not a new number — which is why the chain still ends at `0041` |
+| Migration chain | `0025`–`0042`, contiguous, no gaps, no `0043`. Phase 1 `0025`–`0034`, P3 `0035`–`0037` (**amended, M3-P3-OD-17/18**: C3's test-send needs a narrow `INSERT` grant on `public.job_items` — `0037` — that could not have been anticipated when P3 was planned at two migrations; P4 and every later phase shifted +1 to accommodate it), P4 `0038`–`0039`, P5 `0040`–`0041`, P6 `0042` **only if needed** (§10 says an empty migration is chain noise and Phase 7 should plan on `0042` being free), P7 `0042`. **Every doc's "Migration numbers:" header agrees with every other doc's claim about it.** The two multi-doc numbers are legitimate: `0028` is Phase 1's file that Phase 2's G2 *applies*, and `0033`/`0042` is the collision below |
+| The consolidation commit | Carries **no migration** — it is a Go-side refactor plus making `accounts_eligibility_idx`'s `WHERE` adjacent. The index's term changes land in commits 2 and 3, i.e. in Phase 3's `0035` and Phase 4's `0039`. Nothing needed a number reserved for it |
+| P7-OD-6's new column | Rides in Phase 7's existing `0042`, not a new number — which is why the chain still ends at `0042` |
 | Config dials | **85** under both the Phase-8 self-check form (`54 − 2 + 6 + 7 + 10 + 0 + 10`) and the chain form. Phase 5 §4, Phase 7 §8 and Phase 8's self-check 3 now state the same inherited **52** and the same Phase 7 **10** |
 | Gate vocabularies | Three, and all three now disambiguated where they collide. Phase 0 §2.2 carries the disambiguation note; the two remaining bare `G2`s in the build plan are unambiguous in context (both appear in a `G1 → G2 → G3` sequence) |
 | "Phase N owns this" pointers | Spot-resolved across the set — `Phase 1 §3.1`, `§4.1`, `§4.2`, `§4.3`, `§4.4`, `§4.6`, `§5.4`, `Phase 3 §5.1` all resolve to sections that exist and say what the citing doc claims |
@@ -226,7 +226,7 @@ ruled, not because it was rounded down.
 **Both blocking items are now closed. One carry-forward remains, and it is a test, not a decision.**
 
 1. ~~**M3-P7-OD-9 needs a ruling.**~~ **CLOSED — RULED (b) 2026-07-31.** Phase 7's shape wins;
-   Phase 1's `0033` is the single create site; `0041` creates neither the enum nor the table;
+   Phase 1's `0033` is the single create site; `0042` creates neither the enum nor the table;
    `notification_state` moves into `0025`. Applied across Phase 1 §4.6/§5.3/§6, Phase 7 §8/§12/§13, and
    Phase 8 §4.3/§9/§12. Full reasoning in
    [`open-decisions.md`](open-decisions.md#m3-p7-od-9--ruled-b-2026-07-31).
@@ -244,7 +244,7 @@ ruled, not because it was rounded down.
 ## Self-check: did any "revision" change MEANING?
 
 The pass's own rule was that a change of meaning is a new decision, not a revision. Reviewed against
-that, and **one** qualified: the `0033`/`0041` collision, whose resolution required choosing which
+that, and **one** qualified: the `0033`/`0042` collision, whose resolution required choosing which
 design survives. It was **raised as M3-P7-OD-9 and left unresolved by the revision** rather than merged
 into a plausible-looking hybrid — a merged version would have read as settled while encoding a choice
 nobody made. It was then **ruled (b) as a decision, with its reasoning recorded**, which is the outcome
@@ -261,7 +261,7 @@ a tree fact already settled the matter and only one document disagreed:
 - Phase 6's route counts — the tree says 21, and three other documents already agreed.
 
 The `destination_domain` writer is the borderline case, and it is worth naming as such: adding a
-`CREATE OR REPLACE` to `0041` is more than a wording fix. It is recorded as a revision because
+`CREATE OR REPLACE` to `0042` is more than a wording fix. It is recorded as a revision because
 M3-P7-OD-6 ruled the *column* and the aggregation that reads it, and a column with no writer does not
 implement that ruling — it only appears to. The writer is the ruling's minimum implementation, not a
 new choice on top of it.
