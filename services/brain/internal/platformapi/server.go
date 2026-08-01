@@ -30,23 +30,48 @@ import (
 // signals the dispatcher's run loop.
 type Kicker func()
 
+// AccountVerifier is the seam through which the account-create/test-button handlers trigger a
+// real box verification (Module 3 Phase 3 §2.1) without platformapi importing internal/dispatch
+// (OD-7's package-isolation precedent) — *dispatch.Verifier satisfies this structurally. Verify
+// runs synchronously (create's own response carries the result, §2.5: failure persists the row,
+// it does not roll it back) and requires a connected box; a caller with none configured (nil) sees
+// verification simply never attempted, which only matters to tests that don't wire a box.
+type AccountVerifier interface {
+	Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (VerifyResult, error)
+}
+
+// VerifyResult mirrors dispatch.VerifyResult's shape (duplicated per OD-7 isolation — the two
+// types are kept byte-for-byte in sync by hand, the same discipline as the crypto/uuid/pgxDB
+// copies elsewhere in this package).
+type VerifyResult struct {
+	Verified     bool
+	State        string
+	ExternalCode string
+	Message      string
+	SMTPResponse string
+}
+
 // Server is the platform API. It holds the DB pool (byosmtp_module), the service-token
 // authenticator, an async dispatcher kick, and (Module 3 Phase 3) the account-surface's OWN
 // Encrypt-only credential primitive — a separate instance from adminapi.Encryptor (OD-7
-// isolation), sharing only the underlying KMS key material main.go loads once.
+// isolation), sharing only the underlying KMS key material main.go loads once — plus the
+// AccountVerifier seam for verify-on-add.
 type Server struct {
-	db   *pgxpool.Pool
-	auth *Authenticator
-	kick Kicker
-	enc  *Encryptor
-	mux  *http.ServeMux
+	db       *pgxpool.Pool
+	auth     *Authenticator
+	kick     Kicker
+	enc      *Encryptor
+	verifier AccountVerifier
+	mux      *http.ServeMux
 }
 
 // NewServer wires the Domain-A routes. kick may be nil (run still succeeds; the dispatcher's own
 // loop will pick the job up) but is normally the dispatcher nudge. enc may be nil ONLY in tests
 // that never exercise the account-create/update paths — production always supplies one (main.go).
-func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor) *Server {
-	s := &Server{db: db, auth: auth, kick: kick, enc: enc, mux: http.NewServeMux()}
+// verifier may be nil in tests that don't exercise verify-on-add; handleAccountCreate treats a nil
+// verifier as "verification unavailable" (a clean internal_error), never a silent skip.
+func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor, verifier AccountVerifier) *Server {
+	s := &Server{db: db, auth: auth, kick: kick, enc: enc, verifier: verifier, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }

@@ -181,6 +181,12 @@ export class BoxStream {
         // Do not await here — process the job then report; keep the read loop responsive.
         this.#runJob(msg).catch(() => { /* #runJob never throws credential detail; already handled */ });
         break;
+      case "push_verify":
+        // Verify-on-add (Phase 3 §2.2). Same credential lifecycle as push_job — the box never
+        // buffers/replays a verify_report (it is not a job outcome; a lost verify simply times out
+        // Brain-side and the caller may retry). Do not await; keep the read loop responsive.
+        this.#runVerify(msg).catch(() => { /* #runVerify never throws credential detail; already handled */ });
+        break;
       case "report_ack":
         // The Brain durably persisted (or cleanly no-op'd) this job's outcome — drop the buffered copy
         // so we stop replaying it (P7-4). Keyed by job_id so it matches across a reconnect (the buffer
@@ -362,6 +368,56 @@ export class BoxStream {
     // Buffer-then-send (P7-4): retain the outcome (never the credential — already zeroed above) so a
     // lost send is replayed on reconnect, until the Brain acks it.
     this.#bufferAndSend(report);
+  }
+
+  // #runVerify is the credential lifecycle boundary for a VERIFY (Phase 3 §2.2), mirroring #runJob's
+  // zero-on-every-exit-path discipline but calling runSmtpSession with stopAfterAuth:true and NO
+  // recipient/dataBytes at all — the push_verify frame carries neither field (§2.2's defense in
+  // depth: even if the stopAfterAuth branch regressed, there would be no address to send to). A
+  // verify_report is sent directly (no outcome buffer — a verify is not a job outcome the Brain
+  // must durably persist before ack; a lost verify_report simply times out Brain-side).
+  async #runVerify(pv) {
+    const credential = new MemoryCredential(pv.smtp.secret);
+    pv.smtp.secret = null;
+
+    let report;
+    try {
+      // A verify has no envelope, so heloName (runSmtpSession derives it as "mail." +
+      // sendingDomain(job.envelopeFrom)) has nothing to extract a domain from — sendingDomain's own
+      // fallback is "localhost" (§2.2's own warning: "easy to get wrong by defaulting to
+      // localhost"). verify_domain exists exactly to prevent that: passing a synthetic
+      // envelopeFrom whose domain part IS verify_domain keeps EHLO byte-identical to what a real
+      // send from this account would produce. sendingDomain only ever extracts the part after "@",
+      // so this is exactly its documented contract, not a workaround of it.
+      const result = await runSmtpSession(
+        {
+          smtp: { host: pv.smtp.host, port: pv.smtp.port, username: pv.smtp.username, security: pv.smtp.security },
+          envelopeFrom: "verify@" + (pv.verify_domain || "localhost"),
+        },
+        credential,
+        { timeoutMs: pv.smtp.operation_timeout_sec > 0 ? pv.smtp.operation_timeout_sec * 1000 : this.smtpTimeoutMs, stopAfterAuth: true },
+      );
+      report = {
+        type: "verify_report",
+        request_id: pv.request_id,
+        account_id: pv.account_id,
+        attempt_token: pv.attempt_token,
+        outcome: "accepted",
+        smtp_response: result.smtpResponse,
+        error_reason: null,
+      };
+    } catch (e) {
+      const reason = e instanceof SMTPError ? e.reason : "timeout";
+      const resp = e instanceof SMTPError ? (e.smtpResponse || "") : "";
+      report = {
+        type: "verify_report", request_id: pv.request_id, account_id: pv.account_id,
+        attempt_token: pv.attempt_token, outcome: "error", smtp_response: resp, error_reason: reason,
+      };
+    } finally {
+      credential.zero();
+      if (this.onZeroed) { try { this.onZeroed(pv.request_id); } catch { /* test hook only */ } }
+    }
+    this.#send(report);
   }
 
   // replayNow re-sends all still-unacked buffered outcomes (pruning expired ones first). The box does

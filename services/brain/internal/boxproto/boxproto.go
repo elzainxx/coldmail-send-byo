@@ -18,6 +18,13 @@ const (
 	TypePushJob     = "push_job"     // Brain → box: one job + its decrypted credential (§2.3)
 	TypeReport      = "report"       // box → Brain: outcome of one job (§2.4)
 	TypeReportAck   = "report_ack"   // Brain → box: outcome DURABLY persisted (Phase 7 §1.3, P7-4)
+	// Module 3 Phase 3 §2.2: verify-on-add. A NEW frame pair, additive-only (Rule 5) — nothing
+	// renamed, nothing repurposed. The box's #handle switch silently drops unknown types, so an
+	// implementation that forgot to add a case here would have shipped a verify that does nothing;
+	// the corresponding stream.js case and the mandatory switch-coverage test both exist for that
+	// exact failure mode.
+	TypePushVerify   = "push_verify"   // Brain → box: connect + STARTTLS + AUTH only, no send
+	TypeVerifyReport = "verify_report" // box → Brain: outcome of one verify
 )
 
 // Outcome values (§2.4). Phase 3 does NOT classify an error taxonomy (Phase 5).
@@ -185,6 +192,33 @@ type CommentIntensityRates struct {
 	Low    int `json:"low"`
 	Medium int `json:"medium"`
 	High   int `json:"high"`
+}
+
+// PushVerify delivers one credential-verification request down the held stream (Module 3 Phase 3
+// §2.2). It is the push_job SMTP envelope MINUS `send` entirely — no recipient, no dataBytes, no
+// Message-ID — so even a regression in the box's stopAfterAuth branch would find no address to
+// send to (§2.2's stated defense in depth). VerifyDomain exists because heloName is normally
+// derived from the envelope (job.envelopeFrom), and a verify has none; passing the domain
+// explicitly keeps EHLO byte-identical to what a real send from this account would produce.
+type PushVerify struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	AccountID    string `json:"account_id"`
+	AttemptToken int64  `json:"attempt_token,omitempty"`
+	SMTP         SMTP   `json:"smtp"` // Secret is the decrypted plaintext, scoped to this one verify
+	VerifyDomain string `json:"verify_domain"`
+}
+
+// VerifyReport is the box's outcome for one verify (§2.2) — the existing Report shape minus
+// provider_message_id (a verify never sends, so there is no provider message id to report).
+type VerifyReport struct {
+	Type         string `json:"type"`
+	RequestID    string `json:"request_id"`
+	AccountID    string `json:"account_id"`
+	AttemptToken int64  `json:"attempt_token,omitempty"`
+	Outcome      string `json:"outcome"` // accepted | error (never "bounced" — no recipient)
+	SMTPResponse string `json:"smtp_response,omitempty"`
+	ErrorReason  string `json:"error_reason,omitempty"`
 }
 
 // Report is the box's outcome for one job (§2.4). provider_message_id present iff accepted.

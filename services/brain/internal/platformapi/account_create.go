@@ -2,6 +2,7 @@ package platformapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 )
 
@@ -139,12 +140,39 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify-on-add is MANDATORY (§2, exit criterion 3). §2.5: a failed verification does NOT roll
+	// back the create — the row already exists (the credential is already encrypted and stored),
+	// and a rollback would discard a row the user can fix with one PATCH. So this runs AFTER the
+	// commit above, never inside its transaction, and its own failure is never surfaced as this
+	// request's error — the 201 always reflects the row that now exists, verified or not.
+	s.runVerifyOnAdd(ctx, accIDStr, userID)
+
 	acc, err := getAccount(ctx, s.db, accIDStr, userID)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "account_reread_error: "+err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusCreated, acc)
+}
+
+// runVerifyOnAdd calls the injected AccountVerifier and applies nothing itself — Verify already
+// wrote the outcome to byosmtp.accounts (dispatch.Verifier.applyVerifyReport). A nil verifier
+// (only possible in a misconfigured deployment; main.go always supplies one) or a genuine error
+// from Verify (a DB write failure while applying the outcome, not a verification failure — those
+// are a NORMAL VerifyResult) is logged, not surfaced to the caller: the create already succeeded
+// and §2.5 forbids treating a verification problem as a create failure.
+func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
+	if s.verifier == nil {
+		log.Printf("platformapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified'", accountID)
+		return
+	}
+	opTimeout, ok, err := s.readConfigInt(ctx, "smtp_operation_timeout_sec")
+	if err != nil || !ok {
+		opTimeout = 0 // Verify/runSmtpSession fall back to their own bootstrap defaults on 0
+	}
+	if _, err := s.verifier.Verify(ctx, accountID, userID, opTimeout); err != nil {
+		log.Printf("platformapi: verify-on-add for account %s failed to complete: %v", accountID, err)
+	}
 }
 
 // checkAccountCapAndDuplicate runs BOTH §5 pre-checks inside the caller's advisory-locked tx: the

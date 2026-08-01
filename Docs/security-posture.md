@@ -253,6 +253,17 @@ can MITM with a self-signed certificate and capture the plaintext credential. A 
 unaffected — verification is enforced there. Deploy-time check in §5; rejecting private-range
 `smtp_host` at write time is registered in [`future-work.md`](./future-work.md).
 
+**Amended (Module 3 Phase 3, M3-P3-OD-13 RULED):** verify-on-add (`push_verify`/`verify_report`)
+reuses `runSmtpSession` verbatim (§2.2 of `Docs/phase-3-user-owned-accounts.md`) and therefore
+inherits this exact risk unchanged — one implementation, one behavior, by design. The consequence
+is now sharper: **`credential_verification_state='verified'` is a user-visible claim**, where
+module 2's equivalent was operator-only. A user reading `verified` on their account has no way to
+tell whether that success happened over a validated connection or an unverified one to a private
+address. The ruling was to **disclose, not fix** here — the fix (a contract change narrowing which
+hosts may skip verification, or a new dev-only flag separating the test affordance from production
+posture) is larger than this phase and is registered in [`future-work.md`](./future-work.md)
+alongside the pre-existing entry above; this paragraph is that disclosure.
+
 ### 3.14 The alert webhook's destination is unrestricted — blind SSRF from inside the trust boundary
 
 §2's webhook row is about the payload, and the payload is clean. The **destination** is validated for

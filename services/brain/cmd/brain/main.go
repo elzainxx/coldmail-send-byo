@@ -155,6 +155,14 @@ func main() {
 	// NOT a polling loop — Phase 4). A box coming online kicks it too (a queued job may be waiting).
 	dispatcher := dispatch.NewDispatcher(database.Pool, dec, stream)
 
+	// Module 3 Phase 3 (§2.1): the verify-on-add Verifier shares the SAME decryptor and box stream
+	// the Dispatcher uses (Rule 6: Brain is the sole decryptor; verify runs on the box, never here)
+	// — verify and send are two operations against one set of capabilities, never two
+	// implementations. Its verify_report frames arrive on the same stream as job reports, so it is
+	// wired as the stream's VerifyHandler alongside the OutcomeHandler's ReportHandler.
+	verifier := dispatch.NewVerifier(database.Pool, dec, stream)
+	stream.SetOnVerify(verifier.HandleVerifyReport)
+
 	// Phase 7 (§2, P7-3): the Supabase-down gate. The dispatcher owns the ONE shared DBHealth so the
 	// dispatch loop, the reclaim loop and the retention sweep all pause on a single detection; the
 	// outcome handler shares it as an OBSERVER only — it always attempts a report (a commit is what
@@ -234,7 +242,7 @@ func main() {
 			log.Fatalf("FATAL platform encryptor init: %v", err)
 		}
 		pauth := platformapi.NewAuthenticator(cfg.PlatformTokenHashes)
-		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick, platEnc)
+		psrv := platformapi.NewServer(database.Pool, pauth, runner.Kick, platEnc, verifierAdapter{verifier})
 		platformHandler = psrv.Handler()
 		log.Printf("platform API mounted under /v1/{quote,run,report,describe,byosmtp/accounts...} (service-token auth; %d token(s) configured)", len(cfg.PlatformTokenHashes))
 	} else {
@@ -359,4 +367,27 @@ func readSingletonReacquireInterval(ctx context.Context, pool *pgxpool.Pool) tim
 		return 0
 	}
 	return time.Duration(*wrap.V) * time.Second
+}
+
+// verifierAdapter satisfies platformapi.AccountVerifier by wrapping *dispatch.Verifier and
+// converting dispatch.VerifyResult to platformapi.VerifyResult field-by-field. This is the ONE
+// place that conversion happens — platformapi cannot import internal/dispatch (OD-7 isolation),
+// so main.go, which already imports both, is the seam. operationTimeoutSec is read fresh from
+// byosmtp.config on every call (config-not-code) rather than captured once at startup.
+type verifierAdapter struct {
+	v *dispatch.Verifier
+}
+
+func (a verifierAdapter) Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (platformapi.VerifyResult, error) {
+	r, err := a.v.Verify(ctx, accountID, userID, operationTimeoutSec)
+	if err != nil {
+		return platformapi.VerifyResult{}, err
+	}
+	return platformapi.VerifyResult{
+		Verified:     r.Verified,
+		State:        r.State,
+		ExternalCode: r.ExternalCode,
+		Message:      r.Message,
+		SMTPResponse: r.SMTPResponse,
+	}, nil
 }

@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 87 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 88 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -32,7 +32,12 @@ account is soft-deleted was misclassified as self-recovering (WAIT forever) inst
 is a fourth build-time finding, raised at the start of Phase 3's kickoff while confirming M3-P2-OD-10
 landed: M3-P2-OD-3 ruled the `last_error_message` literal renames `pool_exhausted` →
 `accounts_exhausted` at G3, but G3's own closeout checklist never listed it as a criterion and it was
-never done — ruled and fixed the same day it was found.
+never done — ruled and fixed the same day it was found. The 88th,
+[M3-P3-OD-14](#m3-p3-od-14--ruled-2026-08-01-no-connected-box-at-verify-time-is-a-verify-failure-not-a-blocked-create),
+was raised while wiring C2 (verify-on-add): the spec never states what happens when account
+creation is requested but no box is currently connected to run the verification at all, distinct
+from a real, reachable provider rejecting the credential. Ruled the same day: treat it as an
+ordinary verify failure (`verify_connection_lost`), not a blocked create.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -670,6 +675,50 @@ to describing the rename as done. `Docs/phase-2-strip-shared-pool.md` gets a new
 closeout, mirroring §8.5/§8.6's shape. No migration, no test change (none asserted the old string).
 
 **Verified:** clean-slate reset, full harness green, all six CI gates green.
+
+---
+
+## M3-P3-OD-14 — RULED 2026-08-01: no connected box at verify time is a verify FAILURE, not a blocked create
+
+Found while wiring Phase 3's C2 (verify-on-add, `Docs/phase-3-user-owned-accounts.md` §2). §2.5
+already locks that a verification failure does not roll back the create — the account is
+persisted with `credential_verification_state='failed'` and the client sees the detail. But every
+worked example in §2/§8.2/§8.3 assumes a real box reachable and answering; none addresses the
+case where `AnyConnectedBox()` returns nothing at all — no box currently registered on the stream,
+so there is nowhere to even attempt the connect+AUTH.
+
+**The question, asked before implementing `dispatch.Verifier.Verify` (Rule 2):** is "no box
+connected" (a) an ordinary verify failure — same code path as a real provider rejecting AUTH, just
+a different external code — or (b) a distinct condition that should block the create outright
+(reject with 503/409, create no row) until a box is available?
+
+**RULED: (a) — an ordinary verify failure, external code `verify_connection_lost`.** No new state,
+no new code path. Reasoning:
+
+- **§2.5 already answers the shape question.** It locks that ANY verification failure — auth
+  rejected, TLS unavailable, timeout — persists the row with `state='failed'` rather than rolling
+  back, specifically so a bulk-add (§4) can report per-row outcomes on rows that exist and so a
+  user can fix a bad credential with one PATCH. "No box connected" is one more entry in that same
+  failure space, not a structurally different kind of failure.
+- **Blocking the create makes account creation depend on box-fleet availability**, which no exit
+  criterion in §12 requires and no other route in this phase does. The account-cap check, the
+  uniqueness pre-check, and the encryption step all run to completion regardless of box state;
+  making verify-on-add the one path that 503s on empty box fleet would be a new, undocumented
+  availability coupling.
+- **`verify_connection_lost`'s own §2.3 definition — "the connection dropped mid-handshake" —
+  already covers "there was never a connection to drop."** No sixth external code is needed; the
+  existing one's user-facing meaning ("something on the network path failed") is accurate whether
+  the box vanished mid-verify or was never there to begin with. Introducing a distinct
+  `verify_no_box_available` code would be the kind of speculative surface-widening Rule 5's
+  additive-only discipline exists to keep to actual demonstrated need.
+
+**Implementation:** `dispatch.Verifier.Verify` detects an empty `AnyConnectedBox()` and calls its
+own `applyVerifyReport` with a synthetic `{Outcome: "error", ErrorReason: "connection_closed"}` —
+the SAME write a genuine box-reported `connection_closed` would produce, from a second trigger
+inside the same function rather than a second write path. The caller (`platformapi`'s
+account-create handler) sees an ordinary `VerifyResult{Verified: false, ExternalCode:
+"verify_connection_lost", ...}` and never needs to distinguish "no box" from "box that failed
+mid-handshake" — by design, per the ruling above.
 
 ---
 

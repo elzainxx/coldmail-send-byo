@@ -24,8 +24,19 @@ export function startSink(opts = {}) {
   // base64-encoded password) back in its 535 text. Used to prove scrubSecret redacts the base64
   // form, not just the plaintext (§4.4). Default false (well-behaved server).
   const echoAuthInError = opts.echoAuthInError === true;
+  // captureData: record the full DATA payload (dot-unstuffed, joined lines) so a test can assert
+  // on the ACTUAL delivered body — the only real proof a message was genuinely sent with specific
+  // content (Module 3 Phase 3 T3b's negative control on the dataBytes hazard).
+  const captureData = opts.captureData === true;
+  // rejectData: reject DATA with a permanent 5xx (Module 3 Phase 3 T3's negative control) — a
+  // fault reachable ONLY by the send path (verify never issues MAIL FROM/RCPT/DATA at all), so it
+  // proves the two paths are genuinely distinct where they SHOULD be, the counterpart to
+  // advertiseStartTLS:false proving they are genuinely shared where they SHOULD be.
+  const rejectData = opts.rejectData === true;
   const received = []; // every line the client sent (plaintext + TLS phases)
   let tlsActive = false;
+  let dataLines = null;
+  let capturedBody = null;
 
   const tlsOpts = {
     cert: fs.readFileSync(path.join(certDir, "sink.crt")),
@@ -54,7 +65,19 @@ export function startSink(opts = {}) {
 
   function onLine(sock, line, isTls, setData, clearData, inData) {
     if (inData()) {
-      if (line === ".") { clearData(); write(sock, "250 2.0.0 Ok: queued as SINK12345"); }
+      if (line === ".") {
+        if (captureData && dataLines) capturedBody = dataLines.join("\n");
+        dataLines = null;
+        clearData();
+        write(sock, "250 2.0.0 Ok: queued as SINK12345");
+        return;
+      }
+      if (captureData) {
+        if (!dataLines) dataLines = [];
+        // RFC 5321 §4.5.2 transparency: a line starting with ".." on the wire means a real leading
+        // "." in the body — undo exactly one level of dot-stuffing when capturing.
+        dataLines.push(line.startsWith("..") ? line.slice(1) : line);
+      }
       return;
     }
     const up = line.toUpperCase();
@@ -92,6 +115,7 @@ export function startSink(opts = {}) {
     } else if (up.startsWith("RCPT TO")) {
       write(sock, "250 2.1.5 Ok");
     } else if (up === "DATA") {
+      if (rejectData) { write(sock, "554 5.6.0 rejected for test"); return; }
       write(sock, "354 End data with <CR><LF>.<CR><LF>");
       setData();
     } else if (up === "QUIT") {
@@ -113,6 +137,7 @@ export function startSink(opts = {}) {
         port,
         received,
         tlsWasActive: () => tlsActive,
+        get capturedBody() { return capturedBody; },
         close: () => new Promise((r) => server.close(r)),
       });
     });

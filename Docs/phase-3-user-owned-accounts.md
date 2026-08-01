@@ -1423,3 +1423,51 @@ codes; T9's three controls minus the soft-delete one, which needs C5), all six C
 (`config_drift`: 59 keys; `config_consumption`: 59 keys, one consumed + five RESERVED-with-expiry;
 `contract_drift`: 12 platform routes gated, quarantine correctly absent; `migration_lint`;
 `drain_grace`; `no_secret_leak`).
+
+### 14.2 C2 closeout — verify-on-add (`push_verify`/`verify_report`, `stopAfterAuth`)
+
+**What landed:** the new frame pair (`boxproto.PushVerify`/`VerifyReport`, additive-only), `smtp.js`'s
+`stopAfterAuth` option (returns before step 5/MAIL FROM, the first recipient-bearing command — not a
+body-assembly skip further down), `stream.js`'s `#runVerify` handler (mirrors `#runJob`'s
+zero-on-every-exit-path discipline, sends a synthetic `envelopeFrom` built from `verify_domain` so
+EHLO stays byte-identical to a real send), `boxlink.StreamServer.PushVerify`/`SetOnVerify`, and
+`dispatch.Verifier` (shares the Dispatcher's own decryptor + Pusher — Rule 6: one decryptor,
+never a second Brain-side verifier). `platformapi.AccountVerifier` is the OD-7-respecting seam
+(an interface `*dispatch.Verifier` satisfies structurally; `main.go`'s `verifierAdapter` converts
+the two packages' independently-declared `VerifyResult` types at the one place both are already
+imported). `handleAccountCreate` calls it after commit, never inside the create's own transaction
+(§2.5: a failed verification does not roll back the row). Migration `0035`'s columns are now for
+real — `credential_verification_state`/`verified_at`/`verify_at`/`verify_code`/`verify_response`
+all get written by `applyVerifyReport`.
+
+**A real design gap the spec never addressed, found while wiring, ruled the same day
+(M3-P3-OD-14):** what happens when account creation runs but no box is currently connected at all
+— distinct from a real, reachable provider rejecting the credential. RULED: an ordinary verify
+failure (`verify_connection_lost`), not a blocked create — §2.5 already locks that shape for every
+other failure mode, and blocking would couple account creation to box-fleet availability in a way
+no exit criterion requires. `Verifier.Verify` detects the empty `AnyConnectedBox()` and calls its
+own `applyVerifyReport` with a synthetic `connection_closed` outcome — one write path, two
+triggers, never two.
+
+**Verified live, not just against mocks:** a NEW harness suite (`tests/harness/phase3_verify.sh`,
+SUITE 11) drove the REAL push_verify/verify_report round trip against the real running box and
+the real smtp-sink container — a correct credential reached `credential_verification_state=
+'verified'` with both timestamp columns set and the GET response reflecting it, a mandatory
+verify-on-add delivered ZERO mail (Mailpit count unchanged across account creation), and the
+canary never leaked (plaintext or base64) through the live path. The dev stack's smtp-sink
+(Mailpit) accepts any AUTH unconditionally — a pre-existing, documented stack limitation — so the
+live suite proves the success path; the real AUTH-reject provider-error case (T2's dispositive
+assertion) is proven by the Node unit suite against a REAL rejecting SMTP server
+(`services/box/test/sink.mjs`), not invented against a sink capability that does not exist.
+
+**The single most important test in this chunk, and it passed on the first real run:** T3b's
+negative control on the `dataBytes` hazard itself — a verify-shaped call (no recipient, no
+dataBytes) run through `runSmtpSession` WITHOUT `stopAfterAuth` genuinely delivers a real message
+with body `"undefined"` at the sink, captured and asserted against the actual DATA payload the
+sink received (not the source code). This is the proof that the guard is load-bearing rather than
+decorative — a version of this test that could not observe the bug would prove nothing about the
+fix.
+
+**Verified:** clean-slate reset, full harness 66/66 (Node box units 87/87 — T2/T2-control/T3/
+T3-control/T3-structural-corroboration/§0.5-switch-coverage/T3b/T3b-control/T3b-negative-control-
+on-the-bug, 9 new; the new live SUITE 11, 10 assertions), all six CI gates green.

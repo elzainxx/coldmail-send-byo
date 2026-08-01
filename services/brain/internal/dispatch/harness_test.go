@@ -64,6 +64,13 @@ func (p *recordingPusher) PushJob(pj boxproto.PushJob, boxID string) error {
 	return nil
 }
 
+// PushVerify satisfies the Pusher interface (Module 3 Phase 3 §2.2). Not exercised by the
+// dispatch-package suite (verify has its own package's tests); it never fails so it does not
+// interfere with any existing test's push-count/lastPush assertions.
+func (p *recordingPusher) PushVerify(pv boxproto.PushVerify, boxID string) error {
+	return nil
+}
+
 func (p *recordingPusher) AnyConnectedBox() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

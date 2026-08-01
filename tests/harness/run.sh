@@ -270,6 +270,13 @@ hr; echo "SUITE 10: Phase 8 content variation — LIVE end-to-end (real box + re
 # shellcheck disable=SC1091
 source tests/harness/phase8_variation.sh
 
+hr; echo "SUITE 11: Module 3 Phase 3 C2 — verify-on-add LIVE end-to-end (real box + real smtp-sink)"; hr
+# T2/T2c: account creation triggers a real push_verify/verify_report round trip against the live
+# box; T3b (live): verify-on-add delivers NO mail; S1: the verify canary never leaks. Reuses
+# phase3_send.sh's $SYSUSER/$PLTOK/$DC/$PSQL and the already-registered box.
+# shellcheck disable=SC1091
+source tests/harness/phase3_verify.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr

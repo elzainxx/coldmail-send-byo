@@ -415,17 +415,33 @@ remain, on two auth domains, over the same table (module 2 §4.5's separation, r
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/byosmtp/accounts` | create an account for the caller's tenant — body `{user_id, smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}`. `user_id` is the tenant selector; there is no move/re-tenancy path (an account never changes owner). Duplicate `(user_id, smtp_host, smtp_username)` → clean `409 conflict` (`duplicate_account_for_user`) from an app-level pre-check, with the unique index as the race backstop — never a raw `23505`. Exceeding `account_count_cap_per_user` (non-deleted accounts, global-only dial) → `409 conflict` (`account_cap_reached`). Returns `201` with the account object, including a `verification` block (`state` starts `"unverified"` until a later chunk wires the mandatory verify-on-add call) |
+| POST | `/v1/byosmtp/accounts` | create an account for the caller's tenant — body `{user_id, smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}`. `user_id` is the tenant selector; there is no move/re-tenancy path (an account never changes owner). Duplicate `(user_id, smtp_host, smtp_username)` → clean `409 conflict` (`duplicate_account_for_user`) from an app-level pre-check, with the unique index as the race backstop — never a raw `23505`. Exceeding `account_count_cap_per_user` (non-deleted accounts, global-only dial) → `409 conflict` (`account_cap_reached`). **Verify-on-add is MANDATORY** (connect + STARTTLS + AUTH only, no test send): the create always returns `201` with the account object regardless of the verification outcome — a failed verification does NOT roll back the row (the credential is already encrypted and stored; the user can fix it with one PATCH). The `verification` block: `{state: "unverified"\|"verified"\|"failed", verified_at?, verify_at?, code?, smtp_response?}` — `code`/`smtp_response` present only on `"failed"`. `smtp_response` is a deliberate widening of the response envelope for this surface only (M3-P3-OD-3) — the scrubbed provider text, never the internal reason. |
 | GET | `/v1/byosmtp/accounts` | list the caller's OWN accounts — `?user_id=<uuid>` is MANDATORY and SERVER-ENFORCED (never an optional filter, unlike the admin list). Cursor-paginated on `(created_at, id)`, same keyset shape as the admin list |
 | GET | `/v1/byosmtp/accounts/{id}` | read one account, scoped to `?user_id=<uuid>`. Never includes the secret/ciphertext/nonce/key id — `has_credential` is the only credential-related field |
 | PATCH | `/v1/byosmtp/accounts/{id}` | update, scoped to `?user_id=<uuid>`. Omit = unchanged (structural for `smtp_secret`: the credential columns are absent from the SET list entirely when the field is omitted). `user_id` is NOT a patchable field — it does not exist in the request schema, so an attempt to send it is rejected by the strict decoder before any handler logic runs |
 | GET | `/v1/byosmtp/accounts/{id}/events` | the account's own audit trail, scoped to `user_id` (not `account_id` alone — a purged account's events row has `account_id` nulled, so scoping by `user_id` keeps it reachable and keeps a cross-tenant probe against a foreign account id from returning anything) |
 | POST | `/v1/byosmtp/accounts/{id}/disable`, `/v1/byosmtp/accounts/{id}/enable`, `/v1/byosmtp/accounts/{id}/pause`, `/v1/byosmtp/accounts/{id}/unpause` | re-scoped lifecycle transitions (module 2's engine, unchanged logic). `unpause` refuses to clear a non-`manual` pause (`pause_reason` is not `'manual'`) — the one piece of user-safety logic that makes exposing it to users safe at all. `quarantine`/`unquarantine` are **NOT exposed here** — they stay operator-only; a user-facing un-quarantine is Phase 5's (its own rate limit + test-verified bypass) |
 
-**Not yet wired at this commit** (later chunks of the same phase; tracked as they land): verify-on-add
-(mandatory on create), the test button (`.../test`, `.../test-send`), bulk add (`.../bulk`), and
-soft-delete (`DELETE /v1/byosmtp/accounts/{id}`, which stamps `deleted_at`/`purge_after` rather than
-hard-deleting — the operator's `DELETE /v1/admin/accounts/{id}` remains a hard delete).
+**Verify-on-add's external code vocabulary** (§2.3 of `Docs/phase-3-user-owned-accounts.md`,
+`verification.code` on a `"failed"` state) — additive-only forever (Rule 5), and deliberately
+DISTINCT from the internal `error_class` enum (`classifyReport`'s six values are too coarse for a
+user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both classify
+`auth_failure` there — correct for send policy, wrong for a user):
+
+| Code | Meaning to the user |
+|---|---|
+| `verify_connect_failed` | Could not reach the server on that host/port (also covers: no box was available to run the check) |
+| `verify_timeout` | The server did not answer in time |
+| `verify_tls_unavailable` | The server does not offer STARTTLS — we aborted before sending your password |
+| `verify_tls_failed` | TLS negotiation failed (often a certificate problem) |
+| `verify_auth_failed` | The username or password was rejected |
+| `verify_protocol_error` | The server did not speak SMTP as expected |
+| `verify_connection_lost` | The connection dropped mid-handshake |
+
+**Not yet wired at this commit** (later chunks of the same phase; tracked as they land): the test
+button (`.../test`, `.../test-send`), bulk add (`.../bulk`), and soft-delete (`DELETE
+/v1/byosmtp/accounts/{id}`, which stamps `deleted_at`/`purge_after` rather than hard-deleting — the
+operator's `DELETE /v1/admin/accounts/{id}` remains a hard delete).
 
 ## What is NOT part of the public REST contract
 

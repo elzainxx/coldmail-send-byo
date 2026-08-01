@@ -153,18 +153,30 @@ function expect(reply, okCodes, reason) {
 }
 
 /**
- * runSmtpSession performs one full SMTP send. The credential is provided as a MemoryCredential
- * and used ONLY inside this function; the caller zeroes it after (and this function tolerates it
- * already being zeroed on the abort-before-AUTH path). Returns { smtpResponse } on a 250 accept.
- * Throws SMTPError (reason + scrubbed smtpResponse) on any failure — the caller maps it to a
- * report. This function NEVER logs and NEVER puts the secret into an error.
+ * runSmtpSession performs one full SMTP send, OR — with opts.stopAfterAuth — a connect+STARTTLS+
+ * AUTH-only VERIFICATION that returns before any recipient-bearing command is issued (Phase 3
+ * §2.2). The credential is provided as a MemoryCredential and used ONLY inside this function; the
+ * caller zeroes it after (and this function tolerates it already being zeroed on the
+ * abort-before-AUTH path). Returns { smtpResponse } on success. Throws SMTPError (reason +
+ * scrubbed smtpResponse) on any failure — the caller maps it to a report. This function NEVER
+ * logs and NEVER puts the secret into an error.
+ *
+ * stopAfterAuth IS THE WHOLE MECHANISM THAT MAKES VERIFY-ON-ADD SAFE (§2.2's own words). Omitting
+ * job.dataBytes does NOT abort the send — dotStuff(undefined) coerces to the literal string
+ * "undefined" and a REAL MESSAGE IS DELIVERED to job.recipient. So this flag must, and does,
+ * `return` BEFORE step 5 (MAIL FROM, the first recipient-bearing command) rather than merely skip
+ * assembling the body — there is no path through the "unless stopAfterAuth" branch below that can
+ * reach DATA. Defense in depth: the verify caller (dispatch/verify.go) ALSO never sets
+ * job.recipient/job.dataBytes on a verify job at all, so even a future regression in this branch
+ * would find no address to send to.
  *
  * @param {object} job  { smtp:{host,port,username,security}, dataBytes:string, envelopeFrom, recipient }
  * @param {MemoryCredential} credential  memory-only plaintext secret
- * @param {object} opts { timeoutMs }
+ * @param {object} opts { timeoutMs, stopAfterAuth }
  */
 export async function runSmtpSession(job, credential, opts = {}) {
   const timeoutMs = opts.timeoutMs || 30000;
+  const stopAfterAuth = opts.stopAfterAuth === true;
   const { host, port, username, security } = job.smtp;
   const allowSelfSigned = isPrivateHost(host); // test affordance ONLY (§4.2)
 
@@ -200,7 +212,19 @@ export async function runSmtpSession(job, credential, opts = {}) {
     }
 
     // 4) AUTH — now, and only now, is the credential put on the wire (over TLS). AUTH LOGIN.
-    await doAuthLogin(conn, username, credential, timeoutMs);
+    const authReply = await doAuthLogin(conn, username, credential, timeoutMs);
+
+    // VERIFY STOPS HERE (§2.2). This is the entire mechanism: a `return` before step 5, the first
+    // recipient-bearing command — not a body-assembly skip further down, where dotStuff's
+    // String(undefined) coercion would still deliver a real message. AUTH's own 235 is the whole
+    // outcome for a verify; there is no DATA reply to report on, so smtpResponse is AUTH's real
+    // reply text. QUIT's 2000ms bound below is NOT reused here: its own comment says the outcome
+    // is discarded "because the send already succeeded by this point" — false for a verify, where
+    // AUTH's result IS the entire outcome. A verify's QUIT gets the full per-operation timeoutMs.
+    if (stopAfterAuth) {
+      try { await withTimeout(conn.write("QUIT").then(() => conn.read()), timeoutMs); } catch { /* best-effort */ }
+      return { smtpResponse: scrubSecret(authReply.text, credential) };
+    }
 
     // 5) MAIL FROM.
     expect(await cmd(conn, `MAIL FROM:<${job.envelopeFrom}>`, timeoutMs), [250], "mail_from_rejected");
@@ -295,6 +319,7 @@ async function doAuthLogin(conn, username, credential, timeoutMs) {
     // NEVER include the credential; only the server's own response text (scrubbed defensively).
     throw new SMTPError("auth_failed", scrubSecret(authReply.text, credential));
   }
+  return authReply;
 }
 
 // sendingDomain extracts the domain from an email address for the HELO name (§4.1).

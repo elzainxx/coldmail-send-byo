@@ -21,6 +21,9 @@ import (
 type Pusher interface {
 	PushJob(pj boxproto.PushJob, boxID string) error
 	AnyConnectedBox() string
+	// PushVerify delivers one push_verify frame (Module 3 Phase 3 §2.2) to a named box — same
+	// channel and same "must be currently registered" precondition as PushJob.
+	PushVerify(pv boxproto.PushVerify, boxID string) error
 }
 
 // Dispatcher runs the send path: claims jobs (TryDispatch for Phase 3, Tick for Phase 4's polling

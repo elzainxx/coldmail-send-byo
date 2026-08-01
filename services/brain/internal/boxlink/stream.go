@@ -42,11 +42,18 @@ import (
 // handler confirms durability, never optimistically.
 type ReportHandler func(boxID string, rep boxproto.Report) (resolved bool)
 
+// VerifyHandler is invoked for each box `verify_report` frame (Module 3 Phase 3 §2.2). Unlike
+// ReportHandler, a verify has no durability contract to ack — the caller (dispatch.Verifier)
+// correlates by request_id and simply returns the outcome to whoever is waiting; there is no
+// verify_report_ack frame in the vocabulary.
+type VerifyHandler func(boxID string, rep boxproto.VerifyReport)
+
 // StreamServer accepts box connections on the mTLS boxlink stream port.
 type StreamServer struct {
 	ln         net.Listener
 	db         *pgxpool.Pool
 	onReport   ReportHandler
+	onVerify   VerifyHandler
 	onRegister func(boxID string) // optional: kick the dispatcher when a box comes online
 
 	mu    sync.Mutex
@@ -59,6 +66,9 @@ type StreamServer struct {
 // it to kick a dispatch attempt when a box comes online (event-driven — NOT a background timer),
 // so a job queued before any box connected is picked up on connect. Must not block.
 func (s *StreamServer) SetOnRegister(fn func(boxID string)) { s.onRegister = fn }
+
+// SetOnVerify installs the callback fired for each inbound verify_report frame (§2.2).
+func (s *StreamServer) SetOnVerify(fn VerifyHandler) { s.onVerify = fn }
 
 // boxConn is one registered box's held stream. writes are serialized by wmu so a push_job frame
 // is never interleaved with an ack.
@@ -246,6 +256,18 @@ func (s *StreamServer) dispatchFrame(boxID string, line []byte) {
 				})
 			}
 		}
+	case boxproto.TypeVerifyReport:
+		// Module 3 Phase 3 §2.2. No outcome buffer, no ack frame — a verify is not a job outcome the
+		// Brain must durably persist before the box may drop it; the caller correlates by
+		// request_id and simply resolves whatever is waiting. A lost verify_report is a caller-side
+		// timeout, not a replay target.
+		var vrep boxproto.VerifyReport
+		if json.Unmarshal(line, &vrep) != nil {
+			return
+		}
+		if s.onVerify != nil {
+			s.onVerify(boxID, vrep)
+		}
 	default:
 		// Unknown/`register`-after-handshake: ignore (defensive; never leak, never crash).
 	}
@@ -279,6 +301,20 @@ func (s *StreamServer) PushJob(pj boxproto.PushJob, boxID string) error {
 		return err
 	}
 	return nil
+}
+
+// PushVerify writes a push_verify frame to the given box (Module 3 Phase 3 §2.2). Unlike PushJob,
+// it does NOT participate in the one-job-in-flight-per-box bookkeeping — a verify is a separate,
+// short-lived credential check, not a send, and its own C3 rate limit (account_test_rate_limit_per_day)
+// bounds concurrent verify volume. It still requires the box to be currently registered.
+func (s *StreamServer) PushVerify(pv boxproto.PushVerify, boxID string) error {
+	s.mu.Lock()
+	bc := s.boxes[boxID]
+	s.mu.Unlock()
+	if bc == nil {
+		return fmt.Errorf("box %q not connected", boxID)
+	}
+	return s.writeFrame(bc, pv)
 }
 
 // Connected reports whether a box currently holds a registered stream (used by the dispatcher to
