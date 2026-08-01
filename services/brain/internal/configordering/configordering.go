@@ -54,3 +54,34 @@ func CheckBufferTTLVsReconnectWindow(bufferTTLSec, reconnectWindowSec int) *Viol
 	}
 	return nil
 }
+
+// CheckFromDNSLookupTimeoutVsBudget enforces Module 3 Phase 4 §6.4's invariant: the per-lookup
+// timeout must not EXCEED the whole-check budget — STRICT ceiling honored as `<=` (equality is
+// the boundary, not itself a violation, per Phase 4 §11 T11: "the valid boundary case (==) is
+// accepted"). A budget below a single lookup's timeout makes EVERY From-gate check fail
+// indeterminate, presenting as "account creation is broken" with no diagnosable cause — the
+// Phase 8 HIGH-finding class this rule exists to keep out of config writes (CLAUDE.md Rule 11).
+func CheckFromDNSLookupTimeoutVsBudget(lookupTimeoutMS, totalBudgetMS int) *Violation {
+	if lookupTimeoutMS > totalBudgetMS {
+		return &Violation{
+			Key: "from_dns_lookup_timeout_ms", Value: lookupTimeoutMS, Constraint: "must be <=",
+			CounterpartKey: "from_dns_total_budget_ms", CounterpartValue: totalBudgetMS,
+		}
+	}
+	return nil
+}
+
+// CheckFromDNSNegativeCacheVsPositiveCache enforces Phase 4 §6.5's asymmetric-caching invariant:
+// the NEGATIVE (absence) cache TTL must not EXCEED the positive one. A stale negative is a cached
+// decision to be MORE PERMISSIVE — "Leniency-by-caching is the dangerous direction" (§6.5) — so a
+// negative TTL exceeding the positive one silently inverts the safety asymmetry the two separate
+// dials exist to encode. Equality is the boundary, not a violation (mirrors T11's `==` acceptance).
+func CheckFromDNSNegativeCacheVsPositiveCache(negativeTTLSec, positiveTTLSec int) *Violation {
+	if negativeTTLSec > positiveTTLSec {
+		return &Violation{
+			Key: "from_dns_negative_cache_ttl_sec", Value: negativeTTLSec, Constraint: "must be <=",
+			CounterpartKey: "from_dns_cache_ttl_sec", CounterpartValue: positiveTTLSec,
+		}
+	}
+	return nil
+}

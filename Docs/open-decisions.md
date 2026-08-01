@@ -1013,11 +1013,111 @@ explicitly, so a future reader does not conflate the two mechanisms again.
 
 ---
 
+## M3-P4-OD-12 — RULED 2026-08-01: `from_gate_mode=off` writes `aligned`, disclosed as skipped
+
+Found while designing the DNS evaluator's contract (Phase 4 C1, before any code was written).
+§6.2 names `off` as the escape hatch for a resolver-side incident and M3-P4-OD-8's ruling treats
+it as *the* answer to "a user whose DNS is durably broken can never create an account" — but
+neither §6.2 nor §1.6's decision table states what `from_verification_state` is actually written
+when `off` is active. Left unspecified, the natural default (write nothing, leave `unverified`)
+would make the escape hatch inert: `unverified` is excluded from routing by §8's positive-list
+predicate, so an account created under `off` would still never send — the operator's incident
+lever would toggle DNS traffic without ever unblocking the users it exists to unblock.
+
+**The question, asked before implementing (Rule 2):** does `off` write `aligned` (disclosed as
+skipped, not evaluated) so the account actually routes, or does it leave the row `unverified`
+(only DNS traffic stops, gating is unaffected)?
+
+**RULED: write `aligned`, with `from_checked_at = NOW()` and `from_check_detail` stating
+explicitly that the check was skipped by operator policy, never evaluated.** Reasoning:
+
+- **This is what makes the dial do its job.** §6.2's whole justification for `off` existing is
+  unblocking onboarding during a resolver-side incident; a mode that stops DNS queries but leaves
+  every new account permanently unrouted via §8's positive list is not that lever.
+- **Disclosure, not fabrication.** Rule 5 forbids inventing an outcome that did not happen — but
+  `from_check_detail` recording "operator disabled the check" is the true, complete account of
+  what happened, the same shape as ALLOW's own "no obstacle found, not guaranteed" honesty
+  posture (§1.4) extended one step further to "we chose not to look." It is not a claim that
+  alignment was verified.
+- **Consistent with `warn_only`'s existing shape.** `warn_only` already downgrades a `blocked`
+  verdict to `unaligned_warned` without pretending DNS was never consulted; `off` downgrading
+  further to `aligned` (no acknowledgment required, since nothing was found to warn about) is the
+  same ladder, one rung further, for the one mode that skips DNS outright.
+
+**Consequence for T12:** in addition to its existing assertion (zero DNS queries under `off`), T12
+gains a second assertion — the resulting row is `aligned`, `from_checked_at` is set, and the
+account is routable — so the escape hatch's actual purpose is what the test proves, not merely its
+DNS-traffic side effect.
+
+---
+
+## M3-P4-OD-13 — RULED 2026-08-01: no NXDOMAIN-vs-NODATA distinction for the From domain itself; absence falls through to ordinary WARN
+
+Found while running the DNS evaluator's own tests against real infra (the local authoritative
+CoreDNS fixture), not while reading the spec. §3.2's table lists "NXDOMAIN on the From domain
+itself" as a DECISIVE case, distinct from an ordinary absence result: `from_domain_not_found`,
+400, "a typo, the user can fix it" — deliberately NOT the same treatment as "no SPF record" (an
+ordinary WARN) or ignorance (`from_dns_unavailable`, retryable).
+
+**Empirically verified this cannot be implemented as specified against Go's stdlib resolver.**
+`net.DNSError.IsNotFound` is documented, and confirmed live against the CoreDNS fixture, to be set
+identically for BOTH NXDOMAIN (`this-name-does-not-exist.test`) and NODATA (`aligned.test` queried
+for `LookupHost` — a domain that genuinely exists, has a real SPF TXT record, and simply has no
+A/AAAA record, which is completely normal for a mail-sending domain). §3.1 itself already names
+this exact limitation for the ignorance/absence distinction ("the rcode is not exposed at all");
+running the actual test against the actual fixture surfaced that the SAME limitation blocks the
+domain-existence check specifically — a `LookupHost`-based existence probe would have classified
+every legitimate SPF-publishing domain with no A record as "does not exist," which is not a rare
+edge case, it is the common case for a domain whose only purpose is sending mail through a
+third-party provider.
+
+**The question, asked before shipping the fix (Rule 2):** drop the decisive from_domain_not_found
+check (absence falls through to the ordinary WARN path, same as "no SPF record"), or build a raw
+DNS client (`golang.org/x/net/dns/dnsmessage`, already available transitively) that reads the real
+RCODE directly, bypassing `net.Resolver` for just this one probe?
+
+**RULED: drop the decisive check.** Absence of any kind on the From domain (whether the domain
+never existed, or exists but has no SPF/DMARC/DKIM records) now falls through to the SAME "no SPF
+record" / "no DMARC record" absence handling every other absence case already uses, landing at an
+ordinary WARN per §1.6's table — never a distinct `from_domain_not_found`/400. Reasoning:
+
+- **Matches what the resolver can actually promise.** The spec's own §3.1 already accepts this
+  limitation for ignorance-vs-absence; extending the same acceptance to this one additional case
+  is consistent, not a new compromise invented for convenience.
+- **No security or correctness property is lost, only a diagnostic-quality distinction.** Every
+  other lookup this evaluator performs (DMARC, DKIM) independently ALSO reports absence for a
+  nonexistent domain, so a typo'd From address can never reach BLOCK by accident — it lands on the
+  same "we couldn't verify this will authenticate" WARN copy a legitimate-but-unaligned domain
+  gets. The user still sees an actionable message; it is merely not phrased as "this domain does
+  not exist" specifically.
+- **The alternative's cost is disproportionate.** A hand-built raw UDP DNS client (query
+  construction, TCP-on-truncation fallback per RFC 1035 §4.2.1, its own timeout/retry handling) is
+  a second DNS client implementation to maintain indefinitely alongside `net.Resolver`, for the
+  sake of one diagnostic error code that a typo-fixing user does not strictly need distinguished
+  from any other absence.
+
+**Fix:** `Evaluate` (`internal/fromgate/evaluator.go`) no longer performs a separate
+`LookupHost`-based existence probe before evaluating SPF/DMARC/DKIM. `isDomainNotFound` and the
+`from_domain_not_found` external code are removed from the evaluator's control flow (the code
+constant itself may remain documented in §5.1 as a reserved-but-unused vocabulary entry, or be
+dropped — an implementation detail, not a further ruling). §3.2's table is corrected in place: the
+"NXDOMAIN on the From domain itself" row is removed; a bare "no SPF record" / "no DMARC record"
+absence on a domain that turns out not to exist at all is handled identically to one that exists
+but is merely unaligned.
+
+**Verified:** this was found and fixed by RUNNING the real-DNS test suite (`TestEvaluate_T1_*`
+depends on `aligned.test` resolving cleanly through the exact code path this bug would have broken
+for every fixture zone) — exactly the "find bugs by running the suite, not by inspecting it"
+standing rule this session's own retrospective just added to CLAUDE.md.
+
+---
+
 ## Honest final position
 
 **Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which
 this pass raised, reported as open, and had ruled the same day. Nothing is deferred, nothing is
-"awaiting ruling", and no item was closed on my authority.
+"awaiting ruling", and no item was closed on my authority. **Phase 4's own build subsequently
+raised and ruled M3-P4-OD-12 the same day it was found** — see above.
 
 **One correction I had to make against my own earlier report, stated plainly:** M3-P3-OD-3's closure
 rested on a citation I had accepted, and on direct verification the citation was wrong — Phase 3

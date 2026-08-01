@@ -1,0 +1,134 @@
+; DEV/TEST-ONLY FIXTURE ZONE — NOT real DNS data, NOT a real domain's records.
+; Serves the "test." TLD (RFC 2606 reserves .test for exactly this purpose) for the Phase 4
+; "From gate" SPF/DMARC/DKIM alignment behavioral tests. See Docs/phase-4-from-gate.md §7.1 and
+; deploy/dns-test/README.md for the full zone-to-fixture-purpose mapping. Mirrors the
+; deploy/pg-init disclaimer convention: these records exist only to give the Go test suite a
+; REAL, controllable authoritative answer for each edge case (misalignment, malformed SPF, void
+; lookups, macros, etc) — none of it is production data and none of it should ever be treated
+; as such.
+;
+; servfail.test and blackhole.test are handled by DEDICATED Corefile zone blocks (template /
+; forward respectively) and deliberately have NO records here — see ../Corefile.
+
+$ORIGIN test.
+$TTL 300
+
+@       IN SOA  ns.test. admin.test. (
+                2026080101 ; serial
+                3600       ; refresh
+                900        ; retry
+                604800     ; expire
+                60 )       ; negative-cache TTL
+@       IN NS   ns.test.
+ns.test.        IN A    127.0.0.1
+
+; ── Fake provider SPF include targets (self-contained; not real infra) ──────────────────────
+; Treat these exactly as if they were a provider's published SPF include target (cf. the real
+; _spf.google.com / spf.protection.outlook.com rows in §1.4's provider table). Content is a
+; plausible "authorize this provider's sending infra" style record; the addresses are RFC 5737
+; TEST-NET documentation ranges, not real infra.
+_spf.fakeprovider.test.        IN TXT  "v=spf1 ip4:203.0.113.0/24 ~all"
+_spf.otherprovider.test.       IN TXT  "v=spf1 ip4:198.51.100.0/24 ~all"
+
+; ── T1 / T3 core alignment fixtures ──────────────────────────────────────────────────────────
+; aligned.test: SPF include literally contains the real Google Workspace SPF token
+; (_spf.google.com), matching §1.4's provider table. Resolves for real via the Corefile's
+; catch-all upstream forward (8.8.8.8 / 1.1.1.1) — this is the one fixture that is intentionally
+; NOT fully self-contained, per explicit instruction; every other zone below uses the fake
+; provider tokens and needs no internet access.
+aligned.test.                          IN TXT  "v=spf1 include:_spf.google.com ~all"
+
+; misaligned-reject-with-spf.test: SPF record present but does NOT include the fake provider's
+; token -> p=reject -> the common WARN case (M3-P4-OD-1's ruling; T2's paired control; T3c).
+misaligned-reject-with-spf.test.       IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+_dmarc.misaligned-reject-with-spf.test. IN TXT "v=DMARC1; p=reject;"
+
+; misaligned-reject-nospf-nodkim.test: NO SPF record at all, p=reject, and no DKIM key at any
+; common selector (absence is the point -- nothing created under *._domainkey here). This is
+; the ONLY remaining BLOCK case under M3-P4-OD-1's ruling (T2's positive).
+_dmarc.misaligned-reject-nospf-nodkim.test. IN TXT "v=DMARC1; p=reject;"
+
+; misaligned-quarantine.test: SPF present, no matching token, p=quarantine -> WARN.
+misaligned-quarantine.test.            IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+_dmarc.misaligned-quarantine.test.     IN TXT  "v=DMARC1; p=quarantine;"
+
+; misaligned-none.test: SPF present, no matching token, p=none -> WARN (ordinary variant, T3c
+; control).
+misaligned-none.test.                  IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+_dmarc.misaligned-none.test.           IN TXT  "v=DMARC1; p=none;"
+
+; no-dmarc.test: SPF present, no matching token, NO _dmarc TXT record at all.
+no-dmarc.test.                         IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+
+; ── DMARC / SPF record-count edge cases ──────────────────────────────────────────────────────
+; two-dmarc.test: TWO separate _dmarc TXT records, each starting v=DMARC1, different policies ->
+; the ambiguous "multiple records, cannot pick one" non-detection case.
+_dmarc.two-dmarc.test.                 IN TXT  "v=DMARC1; p=reject;"
+_dmarc.two-dmarc.test.                 IN TXT  "v=DMARC1; p=none;"
+
+; two-spf.test: TWO separate apex TXT records, each starting v=spf1 -> RFC 7208 §4.5 PermError
+; ("multiple records" is itself the failure, independent of content).
+two-spf.test.                          IN TXT  "v=spf1 include:_spf.fakeprovider.test ~all"
+two-spf.test.                          IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+
+; malformed-spf.test: v=spf1 prefix present, but an unknown/unparseable mechanism token follows
+; -> a correct parser must PermError, not silently ignore it.
+malformed-spf.test.                    IN TXT  "v=spf1 frobnicate:nonsense ~all"
+
+; ── SPF lookup-limit (RFC 7208 §4.6.4, >10 mechanism/modifier lookups -> PermError) ──────────
+; spf-lookup-limit.test's apex include kicks off a chain 11 lookups deep: the apex "include" is
+; lookup #1, l1..l10 each contribute one more "include" lookup (#2..#11), and l11 terminates
+; with no further lookup. 11 > 10, so a correct evaluator PermErrors.
+spf-lookup-limit.test.                 IN TXT  "v=spf1 include:l1.spf-lookup-limit.test ~all"
+l1.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l2.spf-lookup-limit.test ~all"
+l2.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l3.spf-lookup-limit.test ~all"
+l3.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l4.spf-lookup-limit.test ~all"
+l4.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l5.spf-lookup-limit.test ~all"
+l5.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l6.spf-lookup-limit.test ~all"
+l6.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l7.spf-lookup-limit.test ~all"
+l7.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l8.spf-lookup-limit.test ~all"
+l8.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l9.spf-lookup-limit.test ~all"
+l9.spf-lookup-limit.test.              IN TXT  "v=spf1 include:l10.spf-lookup-limit.test ~all"
+l10.spf-lookup-limit.test.             IN TXT  "v=spf1 include:l11.spf-lookup-limit.test ~all"
+l11.spf-lookup-limit.test.             IN TXT  "v=spf1 ~all"
+
+; spf-void-limit.test: 3 include mechanisms pointing at names that do not exist anywhere in this
+; zone (NXDOMAIN/NODATA) -> 3 void lookups, exceeding the RFC 7208 §11.1 recommended limit of 2.
+; void1/void2/void3 are deliberately absent -- do not add records for them.
+spf-void-limit.test.                   IN TXT  "v=spf1 include:void1.spf-void-limit.test include:void2.spf-void-limit.test include:void3.spf-void-limit.test ~all"
+
+; macro-spf.test: a syntactically valid SPF macro (%{ir}, %{l1r+-}) that a setup-time evaluator
+; must recognize and refuse to evaluate rather than attempt to expand blindly.
+macro-spf.test.                        IN TXT  "v=spf1 exists:%{ir}.%{l1r+-}._spf.macro-spf.test ~all"
+
+; ── §1.7 send-as alias fixtures (T4) ─────────────────────────────────────────────────────────
+; alias-selfhosted.test: "send-as via the alias domain's own SMTP" -- bare a/mx mechanisms,
+; genuinely resolvable via this zone's own A record. Aligns trivially; must be ALLOWED (T4
+; positive -- the legitimate case must not be collateral damage).
+alias-selfhosted.test.                 IN A    10.10.10.10
+alias-selfhosted.test.                 IN TXT  "v=spf1 a mx ~all"
+
+; alias-viaprovider.test: "send-as via the provider's servers" -- SPF DOES contain the fake
+; provider's token (a naive token match would false-ALLOW this), but the authenticating mailbox
+; is a DIFFERENT domain -- Go-side alias-detection logic must override the token match (T4
+; negative control). DNS alone cannot express "different authenticating mailbox"; this zone just
+; supplies the trap (token present) for that Go-side check to catch.
+alias-viaprovider.test.                IN TXT  "v=spf1 include:_spf.fakeprovider.test ~all"
+
+; ── T2b: BLOCK requires ALL THREE conditions -- each zone below satisfies exactly two of
+; {p=reject, no SPF record, no DKIM at any common selector} and must produce WARN, not BLOCK ──
+
+; (i) p=reject + no SPF record + DKIM PRESENT at a common selector (google._domainkey) ->
+;     missing "no DKIM" -> WARN. The row most likely to regress if DKIM probing gets skipped.
+_dmarc.t2b-nospf-dkim.test.            IN TXT  "v=DMARC1; p=reject;"
+google._domainkey.t2b-nospf-dkim.test. IN TXT  "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC7VJTUt9Us8cKjMzEfYyjiWA4R4M2bS1GkbXKARWEs7v9W6D4x2DxLnRDPQgHIDDkjM7CyCVJdvW49bZ9pJ0eR3IDAQAB"
+
+; (ii) p=reject + SPF record present (any content, no matching token) + no DKIM at any common
+;      selector -> missing "no SPF record" -> WARN.
+t2b-spf-nodkim.test.                   IN TXT  "v=spf1 include:_spf.otherprovider.test ~all"
+_dmarc.t2b-spf-nodkim.test.            IN TXT  "v=DMARC1; p=reject;"
+
+; (iii) no SPF record + no DKIM at any common selector + DMARC policy is NOT reject (p=quarantine)
+;       -> missing "p=reject" -> WARN. Distinct from misaligned-quarantine.test, which has an SPF
+;       record present -- this one has SPF absent specifically.
+_dmarc.t2b-nospf-nodkim-quarantine.test. IN TXT "v=DMARC1; p=quarantine;"

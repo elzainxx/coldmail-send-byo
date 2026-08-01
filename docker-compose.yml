@@ -199,3 +199,35 @@ services:
     ports:
       - "${HOST_PORT_MAILPIT:-9025}:8025"     # Mailpit web UI
       # 1025/587 stay internal to the compose network
+
+  # Phase 4 "From gate" (SPF/DMARC/DKIM alignment) test DNS infrastructure — Docs/phase-4-from-gate.md
+  # §7.1. A real local authoritative DNS server serving zone files this repo owns, so the gate's
+  # behavioral tests exercise the REAL resolver code path (net.Resolver, real protocol) against
+  # REAL, controllable failure modes (SERVFAIL, timeout, NXDOMAIN) that a public registrar cannot
+  # be made to produce on demand (Rule 3). ADDITIVE ONLY: nothing else in this file depends on it
+  # and it does not gate anything else's startup — same posture as smtp-sink.
+  coredns:
+    image: coredns/coredns:latest
+    volumes:
+      # LEAST-PRIVILEGE / dev-only fixture data, read-only — see deploy/dns-test/README.md.
+      - ./deploy/dns-test/Corefile:/etc/coredns/Corefile:ro
+      - ./deploy/dns-test/zones:/etc/coredns/zones:ro
+    command: ["-conf", "/etc/coredns/Corefile"]
+    # Host side is .env-driven (M3-P0-OD-6), offset +1000 from module 2's identical fixture (module
+    # 2 has no DNS fixture yet, so this default is simply module 2's port-numbering convention
+    # continued, not an actual collision avoidance today). Tests run via `go test` OUTSIDE Docker
+    # point `from_dns_resolver` at `localhost:<HOST_PORT_COREDNS_UDP>`; the Brain, running AS a
+    # compose service in later chunks, reaches this same server container-to-container at
+    # `coredns:53` and never needs the host port at all.
+    ports:
+      - "${HOST_PORT_COREDNS_UDP:-9053}:53/udp"
+      - "${HOST_PORT_COREDNS_TCP:-9053}:53/tcp"
+
+  # Companion fixture for the T5 DNS-timeout test: accepts UDP packets and NEVER replies, so a
+  # query CoreDNS forwards here (the blackhole.test zone, see Corefile) genuinely hangs on the
+  # wire rather than erroring out immediately. No host port — reached only by coredns, internally,
+  # at dns-blackhole:53. ADDITIVE ONLY, same posture as coredns above.
+  dns-blackhole:
+    image: python:3-alpine
+    command: >
+      python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('0.0.0.0',53)); [s.recvfrom(512) for _ in iter(int,1)]"

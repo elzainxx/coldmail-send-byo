@@ -1,6 +1,28 @@
 # Phase 4 — The From gate
 
-**Status:** PLAN ONLY. No code, no migrations, no tests written by this document.
+> **Status (2026-08-01):** Chunk 1 (the DNS evaluation primitive, `internal/fromgate`) is
+> implemented and green against real local-authoritative-DNS infra (`deploy/dns-test/`, the
+> `coredns`/`dns-blackhole` compose services) — 15/15 tests, including T1-T5, T2b, T3c, T4, the
+> SPF lookup/void-limit chains, macro handling, ambiguous-DMARC non-detection, and a live canary
+> against `_spf.google.com`. Migration `0039` (the seven config seeds) is written and its keys
+> have real consumers in this chunk's code. Two new config-ordering invariants
+> (`from_dns_lookup_timeout_ms <= from_dns_total_budget_ms`,
+> `from_dns_negative_cache_ttl_sec <= from_dns_cache_ttl_sec`) are added to
+> `internal/configordering`, shared with the (not-yet-built) admin PUT boundary per the existing
+> P9-OD-2 precedent. **One genuine spec gap found and ruled while running real tests, not while
+> reading the spec:** M3-P4-OD-13 — §3.2's "NXDOMAIN on the From domain itself is decisive" row
+> cannot be implemented against Go's stdlib resolver (`net.DNSError.IsNotFound` is set identically
+> for NXDOMAIN and NODATA, confirmed empirically against a legitimate SPF-publishing domain with no
+> A record); dropped, absence now falls through to the ordinary WARN path. `from_domain_not_found`
+> is removed from the external-code vocabulary. **M3-P4-OD-12** (found before writing code, not
+> during testing) settled what `from_gate_mode=off` writes (`aligned`, disclosed as skipped) so the
+> escape hatch actually unblocks routing. Chunks 2 (the store-layer gate + acknowledgment) and 3
+> (failure-mode wiring + the test-button hook) are not yet built. See `Docs/open-decisions.md` for
+> both rulings' full reasoning.
+>
+> Original status below, retained for what it originally meant:
+>
+> **Status (original):** PLAN ONLY. No code, no migrations, no tests written by this document.
 **Owns:** the SPF/DMARC alignment gate on `byosmtp.accounts.from_address`, the four setup-time entry
 points that must pass through it, and the routing exclusion that makes a `blocked` verdict mean
 something.
@@ -604,8 +626,7 @@ downgrade above, delivered by a one-line mistake.
 | SERVFAIL | ignorance | REFUSE, retryable — `from_dns_unavailable` |
 | NXDOMAIN at `_dmarc.<domain>` | absence | real result → org-domain fallback, then no-DMARC row |
 | NODATA at `_dmarc.<domain>` | absence | same as NXDOMAIN |
-| NXDOMAIN on the From domain itself | absence, but decisive | REFUSE — a From domain that does not exist cannot receive replies or publish policy. `from_domain_not_found`. Not "warn": this is a typo, and the user can fix it. |
-| No SPF record at all | absence | SPF token absent → §1.6 |
+| No SPF record at all (including a From domain that does not exist) | absence | SPF token absent → §1.6. **M3-P4-OD-13, ruled 2026-08-01:** an earlier draft of this row gave NXDOMAIN on the From domain itself a DECISIVE, distinct treatment (`from_domain_not_found`, 400, "not a warn — a typo the user can fix"). Dropped: `net.DNSError.IsNotFound` is set identically for NXDOMAIN and NODATA with no way to tell them apart through the stdlib resolver API (verified empirically against the real fixture server — a legitimate SPF-publishing domain with no A/AAAA record reports the SAME flag a nonexistent domain does), so a domain that does not exist now falls through this SAME absence row, landing at an ordinary WARN — never a distinct code, and never a false BLOCK (every other lookup independently also reports absence for a nonexistent domain, so BLOCK's own three-condition conjunction still cannot fire from this alone). |
 | Malformed SPF (unparseable) | PermError | Surface as **the domain's own record being broken**, `from_spf_record_invalid` — distinct copy, because the fix is unrelated to provider choice (§5.5) |
 | Multiple `v=spf1` records | PermError (RFC 7208 §4.5) | `from_spf_multiple_records` — actionable, names the defect |
 | SPF exceeds 10 lookups | PermError (§4.6.4) | Governed by `from_spf_lookup_limit_posture` (§6.3) |
@@ -755,11 +776,16 @@ a policy block) and rather than serializing internal resolver detail.
 |---|---|---|
 | `from_alignment_blocked` | `201` body field (not an error envelope — the row is created) | The BLOCK verdict |
 | `from_dns_unavailable` | `503` | Indeterminate lookup; retry |
-| `from_domain_not_found` | `400` | The From domain does not resolve |
 | `from_spf_record_invalid` | `201` body field | The domain's own SPF record is malformed |
 | `from_spf_multiple_records` | `201` body field | Two or more `v=spf1` records |
 | `from_spf_lookup_limit_exceeded` | `201` body field | Per §6.3's posture |
 | `from_unauthenticated_warned` | `201` body field | The WARNING verdict |
+
+`from_domain_not_found` is **not** in this table — an earlier draft included it for the NXDOMAIN-
+on-the-From-domain case §3.2 originally specified as decisive. **M3-P4-OD-13 (ruled 2026-08-01)
+removed that case**: it cannot be reliably distinguished from an ordinary NODATA absence through
+Go's stdlib resolver, so it is never emitted; a nonexistent From domain surfaces as
+`from_unauthenticated_warned` like any other absence.
 
 No new `error_class` value; that enum is additive-only and untouched.
 

@@ -283,3 +283,41 @@ green: spec written; real behavioral tests green on real infra; docs updated in 
 same change; config keys seeded + documented; no hardcoded tuning constants; Open
 Decisions discharged; additive-only + migration chain intact; security properties
 re-verified; control-plane safety controls honored.
+
+## Module 3 implementation rules (standing — apply to every phase)
+
+VERIFICATION IS TIERED. Per chunk: run only the affected package's tests. At PHASE END
+only: full harness + clean-slate reset + all CI gates, twice. Do not clean-slate per
+chunk — it proves migrations apply from empty, which does not change between chunks.
+Batch fixes and verify once; do not re-verify after each small fix.
+
+OPEN DECISIONS ARE BATCHED. Collect ODs as you go, rule them at phase end. Stop
+mid-flight only if one genuinely blocks progress. Before "fixing" anything that looks
+wrong, check open-decisions.md — a settled ruling was nearly reverted in Phase 3.
+
+CHUNKS: three per phase unless the phase genuinely needs more. Commit + a 2-4 line status
+after each, then CONTINUE. Never wait for approval.
+
+TESTS — these are not negotiable, they are what has caught every real bug:
+- Every test has a paired control that FAILS when the property is broken. A test that
+  cannot fail is not a test.
+- Concurrency tests must PROVE contention (blocked backend via scoped pg_stat_activity,
+  or a forced deterministic interleave), never hope for it.
+- Find bugs by RUNNING the suite, not by inspecting it.
+- Security tests must match the encoding on the wire, not just the plaintext.
+
+THE ADMIN BYPASS SURFACE: twelve adminapi break-glass routes are retained and are a
+permanent parallel write path. Every new user-path requirement must be checked against
+them. Gates belong in the STORE layer, where all writers pass — not on the handler in
+scope. This has bitten three times.
+
+SELF-CHECK before handing back: (1) does every new test have a control that fails when
+broken? (2) does claimed reuse genuinely share code? (3) does every config key have a real
+consumer at its seeding commit? (4) does every changed object list its dependents? (5) did
+I re-specify anything inherited instead of referencing it?
+
+AGENT REVIEW only for a new protocol frame, security surface, or concurrency path —
+scoped to ONE question, narrow agents plus a refutation pass. A failed agent is
+UNANSWERED, not "no finding".
+
+PASTE runs, don't claim them.

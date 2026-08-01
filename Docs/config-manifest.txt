@@ -4,7 +4,8 @@
 # Each config-seeding migration (Phase 1's sender_0010 onward) appends its keys here in the
 # SAME change, so the gate grows monotonically: 53 keys after sender_0021/G2 (amended from 50 —
 # P8-OD-1, Phase 8 grew from 14 to 17 keys post-Chunk-5), then 59 after Module 3 Phase 3's 0036
-# (+6 account-surface dials), then 60 after Phase 3's 0038 (+1, bulk_add_max_rows, M3-P3-OD-19).
+# (+6 account-surface dials), then 60 after Phase 3's 0038 (+1, bulk_add_max_rows, M3-P3-OD-19),
+# then 67 after Phase 4's 0039 (+7, the From-gate DNS evaluator's dials).
 #
 # Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1).
 daily_limit_default
@@ -92,3 +93,14 @@ account_purge_delete_batch_size
 # Module 3 Phase 3 — byosmtp_0038 (+1 key: the bulk-add row-count bound, M3-P3-OD-8/19).
 # Docs/phase-3-user-owned-accounts.md §4.2.
 bulk_add_max_rows
+
+# Module 3 Phase 4 — byosmtp_0039 (+7 keys: the From-gate DNS evaluator's dials — the kill switch,
+# the resolver override, the two DNS timeouts, the two cache TTLs, the SPF lookup-limit posture).
+# Docs/phase-4-from-gate.md §6.1.
+from_gate_mode
+from_dns_resolver
+from_dns_lookup_timeout_ms
+from_dns_total_budget_ms
+from_dns_cache_ttl_sec
+from_dns_negative_cache_ttl_sec
+from_spf_lookup_limit_posture

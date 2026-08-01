@@ -1,0 +1,61 @@
+# DEV/TEST-ONLY fixture DNS server (Phase 4 "From gate" behavioral tests, per
+# Docs/phase-4-from-gate.md §7.1). NOT real infrastructure and NOT real prod DNS data — mirrors
+# the deploy/pg-init disclaimer convention: these zones exist solely so the SPF/DMARC/DKIM
+# alignment gate's behavioral tests can exercise a REAL resolver, real protocol, real
+# net.Resolver code path against REAL, controllable failure modes (SERVFAIL, hang/timeout,
+# NXDOMAIN) that a public registrar cannot be made to produce on demand. See
+# deploy/dns-test/README.md for the full zone-to-fixture-purpose mapping.
+#
+# Three server blocks, most-specific-zone-wins (CoreDNS picks the longest matching zone, so
+# servfail.test/blackhole.test queries never fall through to the test: block below them):
+
+# servfail.test: the `template` plugin manufactures a SERVFAIL for EVERY query under this zone.
+# Used to prove a DNS lookup failure fails the gate closed (§3.1) — and that SERVFAIL and a real
+# timeout (blackhole.test, below) are handled identically, while NXDOMAIN (a real, valid answer)
+# is not conflated with either.
+servfail.test:53 {
+    template ANY ANY {
+        rcode SERVFAIL
+    }
+    log
+    errors
+}
+
+# blackhole.test: forwarded to the dns-blackhole service, which accepts every UDP packet and
+# NEVER replies — so a query under this zone genuinely hangs on the wire rather than erroring
+# immediately. `max_fails 0` stops the forward plugin from ever marking dns-blackhole "down" and
+# short-circuiting later queries with an instant SERVFAIL instead of actually waiting on it.
+# CoreDNS's own per-query patience when forwarding is on the order of several seconds — a test
+# client should use its OWN short context deadline (recommend 2-3s) so the test's timeout fires
+# first and the query is observed as a genuine hang, not a delayed SERVFAIL from CoreDNS giving
+# up. See README for the exact behavior observed during verification.
+blackhole.test:53 {
+    forward . dns-blackhole:53 {
+        max_fails 0
+        expire 30s
+    }
+    log
+    errors
+}
+
+# The real fixture zone: every other Phase-4 test domain (aligned.test, misaligned-*.test,
+# two-spf.test, spf-lookup-limit.test, the T2b zones, etc.) lives in one BIND-style zone file —
+# see zones/db.zone for the full record set and zones/README-style header comment there.
+test:53 {
+    file /etc/coredns/zones/db.zone
+    log
+    errors
+}
+
+# Catch-all: anything NOT under .test (e.g. _spf.google.com, smtp.gmail.com — real public
+# records the M3-P4-OD-6 canary tests read) forwards to real upstream resolvers. This lets
+# from_dns_resolver point at THIS server for every test — both the self-contained .test
+# fixtures and the separately-marked, allowed-to-fail-loudly canary tests — with no test-only
+# resolver branching required on the Go side. Also what lets a self-contained fixture (e.g.
+# aligned.test) reference a real provider's real include target if a test author ever wants to,
+# without that lookup dead-ending.
+.:53 {
+    forward . 8.8.8.8 1.1.1.1
+    log
+    errors
+}

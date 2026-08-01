@@ -163,8 +163,15 @@ soft-delete handler and the purge loop.
 | `bulk_add_max_rows` | `{"v":500}` | integer | byosmtp_0038 | Maximum rows accepted per bulk-add request; `422 batch_too_large` above it, checked before any row is processed. Bounds worst-case request duration at the strictly-serial pacer. Consumed by `platformapi/account_bulk_add.go`'s `readBulkAddMaxRows` (C4). Phase 3 §4.2, M3-P3-OD-8/19. |
 | `account_purge_sweep_interval_ms` | `{"v":3600000}` | integer | byosmtp_0036 | How often (ms) the account-purge loop ticks. Mirrors `retention_sweep_interval_ms` (1 hour). Consumed by `dispatch/purge.go`'s `PurgeRunner` (C5, the FIFTH single-Brain loop). Phase 3 §6.3. |
 | `account_purge_delete_batch_size` | `{"v":100}` | integer | byosmtp_0036 | Max accounts hard-deleted per purge-loop tick. Mirrors `retention_delete_batch_size`. `<= 0` disables the sweep. Consumed by `dispatch/purge.go`'s `sweepExpiredAccounts` (C5). Phase 3 §6.3. |
+| `from_gate_mode` | `{"v":"enforce"}` | string | byosmtp_0039 | `off \| warn_only \| enforce`. The From-alignment gate's kill switch. `enforce` runs the full §1.6 decision table; `warn_only` downgrades every BLOCK to a warning; `off` skips DNS entirely and writes `'aligned'` (disclosed as skipped in `from_check_detail`, M3-P4-OD-12) so the escape hatch actually unblocks onboarding during a resolver-side incident. Unrecognized value degrades to `enforce` with a logged warning. Consumed by `internal/fromgate`'s verdict applier. Phase 4 §6.2. |
+| `from_dns_resolver` | `{"v":""}` | string | byosmtp_0039 | Empty = system resolver; non-empty `host:port` dials that DNS server explicitly, bypassing the system resolver — the seam the behavioral test suite uses to point at the local authoritative compose service (real DNS protocol, production evaluator unmodified). Consumed by `internal/fromgate`'s resolver constructor. Phase 4 §6.6. |
+| `from_dns_lookup_timeout_ms` | `{"v":3000}` | integer | byosmtp_0039 | Per-lookup deadline (ms). Exceeding it is ignorance, not absence (§3.1) — `503 from_dns_unavailable`, retryable. **INVARIANT:** must be `<= from_dns_total_budget_ms`. Consumed by `internal/fromgate`'s `timedResolver`. Phase 4 §6.4. |
+| `from_dns_total_budget_ms` | `{"v":15000}` | integer | byosmtp_0039 | Whole-check deadline (ms) across every lookup one evaluation may issue (worst case ~16 sequential lookups). Exceeding it is ignorance, not absence. Consumed by `internal/fromgate.Evaluate`. Phase 4 §6.4. |
+| `from_dns_cache_ttl_sec` | `{"v":3600}` | integer | byosmtp_0039 | Lifetime (sec) of a cached POSITIVE lookup result in the From gate's in-memory, Brain-process-local cache. Verdicts themselves never expire from this cache (§4.2) — only the underlying DNS lookup does. Consumed by the store-layer gate's cache (Chunk 2). Phase 4 §6.5. |
+| `from_dns_negative_cache_ttl_sec` | `{"v":300}` | integer | byosmtp_0039 | Lifetime (sec) of a cached ABSENCE result. Deliberately far shorter than `from_dns_cache_ttl_sec` — a stale negative is a cached decision to be MORE PERMISSIVE, the dangerous direction (§6.5). **INVARIANT:** must be `<= from_dns_cache_ttl_sec`. Consumed by the store-layer gate's cache (Chunk 2). Phase 4 §6.5. |
+| `from_spf_lookup_limit_posture` | `{"v":"warn"}` | string | byosmtp_0039 | `warn \| block`. Governs the SPF 10-lookup/2-void-lookup PermError (RFC 7208 §4.6.4) ONLY — the limit numbers themselves are RFC constants, not a dial. Default `warn`: the limit is the most common real-world SPF misconfiguration, often caused by an `include:` the domain owner doesn't control. Consumed by `internal/fromgate.decide`. Phase 4 §6.3. |
 
-## Both config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative)
+## All four config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs added below)
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**
 the admin `PUT /v1/admin/config/{key}` boundary rejects a write that would invert either pair
@@ -199,6 +206,15 @@ one succeed and one rejected with `config_ordering_violation`, never both succee
   late-but-in-window has already dropped its outcome → the job is lease-reclaimed and re-sent → a
   **silent duplicate**. Bare equality is the floor; a margin (~2×, defaults `900 ≥ 2×120`) covers
   reconnect-backoff.
+- `from_dns_lookup_timeout_ms <= from_dns_total_budget_ms` — **enforced as of Phase 4** (both keys
+  seeded via `byosmtp_0039`). A budget below a single lookup's timeout makes EVERY From-gate check
+  fail indeterminate, presenting as "account creation is broken" with no diagnosable cause — the
+  same Phase 8 HIGH-finding class CLAUDE.md Rule 11 names. Bare equality is the boundary, not a
+  violation (Phase 4 §11 T11).
+- `from_dns_negative_cache_ttl_sec <= from_dns_cache_ttl_sec` — **enforced as of Phase 4** (both
+  keys seeded via `byosmtp_0039`). A negative TTL exceeding the positive one silently inverts the
+  cache's safety asymmetry (§6.5: "leniency-by-caching is the dangerous direction"). Bare equality
+  is the boundary, not a violation.
 
 **Widening BOTH keys of a pair upward requires ordering the two writes** — each individual `PUT` is
 validated against the counterpart's value AT THAT MOMENT, so raising the boundary key first (the
