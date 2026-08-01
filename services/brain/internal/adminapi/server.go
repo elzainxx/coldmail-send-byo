@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/fromgate"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,11 +44,12 @@ type VerifyResult struct {
 // AccountVerifier seam for verify-on-add. It registers its routes on a mux that the Brain mounts
 // under /v1/admin/*.
 type Server struct {
-	db       *pgxpool.Pool
-	enc      *Encryptor
-	auth     *Authenticator
-	verifier AccountVerifier
-	mux      *http.ServeMux
+	db            *pgxpool.Pool
+	enc           *Encryptor
+	auth          *Authenticator
+	verifier      AccountVerifier
+	fromGateCache *fromgate.Cache
+	mux           *http.ServeMux
 }
 
 // NewServer wires the admin routes. db is the byosmtp_module pool (never superuser); enc is the
@@ -55,10 +57,31 @@ type Server struct {
 // that don't exercise verify-on-add; handleAccountCreate treats a nil verifier as "verification
 // unavailable" (logged, never surfaced as a create failure — the same §2.5 precedent
 // platformapi's own create path already follows).
+//
+// fromGateCache (Phase 4 §6.5) is constructed ONCE here, mirroring platformapi's own
+// NewServer — see that package's comment for why a live config change to either TTL needs a
+// Brain restart to take effect.
 func NewServer(db *pgxpool.Pool, enc *Encryptor, auth *Authenticator, verifier AccountVerifier) *Server {
 	s := &Server{db: db, enc: enc, auth: auth, verifier: verifier, mux: http.NewServeMux()}
+	s.fromGateCache = s.newFromGateCacheFromConfig()
 	s.routes()
 	return s
+}
+
+// newFromGateCacheFromConfig mirrors platformapi's own function (duplicated per OD-7 isolation).
+func (s *Server) newFromGateCacheFromConfig() *fromgate.Cache {
+	positiveSec, negativeSec := 3600, 300 // byosmtp_0039's seeded defaults
+	if s.db != nil {
+		ctx, cancel := dbCtx(context.Background())
+		defer cancel()
+		if n, err := readConfigInt(ctx, s.db, "from_dns_cache_ttl_sec"); err == nil {
+			positiveSec = n
+		}
+		if n, err := readConfigInt(ctx, s.db, "from_dns_negative_cache_ttl_sec"); err == nil {
+			negativeSec = n
+		}
+	}
+	return fromgate.NewCache(time.Duration(positiveSec)*time.Second, time.Duration(negativeSec)*time.Second)
 }
 
 // Handler exposes the mux so the Brain can mount it (e.g. under a parent mux).

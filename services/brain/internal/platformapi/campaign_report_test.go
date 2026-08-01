@@ -9,15 +9,23 @@ import (
 
 // seedEligibleAccount inserts a real account owned by userID (full headroom, eligible right now).
 // G2 re-key (M3-P2-OD-12 extension): accounts are user-owned directly, no pool indirection.
+// credential_verification_state='verified' + from_verification_state='aligned' (+ their paired
+// timestamps): the name asserts eligibility, and both columns' 'unverified' defaults are now
+// STRUCTURALLY excluded from accountBaseEligibilityFilter (M3-P3-OD-4, M3-P4-OD-3 commit 3) — a
+// fixture whose name states a property it no longer has would misdirect whoever debugs the
+// resulting failure (the exact hazard §2.7 of the Phase 4 spec names).
 func (e *testEnv) seedEligibleAccount(t *testing.T, userID string) string {
 	t.Helper()
 	var id string
 	if err := e.admin.QueryRow(bgctx(),
 		`INSERT INTO byosmtp.accounts
 		   (user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
+		    credential_verification_state, credential_verified_at,
+		    from_verification_state, from_checked_at)
 		 VALUES ($1,'smtp-sink',587,'u@ourdomain.com',
-		         '\x00','test-key','\x00','u@ourdomain.com','Tester')
+		         '\x00','test-key','\x00','u@ourdomain.com','Tester',
+		         'verified',NOW(),'aligned',NOW())
 		 RETURNING id`, userID).Scan(&id); err != nil {
 		t.Fatalf("seed eligible account: %v", err)
 	}

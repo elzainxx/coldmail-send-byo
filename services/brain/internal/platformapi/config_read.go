@@ -21,3 +21,20 @@ func (s *Server) readConfigInt(ctx context.Context, key string) (int, bool, erro
 	}
 	return *wrap.V, true, nil
 }
+
+// readConfigString mirrors readConfigInt for a string-typed byosmtp.config row (Phase 4's
+// from_gate_mode/from_dns_resolver/from_spf_lookup_limit_posture — the first string-typed config
+// keys this surface reads).
+func (s *Server) readConfigString(ctx context.Context, key string) (string, bool, error) {
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return "", false, err
+	}
+	var wrap struct {
+		V *string `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return "", false, nil
+	}
+	return *wrap.V, true, nil
+}

@@ -20,16 +20,34 @@
 > (failure-mode wiring + the test-button hook) are not yet built. See `Docs/open-decisions.md` for
 > both rulings' full reasoning.
 >
+> **Chunk 2 update (2026-08-01):** the store-layer gate landed on all four §2.2 write routes —
+> `platformapi` create/PATCH/bulk-add (Domain A) and `adminapi` create/PATCH (Domain B) — plus
+> M3-P4-OD-9's break-glass override on both admin routes. §2.8's finding (admin PATCH could
+> preserve a stale `aligned` verdict across an ungated `from_address` change) is closed: both
+> surfaces' PATCH handlers re-run the gate exactly when `from_address` changes, refuse an
+> unacknowledged WARN or an indeterminate check (§2.3/M3-P4-OD-15), and the override writes
+> `'unverified'` only, never a real verdict, with its own audited event. 27 new behavioral tests
+> (18 real-infra against `platformapi`/`adminapi` plus `internal/fromgate`'s own copy-rendering
+> unit tests) green, including T8/T8b/T8c/T13/T13b and both create-time rulings (M3-P4-OD-14/15).
+> This needed a THIRD migration — M3-P4-OD-16, ruled the same day: the override's own audit event
+> (`'from_gate_overridden'`) required widening `account_events_action_check`, which Phase 4's
+> original two-migration allotment never anticipated. Phase 4 now claims `0039`–`0041`; Phase 5+
+> cascaded +1 again (the third such cascade this build, after M3-P3-OD-18/19) — see
+> `Docs/plan-revision-log.md`'s 2026-08-01 addendum for the full chain. Chunk 3 (the remaining §3
+> failure-mode edge cases and the test-button hook, §2.5) is not yet built.
+>
 > Original status below, retained for what it originally meant:
 >
 > **Status (original):** PLAN ONLY. No code, no migrations, no tests written by this document.
 **Owns:** the SPF/DMARC alignment gate on `byosmtp.accounts.from_address`, the four setup-time entry
 points that must pass through it, and the routing exclusion that makes a `blocked` verdict mean
 something.
-**Migration numbers:** `0039` (config seeds) then `0040` (routing-predicate change + backfill).
-Phase 1 claims `0025`–`0034`; Phase 3 claims `0035`–`0037` (amended, M3-P3-OD-17/18 — C3 needed a
-third migration, the narrow `job_items` INSERT grant, discovered only while implementing test-send;
-see `Docs/phase-3-user-owned-accounts.md` §0.2).
+**Migration numbers:** `0039` (config seeds), `0040` (routing-predicate change + acknowledgment
+columns), and `0041` (M3-P4-OD-16: widen `account_events_action_check` for the operator override's
+own audit action). Phase 1 claims `0025`–`0034`; Phase 3 claims `0035`–`0038` (amended twice,
+M3-P3-OD-17/18 then M3-P3-OD-19 — C3 needed the narrow `job_items` INSERT grant, C4 needed the
+`bulk_add_max_rows` seed, both discovered only while implementing; see
+`Docs/phase-3-user-owned-accounts.md` §0.2).
 
 **The order is load-bearing, and an earlier draft had it reversed.** The config seeds must land
 *first*: §6.1's keys are consumed by the evaluator, and §8.2's recommended two-step deploy ships the

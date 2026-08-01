@@ -67,15 +67,33 @@ type Options struct {
 	LookupTimeout         time.Duration // from_dns_lookup_timeout_ms (§6.4, per-lookup deadline)
 	TotalBudget           time.Duration // from_dns_total_budget_ms (§6.4, whole-check deadline)
 	SPFLookupLimitPosture string        // "warn" | "block" (§6.3)
+
+	// Cache is §6.5's lookup cache, shared across every Evaluate call in the Brain process (one
+	// singleton instance, wired once). Nil means "no caching" — every call is a real lookup; used
+	// by tests and by any caller that has not yet constructed a Cache.
+	Cache *Cache
+
+	// GateMode is §6.2's kill switch: "off" | "warn_only" | "enforce" (an unrecognized value is
+	// the CALLER's responsibility to have already degraded to "enforce" with a log line, per §6.2
+	// — this package treats anything other than the two recognized overrides as enforce).
+	GateMode string
 }
 
 // Evaluate runs §1.2's six-step primitive for one (fromAddress, smtpHost, smtpUsername) triple and
-// returns the §1.6 verdict. It is a PURE function of its inputs plus live DNS state — no caching
-// here (§6.5's cache is the CALLER's responsibility, keyed on whatever the caller chooses; this
-// function is always a real lookup) and no persistence (the caller writes Verdict's fields to
-// byosmtp.accounts). Cancelling ctx or exceeding opts.TotalBudget both surface as
-// Outcome=OutcomeIndeterminate — never a panic, never a partial verdict presented as definitive.
+// returns the §1.6 verdict. Persistence is the CALLER's responsibility (the caller writes
+// Verdict's fields to byosmtp.accounts). Cancelling ctx or exceeding opts.TotalBudget both surface
+// as Outcome=OutcomeIndeterminate — never a panic, never a partial verdict presented as definitive.
 func Evaluate(ctx context.Context, fromAddress, smtpHost, smtpUsername string, opts Options) Verdict {
+	// §6.2's "off": skip DNS entirely. M3-P4-OD-12 (ruled 2026-08-01): writes 'aligned', disclosed
+	// as skipped rather than left 'unverified' — otherwise the escape hatch would stop DNS traffic
+	// without ever unblocking the users it exists to unblock (§8's positive-list predicate would
+	// still exclude an 'unverified' row).
+	if opts.GateMode == "off" {
+		return Verdict{
+			Outcome: OutcomeAllow, State: "aligned",
+			Detail: map[string]any{"from_gate_mode": "off", "note": "check skipped by operator policy — not evaluated"},
+		}
+	}
 	domain := domainOf(fromAddress)
 	budget := opts.TotalBudget
 	if budget <= 0 {
@@ -84,7 +102,10 @@ func Evaluate(ctx context.Context, fromAddress, smtpHost, smtpUsername string, o
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	r := &timedResolver{inner: newResolver(opts.DNSResolverAddr), perLookup: opts.LookupTimeout}
+	var r resolverLike = &timedResolver{inner: newResolver(opts.DNSResolverAddr), perLookup: opts.LookupTimeout}
+	if opts.Cache != nil {
+		r = opts.Cache.wrap(r) // cache sits ABOVE the timed resolver: a cache hit costs no deadline at all
+	}
 
 	// M3-P4-OD-13 (ruled 2026-08-01): §3.2's original table listed a decisive NXDOMAIN-on-the-
 	// From-domain check here. Dropped — net.DNSError.IsNotFound is set identically for NXDOMAIN
@@ -113,7 +134,19 @@ func Evaluate(ctx context.Context, fromAddress, smtpHost, smtpUsername string, o
 		}
 	}
 
-	return decide(fromAddress, domain, smtpHost, smtpUsername, prov, matched, spfRes, dmarcRes, dkimRes, opts)
+	v := decide(fromAddress, domain, smtpHost, smtpUsername, prov, matched, spfRes, dmarcRes, dkimRes, opts)
+
+	// §6.2's "warn_only": downgrade a definitive BLOCK to WARN. Applied AFTER decide() (never
+	// threaded into the decision table itself) so the table's own logic — including
+	// M3-P4-OD-2's unguessable-selector exemption — stays the single, un-duplicated source of the
+	// BLOCK condition; this is purely a post-hoc override of the OUTCOME, not a second copy of when
+	// BLOCK fires.
+	if opts.GateMode == "warn_only" && v.Outcome == OutcomeBlock {
+		v.Outcome = OutcomeWarn
+		v.State = "unaligned_warned"
+		v.ExternalCode = "from_unauthenticated_warned"
+	}
+	return v
 }
 
 // indeterminate builds the uniform §3.2 "REFUSE, retryable" Verdict — from_verification_state and

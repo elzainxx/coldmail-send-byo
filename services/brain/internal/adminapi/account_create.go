@@ -4,17 +4,26 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 type accountCreateReq struct {
-	UserID       string  `json:"user_id"`
-	SMTPHost     string  `json:"smtp_host"`
-	SMTPPort     *int    `json:"smtp_port"`
-	SMTPUsername string  `json:"smtp_username"`
-	SMTPSecret   string  `json:"smtp_secret"`
-	FromAddress  string  `json:"from_address"`
-	FromName     *string `json:"from_name"`
-	DailyLimit   *int    `json:"daily_limit"`
+	UserID                      string  `json:"user_id"`
+	SMTPHost                    string  `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                string  `json:"smtp_username"`
+	SMTPSecret                  string  `json:"smtp_secret"`
+	FromAddress                 string  `json:"from_address"`
+	FromName                    *string `json:"from_name"`
+	DailyLimit                  *int    `json:"daily_limit"`
+	AcknowledgeAlignmentWarning bool    `json:"acknowledge_alignment_warning"`
+	// OverrideFromGate/OverrideReason: M3-P4-OD-9's break-glass path. Present+true on the flag
+	// AND a non-empty reason is the ONLY way to create a row whose From does not pass the gate
+	// without an acknowledgment — writes from_verification_state='unverified' (never a real
+	// verdict, §2.8) and records its own distinct audit event.
+	OverrideFromGate bool    `json:"override_from_gate"`
+	OverrideReason   *string `json:"override_reason"`
 }
 
 // handleAccountCreate: POST /v1/admin/accounts. Validate → resolve daily_limit default → validate
@@ -59,9 +68,33 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if req.DailyLimit != nil {
 		details = append(details, collect(validateDailyLimit(*req.DailyLimit))...)
 	}
+	// M3-P4-OD-9: the override flag requires a non-empty reason (the same "time-limited,
+	// reason-required, audited" contract as break-glass credential read).
+	if req.OverrideFromGate && (req.OverrideReason == nil || strings.TrimSpace(*req.OverrideReason) == "") {
+		details = append(details, fieldDetail{Field: "override_reason", Issue: issueRequired})
+	}
 	if len(details) > 0 {
 		s.fail(w, r, newErr(codeValidationFailed, "account_create_validation").withDetails(details...))
 		return
+	}
+
+	// The From gate (§2.8/M3-P4-OD-9's store-layer requirement) runs BEFORE the daily_limit
+	// resolution below only in the sense that it does not depend on it — ordered here so an
+	// unacknowledged-warn refusal (M3-P4-OD-15's reasoning, applied identically to this surface)
+	// short-circuits before any other work. r.Context() (unbounded), not dbCtx's 10s window — see
+	// platformapi's own createAccountRow for why.
+	var gateRes fromGateResult
+	var verdictSets []fromGateColumnSet
+	if req.OverrideFromGate {
+		verdictSets = overrideFromGateColumnSets()
+	} else {
+		gateRes = s.runFromGate(r.Context(), req.FromAddress, req.SMTPHost, req.SMTPUsername, req.AcknowledgeAlignmentWarning)
+		var gerr *apiError
+		verdictSets, gerr = fromGateVerdictSets(gateRes)
+		if gerr != nil {
+			s.fail(w, r, gerr) // M3-P4-OD-15: an unacknowledged WARN refuses the whole create
+			return
+		}
 	}
 
 	ctx, cancel := dbCtx(r.Context())
@@ -112,14 +145,30 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.Background())
 
+	cols := []string{"id", "user_id", "smtp_host", "smtp_port", "smtp_username",
+		"credential_ciphertext", "credential_key_id", "credential_nonce", "from_address", "from_name", "daily_limit"}
+	args := []any{accIDStr, userID, req.SMTPHost, port, req.SMTPUsername, ciphertext, keyID, nonce, req.FromAddress, req.FromName, dailyLimit}
+	phs := make([]string, len(cols))
+	for i := range cols {
+		phs[i] = "$" + strconv.Itoa(i+1)
+	}
+	for _, vs := range verdictSets {
+		cols = append(cols, vs.Col)
+		if _, isNow := vs.Val.(nowLiteral); isNow {
+			phs = append(phs, "NOW()")
+			continue
+		}
+		args = append(args, vs.Val)
+		ph := "$" + strconv.Itoa(len(args))
+		if vs.Col == "from_dmarc_policy" {
+			ph += "::byosmtp.dmarc_policy"
+		}
+		phs = append(phs, ph)
+	}
+
 	_, err = tx.Exec(ctx,
-		`INSERT INTO byosmtp.accounts
-		   (id, user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce,
-		    from_address, from_name, daily_limit)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		accIDStr, userID, req.SMTPHost, port, req.SMTPUsername,
-		ciphertext, keyID, nonce, req.FromAddress, req.FromName, dailyLimit)
+		"INSERT INTO byosmtp.accounts ("+strings.Join(cols, ", ")+") VALUES ("+strings.Join(phs, ", ")+")",
+		args...)
 	if err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))
 		return
@@ -127,6 +176,17 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if err := writeAuditEvent(ctx, tx, accIDStr, userID, "created", nil, ptrSnapshot(false, nil, false, false), nil, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
+	}
+	// M3-P4-OD-9's audited override event: its own distinct row, carrying the operator identity
+	// (the 'admin' actor GUC every write on this surface already sets), the address, and the
+	// reason — "the SAME pattern as break-glass credential read: deliberate and logged, never
+	// accidental." Written in the SAME transaction as the create, so the override is never
+	// recorded without the row it applied to (or vice versa).
+	if req.OverrideFromGate {
+		if err := writeFromGateOverrideEvent(ctx, tx, accIDStr, userID, req.FromAddress, *req.OverrideReason, requestIDFrom(r.Context())); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "override_audit_write_error: "+err.Error()))
+			return
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))

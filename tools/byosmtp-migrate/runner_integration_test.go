@@ -104,12 +104,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	// account_events_action_check; then Phase 3's own 0035 (credential_verification_state enum +
 	// accounts columns), 0036 (the six account-surface config seeds), 0037 (M3-P3-OD-17/18: a
 	// narrow INSERT-only grant on public.job_items so test-send can create its own job_item row),
-	// and 0038 (M3-P3-OD-8/19: the bulk_add_max_rows seed C4's row-count bound needed). This is
-	// the executable expectation of the migration chain.
+	// and 0038 (M3-P3-OD-8/19: the bulk_add_max_rows seed C4's row-count bound needed); then
+	// Phase 4's own 0039 (the seven From-gate DNS-evaluator config seeds), 0040 (the
+	// acknowledgment columns + the eligibility predicate's third and final consolidated term +
+	// the accounts_eligibility_idx WHERE-clause update, §8.1/§4.6), and 0041 (M3-P4-OD-16: widen
+	// account_events_action_check for the operator break-glass override's own audit action,
+	// discovered only while wiring the store-layer gate onto the adminapi surface). This is the
+	// executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
-		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038"}
+		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -152,11 +157,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	// account_retention_window_sec, bulk_add_verify_interval_ms, account_purge_sweep_interval_ms,
 	// account_purge_delete_batch_size) = 59, PLUS Phase 3's 7th (0038: bulk_add_max_rows,
 	// M3-P3-OD-8/19 — discovered only while implementing C4, after 0036's six had already
-	// shipped) = 60. Phase 4 added NO config key (§0); Phase 7, Phase 9.5 and sender_0023 are
-	// fully schema-neutral (config seeds only, no table); module 3's 0025-0027, 0029-0035 add no
-	// config key either.
-	if n := configKeyCount(t, admin); n != 60 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 60 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 7 Phase 3)", n)
+	// shipped) = 60, PLUS Phase 4's 7 (0039: from_gate_mode, from_dns_resolver,
+	// from_dns_lookup_timeout_ms, from_dns_total_budget_ms, from_dns_cache_ttl_sec,
+	// from_dns_negative_cache_ttl_sec, from_spf_lookup_limit_posture) = 67. 0040 adds NO config
+	// key (schema/predicate only); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral
+	// (config seeds only, no table); module 3's 0025-0027, 0029-0035 add no config key either.
+	if n := configKeyCount(t, admin); n != 67 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 67 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 7 Phase 3 + 7 Phase 4)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -340,6 +347,26 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Up: byosmtp_module lacks INSERT on public.job_items (0037 not applied)")
 	}
 
+	// 0039 (Phase 4 §6.1): the seven From-gate config seeds.
+	for _, key := range []string{"from_gate_mode", "from_dns_resolver", "from_dns_lookup_timeout_ms",
+		"from_dns_total_budget_ms", "from_dns_cache_ttl_sec", "from_dns_negative_cache_ttl_sec",
+		"from_spf_lookup_limit_posture"} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: byosmtp.config missing %q (0039 not applied)", key)
+		}
+	}
+	// 0040 (Phase 4 §4.6): the two acknowledgment columns + the generated fingerprint column.
+	for _, col := range []string{"from_warning_acknowledged_at", "from_warning_acknowledged_for", "from_verdict_fingerprint"} {
+		if !columnExists(t, admin, "accounts", col) {
+			t.Fatalf("after Up: byosmtp.accounts.%s missing (0040 not applied)", col)
+		}
+	}
+	// 0041 (M3-P4-OD-16): the widened account_events_action_check accepts the operator
+	// break-glass override's own audit action.
+	if !accountEventsActionAllowed(t, admin, "from_gate_overridden") {
+		t.Fatal("after Up: account_events_action_check rejects action \"from_gate_overridden\" (0041 not applied)")
+	}
+
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
 		t.Fatal("after Up: byosmtp.accounts does not have FORCE ROW LEVEL SECURITY")
@@ -396,6 +423,23 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0038" && configKeyExists(t, admin, "bulk_add_max_rows") {
 			t.Fatal("after Down 0038: byosmtp.config still has bulk_add_max_rows (down did not delete it)")
+		}
+		if v == "0041" && accountEventsActionAllowed(t, admin, "from_gate_overridden") {
+			t.Fatal("after Down 0041: account_events_action_check still accepts \"from_gate_overridden\" (down did not narrow it)")
+		}
+		if v == "0040" && (columnExists(t, admin, "accounts", "from_warning_acknowledged_at") ||
+			columnExists(t, admin, "accounts", "from_warning_acknowledged_for") ||
+			columnExists(t, admin, "accounts", "from_verdict_fingerprint")) {
+			t.Fatal("after Down 0040: a Phase 4 acknowledgment column is still present (down did not drop it)")
+		}
+		if v == "0039" {
+			for _, key := range []string{"from_gate_mode", "from_dns_resolver", "from_dns_lookup_timeout_ms",
+				"from_dns_total_budget_ms", "from_dns_cache_ttl_sec", "from_dns_negative_cache_ttl_sec",
+				"from_spf_lookup_limit_posture"} {
+				if configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0039: byosmtp.config still has %q (down did not delete it)", key)
+				}
+			}
 		}
 		if v == "0036" {
 			for _, key := range []string{"account_test_rate_limit_per_day", "account_count_cap_per_user",

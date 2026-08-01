@@ -69,11 +69,36 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 		t.Fatalf("test encryptor: %v", err)
 	}
 
+	// Phase 4 C2: from_gate_mode defaults to 'enforce' (byosmtp_0039's seed), which would make
+	// EVERY pre-Phase-4 create/bulk-add test in this package do a REAL DNS lookup against
+	// whatever from_address it happens to use (most are ordinary non-.test domains like
+	// ourdomain.com, chosen for readability, not for DNS-fixture correctness). Defaulting every
+	// clone to 'off' here keeps those tests' actual subject (CRUD, tenancy, uniqueness) unchanged
+	// and DNS-independent; the handful of tests that specifically exercise the From gate flip it
+	// back with setConfigStr(t, "from_gate_mode", "enforce") and point from_address at the real
+	// local DNS fixture zones (deploy/dns-test/), same pattern as internal/fromgate's own suite.
+	if _, err := admin.Exec(context.Background(),
+		`UPDATE byosmtp.config SET value = '{"v":"off"}' WHERE key = 'from_gate_mode'`); err != nil {
+		t.Fatalf("disable from_gate_mode for test clone: %v", err)
+	}
+
 	srv := NewServer(pool, auth, nil, enc, nil, nil) // kick=nil: run only needs to INSERT + return; verifier/testSender=nil: no box in these tests
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 
 	return &testEnv{baseURL: ts.URL, token: token, admin: admin, pool: pool}
+}
+
+// setConfigStr overwrites a seeded byosmtp.config string value (default_value is left untouched,
+// Rule 1) — used by From-gate tests that need to flip from_gate_mode back to 'enforce'/'warn_only'
+// or point from_dns_resolver at the local fixture server. (setConfigInt already exists, in
+// account_cap_test.go.)
+func (e *testEnv) setConfigStr(t *testing.T, key, v string) {
+	t.Helper()
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.config SET value = jsonb_build_object('v', $2::text) WHERE key=$1`, key, v); err != nil {
+		t.Fatalf("set config %s: %v", key, err)
+	}
 }
 
 // seedUser inserts a real public.users row and returns its id.

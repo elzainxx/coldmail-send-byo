@@ -7,7 +7,7 @@
 what this document makes executable. Its four exit criteria are quoted verbatim in §11 and are not
 reinterpreted.
 
-**Migration numbers:** `0043` only, and it is a *small* one (§10). Phases 1–5 consumed `0025`–`0042`.
+**Migration numbers:** `0044` only, and it is a *small* one (§10). Phases 1–5 consumed `0025`–`0043`.
 
 **The one-sentence scope.** Module 2 had one operator tuning a single global config. Module 3 has many
 users whose needs genuinely conflict — a 1-SMTP user and a 20-SMTP user cannot share one pacing
@@ -34,7 +34,7 @@ migration.
 | The override **table** | **YES** — `byosmtp.user_config_overrides`, six nullable dial columns, `updated_by`, FK to `public.users` `ON DELETE CASCADE`, two CHECKs | Phase 1 §4.2, migration `0030` |
 | The **user_settings** table holding `routing_strategy` | **YES** — one row per user, `NOT NULL DEFAULT 'round_robin'`, RLS enabled | Phase 1 §4.1, migration `0029` |
 | The strategy **read** re-pointed off pools | **YES** — `SELECT routing_strategy::text FROM byosmtp.user_settings WHERE user_id = $1` | Phase 2 §3.2, edit 3 |
-| The three **cap globals** (`max_campaign_size`, `max_queued_jobs`, `campaign_expiry_sec`) | **YES**, seeded *with* consumers | Phase 5 §10.1, migration `0041` |
+| The three **cap globals** (`max_campaign_size`, `max_queued_jobs`, `campaign_expiry_sec`) | **YES**, seeded *with* consumers | Phase 5 §10.1, migration `0042` |
 | The **resolution function** | **NO** — and worse than absent: Phase 5 §10.2 deliberately left **two inline `COALESCE(o.<col>, <global>)` sites** for Phase 6 to consolidate and delete | This phase, §1 |
 | The **admin write route** for overrides | **NO** | This phase, §4 |
 | **Resolved-set** ordering validation (M3-P1-OD-8) | **NO** — Phase 1 recorded that the schema *cannot* do it | This phase, §4.4 |
@@ -197,7 +197,7 @@ ways, and a dial's *absence* from the override table is a design decision that d
 | `smtp_operation_timeout_sec`, `job_max_processing_time_sec` | Rule 1 ordering invariant (a). Per-user override would make the invariant per-user, and a violating *pair* wedges the shared dispatch loop — a blast radius one user must not have. |
 | `box_outcome_buffer_ttl_sec`, `startup_reconnect_window_sec` | Rule 1 ordering invariant (b). Both are **box-lifecycle**, not user-facing, and the box has no concept of a user. |
 | `dispatch_enabled`, `autoquarantine_mode`, `autopause_enabled`, `variation_enabled`, `alert_webhook_url` | Rule 7 safety controls. A per-user kill-switch override is a per-user way to **disable a safety control**. Never. |
-| ~~`quarantine_threshold`~~ → `score_alert_threshold`, failure-rate threshold/window, minimum sample | Phase 5's autonomous-protection thresholds. Per-user relaxation is a per-user way to opt out of quarantine — the same objection. **Updated 2026-07-31 (M3-P5-OD-1, RULED):** `quarantine_threshold` is **dropped** (Phase 5 §10.1's `0041`) and `score_alert_threshold` **added** in its place (Phase 7 §8). The replacement is global-only for the same reason plus one of its own: a per-user alert threshold is a per-user way to silence the warning, and the warning is a diagnostic for the operator as much as the user. |
+| ~~`quarantine_threshold`~~ → `score_alert_threshold`, failure-rate threshold/window, minimum sample | Phase 5's autonomous-protection thresholds. Per-user relaxation is a per-user way to opt out of quarantine — the same objection. **Updated 2026-07-31 (M3-P5-OD-1, RULED):** `quarantine_threshold` is **dropped** (Phase 5 §10.1's `0042`) and `score_alert_threshold` **added** in its place (Phase 7 §8). The replacement is global-only for the same reason plus one of its own: a per-user alert threshold is a per-user way to silence the warning, and the warning is a diagnostic for the operator as much as the user. |
 | `daily_reset_timezone`, `daily_reset_hour` | Per-**account** daily-limit accounting, already per-account via `accounts.daily_limit`. A per-user reset hour would desynchronize `accounts_daily_sent_check`'s day boundary from the counter it guards. |
 | `retention_window`, `debug_log_retention_days`, `retention_delete_batch_size` | Retention is a **compliance and storage** property of the operator's substrate. |
 | `test_button_rate_limit`, `account_count_cap`, bulk-add pacing (Phase 3) | **Candidates, deliberately declined for V1.** They are genuinely per-user in character, but each needs its own consumer-side story and none is load-bearing under flat pricing the way §2's six are. Registered as **M3-P6-OD-5** rather than silently added, because "the override table is where per-user dials go" will otherwise be read as "…so add mine to it." |
@@ -694,7 +694,7 @@ fail.
   appended to** (§1.4), or the manifest will assert the duplication Phase 6 exists to remove.
 - `api-contract.md` — the two new admin routes and the user-facing settings write. Module 2's
   `contract_drift` gate compares the served route set against this file, so an unlisted route fails CI.
-- The migration doc for `0043`.
+- The migration doc for `0044`.
 - `advisory-locks.md` — that `8_300_000_001` now also serializes override writes, and **why** it is the
   same lock rather than a new one (§4.4).
 
@@ -765,20 +765,20 @@ failure mode is invisible without it.
 
 ---
 
-## 10. Migration `0043`
+## 10. Migration `0044`
 
 Small, and it is worth naming what makes it small: the tables already exist (§0).
 
 | Migration | Contents | Down |
 |---|---|---|
-| `0043` | Whatever M3-P6-OD-2 requires — expected to be **nothing structural**. **M3-P6-OD-1 no longer contributes:** its ruling (§3.3) selects among lanes already in the in-memory register, so it persists nothing and adds no column | mirror |
+| `0044` | Whatever M3-P6-OD-2 requires — expected to be **nothing structural**. **M3-P6-OD-1 no longer contributes:** its ruling (§3.3) selects among lanes already in the in-memory register, so it persists nothing and adds no column | mirror |
 
 **Phase 6 may need no migration at all**, and after the OD-1 ruling that is now the *likely* outcome
 rather than merely the honest expectation: it is a code-and-boundary phase over Phase 1's schema, and
 the one open decision that could plausibly have demanded persisted state has been ruled in a direction
-that does not. If it needs none, `0043` is **not written** — an empty migration to fill a number is
-chain noise, and the next phase simply takes `0043`. Numbers are not reserved by being mentioned in a
-plan. **Phase 7 should therefore plan on `0043` being available.**
+that does not. If it needs none, `0044` is **not written** — an empty migration to fill a number is
+chain noise, and the next phase simply takes `0044`. Numbers are not reserved by being mentioned in a
+plan. **Phase 7 should therefore plan on `0044` being available.**
 
 ---
 

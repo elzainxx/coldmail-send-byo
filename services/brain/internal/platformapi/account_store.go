@@ -2,8 +2,10 @@ package platformapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
+	"github.com/byosmtp-module/brain/internal/fromgate"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,27 +27,48 @@ type accountVerification struct {
 	SMTPResponse *string `json:"smtp_response,omitempty"`
 }
 
+// accountAlignment mirrors Phase 1 §4.4's From-gate columns plus Phase 4's own acknowledgment pair
+// (§4.6). Message is rendered LIVE from the stored typed columns at read time
+// (fromgate.RenderCopy) — never itself stored, per Rule 5's two-vocabulary rule: from_check_detail
+// holds raw third-party DNS content and is never returned verbatim (§5.1); only the already-
+// evidence-bounded rendered copy crosses this boundary.
+type accountAlignment struct {
+	State            string  `json:"state"`
+	DMARCPolicy      *string `json:"dmarc_policy,omitempty"`
+	CheckedAt        *string `json:"checked_at,omitempty"`
+	LastAttemptAt    *string `json:"last_attempt_at,omitempty"`
+	LastAttemptError *string `json:"last_attempt_error,omitempty"`
+	Message          *string `json:"message,omitempty"`
+	AcknowledgedAt   *string `json:"acknowledged_at,omitempty"`
+}
+
 // accountResource is the external account object, re-scoped from adminapi's shape (§1.2). NEVER
 // includes the secret/ciphertext/nonce/key id — has_credential is the only credential-related
 // field.
 type accountResource struct {
-	ID            string               `json:"id"`
-	UserID        string               `json:"user_id"`
-	SMTPHost      string               `json:"smtp_host"`
-	SMTPPort      int                  `json:"smtp_port"`
-	SMTPUsername  string               `json:"smtp_username"`
-	FromAddress   string               `json:"from_address"`
-	FromName      *string              `json:"from_name"`
-	HasCredential bool                 `json:"has_credential"`
-	Status        accountStatus        `json:"status"`
-	Verification  accountVerification  `json:"verification"`
-	DailyLimit    int                  `json:"daily_limit"`
-	CreatedAt     string               `json:"created_at"`
-	UpdatedAt     string               `json:"updated_at"`
+	ID            string              `json:"id"`
+	UserID        string              `json:"user_id"`
+	SMTPHost      string              `json:"smtp_host"`
+	SMTPPort      int                 `json:"smtp_port"`
+	SMTPUsername  string              `json:"smtp_username"`
+	FromAddress   string              `json:"from_address"`
+	FromName      *string             `json:"from_name"`
+	HasCredential bool                `json:"has_credential"`
+	Status        accountStatus       `json:"status"`
+	Verification  accountVerification `json:"verification"`
+	Alignment     accountAlignment    `json:"from_alignment"`
+	DailyLimit    int                 `json:"daily_limit"`
+	CreatedAt     string              `json:"created_at"`
+	UpdatedAt     string              `json:"updated_at"`
 }
 
 // accountSelectCols projects ONLY safe columns — the credential_* columns are never read into a
-// response; has_credential is computed as "ciphertext is present and non-empty".
+// response; has_credential is computed as "ciphertext is present and non-empty". The From-gate
+// columns (Phase 1 §4.4, Phase 4 §4.6) are read as their RAW typed values PLUS from_check_detail —
+// the detail JSONB is read server-side ONLY to reconstruct the fromgate.Verdict fields
+// (provider_matched/provider_name/spf_record_present) RenderCopy needs for an accurate re-render;
+// it is parsed into structured fields and never returned to the client verbatim (§5.1: it may
+// carry third-party DNS content).
 const accountSelectCols = `a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username,
 	a.from_address, a.from_name,
 	(octet_length(a.credential_ciphertext) > 0) AS has_credential,
@@ -54,6 +77,12 @@ const accountSelectCols = `a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_use
 	to_char(a.credential_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(a.credential_verify_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	a.credential_verify_code, a.credential_verify_response,
+	a.from_verification_state::text, a.from_dmarc_policy::text,
+	a.from_spf_aligned, a.from_dmarc_aligned, a.from_check_detail,
+	to_char(a.from_checked_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	to_char(a.from_last_attempt_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	a.from_last_attempt_error,
+	to_char(a.from_warning_acknowledged_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	a.daily_limit,
 	to_char(a.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(a.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')`
@@ -62,15 +91,82 @@ var errAccountNotFound = errors.New("account not found")
 
 func scanAccount(row pgx.Row) (*accountResource, error) {
 	var a accountResource
+	var dmarcPolicy, lastAttemptErr *string
+	var spfAligned, dmarcAligned *bool
+	var detailRaw []byte
 	if err := row.Scan(&a.ID, &a.UserID, &a.SMTPHost, &a.SMTPPort, &a.SMTPUsername,
 		&a.FromAddress, &a.FromName, &a.HasCredential,
 		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.Disabled,
 		&a.Verification.State, &a.Verification.VerifiedAt, &a.Verification.VerifyAt,
 		&a.Verification.Code, &a.Verification.SMTPResponse,
+		&a.Alignment.State, &dmarcPolicy, &spfAligned, &dmarcAligned, &detailRaw,
+		&a.Alignment.CheckedAt, &a.Alignment.LastAttemptAt, &lastAttemptErr,
+		&a.Alignment.AcknowledgedAt,
 		&a.DailyLimit, &a.CreatedAt, &a.UpdatedAt); err != nil {
 		return nil, err
 	}
+	a.Alignment.DMARCPolicy = dmarcPolicy
+	a.Alignment.LastAttemptError = lastAttemptErr
+	verdict := alignmentVerdict(a.Alignment.State, dmarcPolicy, spfAligned, dmarcAligned, detailRaw)
+	if msg := fromgate.RenderCopy(verdict, a.FromAddress, domainOfAddress(a.FromAddress), a.SMTPHost); msg != "" {
+		a.Alignment.Message = &msg
+	}
 	return &a, nil
+}
+
+// fromCheckDetail is the subset of decide()'s Detail map this package needs to re-render accurate
+// copy from a stored row — parsed, never passed through verbatim (§5.1).
+type fromCheckDetail struct {
+	ProviderMatched  bool   `json:"provider_matched"`
+	ProviderName     string `json:"provider_name"`
+	SPFRecordPresent bool   `json:"spf_record_present"`
+}
+
+// alignmentVerdict reconstructs enough of a fromgate.Verdict from stored columns (+ the parsed
+// from_check_detail) to drive RenderCopy accurately — the Outcome is derived from State (the
+// inverse of decide()'s own State assignment).
+func alignmentVerdict(state string, dmarcPolicy *string, spfAligned, dmarcAligned *bool, detailRaw []byte) fromgate.Verdict {
+	v := fromgate.Verdict{State: state}
+	if dmarcPolicy != nil {
+		v.DMARCPolicy = *dmarcPolicy
+	}
+	if spfAligned != nil {
+		v.SPFAligned = *spfAligned
+	}
+	if dmarcAligned != nil {
+		v.DMARCAligned = *dmarcAligned
+	}
+	var d fromCheckDetail
+	if len(detailRaw) > 0 {
+		_ = json.Unmarshal(detailRaw, &d) // malformed/absent detail degrades to zero-value, never an error
+	}
+	v.ProviderMatched = d.ProviderMatched
+	v.ProviderName = d.ProviderName
+	v.SPFRecordAbsent = !d.SPFRecordPresent
+	switch state {
+	case "aligned":
+		v.Outcome = fromgate.OutcomeAllow
+	case "blocked":
+		v.Outcome = fromgate.OutcomeBlock
+		v.ExternalCode = "from_alignment_blocked"
+	case "unaligned_warned":
+		v.Outcome = fromgate.OutcomeWarn
+	default: // 'unverified' — never checked, no message
+		return fromgate.Verdict{}
+	}
+	return v
+}
+
+// domainOfAddress extracts the domain half of an email address for copy rendering (mirrors
+// fromgate's own unexported domainOf — duplicated here rather than exported, since it is a
+// one-line string operation, not shared logic worth a package boundary).
+func domainOfAddress(addr string) string {
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == '@' {
+			return addr[i+1:]
+		}
+	}
+	return addr
 }
 
 // getAccount reads one account by id, TENANT-SCOPED to userID and excluding soft-deleted rows

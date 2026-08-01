@@ -233,12 +233,17 @@ func (e *dispatchEnv) seedAccountForUser(t *testing.T, userID, secret string) st
 	// STRUCTURALLY ineligible, so every fixture that expects to be a normal, eligible account must
 	// seed 'verified' explicitly — the same shape as quarantined/disabled/deleted_at already
 	// defaulting to "eligible" and a dedicated test flipping ONE flag to prove exclusion.
+	// from_verification_state='aligned' (+ from_checked_at, accounts_from_checked_pairing_check's
+	// pairing) is the SAME shape for Phase 4's own term (M3-P4-OD-3 commit 3): the column default
+	// 'unverified' is now ALSO structurally ineligible, so every ordinarily-eligible fixture must
+	// seed 'aligned' explicitly too.
 	_, err = e.admin.Exec(ctx,
 		`INSERT INTO byosmtp.accounts
 		   (id, user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
-		    credential_verification_state, credential_verified_at)
-		 VALUES ($1,$6,'smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW())`,
+		    credential_verification_state, credential_verified_at,
+		    from_verification_state, from_checked_at)
+		 VALUES ($1,$6,'smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW(),'aligned',NOW())`,
 		id, ct, testKeyID, nonce, username, userID)
 	if err != nil {
 		t.Fatalf("seed account for user: %v", err)
@@ -263,14 +268,15 @@ func (e *dispatchEnv) seedAccount(t *testing.T, secret string) string {
 		t.Fatalf("encrypt: %v", err)
 	}
 	username := "u-" + id + "@ourdomain.com"
-	// credential_verification_state='verified' (+ credential_verified_at) — see
-	// seedAccountForUser's comment above; the same reasoning applies here.
+	// credential_verification_state='verified' + from_verification_state='aligned' (+ their paired
+	// timestamps) — see seedAccountForUser's comment above; the same reasoning applies here.
 	_, err = e.admin.Exec(ctx,
 		`INSERT INTO byosmtp.accounts
 		   (id, user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
-		    credential_verification_state, credential_verified_at)
-		 VALUES ($1,'00000000-0000-0000-0000-000000000000','smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW())`,
+		    credential_verification_state, credential_verified_at,
+		    from_verification_state, from_checked_at)
+		 VALUES ($1,'00000000-0000-0000-0000-000000000000','smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW(),'aligned',NOW())`,
 		id, ct, testKeyID, nonce, username)
 	if err != nil {
 		t.Fatalf("seed account: %v", err)

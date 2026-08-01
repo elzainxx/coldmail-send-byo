@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/byosmtp-module/brain/internal/fromgate"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -78,13 +79,14 @@ var (
 // isolation), sharing only the underlying KMS key material main.go loads once — plus the
 // AccountVerifier seam for verify-on-add.
 type Server struct {
-	db         *pgxpool.Pool
-	auth       *Authenticator
-	kick       Kicker
-	enc        *Encryptor
-	verifier   AccountVerifier
-	testSender TestSender
-	mux        *http.ServeMux
+	db            *pgxpool.Pool
+	auth          *Authenticator
+	kick          Kicker
+	enc           *Encryptor
+	verifier      AccountVerifier
+	testSender    TestSender
+	fromGateCache *fromgate.Cache
+	mux           *http.ServeMux
 }
 
 // NewServer wires the Domain-A routes. kick may be nil (run still succeeds; the dispatcher's own
@@ -93,10 +95,35 @@ type Server struct {
 // verifier may be nil in tests that don't exercise verify-on-add; handleAccountCreate treats a nil
 // verifier as "verification unavailable" (a clean internal_error), never a silent skip. testSender
 // may be nil in tests that don't exercise test-send.
+//
+// fromGateCache (Phase 4 §6.5) is constructed ONCE here with the seeded defaults
+// (from_dns_cache_ttl_sec/from_dns_negative_cache_ttl_sec), not re-read per request — §6.5's cache
+// is a Brain-process-local singleton with no coherence problem to solve by re-reading; a LIVE
+// config change to either TTL takes effect on the Brain's next restart, the same "cold cache costs
+// latency, never correctness" posture §6.5 already documents for a restart's cache flush.
 func NewServer(db *pgxpool.Pool, auth *Authenticator, kick Kicker, enc *Encryptor, verifier AccountVerifier, testSender TestSender) *Server {
 	s := &Server{db: db, auth: auth, kick: kick, enc: enc, verifier: verifier, testSender: testSender, mux: http.NewServeMux()}
+	s.fromGateCache = s.newFromGateCacheFromConfig()
 	s.routes()
 	return s
+}
+
+// newFromGateCacheFromConfig reads the two cache TTLs once at construction, falling back to the
+// seeded defaults on a read/parse failure (db may be nil in package tests that never construct a
+// real pool — that path skips the read entirely rather than querying a nil pool).
+func (s *Server) newFromGateCacheFromConfig() *fromgate.Cache {
+	positiveSec, negativeSec := 3600, 300 // byosmtp_0039's seeded defaults
+	if s.db != nil {
+		ctx, cancel := dbCtx(context.Background())
+		defer cancel()
+		if n, ok, err := s.readConfigInt(ctx, "from_dns_cache_ttl_sec"); err == nil && ok {
+			positiveSec = n
+		}
+		if n, ok, err := s.readConfigInt(ctx, "from_dns_negative_cache_ttl_sec"); err == nil && ok {
+			negativeSec = n
+		}
+	}
+	return fromgate.NewCache(time.Duration(positiveSec)*time.Second, time.Duration(negativeSec)*time.Second)
 }
 
 // Handler exposes the mux for mounting under /v1/* on the Brain's HTTP server.

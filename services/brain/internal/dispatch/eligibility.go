@@ -41,15 +41,26 @@ import (
 // isolation, OD-7's precedent) — so it carries its own literal copy, fixed in the same commit as
 // this consolidation and cross-referenced here so a future term addition is visible in review even
 // though it cannot be enforced by the compiler across that boundary.
-// credential_verification_state = 'verified' joins the base filter as commit 2 of Phase 4 §8.1's
+// credential_verification_state = 'verified' joined the base filter as commit 2 of Phase 4 §8.1's
 // three-commit order (M3-P3-OD-4, ruled): a failed-verification account is created and persisted
-// (§2.5 — not rolled back), but it is NOT ROUTABLE. This is a ONE-LINE addition to the single
-// consolidated definition, per the ruling — it does NOT re-open the five-hand-copied-site pattern
-// M3-P4-OD-3 already closed; every call site below inherits the term by construction.
+// (§2.5 — not rolled back), but it is NOT ROUTABLE.
+//
+// The from_verification_state disjunction is commit 3 (M3-P4-OD-3's own final term): 'aligned'
+// needs no acknowledgment; 'unaligned_warned' needs a CURRENT acknowledgment — the OR-shape, not a
+// flat conjoined AND, because §8's ruling is explicit that a flat AND across both states would
+// make every correctly-configured account require a checkbox, which is the FIRST control of T13
+// failing. "Current" means from_warning_acknowledged_for equals from_verdict_fingerprint (§4.6) —
+// a GENERATED STORED column over the verdict inputs (byosmtp_0040), so a write path that
+// re-derives a verdict invalidates a stale acknowledgment BY DATA, with no invalidation statement
+// to forget (§4.6's option (a), adopted over the plain-column option (b) for exactly this reason).
 const accountBaseEligibilityFilter = `a.quarantined = FALSE
       AND a.disabled = FALSE
       AND a.deleted_at IS NULL
-      AND a.credential_verification_state = 'verified'`
+      AND a.credential_verification_state = 'verified'
+      AND (a.from_verification_state = 'aligned'
+           OR (a.from_verification_state = 'unaligned_warned'
+               AND a.from_warning_acknowledged_at IS NOT NULL
+               AND a.from_warning_acknowledged_for = a.from_verdict_fingerprint))`
 
 // defaultAccountOrderBy is the one_by_one / fallback ORDER BY (§3, RULED — see P4-OD-1 below):
 // score DESC, then a DETERMINISTIC id ASC tiebreak — NOT RANDOM(). §3's literal SQL

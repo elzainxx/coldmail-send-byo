@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/byosmtp-module/brain/internal/fromgate"
 )
 
 // accountUpdateReq deliberately has NO user_id field (§1.3): an account never changes owner.
@@ -13,13 +15,14 @@ import (
 // patchable pool_id that re-derived user_id) is closed by this field's permanent ABSENCE, not by
 // a runtime guard. Do not add it back; see §1.3's own warning.
 type accountUpdateReq struct {
-	SMTPHost     *string `json:"smtp_host"`
-	SMTPPort     *int    `json:"smtp_port"`
-	SMTPUsername *string `json:"smtp_username"`
-	SMTPSecret   *string `json:"smtp_secret"`
-	FromAddress  *string `json:"from_address"`
-	FromName     *string `json:"from_name"`
-	DailyLimit   *int    `json:"daily_limit"`
+	SMTPHost                    *string `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                *string `json:"smtp_username"`
+	SMTPSecret                  *string `json:"smtp_secret"`
+	FromAddress                 *string `json:"from_address"`
+	FromName                    *string `json:"from_name"`
+	DailyLimit                  *int    `json:"daily_limit"`
+	AcknowledgeAlignmentWarning bool    `json:"acknowledge_alignment_warning"`
 }
 
 // handleAccountUpdate: PATCH /v1/byosmtp/accounts/{id}?user_id=<uuid> (§1.2/§1.3). The tenant
@@ -107,6 +110,44 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §2.3: the gate re-runs synchronously if from_address is present AND its value DIFFERS from
+	// the current row — a PATCH that touches from_name alone, or resends the SAME from_address,
+	// must not re-run the gate or alter the verdict (T8's own assertion). smtp_host/smtp_username
+	// feed the gate too (provider identification, the alias-detection check), so a PATCH changing
+	// EITHER of those alongside from_address evaluates against the NEW values; a PATCH changing
+	// only smtp_host/smtp_username with from_address absent does NOT re-run the gate — §2.3 keys
+	// the re-run on from_address specifically, matching §2.2's route-obligation table.
+	fromAddressChanging := hasField(present, "from_address") && req.FromAddress != nil && *req.FromAddress != cur.FromAddress
+	var gateRes fromGateResult
+	if fromAddressChanging {
+		gateHost := cur.SMTPHost
+		if hasField(present, "smtp_host") && req.SMTPHost != nil {
+			gateHost = *req.SMTPHost
+		}
+		gateUsername := cur.SMTPUsername
+		if hasField(present, "smtp_username") && req.SMTPUsername != nil {
+			gateUsername = *req.SMTPUsername
+		}
+		gateRes = s.runFromGate(r.Context(), *req.FromAddress, gateHost, gateUsername, req.AcknowledgeAlignmentWarning)
+		if gateRes.verdict.Outcome == fromgate.OutcomeIndeterminate {
+			// §2.3: "the PATCH is refused with a retryable code. The old address and its old
+			// verdict remain intact." Fail-closed at setup, applied to the update path.
+			s.fail(w, r, newErr(codeUnprocessable, "from_dns_unavailable").
+				withMessage("We couldn't check whether this From address will authenticate right now (a DNS lookup didn't answer). Nothing changed — try again."))
+			return
+		}
+	}
+	// gateRes is the zero value when fromAddressChanging is false — fromGateVerdictSets treats
+	// that identically to an indeterminate outcome (writes nothing), so this call is safe
+	// unconditionally.
+	verdictSets, gerr := fromGateVerdictSets(gateRes)
+	if gerr != nil {
+		// M3-P4-OD-15's create-time reasoning applies identically here: an unacknowledged WARN
+		// refuses the WHOLE PATCH, leaving every column — including from_address — unchanged.
+		s.fail(w, r, gerr)
+		return
+	}
+
 	var sets []string
 	var args []any
 	set := func(expr string, val any) {
@@ -133,6 +174,17 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		// accounts_daily_sent_check and translated to a clean 409 in translateAccountWrite —
 		// no separate app-level pre-check needed (same outcome, one fewer round trip to skip).
 		set("daily_limit = ?", *req.DailyLimit)
+	}
+	for _, vs := range verdictSets {
+		if _, isNow := vs.Val.(nowLiteral); isNow {
+			sets = append(sets, vs.Col+" = NOW()")
+			continue
+		}
+		expr := vs.Col + " = ?"
+		if vs.Col == "from_dmarc_policy" {
+			expr = vs.Col + " = ?::byosmtp.dmarc_policy"
+		}
+		set(expr, vs.Val)
 	}
 
 	if hasField(present, "smtp_secret") {
@@ -171,8 +223,31 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// The acknowledgment write is a SECOND statement (fromGateVerdictSets' own comment explains
+	// why: from_verdict_fingerprint is a GENERATED column and a same-statement self-reference
+	// reads the OLD value) — only for a fresh WARN verdict that WAS acknowledged on THIS PATCH.
+	if fromAddressChanging && gateRes.verdict.Outcome == fromgate.OutcomeWarn && req.AcknowledgeAlignmentWarning {
+		if err := fromGateWriteAcknowledgment(ctx, tx, id); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
+			return
+		}
+	}
+
 	fromSnap := ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, cur.Status.Quarantined, cur.Status.Disabled)
-	if err := writeAuditEvent(ctx, tx, id, userID, "updated", fromSnap, fromSnap, nil, requestIDFrom(r.Context())); err != nil {
+	// §2.3: "the audit row's identical-snapshot defect must be fixed here for From changes
+	// specifically — a From change is exactly the event an operator will later need to
+	// reconstruct." from_flags/to_flags carry a FIXED flagsSnapshot shape read by every events
+	// handler on this surface (M3-P3-OD-15's finding — a differently-shaped payload there
+	// silently decodes to a zero-value snapshot on read, corrupting rather than carrying the
+	// change), so the From-address change is recorded in the free-text reason column instead,
+	// the same pattern OD-15 already established for the test-button's audit rows.
+	var auditReason *string
+	if fromAddressChanging {
+		reasonText := "from_address changed: " + cur.FromAddress + " -> " + *req.FromAddress + " (verdict: " + gateRes.verdict.State + ")"
+		auditReason = &reasonText
+	}
+	if err := writeAuditEvent(ctx, tx, id, userID, "updated", fromSnap, fromSnap, auditReason, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
 	}

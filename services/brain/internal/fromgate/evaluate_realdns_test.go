@@ -340,3 +340,45 @@ func TestEvaluate_CanaryRealProviderFacts(t *testing.T) {
 		t.Skipf("CANARY: _spf.google.com no longer publishes the documented ip4:74.125.0.0/16 range (§1.1) — provider table drift signal, not a fromgate bug: %v", txts)
 	}
 }
+
+// T12: from_gate_mode is honored in all three positions. warn_only downgrades the T2 zone (the
+// ONE zone that blocks under enforce) to unaligned_warned; off skips DNS entirely (asserted via
+// the fixed 'aligned' verdict with no lookups performed — proven by pointing at an address whose
+// resolver would otherwise indeterminate/block, and observing neither). enforce on the SAME T2
+// zone still blocks, proving the mode dial (not the zone) is what changed.
+func TestEvaluate_T12_GateModeHonored(t *testing.T) {
+	skipIfDNSUnreachable(t)
+	const blockZone = "misaligned-reject-nospf-nodkim.test"
+
+	enforceOpts := testOpts()
+	enforceOpts.GateMode = "enforce"
+	enforced := Evaluate(context.Background(), "user@"+blockZone, "smtp.gmail.com", "user@"+blockZone, enforceOpts)
+	if enforced.Outcome != OutcomeBlock {
+		t.Fatalf("enforce on %s: got Outcome=%s, want block (this is the control the other two modes are compared against)", blockZone, enforced.Outcome)
+	}
+
+	warnOnlyOpts := testOpts()
+	warnOnlyOpts.GateMode = "warn_only"
+	warned := Evaluate(context.Background(), "user@"+blockZone, "smtp.gmail.com", "user@"+blockZone, warnOnlyOpts)
+	if warned.Outcome != OutcomeWarn {
+		t.Fatalf("warn_only on %s: got Outcome=%s, want warn (the SAME zone that just blocked under enforce)", blockZone, warned.Outcome)
+	}
+
+	// off: skips DNS entirely. Point it at a name that would otherwise be indeterminate (the
+	// black-hole zone, which under enforce times out) — if DNS were still being consulted, off
+	// would ALSO time out or otherwise take real elapsed time. Assert both the outcome AND that it
+	// returns fast (proving no lookup was attempted), giving off a genuine behavioral distinction
+	// from a mode that merely happens to allow.
+	offOpts := testOpts()
+	offOpts.GateMode = "off"
+	offOpts.TotalBudget = 100 * time.Millisecond // if DNS were consulted at all, this would starve it
+	start := time.Now()
+	skipped := Evaluate(context.Background(), "user@blackhole.test", "smtp.gmail.com", "user@blackhole.test", offOpts)
+	elapsed := time.Since(start)
+	if skipped.Outcome != OutcomeAllow || skipped.State != "aligned" {
+		t.Fatalf("off on blackhole.test: got Outcome=%s State=%s, want allow/aligned (M3-P4-OD-12: off writes aligned, disclosed as skipped)", skipped.Outcome, skipped.State)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("off took %v against a black-hole zone with a 100ms budget — DNS appears to have been consulted despite off, want near-instant", elapsed)
+	}
+}

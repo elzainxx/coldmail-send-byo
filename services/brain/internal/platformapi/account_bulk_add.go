@@ -11,18 +11,21 @@ import (
 	"context"
 	"net/http"
 	"time"
+
+	"github.com/byosmtp-module/brain/internal/fromgate"
 )
 
 // bulkAddRow mirrors accountCreateReq's per-account fields (no user_id — that is the request's
 // single tenant selector, shared by every row; §1.1's tenancy model has no per-row owner).
 type bulkAddRow struct {
-	SMTPHost     string  `json:"smtp_host"`
-	SMTPPort     *int    `json:"smtp_port"`
-	SMTPUsername string  `json:"smtp_username"`
-	SMTPSecret   string  `json:"smtp_secret"`
-	FromAddress  string  `json:"from_address"`
-	FromName     *string `json:"from_name"`
-	DailyLimit   *int    `json:"daily_limit"`
+	SMTPHost                    string  `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                string  `json:"smtp_username"`
+	SMTPSecret                  string  `json:"smtp_secret"`
+	FromAddress                 string  `json:"from_address"`
+	FromName                    *string `json:"from_name"`
+	DailyLimit                  *int    `json:"daily_limit"`
+	AcknowledgeAlignmentWarning bool    `json:"acknowledge_alignment_warning"`
 }
 
 type bulkAddReq struct {
@@ -33,15 +36,20 @@ type bulkAddReq struct {
 // bulkAddRowResult is one row of the §4.2 result vector. Row is the 1-based input index (so a
 // caller can map an outcome back to their file); Status is "created" or "rejected". A row that is
 // created but fails verification is Status:"created", Verification:"failed" — §2.5's two
-// orthogonal facts, two fields, never collapsed into one.
+// orthogonal facts, two fields, never collapsed into one. AlignmentState/AlignmentMessage are
+// Phase 4 §2.4's own addition: each row gets its OWN From verdict, reported alongside the
+// credential verdict — Phase 3's bulk-add response was silent on the From gate (an undesigned
+// entry point until this phase closed it).
 type bulkAddRowResult struct {
-	Row          int           `json:"row"`
-	Status       string        `json:"status"`
-	AccountID    string        `json:"account_id,omitempty"`
-	Verification string        `json:"verification,omitempty"`
-	Code         string        `json:"code,omitempty"`
-	SMTPResponse string        `json:"smtp_response,omitempty"`
-	Details      []fieldDetail `json:"details,omitempty"`
+	Row              int           `json:"row"`
+	Status           string        `json:"status"`
+	AccountID        string        `json:"account_id,omitempty"`
+	Verification     string        `json:"verification,omitempty"`
+	Code             string        `json:"code,omitempty"`
+	SMTPResponse     string        `json:"smtp_response,omitempty"`
+	AlignmentState   string        `json:"from_alignment_state,omitempty"`
+	AlignmentMessage string        `json:"from_alignment_message,omitempty"`
+	Details          []fieldDetail `json:"details,omitempty"`
 }
 
 // handleAccountBulkAdd: POST /v1/byosmtp/accounts/bulk (§4). TENANT-SCOPED like every other route
@@ -162,12 +170,15 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 		return bulkAddRowResult{Status: "rejected", Code: lerr.internalReason}
 	}
 
-	accIDStr, cerr := s.createAccountRow(rowCtx, userID, row.SMTPHost, port, row.SMTPUsername, row.SMTPSecret,
-		row.FromAddress, row.FromName, dailyLimit, requestID)
+	// createAccountRow's own doc comment: give it ctx (this row's slice of the request's own
+	// lifetime), never rowCtx (dbCtx-bounded at 10s) — the From gate's own from_dns_total_budget_ms
+	// default (15s) would otherwise be truncated by an unrelated DB-operation timeout.
+	accIDStr, verdict, cerr := s.createAccountRow(ctx, userID, row.SMTPHost, port, row.SMTPUsername, row.SMTPSecret,
+		row.FromAddress, row.FromName, dailyLimit, requestID, row.AcknowledgeAlignmentWarning)
 	if cerr != nil {
-		// account_cap_reached / duplicate_account_for_user / any other clean apiError from the
-		// SAME create path C1 uses — never a raw SQLSTATE (translateAccountWrite already
-		// scrubbed it inside createAccountRow).
+		// account_cap_reached / duplicate_account_for_user / an unacknowledged-warning refusal
+		// (M3-P4-OD-15) / any other clean apiError from the SAME create path C1 uses — never a raw
+		// SQLSTATE (translateAccountWrite already scrubbed it inside createAccountRow).
 		res := bulkAddRowResult{Status: "rejected", Code: cerr.internalReason}
 		if len(cerr.details) > 0 {
 			res.Details = cerr.details
@@ -176,6 +187,15 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 	}
 
 	res := bulkAddRowResult{Status: "created", AccountID: accIDStr, Verification: "unverified"}
+	// Phase 4 §2.4: each row gets its OWN From verdict, reported alongside the credential one.
+	res.AlignmentState = verdict.State
+	if verdict.Outcome != fromgate.OutcomeIndeterminate {
+		if msg := fromgate.RenderCopy(verdict, row.FromAddress, domainOfAddress(row.FromAddress), row.SMTPHost); msg != "" {
+			res.AlignmentMessage = msg
+		}
+	} else {
+		res.AlignmentMessage = "we couldn't check From alignment right now (DNS didn't answer) — press Test on this account to retry"
+	}
 	if s.verifier == nil {
 		return res
 	}

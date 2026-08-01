@@ -442,6 +442,61 @@ user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both c
 | `verify_protocol_error` | The server did not speak SMTP as expected |
 | `verify_connection_lost` | The connection dropped mid-handshake |
 
+## Module 3 Phase 4 additions — the From-gate (§2/§4.6/§5/§8 of `Docs/phase-4-from-gate.md`)
+
+Every writer of `from_address` on BOTH surfaces (Domain A `/v1/byosmtp/accounts...` create/PATCH/
+bulk-add rows; Domain B `/v1/admin/accounts` create/PATCH) now passes through the store-layer
+alignment gate (§2.8/M3-P4-OD-9) before the write lands. The account object (both surfaces) gains
+a `from_alignment` object:
+
+```
+"from_alignment": {
+  "state": "unverified" | "aligned" | "unaligned_warned" | "blocked",
+  "dmarc_policy": "none" | "quarantine" | "reject" | null,
+  "checked_at": "<ISO8601>" | null,
+  "last_attempt_at": "<ISO8601>" | null,
+  "last_attempt_error": "<string>" | null,
+  "message": "<hedged, evidence-bounded copy — §5.2/§5.3>" | omitted when there is nothing to say,
+  "acknowledged_at": "<ISO8601>" | null
+}
+```
+
+`message` is rendered fresh on every read from the stored typed columns — it is never itself
+persisted (Rule 5's two-vocabulary rule: `from_check_detail`'s raw third-party DNS content never
+crosses this boundary, only the already-rendered, evidence-bounded copy does).
+
+**New request field on every create/PATCH body that can write `from_address` (both surfaces):**
+`acknowledge_alignment_warning: true|false` (default false/absent). Required, and the write is
+REFUSED without it, whenever the gate's verdict on the (new) From is `unaligned_warned` — §5.3.1's
+"a checkbox the user must tick, not a dismissible toast," enforced at the store layer so no future
+handler can bypass it. For CREATE (M3-P4-OD-15) an unacknowledged WARN refuses the WHOLE create —
+no row at all, since `from_address` is `NOT NULL` with nothing to fall back to. For PATCH (§2.3)
+the refusal leaves the OLD `from_address` and its OLD verdict untouched — there is a prior row to
+preserve. An indeterminate DNS check (§3, `503`-class `from_dns_unavailable`) behaves differently
+by route: CREATE proceeds anyway with the row left `unverified` (M3-P4-OD-14 — a verification
+PROBLEM never blocks an otherwise-valid create, mirroring the credential verify-on-add precedent);
+PATCH refuses the write outright (§2.3 — fail closed, nothing to lose by refusing).
+
+**Domain B (operator) break-glass override — M3-P4-OD-9, new on both `POST /v1/admin/accounts`
+and `PATCH /v1/admin/accounts/{id}`:** `override_from_gate: true` plus a REQUIRED non-empty
+`override_reason` string bypasses the gate entirely for that write — the ONLY way past it besides
+a passing/acknowledged verdict. Writes `from_verification_state: "unverified"` **always**, even
+when the address would have genuinely passed ("the override buys the operator the ability to
+STORE the address, not the ability to SEND from it") — it is never a route to `"aligned"` or
+`"unaligned_warned"`. Records its own distinct, queryable audit event
+(`account_events.action = 'from_gate_overridden'`, `byosmtp_0041`) carrying the operator identity,
+the address, and the reason — never folded into the generic `'updated'`/`'created'` row. Absent
+the flag, an operator write with a non-passing From is refused exactly like the user-facing
+surface. The override is scoped to writes that actually touch `from_address`: setting the flag on
+a PATCH that changes only `from_name` (or any other field) is a no-op with respect to the gate —
+it does not downgrade a healthy `aligned` row.
+
+**New external code:** `from_alignment_warning_unacknowledged` (`422`, `details: [{field:
+"acknowledge_alignment_warning", issue: "required"}]`) — the unacknowledged-warn refusal, both
+surfaces. `from_dns_unavailable` (`503` on PATCH; never surfaced as a create failure, see above).
+Neither is a new `error_class` value — both are this phase's own vocabulary, matching Phase 3's
+verify-on-add precedent of not overloading the coarser internal enum.
+
 ## What is NOT part of the public REST contract
 
 The box↔Brain protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/`report`/

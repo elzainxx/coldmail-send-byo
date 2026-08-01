@@ -92,6 +92,14 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	log.SetOutput(logBuf)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
+	// Phase 4 C2: from_gate_mode defaults to 'enforce' (byosmtp_0039's seed), which would make
+	// EVERY pre-Phase-4 create test in this package do a REAL DNS lookup — same fix as
+	// platformapi's own newTestEnv, same reasoning (see that package's comment).
+	if _, err := admin.Exec(context.Background(),
+		`UPDATE byosmtp.config SET value = '{"v":"off"}' WHERE key = 'from_gate_mode'`); err != nil {
+		t.Fatalf("disable from_gate_mode for test clone: %v", err)
+	}
+
 	srv := NewServer(pool, enc, auth, nil) // verifier=nil: no box in these tests (CRUD-surface only, none dispatch)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

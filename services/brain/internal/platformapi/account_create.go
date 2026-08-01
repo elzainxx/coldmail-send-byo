@@ -4,17 +4,22 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/byosmtp-module/brain/internal/fromgate"
 )
 
 type accountCreateReq struct {
-	UserID       string  `json:"user_id"`
-	SMTPHost     string  `json:"smtp_host"`
-	SMTPPort     *int    `json:"smtp_port"`
-	SMTPUsername string  `json:"smtp_username"`
-	SMTPSecret   string  `json:"smtp_secret"`
-	FromAddress  string  `json:"from_address"`
-	FromName     *string `json:"from_name"`
-	DailyLimit   *int    `json:"daily_limit"`
+	UserID                      string  `json:"user_id"`
+	SMTPHost                    string  `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                string  `json:"smtp_username"`
+	SMTPSecret                  string  `json:"smtp_secret"`
+	FromAddress                 string  `json:"from_address"`
+	FromName                    *string `json:"from_name"`
+	DailyLimit                  *int    `json:"daily_limit"`
+	AcknowledgeAlignmentWarning bool    `json:"acknowledge_alignment_warning"`
 }
 
 // handleAccountCreate: POST /v1/byosmtp/accounts (§1.2, §5). TENANT-SCOPED: user_id is the
@@ -82,8 +87,10 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := req.UserID
 
-	accIDStr, cerr := s.createAccountRow(ctx, userID, req.SMTPHost, port, req.SMTPUsername, req.SMTPSecret,
-		req.FromAddress, req.FromName, dailyLimit, requestIDFrom(r.Context()))
+	// createAccountRow takes r.Context() directly (its own request-scoped lifetime), not the
+	// dbCtx-bounded ctx already in scope above — see its own doc comment for why.
+	accIDStr, _, cerr := s.createAccountRow(r.Context(), userID, req.SMTPHost, port, req.SMTPUsername, req.SMTPSecret,
+		req.FromAddress, req.FromName, dailyLimit, requestIDFrom(r.Context()), req.AcknowledgeAlignmentWarning)
 	if cerr != nil {
 		s.fail(w, r, cerr)
 		return
@@ -110,23 +117,45 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 // diverge on what "create" means. Returns the new account id on success; on failure returns "" and
 // a clean *apiError the caller renders however its own response shape requires (a top-level error
 // envelope for create, a per-row result for bulk-add).
-func (s *Server) createAccountRow(ctx context.Context, userID, host string, port int, username, secret, fromAddress string, fromName *string, dailyLimit int, requestID string) (string, *apiError) {
+//
+// The From gate (Phase 4 §2.2 route 1, §2.8/M3-P4-OD-9's store-layer requirement) runs INSIDE this
+// same function, before the INSERT — the store layer is where EVERY writer of from_address must
+// pass through the gate, and createAccountRow is already the single shared writer both C1 and C4
+// use, so wiring it here reaches both entry points by construction, matching §8.1's consolidation
+// discipline applied to the write path instead of the read predicate.
+//
+// gateCtx (the caller's request-scoped context, unbounded by dbCtx's 10s DB-operation window) is
+// used ONLY for the gate's own DNS evaluation, which enforces its OWN internal deadline from
+// from_dns_total_budget_ms (default 15s, longer than dbCtx's 10s) — a caller-imposed 10s ceiling
+// underneath it would truncate the gate's real timeout logic, presenting as a spurious
+// indeterminate rather than the gate's own §3 failure-mode handling. Every DB operation below
+// still runs under its own freshly-scoped dbCtx, unchanged from before this gate was added.
+func (s *Server) createAccountRow(gateCtx context.Context, userID, host string, port int, username, secret, fromAddress string, fromName *string, dailyLimit int, requestID string, acknowledged bool) (string, fromgate.Verdict, *apiError) {
+	gateRes := s.runFromGate(gateCtx, fromAddress, host, username, acknowledged)
+	verdictSets, gerr := fromGateVerdictSets(gateRes)
+	if gerr != nil {
+		return "", gateRes.verdict, gerr // M3-P4-OD-15: an unacknowledged WARN refuses the whole create, no row at all
+	}
+
+	ctx, cancel := dbCtx(gateCtx)
+	defer cancel()
+
 	accIDStr, accIDBytes, err := newUUIDv4()
 	if err != nil {
-		return "", newErr(codeInternalError, "uuid_generate_error: "+err.Error())
+		return "", gateRes.verdict, newErr(codeInternalError, "uuid_generate_error: "+err.Error())
 	}
 
 	secretBytes := []byte(secret)
 	ciphertext, nonce, err := s.enc.Encrypt(accIDBytes, secretBytes)
 	zero(secretBytes)
 	if err != nil {
-		return "", newErr(codeInternalError, "encrypt_error: "+err.Error())
+		return "", gateRes.verdict, newErr(codeInternalError, "encrypt_error: "+err.Error())
 	}
 	keyID := s.enc.KeyID()
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", newErr(codeInternalError, "tx_begin_error: "+err.Error())
+		return "", gateRes.verdict, newErr(codeInternalError, "tx_begin_error: "+err.Error())
 	}
 	defer tx.Rollback(context.Background())
 
@@ -137,30 +166,54 @@ func (s *Server) createAccountRow(ctx context.Context, userID, host string, port
 	// not apply (the create path writes no jobs row either).
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtext('byosmtp.account_create:' || $1::text))`, userID); err != nil {
-		return "", newErr(codeInternalError, "advisory_lock_failed")
+		return "", gateRes.verdict, newErr(codeInternalError, "advisory_lock_failed")
 	}
 
 	if perr := s.checkAccountCapAndDuplicate(ctx, tx, userID, host, username); perr != nil {
-		return "", perr
+		return "", gateRes.verdict, perr
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO byosmtp.accounts
-		   (id, user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce,
-		    from_address, from_name, daily_limit)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		accIDStr, userID, host, port, username,
-		ciphertext, keyID, nonce, fromAddress, fromName, dailyLimit); err != nil {
-		return "", s.translateAccountWrite(err)
+	cols := []string{"id", "user_id", "smtp_host", "smtp_port", "smtp_username",
+		"credential_ciphertext", "credential_key_id", "credential_nonce", "from_address", "from_name", "daily_limit"}
+	args := []any{accIDStr, userID, host, port, username, ciphertext, keyID, nonce, fromAddress, fromName, dailyLimit}
+	phs := make([]string, len(cols))
+	for i := range cols {
+		phs[i] = "$" + strconv.Itoa(i+1)
 	}
+	for _, vs := range verdictSets {
+		cols = append(cols, vs.Col)
+		if _, isNow := vs.Val.(nowLiteral); isNow {
+			phs = append(phs, "NOW()")
+			continue
+		}
+		args = append(args, vs.Val)
+		ph := "$" + strconv.Itoa(len(args))
+		if vs.Col == "from_dmarc_policy" {
+			ph += "::byosmtp.dmarc_policy"
+		}
+		phs = append(phs, ph)
+	}
+
+	insertSQL := "INSERT INTO byosmtp.accounts (" + strings.Join(cols, ", ") + ") VALUES (" + strings.Join(phs, ", ") + ")"
+	if _, err := tx.Exec(ctx, insertSQL, args...); err != nil {
+		return "", gateRes.verdict, s.translateAccountWrite(err)
+	}
+
+	// The acknowledgment write is a SECOND statement (see fromGateVerdictSets's own comment on
+	// why) — only for a WARN verdict that WAS acknowledged; ALLOW/BLOCK never carry one.
+	if gateRes.verdict.Outcome == fromgate.OutcomeWarn && acknowledged {
+		if err := fromGateWriteAcknowledgment(ctx, tx, accIDStr); err != nil {
+			return "", gateRes.verdict, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error())
+		}
+	}
+
 	if err := writeAuditEvent(ctx, tx, accIDStr, userID, "created", nil, ptrSnapshot(false, nil, false, false), nil, requestID); err != nil {
-		return "", newErr(codeInternalError, "audit_write_error: "+err.Error())
+		return "", gateRes.verdict, newErr(codeInternalError, "audit_write_error: "+err.Error())
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", s.translateAccountWrite(err)
+		return "", gateRes.verdict, s.translateAccountWrite(err)
 	}
-	return accIDStr, nil
+	return accIDStr, gateRes.verdict, nil
 }
 
 // runVerifyOnAdd calls the injected AccountVerifier and applies nothing itself — Verify already

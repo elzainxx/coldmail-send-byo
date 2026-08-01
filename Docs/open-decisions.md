@@ -1112,6 +1112,134 @@ standing rule this session's own retrospective just added to CLAUDE.md.
 
 ---
 
+## M3-P4-OD-14 — RULED 2026-08-01: create is never refused on an indeterminate From-gate check; the row is created unverified, and Test retries
+
+Found while wiring C2's store-layer gate into `handleAccountCreate`. §2.3 specifies the
+indeterminate case for PATCH precisely — the write is refused, the OLD address and its OLD
+verdict remain intact, because there is a prior row to fall back to. §2.2's route-by-route table
+lists "Run the gate. Persist the verdict." for create but never states what happens when the gate
+itself cannot reach a verdict (a DNS timeout/SERVFAIL at the exact moment of an otherwise-normal
+signup) — CREATE has no prior row, so "leave it intact" has no referent.
+
+**The question, asked before implementing (Rule 2):** does an indeterminate check at create time
+(a) create the row unverified and report the DNS check as indeterminate/retryable (mirroring
+Phase 3's already-shipped verify-on-add: §2.5 locks that a verification PROBLEM never rolls back a
+real create), or (b) refuse the whole POST (no row at all), matching §2.3's PATCH shape applied
+literally to the request as a whole?
+
+**RULED: (a) — create the row, `from_verification_state` stays at its `'unverified'` default
+(never routable per §8's positive list), the response reports the DNS check as indeterminate, and
+the test button is the retry path.** Reasoning:
+
+- **§2.5's precedent is on point, not merely analogous.** Phase 3 already answered the general
+  shape of this question for credential verify-on-add: a verification PROBLEM (there, an AUTH
+  failure or no connected box; here, DNS ignorance) never demotes or rolls back an otherwise-valid
+  create — the row the user asked for gets created, and the verification concern is reported
+  alongside it, not substituted for it.
+- **§3's "fail closed" is about the CHECK's own verdict, not about the right to create a row.**
+  Nothing in §3.1-§3.3 says a DNS blip should cost a user their already-typed SMTP credentials;
+  the section's entire concern is that ignorance must never be silently treated as a passing or
+  failing verdict. Refusing the whole create conflates "the gate has no answer yet" with "the
+  request itself is invalid," which it is not — the request is a normal signup that happened to
+  land during a resolver hiccup.
+- **Consistent operational posture.** An account created unverified from a transient DNS failure
+  looks, to the system, identical to an account created before Phase 4 shipped, or one whose test
+  button has simply never been pressed. No new state, no new external code, no special-casing at
+  the predicate — `from_verification_state='unverified'` already excludes it from routing until a
+  successful check runs.
+
+**Applied:** `handleAccountCreate` (`platformapi`) and its `adminapi` counterpart run the From
+gate AFTER the row is committed (mirroring `runVerifyOnAdd`'s existing placement and its own
+"never inside the transaction" precedent), write nothing to `from_*` columns on an indeterminate
+outcome (the DNS evaluator's own `Verdict.Outcome==indeterminate` already carries no `State`), and
+surface the indeterminate result in the create response the same way a verify-on-add failure is
+already surfaced — informationally, never as the request's own error.
+
+---
+
+## M3-P4-OD-15 — RULED 2026-08-01: an unacknowledged WARN verdict refuses the WHOLE create, no row at all
+
+Found immediately after M3-P4-OD-14, wiring the same handler. §5.3.1 states the acknowledgment
+write is refused without an explicit field, and that "the account is created/updated with the
+From **unset** rather than warned-and-accepted" — a shape that works for PATCH (§2.3: the OLD
+`from_address` and its OLD verdict remain intact, since PATCH always has a prior row) but has no
+referent for CREATE: `byosmtp.accounts.from_address` is `NOT NULL` with no `DEFAULT`
+(`byosmtp_0005`), so there is no "unset" value a create could fall back to.
+
+**The question, asked before implementing (Rule 2):** does CREATE refuse the whole POST (no row
+at all) when the From resolves to WARN and no acknowledgment was supplied, or does it create the
+row unverified anyway (the same shape M3-P4-OD-14 just ruled for the DNS-indeterminate case) and
+let the user supply the acknowledgment later via PATCH or the test button?
+
+**RULED: refuse the whole create — no row, a clean validation-style error naming the
+unacknowledged warning.** Reasoning, and the deciding distinction from M3-P4-OD-14:
+
+- **This is not the same failure class as M3-P4-OD-14.** There, the gate genuinely had NO ANSWER
+  yet (DNS ignorance) — refusing the create would have punished the user for a transient condition
+  entirely outside their control. Here, the gate has a DEFINITIVE answer (WARN) and the ONLY thing
+  missing is a required request field the caller chose not to supply. There is no external
+  uncertainty to accommodate, so §2.5/M3-P4-OD-14's "never let a verification PROBLEM roll back a
+  real create" reasoning does not transfer — this is not a verification problem, it is an
+  incomplete request.
+- **§5.3.1's own words, taken at face value, require refusal — the only question was what a
+  create refusal MEANS given no prior row.** "The write is refused" has an unambiguous referent
+  once CREATE and PATCH are treated as needing separately-stated mechanics (the same class of gap
+  §2.2's route table already left implicit for indeterminate-at-create): PATCH refuses by leaving
+  the row as it was; CREATE refuses by not bringing the row into existence at all. Both are "the
+  write did not happen," which is what "refused" means.
+- **No half-created state to reason about.** Creating a row with the gate silently skipped (as if
+  `from_gate_mode=off` had fired) would misrepresent what happened — the gate was NOT skipped by
+  policy, it was blocked by an incomplete request — and would hand the user a row they have to
+  remember to go fix, rather than an error that tells them exactly what to add to their original
+  request and try again.
+
+**Applied:** `handleAccountCreate` (`platformapi` and `adminapi`) checks the store-layer gate's
+outcome BEFORE the `INSERT`: a WARN verdict with no acknowledgment field present in the request
+refuses with a clean `422`-class error (`from_alignment_warning_unacknowledged`) naming the
+verdict and inviting the caller to resubmit with the acknowledgment; a WARN verdict WITH the
+acknowledgment field present proceeds to create the row with `from_verification_state`/
+`from_warning_acknowledged_at`/`from_warning_acknowledged_for` all set in the SAME `INSERT`. An
+ALLOW or BLOCK verdict is unaffected by this check (BLOCK never required an acknowledgment;
+M3-P4-OD-9's override flag is the operator-only path around a BLOCK, unrelated to this ruling).
+
+---
+
+## M3-P4-OD-16 — RULED 2026-08-01: Phase 4 takes a THIRD migration, 0041, for the override's audit action value; Phase 5+ renumbers again
+
+The same cascade class as M3-P3-OD-18/19, one phase later. Wiring M3-P4-OD-9's operator
+break-glass override (§2.8) needs its own account_events action value
+(`'from_gate_overridden'`) so the override is its own distinct, queryable audit row rather than
+buried inside the generic `'updated'` action every admin PATCH already logs — the ruling's own
+words are explicit that this must be "deliberate and logged, never accidental," which a
+same-action-as-everything-else row would not satisfy. Widening `account_events_action_check`
+requires a migration (`DROP CONSTRAINT` + `ADD CONSTRAINT`, mirroring `byosmtp_0034`'s own
+precedent), and Phase 4's doc had allotted exactly two slots (`0039` config seeds, `0040` the
+predicate + acknowledgment columns) — this schema need was not anticipated when that allotment
+was written, the same shape of gap M3-P3-OD-17 found for test-send's job_items grant.
+
+**The question:** take the next free number (`0041`, cascading Phase 5/6/7 by +1 again) or fold
+the widen into the still-uncommitted `0040`?
+
+**RULED: take `0041`; Phase 5+ renumbers again, same reasoning as M3-P3-OD-18/19.** Folding into
+`0040` was rejected even though `0040` is uncommitted: `0040`'s entire stated purpose (the
+predicate consolidation's third commit, §8.1) plus the acknowledgment columns is already a
+deliberate, singular unit of work per M3-P4-OD-3's Gate-A/B attributability reasoning — a
+migration bundling two unrelated schema changes (a generated column + predicate rewrite,
+AND an unrelated CHECK-constraint widen for a different feature entirely) makes a future `git
+bisect`-style "which change caused this" question ambiguous in exactly the way that reasoning
+exists to prevent. A migration number's SEPARATENESS is what is being preserved here, not its
+git-committedness. Phase 5/6/7 have not started building (no files on disk, no
+`schema_migrations` rows), so the cascade costs only a doc-reference relabel.
+
+**Applied:** Phase 4's own third migration is `byosmtp_0041_from_gate_override_action`. Cascade:
+Phase 5 `0042`/`0043` (was `0041`/`0042`), Phase 6 `0044` (was `0043`), Phase 7 `0044` (unchanged
+relative position — still expected to take Phase 6's number if Phase 6 writes nothing
+structural). `Docs/phase-5-autonomous-behaviour-and-limits.md`,
+`Docs/phase-6-per-user-config-and-routing.md`, `Docs/phase-7-visibility-notifications-contract.md`,
+and `Docs/plan-revision-log.md`'s chain table updated in the same change.
+
+---
+
 ## Honest final position
 
 **Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which

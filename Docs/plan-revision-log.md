@@ -265,3 +265,28 @@ The `destination_domain` writer is the borderline case, and it is worth naming a
 M3-P7-OD-6 ruled the *column* and the aggregation that reads it, and a column with no writer does not
 implement that ruling — it only appears to. The writer is the ruling's minimum implementation, not a
 new choice on top of it.
+
+---
+
+## Addendum, 2026-08-01 — the migration chain shifted three more times during Phase 3/4's own build
+
+This file's "Migration chain" row above (P4 `0039`–`0040`, P5 `0041`–`0042`, P6 `0043`, P7 `0043`) was
+the correct state as of the 2026-07-31 pass. It is **superseded** by three build-time findings, each
+following the SAME precedent this file already documents for the `0033`/`0042` notifications collision
+— a genuine gap found while implementing, ruled the same day, and the whole later chain shifted +1
+while the numbers were still planning text rather than files on disk:
+
+- **M3-P3-OD-18** (2026-08-01): Phase 3's C3 (test-send) needed a narrow `INSERT` grant on
+  `public.job_items`, unanticipated when Phase 3 was planned at two migrations. Phase 3 took `0037`;
+  everything from Phase 4 onward shifted +1.
+- **M3-P3-OD-19** (2026-08-01): Phase 3's C4 (bulk-add) needed a `bulk_add_max_rows` seed, for the same
+  reason. Phase 3 took `0038`; everything from Phase 4 onward shifted +1 again.
+- **M3-P4-OD-16** (2026-08-01): Phase 4's C2 (the store-layer gate) needed a new `account_events`
+  action value (`'from_gate_overridden'`, M3-P4-OD-9's operator override), unanticipated when Phase 4
+  was planned at two migrations. Phase 4 took `0041`; everything from Phase 5 onward shifted +1 again.
+
+**The chain as of this addendum:** Phase 1 `0025`–`0034`; Phase 3 `0035`–`0038`; Phase 4 `0039`–`0041`;
+Phase 5 `0042`–`0043`; Phase 6 `0044` **only if needed**; Phase 7 `0044`. Every phase doc's own
+"Migration numbers:" header was updated in the same change as each finding, per this file's own
+standing convention — this addendum records the chain's CURRENT state without rewriting the historical
+table above, which remains an accurate record of what was true on 2026-07-31.
