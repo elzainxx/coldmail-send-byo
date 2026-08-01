@@ -109,12 +109,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	// acknowledgment columns + the eligibility predicate's third and final consolidated term +
 	// the accounts_eligibility_idx WHERE-clause update, §8.1/§4.6), and 0041 (M3-P4-OD-16: widen
 	// account_events_action_check for the operator break-glass override's own audit action,
-	// discovered only while wiring the store-layer gate onto the adminapi surface). This is the
+	// discovered only while wiring the store-layer gate onto the adminapi surface); then Phase 5's
+	// own 0042 (M3-P5-OD-1/§10.1: the ten dual-quarantine/un-quarantine/resource-protection config
+	// seeds, PLUS the DELETE of the now-unconsumed quarantine_threshold row) and 0043 (§1.3: the
+	// job_events account_id+created_at index the failure-rate window query needs). This is the
 	// executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
-		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041"}
+		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
+		"0042", "0043"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -162,8 +166,10 @@ func TestRunnerLifecycle(t *testing.T) {
 	// from_dns_negative_cache_ttl_sec, from_spf_lookup_limit_posture) = 67. 0040 adds NO config
 	// key (schema/predicate only); Phase 7, Phase 9.5 and sender_0023 are fully schema-neutral
 	// (config seeds only, no table); module 3's 0025-0027, 0029-0035 add no config key either.
-	if n := configKeyCount(t, admin); n != 67 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 67 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 7 Phase 3 + 7 Phase 4)", n)
+	// 0042 (M3-P5-OD-1/§10.1) then SEEDS TEN and DELETES ONE (quarantine_threshold, its
+	// consumer branch removed by this same phase's account_effect.go change): 67 - 1 + 10 = 76.
+	if n := configKeyCount(t, admin); n != 76 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 76 (67 pre-Phase-5 + 10 Phase 5 seeds - 1 quarantine_threshold dropped, M3-P5-OD-1)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -366,6 +372,23 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !accountEventsActionAllowed(t, admin, "from_gate_overridden") {
 		t.Fatal("after Up: account_events_action_check rejects action \"from_gate_overridden\" (0041 not applied)")
 	}
+	// 0042 (Module 3 Phase 5 §10.1): the ten dual-quarantine/un-quarantine/resource-protection
+	// config seeds, PLUS quarantine_threshold DELETED (M3-P5-OD-1).
+	for _, key := range []string{"quarantine_consecutive_threshold", "quarantine_failure_rate_pct",
+		"quarantine_failure_window_sec", "quarantine_min_sample", "unquarantine_max_per_day",
+		"unquarantine_evidence_ttl_sec", "max_campaign_size", "max_queued_jobs",
+		"campaign_expiry_sec", "campaign_expiry_sweep_interval_ms"} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: byosmtp.config missing %q (0042 not applied)", key)
+		}
+	}
+	if configKeyExists(t, admin, "quarantine_threshold") {
+		t.Fatal("after Up: byosmtp.config still has quarantine_threshold (0042 did not delete it, M3-P5-OD-1)")
+	}
+	// 0043 (§1.3): the job_events account_id+created_at index the failure-rate window needs.
+	if !indexExists(t, admin, "job_events_account_id_created_at_idx") {
+		t.Fatal("after Up: byosmtp.job_events_account_id_created_at_idx missing (0043 not applied)")
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -423,6 +446,25 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0038" && configKeyExists(t, admin, "bulk_add_max_rows") {
 			t.Fatal("after Down 0038: byosmtp.config still has bulk_add_max_rows (down did not delete it)")
+		}
+		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
+			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")
+		}
+		if v == "0042" {
+			for _, key := range []string{"quarantine_consecutive_threshold", "quarantine_failure_rate_pct",
+				"quarantine_failure_window_sec", "quarantine_min_sample", "unquarantine_max_per_day",
+				"unquarantine_evidence_ttl_sec", "max_campaign_size", "max_queued_jobs",
+				"campaign_expiry_sec", "campaign_expiry_sweep_interval_ms"} {
+				if configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0042: byosmtp.config still has %q (down did not delete it)", key)
+				}
+			}
+			// The down file re-inserts quarantine_threshold VERBATIM from its sender_0010 seed
+			// (Rule 1: default_value never mutated) — proves the down is a real reverse, not a
+			// one-way DELETE that would leave a later re-Up() re-seeding a key the chain never lost.
+			if !configKeyExists(t, admin, "quarantine_threshold") {
+				t.Fatal("after Down 0042: byosmtp.config is missing quarantine_threshold (down did not restore it)")
+			}
 		}
 		if v == "0041" && accountEventsActionAllowed(t, admin, "from_gate_overridden") {
 			t.Fatal("after Down 0041: account_events_action_check still accepts \"from_gate_overridden\" (down did not narrow it)")

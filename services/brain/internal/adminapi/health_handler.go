@@ -66,10 +66,12 @@ type poolHeadroomJSON struct {
 	Headroom         string `json:"headroom"`
 }
 
+// shadowDecisionJSON's Trigger field is Module 3 Phase 5 §8.2's vocabulary (auth_failure |
+// consecutive_failures | failure_rate) — the score/threshold pair module 2 reported here is gone
+// (§4: the score never independently quarantines, so a shadow decision has nothing to report there).
 type shadowDecisionJSON struct {
 	AccountID string `json:"account_id"`
-	Score     int    `json:"score"`
-	Threshold int    `json:"threshold"`
+	Trigger   string `json:"trigger"`
 	At        string `json:"at"`
 }
 
@@ -172,7 +174,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Shadow.Recent = make([]shadowDecisionJSON, 0, len(snap.Shadow.Recent))
 	for _, d := range snap.Shadow.Recent {
 		resp.Shadow.Recent = append(resp.Shadow.Recent, shadowDecisionJSON{
-			AccountID: d.AccountID, Score: d.Score, Threshold: d.Threshold,
+			AccountID: d.AccountID, Trigger: d.Trigger,
 			At: d.At.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}

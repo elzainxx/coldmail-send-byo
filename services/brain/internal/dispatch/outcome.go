@@ -260,7 +260,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			return err
 		}
 		if acctID != nil {
-			if _, err := h.recomputeScoreOnSuccess(ctx, tx, *acctID, cfg); err != nil {
+			if _, _, err := h.recomputeScoreOnSuccess(ctx, tx, *acctID, cfg); err != nil {
 				return err
 			}
 		}

@@ -232,6 +232,14 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		set("credential_ciphertext = ?", ct)
 		set("credential_nonce = ?", nonce)
 		set("credential_key_id = ?", s.enc.KeyID())
+		// Module 3 Phase 5 §3 (reason-scoped auto-clear): identical rule and SQL shape as
+		// platformapi's own credential PATCH — a credential rewrite auto-clears an auth_failure
+		// quarantine, and ONLY auth_failure. CASE in SQL, not a Go `if` (§13.2), so it is correct
+		// under READ COMMITTED with no lock. §9.2 requires this at BOTH credential writers.
+		sets = append(sets,
+			`quarantined = CASE WHEN quarantine_reason = 'auth_failure' THEN FALSE ELSE quarantined END`,
+			`quarantine_reason = CASE WHEN quarantine_reason = 'auth_failure' THEN NULL ELSE quarantine_reason END`,
+			`quarantined_at = CASE WHEN quarantine_reason = 'auth_failure' THEN NULL ELSE quarantined_at END`)
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -272,9 +280,31 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		reasonText := "from_address changed: " + cur.FromAddress + " -> " + *req.FromAddress + " (verdict: " + verdictState + ")"
 		auditReason = &reasonText
 	}
-	// One 'updated' audit row (flags unchanged by a generic PATCH — snapshot before == after).
+	// One audit row. action='credential_updated' (0034) replaces the generic 'updated' when a
+	// credential rewrite's auto-clear actually fired (§3.2), re-read from the post-UPDATE row
+	// since the clear happened via a SQL CASE, not a Go-computed value.
 	fromSnap := ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, cur.Status.Quarantined, cur.Status.Disabled)
-	if err := writeAuditEvent(ctx, tx, id, newUserID, "updated", fromSnap, fromSnap, auditReason, requestIDFrom(r.Context())); err != nil {
+	toSnap := fromSnap
+	auditAction := "updated"
+	if hasField(present, "smtp_secret") {
+		var nowQuarantined bool
+		if err := tx.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, id).Scan(&nowQuarantined); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "quarantine_state_reread_error: "+err.Error()))
+			return
+		}
+		if cur.Status.Quarantined && !nowQuarantined {
+			toSnap = ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, false, cur.Status.Disabled)
+			auditAction = "credential_updated"
+			clearNote := "auth_failure quarantine auto-cleared by credential update"
+			if auditReason != nil {
+				combined := *auditReason + "; " + clearNote
+				auditReason = &combined
+			} else {
+				auditReason = &clearNote
+			}
+		}
+	}
+	if err := writeAuditEvent(ctx, tx, id, newUserID, auditAction, fromSnap, toSnap, auditReason, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
 	}

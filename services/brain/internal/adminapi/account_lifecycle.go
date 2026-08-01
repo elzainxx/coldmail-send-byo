@@ -61,9 +61,15 @@ var (
 		},
 		apply: func(f accountFlags) accountFlags { f.Quarantined = true; return f },
 	}
+	// Module 3 Phase 5 §2.1: the operator route stays unconditional (no rate limit, no
+	// test-verified-bypass predicate) — an operator action is itself the authority a rate limit
+	// exists to substitute for. quarantined_at is cleared here too (added in this phase; Phase 1
+	// §3.2's original shape only paired the flag with quarantine_reason, since quarantined_at
+	// itself is a Phase 5 addition) so the operator route's read model stays consistent with the
+	// user route's self-serve clear.
 	specUnquarantine = transitionSpec{
 		action:    "unquarantine",
-		setClause: "quarantined = FALSE, quarantine_reason = NULL",
+		setClause: "quarantined = FALSE, quarantine_reason = NULL, quarantined_at = NULL",
 		precondition: func(f accountFlags) *apiError {
 			if !f.Quarantined {
 				return transitionRefusal("not_in_state:quarantined",

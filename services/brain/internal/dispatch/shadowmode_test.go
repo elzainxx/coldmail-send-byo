@@ -55,8 +55,8 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 	if len(reason) < len(marker) || reason[:len(marker)] != marker {
 		t.Fatalf("shadow event reason=%q, want it to start with %q (§2.1's structured marker)", reason, marker)
 	}
-	if !containsAll(reason, "score=", "threshold=", "trigger=auth_failure") {
-		t.Fatalf("shadow event reason=%q, missing expected structured fields", reason)
+	if !containsAll(reason, "trigger=auth_failure") {
+		t.Fatalf("shadow event reason=%q, missing expected structured field (Module 3 Phase 5 §8.2: trigger=<reason>)", reason)
 	}
 
 	// Job still requeued normally (the JOB policy is unaffected by the account-effect mode) and the
@@ -109,15 +109,18 @@ func TestShadowMode_LogsWithoutActing_ThenEnforceActs(t *testing.T) {
 
 // TestShadowMode_OffDisablesDecisionEntirely — autoquarantine_mode=off means quarantineDecision is
 // never even evaluated: no flag change AND no shadow observation row, on the identical
-// score-crossing condition that quarantines under enforce (statemachine_test.go's own recipe).
+// consecutive-failure condition that quarantines under enforce (Module 3 Phase 5 §1.4 branch 2 —
+// score is no longer a trigger at all, §4, so this drives the streak trigger that replaced it).
 func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 	e := newDispatchEnv(t, "quaroff")
 	ctx := context.Background()
 	acct := e.seedAccount(t, "sec-off")
 	job := e.seedQueuedJob(t, "off@example.com")
 	e.setConfigStr(t, "autoquarantine_mode", "off")
+	e.setConfigInt(t, "quarantine_consecutive_threshold", 5)
 
-	// Drive the same 4-transient-failure recipe that crosses quarantine_threshold under enforce.
+	// Drive 5 consecutive transient failures — enough to cross quarantine_consecutive_threshold=5
+	// under enforce, per §1.4 branch 2.
 	for i := 0; i < 5; i++ {
 		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next: %v", err)
@@ -128,9 +131,9 @@ func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 		e.px.freeAllBoxes()
 	}
 
-	score, _, _ := e.accountScoreState(t, acct)
-	if score >= 30 {
-		t.Fatalf("score=%d never dropped below the default threshold (30) — test setup broken, can't prove off suppressed anything", score)
+	_, cf, _ := e.accountScoreState(t, acct)
+	if cf < 5 {
+		t.Fatalf("consecutive_failures=%d never reached the threshold (5) — test setup broken, can't prove off suppressed anything", cf)
 	}
 	_, quarantined, _ := e.accountFlagsNow(t, acct)
 	if quarantined {

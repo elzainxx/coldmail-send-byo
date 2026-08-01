@@ -19,7 +19,6 @@ hardcoded tuning constant" structurally checkable. `default_value` is never muta
 | `daily_limit_default` | `{"v": 500}` | integer | sender_0010 | Default max sends per account per day. |
 | `daily_reset_timezone` | `{"v": "UTC"}` | string | sender_0010 | Timezone (IANA tz name) defining the calendar "day" for limits. |
 | `daily_reset_hour` | `{"v": 0}` | integer | sender_0010 | Hour of day (0–23, in tz) when daily counters reset. Consumed by every daily-reset-boundary computation (eligibility/consume, account exhaustion, account scoring, the admin health endpoint) — wired in the Phase 9.5 CLOSEOUT config-consumption sweep (2026-07-27); seeded/validated since sender_0010 but not read by any of them before that. |
-| `quarantine_threshold` | `{"v": 30}` | integer | sender_0010 | account_status_score below which an account is auto-quarantined (Phase 5). |
 | `retry_count_4xx` | `{"v": 3}` | integer | sender_0010 | **RESERVED / NOT-YET-CONSUMED** (flagged in the Phase 9.5 CLOSEOUT config-consumption sweep, 2026-07-27). Documented in Phase 5 §6.2 (ruling 4) as a SOFT/approximate early-life same-account retry hint, but V1 has no per-job avoid-set or per-(job,account) attempt tracker to hook it into (Phase 5's own §6.3 text) — `backoffSecondsForClass` requeues transient classes purely off the exponential `retry_backoff_schedule` ladder, with zero reference to this key. Writing it today has NO effect on requeue behavior. Wiring it requires designing the avoid-set/attempt-tracking mechanism Phase 5 explicitly deferred — an Open Decision for whichever phase takes it on, not a surgical fix. |
 | `dispatch_tick_interval_ms` | `{"v": 1000}` | integer | sender_0010 | Dispatcher poll interval / config re-read cadence (Phase 4). |
 | `send_delay_min_sec` | `{"v": 3}` | integer | sender_0010 | Lower bound of the random inter-send delay per lane (Phase 6). |
@@ -46,8 +45,11 @@ Phase 5 seeds three new keys via `sender_0017` (and reuses the already-seeded
 **`retry_count_4xx` (seeded `sender_0010`) is documented as a SOFT/approximate early-life
 same-account retry hint (§6.2, ruling 4), NOT a hard per-account ceiling** — but see the
 **RESERVED / NOT-YET-CONSUMED** note on its own row above: no code path reads this key today.
-Ceasing to use a failing account is governed by `status_score_weights` + `quarantine_threshold`,
-not this dial.
+Ceasing to use a failing account is governed by `status_score_weights` + Module 3 Phase 5's
+`quarantine_consecutive_threshold`/`quarantine_failure_rate_pct` (§10, below) — `quarantine_threshold`
+itself (the score-as-trigger dial documented here through module 2) is **DELETED at Module 3
+Phase 5's `byosmtp_0042`** (M3-P5-OD-1: its consumer branch is removed by the same phase — the
+score never independently quarantines).
 
 ## Phase 6 state (+2 keys, `sender_0018`)
 
@@ -171,7 +173,33 @@ soft-delete handler and the purge loop.
 | `from_dns_negative_cache_ttl_sec` | `{"v":300}` | integer | byosmtp_0039 | Lifetime (sec) of a cached ABSENCE result. Deliberately far shorter than `from_dns_cache_ttl_sec` — a stale negative is a cached decision to be MORE PERMISSIVE, the dangerous direction (§6.5). **INVARIANT:** must be `<= from_dns_cache_ttl_sec`. Consumed by the store-layer gate's cache (Chunk 2). Phase 4 §6.5. |
 | `from_spf_lookup_limit_posture` | `{"v":"warn"}` | string | byosmtp_0039 | `warn \| block`. Governs the SPF 10-lookup/2-void-lookup PermError (RFC 7208 §4.6.4) ONLY — the limit numbers themselves are RFC constants, not a dial. Default `warn`: the limit is the most common real-world SPF misconfiguration, often caused by an `include:` the domain owner doesn't control. Consumed by `internal/fromgate.decide`. Phase 4 §6.3. |
 
-## All four config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs added below)
+## Module 3 Phase 5 state (+10 keys, -1 key, `byosmtp_0042`)
+
+The dual quarantine triggers (a consecutive-failure streak, volume-independent; and a windowed
+failure-rate, catching the ~50%-intermittent case a streak counter alone would miss forever), the
+self-serve un-quarantine rate limit + its test-verified bypass's recency bound, and the
+resource-protection/campaign-expiry dials load-bearing under flat-subscription pricing. Ten seeded
+together in Phase 5's first (and only config-seeding) migration, each with a real consumer in the
+same commit (§10.1) — no `RESERVED` marker introduced. **`quarantine_threshold` (the module-2
+score-as-trigger dial, documented in the Phase 1 section above through its historical row) is
+DELETED in this SAME migration** (M3-P5-OD-1: the score never independently quarantines as of this
+phase, §4 — its one consumer branch is removed, so the key would otherwise fail the blocking
+`config_consumption` gate).
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `quarantine_consecutive_threshold` | `{"v":5}` | integer | byosmtp_0042 | Consecutive penalizing failures on ONE account before it auto-quarantines (`quarantine_reason='consecutive_failures'`), volume-independent — fires even with fewer than `quarantine_min_sample` total attempts. Consumed by `dispatch/account_effect.go`'s `quarantineDecision`. Phase 5 §1.4 branch 2. |
+| `quarantine_failure_rate_pct` | `{"v":50}` | integer | byosmtp_0042 | Failure-rate threshold (integer percent) over the trailing `quarantine_failure_window_sec` window: an account whose failures/attempts >= this percent auto-quarantines (`quarantine_reason='failure_rate'`) once `quarantine_min_sample` attempts exist. **INVARIANT:** `1 <= value <= 100` (rejected at load/write with `config_ordering_violation`). Consumed by `dispatch/account_effect.go`'s `quarantineDecision`. Phase 5 §1.4 branch 3. |
+| `quarantine_failure_window_sec` | `{"v":3600}` | integer | byosmtp_0042 | Trailing window (sec) the failure-rate trigger counts real box-reported send/requeue outcomes over (`byosmtp.job_events`, `actor='box'`, `to_state IN ('sent','queued')`) — excludes bounces (never penalize) and reclaim-driven requeues (no send outcome to attribute). Consumed by `dispatch/account_effect.go`'s `queryFailureRateWindow`. Phase 5 §1.3. |
+| `quarantine_min_sample` | `{"v":20}` | integer | byosmtp_0042 | Minimum real attempts inside `quarantine_failure_window_sec` before the failure-rate trigger may fire at all. **INVARIANT:** `>= 1` (rejected at load/write with `config_ordering_violation` — a zero min-sample would make the rate trigger fire on the first failure, making the consecutive threshold unreachable). Consumed by `dispatch/account_effect.go`'s `quarantineDecision`. Phase 5 §1.4 branch 3/§10.4. |
+| `unquarantine_max_per_day` | `{"v":3}` | integer | byosmtp_0042 | Max self-serve un-quarantines per ACCOUNT per day (beyond it, un-quarantine sticks until operator action) — stops a quarantine/un-quarantine spin loop from defeating the circuit breaker. A test-verified bypass is exempt. Consumed by the §2.3 self-serve un-quarantine store function's single-statement predicate. Phase 5 §2.2. |
+| `unquarantine_evidence_ttl_sec` | `{"v":3600}` | integer | byosmtp_0042 | How long (sec) a passing credential-verification test remains valid evidence for the §2.4 test-verified un-quarantine bypass, counted from `credential_verified_at`. M3-P5-OD-4 (adopted addition, not in the brief's original eight). Consumed by the §2.4 `$bypass` predicate. Phase 5 §2.4. |
+| `max_campaign_size` | `{"v":50000}` | integer | byosmtp_0042 | Global max jobs a single campaign may accept (the (cap+1)th `/v1/run` for that `campaign_id` is refused, no job row written). Admin-writable per-user override in `byosmtp.user_config_overrides.max_campaign_size` (NULL = inherit this global). Consumed by `platformapi/store.go`'s cap A check. Phase 5 §5.2. |
+| `max_queued_jobs` | `{"v":100000}` | integer | byosmtp_0042 | Global max non-terminal jobs (queued/assigned/sending) a single user may hold across ALL campaigns at once. Admin-writable per-user override in `byosmtp.user_config_overrides.max_queued_jobs` (NULL = inherit this global). Consumed by `platformapi/store.go`'s cap B check. Phase 5 §5.2. |
+| `campaign_expiry_sec` | `{"v":604800}` | integer | byosmtp_0042 | Seconds after a campaign's first job is accepted before it expires (default 7 days) — the un-gameable bound on a campaign stuck WAITing on self-recovering accounts forever. Resolved override -> global and FROZEN at insert time. Admin-writable per-user override in `byosmtp.user_config_overrides.campaign_expiry_sec` (NULL = inherit this global). Consumed by `platformapi/store.go`'s insert-time freeze. Phase 5 §5.3. |
+| `campaign_expiry_sweep_interval_ms` | `{"v":60000}` | integer | byosmtp_0042 | How often (ms) the campaign-expiry sweep loop ticks (the fifth single-Brain housekeeping loop) — must be a genuine periodic sweep, not a lazy check at the claim point, since the pathological case it bounds means jobs are never claimed. M3-P5-OD-4 (adopted addition). Consumed by `dispatch/campaign_expiry.go`'s `CampaignExpiryRunner`. Phase 5 §5.3. |
+
+## All six config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs; Phase 5 §10.4 for the two quarantine dials)
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**
 the admin `PUT /v1/admin/config/{key}` boundary rejects a write that would invert either pair
@@ -215,6 +243,14 @@ one succeed and one rejected with `config_ordering_violation`, never both succee
   keys seeded via `byosmtp_0039`). A negative TTL exceeding the positive one silently inverts the
   cache's safety asymmetry (§6.5: "leniency-by-caching is the dangerous direction"). Bare equality
   is the boundary, not a violation.
+- `quarantine_min_sample >= 1` — **enforced as of Module 3 Phase 5** (seeded via `byosmtp_0042`).
+  A single-key floor with no counterpart config key — a zero min-sample would let the failure-rate
+  trigger fire on the very first failure, converting it into a one-strike trigger and making the
+  consecutive-failure threshold unreachable in practice. Phase 5 §10.4.
+- `1 <= quarantine_failure_rate_pct <= 100` — **enforced as of Module 3 Phase 5** (seeded via
+  `byosmtp_0042`). A single-key range with no counterpart config key — a rate of 0 would quarantine
+  every account with any failure history at all; above 100 could never fire, silently disabling the
+  trigger while `config_drift` still reports the key as configured. Phase 5 §10.4.
 
 **Widening BOTH keys of a pair upward requires ordering the two writes** — each individual `PUT` is
 validated against the counterpart's value AT THAT MOMENT, so raising the boundary key first (the

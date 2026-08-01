@@ -203,6 +203,17 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		set("credential_ciphertext = ?", ct)
 		set("credential_nonce = ?", nonce)
 		set("credential_key_id = ?", s.enc.KeyID())
+		// Module 3 Phase 5 §3: "the fix IS the update" — a credential rewrite auto-clears an
+		// auth_failure quarantine, and ONLY auth_failure (never consecutive_failures/failure_rate/
+		// manual — clearing those on a no-op credential rewrite would let a user defeat the rate
+		// trigger with a password re-save). CASE in SQL, not an `if` in Go: the condition reads
+		// quarantine_reason from the SAME row this statement is updating, so it is correct under
+		// READ COMMITTED with no lock — the read-then-write shape §13.2 identifies as the
+		// lost-update hazard never exists here.
+		sets = append(sets,
+			`quarantined = CASE WHEN quarantine_reason = 'auth_failure' THEN FALSE ELSE quarantined END`,
+			`quarantine_reason = CASE WHEN quarantine_reason = 'auth_failure' THEN NULL ELSE quarantine_reason END`,
+			`quarantined_at = CASE WHEN quarantine_reason = 'auth_failure' THEN NULL ELSE quarantined_at END`)
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -235,6 +246,8 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fromSnap := ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, cur.Status.Quarantined, cur.Status.Disabled)
+	toSnap := fromSnap
+	auditAction := "updated"
 	// §2.3: "the audit row's identical-snapshot defect must be fixed here for From changes
 	// specifically — a From change is exactly the event an operator will later need to
 	// reconstruct." from_flags/to_flags carry a FIXED flagsSnapshot shape read by every events
@@ -247,7 +260,32 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		reasonText := "from_address changed: " + cur.FromAddress + " -> " + *req.FromAddress + " (verdict: " + gateRes.verdict.State + ")"
 		auditReason = &reasonText
 	}
-	if err := writeAuditEvent(ctx, tx, id, userID, "updated", fromSnap, fromSnap, auditReason, requestIDFrom(r.Context())); err != nil {
+	// §3.2: "a silent auto-clear is worse than no auto-clear: the user sees the account working
+	// again with nothing explaining why." Re-read the row's ACTUAL post-UPDATE quarantine state
+	// (the CASE fired in SQL — Go never computed it) so `to_flags` genuinely differs from
+	// `from_flags` when a clear happened. action='credential_updated' (Phase 1 §3.4, 0034 — "the
+	// auth_failure auto-clear trigger") replaces the generic 'updated' for THIS audit row when the
+	// clear actually fired, so "did a credential update clear a quarantine" is directly queryable
+	// by action, not buried in a free-text reason.
+	if hasField(present, "smtp_secret") {
+		var nowQuarantined bool
+		if err := tx.QueryRow(ctx, `SELECT quarantined FROM byosmtp.accounts WHERE id=$1`, id).Scan(&nowQuarantined); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "quarantine_state_reread_error: "+err.Error()))
+			return
+		}
+		if cur.Status.Quarantined && !nowQuarantined {
+			toSnap = ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, false, cur.Status.Disabled)
+			auditAction = "credential_updated"
+			clearNote := "auth_failure quarantine auto-cleared by credential update"
+			if auditReason != nil {
+				combined := *auditReason + "; " + clearNote
+				auditReason = &combined
+			} else {
+				auditReason = &clearNote
+			}
+		}
+	}
+	if err := writeAuditEvent(ctx, tx, id, userID, auditAction, fromSnap, toSnap, auditReason, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
 	}

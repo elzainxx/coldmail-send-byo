@@ -77,10 +77,15 @@ type shadowSummary struct {
 	Recent               []shadowDecision
 }
 
+// shadowDecision is one §2.1 shadow observation, decoded back from account_events.reason.
+// Trigger is Module 3 Phase 5 §8.2's vocabulary — the SAME quarantine_reason value a real
+// quarantine would have used (auth_failure|consecutive_failures|failure_rate) — replacing module
+// 2's score/threshold-only marker, which had nothing to name before Phase 5 introduced more than
+// one trigger. Score is no longer part of the marker (§4: the score never independently
+// quarantines, so a shadow decision has no score/threshold pair to report).
 type shadowDecision struct {
 	AccountID string
-	Score     int
-	Threshold int
+	Trigger   string
 	At        time.Time
 }
 
@@ -432,8 +437,7 @@ func queryShadowSummary(ctx context.Context, db *pgxpool.Pool, windowSec int, mo
 		if err := rows.Scan(&acctID, &reason, &at); err != nil {
 			return s, err
 		}
-		score, threshold := parseShadowReason(reason)
-		dec := shadowDecision{Score: score, Threshold: threshold, At: at}
+		dec := shadowDecision{Trigger: parseShadowReason(reason), At: at}
 		if acctID != nil {
 			dec.AccountID = *acctID
 		}
@@ -449,14 +453,14 @@ func queryShadowSummary(ctx context.Context, db *pgxpool.Pool, windowSec int, mo
 	return s, nil
 }
 
-// parseShadowReason extracts score/threshold from the §2.1 structured marker
-// ("shadow_would_quarantine: score=<X> threshold=<T> trigger=<...>", written verbatim by
-// account_effect.go's shadowWouldQuarantineReason). A malformed/unparseable reason yields
-// (0, 0) rather than an error — this is a best-effort display field for the health endpoint, never
-// a decision input, so a parse miss must not fail the whole request.
-func parseShadowReason(reason string) (score, threshold int) {
-	_, _ = fmt.Sscanf(reason, "shadow_would_quarantine: score=%d threshold=%d", &score, &threshold)
-	return score, threshold
+// parseShadowReason extracts the trigger from the Module 3 Phase 5 §8.2 structured marker
+// ("shadow_would_quarantine: trigger=<auth_failure|consecutive_failures|failure_rate>", written
+// verbatim by account_effect.go's shadowWouldQuarantineReason). A malformed/unparseable reason
+// yields "" rather than an error — this is a best-effort display field for the health endpoint,
+// never a decision input, so a parse miss must not fail the whole request.
+func parseShadowReason(reason string) (trigger string) {
+	_, _ = fmt.Sscanf(reason, "shadow_would_quarantine: trigger=%s", &trigger)
+	return trigger
 }
 
 // readConfigString/readConfigInt are tiny local readers for the two config keys this file needs

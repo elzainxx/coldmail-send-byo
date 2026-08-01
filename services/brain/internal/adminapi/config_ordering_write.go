@@ -76,6 +76,26 @@ func checkConfigOrderingOnWrite(ctx context.Context, db pgxDB, key string, newVa
 		counterpartVal = buffer
 		v = configordering.CheckBufferTTLVsReconnectWindow(buffer, newValue)
 		explain = "startup_reconnect_window_sec must stay at or below box_outcome_buffer_ttl_sec"
+	case "quarantine_min_sample":
+		// Module 3 Phase 5 §10.4: a single-key floor (>= 1), no counterpart config key — a zero
+		// min-sample would let the failure-rate trigger fire on the first failure at all, silently
+		// converting it into a one-strike trigger. Rendered directly (no counterpart read needed).
+		v = configordering.CheckQuarantineMinSample(newValue)
+		if v == nil {
+			return nil
+		}
+		return newErr(codeConfigOrderingViolation, "config_ordering_violation: "+v.Detail()).
+			withMessage("quarantine_min_sample must be at least 1 — a zero value would let the failure-rate trigger fire on the very first failure.").
+			withDetails(fieldDetail{Field: "value", Issue: issueConflict})
+	case "quarantine_failure_rate_pct":
+		// Module 3 Phase 5 §10.4: a single-key range ([1,100]), no counterpart config key.
+		v = configordering.CheckQuarantineFailureRatePct(newValue)
+		if v == nil {
+			return nil
+		}
+		return newErr(codeConfigOrderingViolation, "config_ordering_violation: "+v.Detail()).
+			withMessage("quarantine_failure_rate_pct must be between 1 and 100 inclusive.").
+			withDetails(fieldDetail{Field: "value", Issue: issueConflict})
 	default:
 		return nil // no ordering counterpart for this key
 	}

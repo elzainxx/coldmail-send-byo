@@ -11,10 +11,12 @@ import (
 
 // accountStatus is the nested status object (§2.1).
 type accountStatus struct {
-	Paused      bool    `json:"paused"`
-	PauseReason *string `json:"pause_reason"`
-	Quarantined bool    `json:"quarantined"`
-	Disabled    bool    `json:"disabled"`
+	Paused           bool    `json:"paused"`
+	PauseReason      *string `json:"pause_reason"`
+	Quarantined      bool    `json:"quarantined"`
+	QuarantineReason *string `json:"quarantine_reason,omitempty"`
+	QuarantinedAt    *string `json:"quarantined_at,omitempty"`
+	Disabled         bool    `json:"disabled"`
 }
 
 // accountAlignment mirrors platformapi's own shape (duplicated per OD-7 isolation) — Phase 1
@@ -59,7 +61,9 @@ type accountResource struct {
 const accountSelectCols = `a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username,
 	a.from_address, a.from_name,
 	(octet_length(a.credential_ciphertext) > 0) AS has_credential,
-	a.paused, a.pause_reason, a.quarantined, a.disabled,
+	a.paused, a.pause_reason, a.quarantined, a.quarantine_reason::text,
+	to_char(a.quarantined_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	a.disabled,
 	a.from_verification_state::text, a.from_dmarc_policy::text,
 	a.from_spf_aligned, a.from_dmarc_aligned, a.from_check_detail,
 	to_char(a.from_checked_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -134,7 +138,8 @@ func scanAccount(row pgx.Row) (*accountResource, error) {
 	var detailRaw []byte
 	if err := row.Scan(&a.ID, &a.UserID, &a.SMTPHost, &a.SMTPPort, &a.SMTPUsername,
 		&a.FromAddress, &a.FromName, &a.HasCredential,
-		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.Disabled,
+		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.QuarantineReason,
+		&a.Status.QuarantinedAt, &a.Status.Disabled,
 		&a.Alignment.State, &dmarcPolicy, &spfAligned, &dmarcAligned, &detailRaw,
 		&a.Alignment.CheckedAt, &a.Alignment.LastAttemptAt, &lastAttemptErr,
 		&a.Alignment.AcknowledgedAt,

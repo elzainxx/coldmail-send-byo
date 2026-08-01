@@ -158,16 +158,14 @@ func TestPolicy_ThrottlePauses(t *testing.T) {
 func TestPolicy_AttemptCountSaturates(t *testing.T) {
 	e := newDispatchEnv(t, "saturate")
 	ctx := context.Background()
-	acct := e.seedAccount(t, "sec")
-	// Give the account a RECENT success so the recency penalty stays ~0 and its score floors at
-	// ~40 (100 - w_fail) even when consecutive_failures saturates — keeping it ABOVE the
-	// quarantine_threshold (30). This isolates the property under test (attempt_count saturation)
-	// from auto-quarantine (§4.2b), which is exercised separately in the Chunk 4 tests. Without a
-	// recent success the never-succeeded recency penalty would (correctly) push the score < 30 and
-	// quarantine the account, ending the job's ability to reach 'sending'.
-	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at = NOW() WHERE id=$1`, acct); err != nil {
-		t.Fatalf("seed last_success_at: %v", err)
-	}
+	e.seedAccount(t, "sec")
+	// Raise quarantine_consecutive_threshold above the 6 requeues this test drives (Module 3 Phase
+	// 5 §1.4 branch 2: score no longer triggers quarantine at all, §4 — the streak trigger is what
+	// would end this test's account early otherwise). This isolates the property under test
+	// (attempt_count saturation, §6.2) from auto-quarantine, which is exercised separately in the
+	// Chunk 1 tests. Without this, the 6th consecutive failure would cross the default threshold (5)
+	// and quarantine the account, ending the job's ability to reach 'sending' again.
+	e.setConfigInt(t, "quarantine_consecutive_threshold", 100)
 	job := e.seedQueuedJob(t, "c@example.com")
 
 	// max_attempts defaults to 3 (locked). Drive 6 transient (timeout) requeues — well past the cap.

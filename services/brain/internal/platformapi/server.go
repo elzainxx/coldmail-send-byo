@@ -153,6 +153,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
+	// Module 3 Phase 5 §2.1: the self-serve un-quarantine route, dropped from the account-
+	// lifecycle re-scope in Phase 3 pending this phase's rate-limit + test-verified-bypass design.
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unquarantine", s.requireAuth(s.handleAccountUnquarantine))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test", s.requireAuth(s.handleAccountTest))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test-send", s.requireAuth(s.handleAccountTestSend))
 }

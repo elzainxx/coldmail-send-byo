@@ -85,3 +85,37 @@ func CheckFromDNSNegativeCacheVsPositiveCache(negativeTTLSec, positiveTTLSec int
 	}
 	return nil
 }
+
+// CheckQuarantineMinSample enforces Module 3 Phase 5 §10.4's invariant: quarantine_min_sample must
+// be at least 1. A zero min-sample would let the failure-rate trigger (§1.4 branch 3) fire on the
+// very FIRST failure — silently converting a windowed rate trigger into a one-strike trigger, and
+// making the consecutive-failure threshold (branch 2) unreachable in practice, since the rate
+// branch would always win first. There is no counterpart key for this invariant — it is a
+// single-key floor, so Violation's CounterpartKey/CounterpartValue are left at their zero values
+// and the caller renders Detail() accordingly (the format still reads correctly with a 0 zero
+// value, since the constraint text names the floor explicitly).
+func CheckQuarantineMinSample(minSample int) *Violation {
+	if minSample < 1 {
+		return &Violation{
+			Key: "quarantine_min_sample", Value: minSample, Constraint: "must be >=",
+			CounterpartKey: "1 (a fixed floor, not a counterpart config key)", CounterpartValue: 1,
+		}
+	}
+	return nil
+}
+
+// CheckQuarantineFailureRatePct enforces Phase 5 §10.4's invariant: quarantine_failure_rate_pct
+// must be within [1,100]. A rate of 0 would quarantine every account with any failure history at
+// all (0% is satisfied trivially); above 100 is meaningless as a percentage and could never fire,
+// silently disabling the rate trigger while `config_drift` still reports the key as configured —
+// exactly the "false promise of control" defect class this invariant exists to keep out of a
+// routine admin write (CLAUDE.md Rule 11 / Phase 8 R3/R4 precedent).
+func CheckQuarantineFailureRatePct(ratePct int) *Violation {
+	if ratePct < 1 || ratePct > 100 {
+		return &Violation{
+			Key: "quarantine_failure_rate_pct", Value: ratePct, Constraint: "must be within [1,100]",
+			CounterpartKey: "[1,100] (a fixed range, not a counterpart config key)", CounterpartValue: 0,
+		}
+	}
+	return nil
+}

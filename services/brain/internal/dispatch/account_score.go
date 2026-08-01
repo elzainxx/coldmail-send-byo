@@ -82,17 +82,23 @@ func clamp01(x float64) float64 {
 
 // recomputeScoreOnFailure applies a penalizing failure's account bookkeeping (§3.3): increment
 // consecutive_failures, stamp last_failure_at=NOW(), then recompute + store the score from the
-// UPDATED row + the config weights, and RETURN the new value (so the quarantine decision can
-// compare it to the threshold in the same tx, §3.4/§4.2b). One statement does the bookkeeping and
-// returns the signals; a second stores the computed score — both inside the caller's tx.
-func (h *OutcomeHandler) recomputeScoreOnFailure(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (int, error) {
+// UPDATED row + the config weights. Returns (score, consecutiveFailures): the score is purely
+// informational (Module 3 Phase 5 §4 — it never independently quarantines); consecutiveFailures is
+// the POST-increment value, read from the SAME UPDATE that incremented it (Phase 5 §1.4: "Phase 5
+// threads that value into the decision rather than issuing a second read — the value is already in
+// hand, and a re-read would be a second snapshot of a row this transaction is mutating"), so the
+// quarantine decision (account_effect.go) can compare it to quarantine_consecutive_threshold in the
+// same tx with no additional query. One statement does the bookkeeping and returns the signals; a
+// second stores the computed score — both inside the caller's tx.
+func (h *OutcomeHandler) recomputeScoreOnFailure(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (score, consecutiveFailures int, err error) {
 	return h.bumpAndRecompute(ctx, tx, accountID, false /*success*/, cfg)
 }
 
 // recomputeScoreOnSuccess applies a successful send's account bookkeeping (§3.3): reset
-// consecutive_failures to 0, set last_success_at=NOW(), then recompute + store the score. Returns
-// the new value (unused by the success path today, but symmetric with the failure entry point).
-func (h *OutcomeHandler) recomputeScoreOnSuccess(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (int, error) {
+// consecutive_failures to 0, set last_success_at=NOW(), then recompute + store the score. The
+// consecutiveFailures return (always 0 on success) is unused by the success path today, kept for
+// symmetry with the failure entry point.
+func (h *OutcomeHandler) recomputeScoreOnSuccess(ctx context.Context, tx pgx.Tx, accountID string, cfg Config) (score, consecutiveFailures int, err error) {
 	return h.bumpAndRecompute(ctx, tx, accountID, true /*success*/, cfg)
 }
 
@@ -102,7 +108,7 @@ func (h *OutcomeHandler) recomputeScoreOnSuccess(ctx context.Context, tx pgx.Tx,
 // transaction, on the ONE account (no sweep, §3.3). cfg is the caller's already-freshly-loaded
 // Config (Phase 9.5 freshness fix — see outcome.go's OutcomeHandler doc comment); the daily-reset tz
 // and score weights it carries match the eligibility predicate's notion of "today" for this report.
-func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accountID string, success bool, cfg Config) (int, error) {
+func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accountID string, success bool, cfg Config) (int, int, error) {
 	var setClause string
 	if success {
 		setClause = `consecutive_failures = 0, last_success_at = NOW(), updated_at = NOW()`
@@ -122,14 +128,14 @@ func (h *OutcomeHandler) bumpAndRecompute(ctx context.Context, tx pgx.Tx, accoun
 		accountID, cfg.DailyResetTimezone, cfg.DailyResetHour)
 	if err := row.Scan(&in.consecutiveFailures, &in.dailySentCount, &in.dailyLimit,
 		&in.dailyResetDay, &in.lastSuccessAt, &in.nowInTZ, &in.now); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	score := computeScore(in, cfg.ScoreWeights)
 	if _, err := tx.Exec(ctx,
 		`UPDATE byosmtp.accounts SET account_status_score = $2, updated_at = NOW() WHERE id = $1`,
 		accountID, score); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return score, nil
+	return score, in.consecutiveFailures, nil
 }

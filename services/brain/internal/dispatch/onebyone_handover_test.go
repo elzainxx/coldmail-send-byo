@@ -174,7 +174,7 @@ func (e *dispatchEnv) recomputeSuccess(t *testing.T, acctID string, cfg Config) 
 		t.Fatalf("begin score tx: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := e.oh.recomputeScoreOnSuccess(ctx, tx, acctID, cfg); err != nil {
+	if _, _, err := e.oh.recomputeScoreOnSuccess(ctx, tx, acctID, cfg); err != nil {
 		t.Fatalf("recomputeScoreOnSuccess: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -159,8 +159,9 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	}
 
 	// Load real config from the clone (seeded by the migration chain) so the OutcomeHandler has the
-	// real Phase 5 dials (quarantine_threshold, throttle_pause_seconds, backoff ladder, weights) —
-	// not a hand-built Config that would zero them and mask policy bugs.
+	// real Phase 5 dials (quarantine_consecutive_threshold, quarantine_failure_rate_pct,
+	// throttle_pause_seconds, backoff ladder, weights) — not a hand-built Config that would zero
+	// them and mask policy bugs.
 	cfg, err := LoadConfig(context.Background(), pool)
 	if err != nil {
 		t.Fatalf("load config: %v", err)

@@ -173,9 +173,14 @@ func TestRescan_LeaseExtensionVsOutcomeNoDeadlock(t *testing.T) {
 	e.setConfigInt(t, "startup_reconnect_window_sec", 120)
 	// Keep the account high-scored (recent success) so the classified failures across many rounds
 	// don't quarantine it and stall dispatchToSending — we're testing the LOCK ORDER, not scoring.
+	// Module 3 Phase 5 §1's dual triggers both fire independently of score and both accumulate
+	// cross-round with no intervening success; raising just the streak threshold was insufficient
+	// (the windowed rate trigger still crosses its own threshold by round ~20 — found by running
+	// the suite). autoquarantine_mode='off' disables both decision paths entirely.
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
+	e.setConfigStr(t, "autoquarantine_mode", "off")
 
 	p1, err := pgxpool.New(ctx, e.moduleDSN)
 	if err != nil {

@@ -5,13 +5,16 @@
 # SAME change, so the gate grows monotonically: 53 keys after sender_0021/G2 (amended from 50 —
 # P8-OD-1, Phase 8 grew from 14 to 17 keys post-Chunk-5), then 59 after Module 3 Phase 3's 0036
 # (+6 account-surface dials), then 60 after Phase 3's 0038 (+1, bulk_add_max_rows, M3-P3-OD-19),
-# then 67 after Phase 4's 0039 (+7, the From-gate DNS evaluator's dials).
+# then 67 after Phase 4's 0039 (+7, the From-gate DNS evaluator's dials), then 76 after Module 3
+# Phase 5's 0042 (+10 dual-quarantine/un-quarantine/resource-protection dials, -1
+# quarantine_threshold DELETED — M3-P5-OD-1: the net is +9, 67-1+10=76).
 #
-# Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1).
+# Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1). quarantine_threshold DELETED at
+# Module 3 Phase 5's byosmtp_0042 (M3-P5-OD-1: its consumer branch was removed by this same
+# phase — the score never independently quarantines, §4).
 daily_limit_default
 daily_reset_timezone
 daily_reset_hour
-quarantine_threshold
 retry_count_4xx
 dispatch_tick_interval_ms
 send_delay_min_sec
@@ -104,3 +107,18 @@ from_dns_total_budget_ms
 from_dns_cache_ttl_sec
 from_dns_negative_cache_ttl_sec
 from_spf_lookup_limit_posture
+
+# Module 3 Phase 5 — byosmtp_0042 (+10 keys: the dual quarantine triggers, self-serve
+# un-quarantine, and resource-protection/campaign-expiry dials). quarantine_threshold is DELETED
+# in this same migration (moved to the top of this file's comment, M3-P5-OD-1).
+# Docs/phase-5-autonomous-behaviour-and-limits.md §10.1.
+quarantine_consecutive_threshold
+quarantine_failure_rate_pct
+quarantine_failure_window_sec
+quarantine_min_sample
+unquarantine_max_per_day
+unquarantine_evidence_ttl_sec
+max_campaign_size
+max_queued_jobs
+campaign_expiry_sec
+campaign_expiry_sweep_interval_ms

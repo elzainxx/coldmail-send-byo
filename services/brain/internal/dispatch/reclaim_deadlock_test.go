@@ -24,10 +24,18 @@ func TestReclaimRace_DetectorAVsClassifiedFailure(t *testing.T) {
 	ctx := context.Background()
 	acct := e.seedAccount(t, "sec")
 	// Keep the score high via a recent success so the classified failure doesn't quarantine mid-loop
-	// (we're testing the LOCK ORDER, not the account effect).
+	// (we're testing the LOCK ORDER, not the account effect). Module 3 Phase 5 §1's DUAL triggers
+	// (consecutive-streak AND windowed failure-rate) both fire independently of score, and BOTH
+	// accumulate cross-round on this one account with no intervening success — raising just the
+	// streak threshold was not enough (the rate trigger crosses quarantine_min_sample/
+	// quarantine_failure_rate_pct by round ~20). autoquarantine_mode='off' disables both decision
+	// paths entirely (no window query, no streak check), which is the correct fix for a test whose
+	// own stated intent is the lock order, not the account effect (found by running the suite —
+	// raising the streak threshold alone still failed at round 20).
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
+	e.setConfigStr(t, "autoquarantine_mode", "off")
 
 	p1, err := pgxpool.New(ctx, e.moduleDSN)
 	if err != nil {

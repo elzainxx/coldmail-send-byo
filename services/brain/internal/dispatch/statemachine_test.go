@@ -8,22 +8,22 @@ import (
 	"github.com/byosmtp-module/brain/internal/boxproto"
 )
 
-// TestStateMachine_ScoreCrossingAutoQuarantines (T5) — driving consecutive transient failures on a
-// never-succeeded account crosses the score below quarantine_threshold and auto-quarantines it in
-// the SAME outcome transaction (§4.2b), with one account_events(system, quarantine,
-// score_below_threshold). Then: the score HOLDS while quarantined (no outcomes → no recompute,
-// §3.3), and recovery does NOT happen by the score (§4.2 no-auto-unquarantine).
-func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
-	e := newDispatchEnv(t, "scorequar")
+// TestStateMachine_ConsecutiveFailuresAutoQuarantines (T5, superseded from module 2's score-
+// crossing test by Module 3 Phase 5 §4: the score never independently quarantines anymore —
+// driving consecutive transient failures now crosses quarantine_consecutive_threshold instead,
+// §1.4 branch 2) — auto-quarantines in the SAME outcome transaction, with one
+// account_events(system, quarantine, consecutive_failures). Then: the score still HOLDS while
+// quarantined (no outcomes → no recompute, §3.3 unchanged), and recovery does NOT happen
+// automatically (manual/self-serve only, §4.2/§2).
+func TestStateMachine_ConsecutiveFailuresAutoQuarantines(t *testing.T) {
+	e := newDispatchEnv(t, "streakquar")
 	ctx := context.Background()
+	e.setConfigInt(t, "quarantine_consecutive_threshold", 4)
 	acct := e.seedAccount(t, "sec")
 	job := e.seedQueuedJob(t, "q@example.com")
 
-	// A never-succeeded account (last_success_at NULL → recency penalty 1.0 = -25) crossing the
-	// failure ramp will fall below 30. With default weights: 100 - 60*min(1,n/5) - 25(recency).
-	// n=1 → 100-12-25=63; n=2 → 51; n=3 → 39; n=4 → 27 < 30 → quarantine at the 4th failure.
 	quarantinedAt := 0
-	for i := 1; i <= 5; i++ {
+	for i := 1; i <= 6; i++ {
 		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
 			t.Fatalf("reset next: %v", err)
 		}
@@ -41,32 +41,31 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 			SMTPResponse: "451 4.3.0 temporary local error"})
 		e.px.freeAllBoxes()
 	}
-	if quarantinedAt == 0 {
-		t.Fatalf("account never auto-quarantined across 5 transient failures (§4.2b)")
+	if quarantinedAt != 4 {
+		t.Fatalf("account quarantined at failure #%d, want exactly 4 (quarantine_consecutive_threshold=4, §1.4 branch 2's off-by-one is the whole assertion)", quarantinedAt)
 	}
 
-	// Exactly one system quarantine event with reason=score_below_threshold (NOT auth_failure).
+	// Exactly one system quarantine event with reason=consecutive_failures (NOT auth_failure).
 	ev := e.systemAccountEvents(t, acct)
 	var quarEvents int
 	for _, x := range ev {
 		if x[0] == "quarantine" {
 			quarEvents++
-			if x[1] != "score_below_threshold" {
-				t.Fatalf("quarantine reason=%q, want score_below_threshold", x[1])
+			if x[1] != "consecutive_failures" {
+				t.Fatalf("quarantine reason=%q, want consecutive_failures", x[1])
 			}
 		}
 	}
 	if quarEvents != 1 {
-		t.Fatalf("system quarantine events=%d, want exactly 1 (idempotent §4.2)", quarEvents)
+		t.Fatalf("system quarantine events=%d, want exactly 1 (idempotent §1.4 row 0)", quarEvents)
 	}
 
-	// Score HOLDS while quarantined: snapshot, run more dispatch ticks, assert unchanged (§3.3).
+	// Score HOLDS while quarantined: snapshot, run more dispatch ticks, assert unchanged (§3.3,
+	// unaffected by Phase 5 — the score is informational and computed at outcome time only, and a
+	// quarantined account gets no outcomes).
 	var scoreHeld int
 	if err := e.admin.QueryRow(ctx, `SELECT account_status_score FROM byosmtp.accounts WHERE id=$1`, acct).Scan(&scoreHeld); err != nil {
 		t.Fatalf("held score: %v", err)
-	}
-	if scoreHeld >= 30 {
-		t.Fatalf("quarantined at score %d, expected < 30", scoreHeld)
 	}
 	for i := 0; i < 3; i++ {
 		if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET next_attempt_at=NOW() WHERE id=$1`, job); err != nil {
@@ -85,7 +84,7 @@ func TestStateMachine_ScoreCrossingAutoQuarantines(t *testing.T) {
 		t.Fatalf("quarantined account's score drifted %d -> %d (must HOLD, §3.3)", scoreHeld, scoreAfter)
 	}
 	if !quarStill {
-		t.Fatalf("account auto-recovered from quarantine (must be manual-only, §4.2)")
+		t.Fatalf("account auto-recovered from quarantine (must be manual/self-serve only, §4.2/§2)")
 	}
 }
 

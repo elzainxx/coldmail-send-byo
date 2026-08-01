@@ -100,10 +100,14 @@ func TestAttemptToken_MonotonicAndNonSaturating(t *testing.T) {
 	ctx := context.Background()
 	acct := e.seedAccount(t, "sec")
 	// Keep the account healthy across many classified failures so dispatch keeps succeeding — we are
-	// measuring the counters, not scoring.
+	// measuring the counters, not scoring. Module 3 Phase 5 §1's dual triggers both fire
+	// independently of score/last_success_at; autoquarantine_mode='off' disables both decision
+	// paths entirely (found by running the suite: attempt 5 hit the default streak threshold and
+	// the 6th dispatch failed with no eligible account).
 	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.accounts SET last_success_at=NOW() WHERE id=$1`, acct); err != nil {
 		t.Fatalf("seed success: %v", err)
 	}
+	e.setConfigStr(t, "autoquarantine_mode", "off")
 
 	job := e.seedQueuedJob(t, "mono@example.com")
 	const attempts = 6 // > max_attempts (3), so attempt_count must saturate

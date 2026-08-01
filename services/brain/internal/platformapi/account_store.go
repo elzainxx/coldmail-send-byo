@@ -11,10 +11,12 @@ import (
 
 // accountStatus mirrors adminapi's nested status object (§1.2's re-scope of account_store.go).
 type accountStatus struct {
-	Paused      bool    `json:"paused"`
-	PauseReason *string `json:"pause_reason"`
-	Quarantined bool    `json:"quarantined"`
-	Disabled    bool    `json:"disabled"`
+	Paused           bool    `json:"paused"`
+	PauseReason      *string `json:"pause_reason"`
+	Quarantined      bool    `json:"quarantined"`
+	QuarantineReason *string `json:"quarantine_reason,omitempty"`
+	QuarantinedAt    *string `json:"quarantined_at,omitempty"`
+	Disabled         bool    `json:"disabled"`
 }
 
 // accountVerification mirrors §2.4's verification columns — additive on the user-facing shape,
@@ -72,7 +74,9 @@ type accountResource struct {
 const accountSelectCols = `a.id, a.user_id, a.smtp_host, a.smtp_port, a.smtp_username,
 	a.from_address, a.from_name,
 	(octet_length(a.credential_ciphertext) > 0) AS has_credential,
-	a.paused, a.pause_reason, a.quarantined, a.disabled,
+	a.paused, a.pause_reason, a.quarantined, a.quarantine_reason::text,
+	to_char(a.quarantined_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	a.disabled,
 	a.credential_verification_state::text,
 	to_char(a.credential_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
 	to_char(a.credential_verify_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -96,7 +100,8 @@ func scanAccount(row pgx.Row) (*accountResource, error) {
 	var detailRaw []byte
 	if err := row.Scan(&a.ID, &a.UserID, &a.SMTPHost, &a.SMTPPort, &a.SMTPUsername,
 		&a.FromAddress, &a.FromName, &a.HasCredential,
-		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.Disabled,
+		&a.Status.Paused, &a.Status.PauseReason, &a.Status.Quarantined, &a.Status.QuarantineReason,
+		&a.Status.QuarantinedAt, &a.Status.Disabled,
 		&a.Verification.State, &a.Verification.VerifiedAt, &a.Verification.VerifyAt,
 		&a.Verification.Code, &a.Verification.SMTPResponse,
 		&a.Alignment.State, &dmarcPolicy, &spfAligned, &dmarcAligned, &detailRaw,

@@ -88,6 +88,7 @@ if [[ "$pf_probe" == "401" ]]; then
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/enable"]=1
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/pause"]=1
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/unpause"]=1
+    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/unquarantine"]=1
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/test"]=1
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/test-send"]=1
     ["POST /v1/byosmtp/accounts/bulk"]=1
@@ -102,7 +103,7 @@ if [[ "$pf_probe" == "401" ]]; then
   # here at all, so an unauthenticated probe 404s (no handler), never 401 (gated-but-present).
   und_pf="$(pf POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
   [[ "$und_pf" == "404" ]] || { echo "contract_drift FAIL: .../quarantine on the platform surface returned $und_pf, want 404 — this route must not exist on Domain A"; fail=1; }
-  echo "contract_drift: Phase 3 platform surface mounted — 16 routes gated (401), quarantine correctly absent (404)."
+  echo "contract_drift: Phase 3 platform surface mounted — 17 routes gated (401), quarantine correctly absent (404)."
 else
   echo "contract_drift: platform surface not mounted (POST /v1/run -> $pf_probe); skipping Phase 3 route checks (set PLATFORM_TOKEN_HASHES to enable)."
 fi
@@ -120,6 +121,7 @@ for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/byosmtp/accounts" "/v1/byosmtp/accounts/{id}" \
          "/v1/byosmtp/accounts/{id}/events" "/v1/byosmtp/accounts/{id}/disable" \
          "/v1/byosmtp/accounts/{id}/pause" "/v1/byosmtp/accounts/{id}/unpause" \
+         "/v1/byosmtp/accounts/{id}/unquarantine" \
          "/v1/byosmtp/accounts/{id}/test" "/v1/byosmtp/accounts/{id}/test-send" \
          "/v1/byosmtp/accounts/bulk"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }

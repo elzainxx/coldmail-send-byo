@@ -62,11 +62,27 @@ type Config struct {
 	RetentionDeleteBatchSize  int    // retention_delete_batch_size — rows per send_logs DELETE batch (§3.1, owner of Phase 1 #29)
 	RollupGranularity         string // rollup_granularity — bucket granularity for the derive-on-demand summaries (§3.2)
 
-	// Phase 5 policy dials (all seeded sender_0017 / sender_0010; config-not-code, §7).
-	QuarantineThreshold  int             // quarantine_threshold — score below which auto-quarantine fires (§3.4/§4.2b)
+	// Phase 5 (module 2) policy dials (seeded sender_0017 / sender_0010; config-not-code, §7).
 	ThrottlePauseSeconds int             // throttle_pause_seconds — throttle-pause window + throttle-class requeue delay (§4.3/§6.4)
 	Backoff              BackoffSchedule // retry_backoff_schedule — the transient/timeout/unknown requeue ladder (§6.4)
 	ScoreWeights         ScoreWeights    // status_score_weights — the account status-score formula (§3.2)
+
+	// Module 3 Phase 5 dual quarantine trigger + self-serve un-quarantine dials (byosmtp_0042;
+	// config-not-code, §10.1). quarantine_threshold (the score-as-trigger dial) is DROPPED in this
+	// same migration (M3-P5-OD-1) — the score is now purely informational (§4) and never
+	// independently quarantines.
+	QuarantineConsecutiveThreshold int // quarantine_consecutive_threshold — §1.4 branch 2, the streak trigger
+	QuarantineFailureRatePct       int // quarantine_failure_rate_pct — §1.4 branch 3, the windowed rate trigger (1-100)
+	QuarantineFailureWindowSec     int // quarantine_failure_window_sec — §1.3's job_events trailing window
+	QuarantineMinSample            int // quarantine_min_sample — §1.4 branch 3's minimum-sample gate (>=1)
+	UnquarantineMaxPerDay          int // unquarantine_max_per_day — §2.3's self-serve rate limit
+	UnquarantineEvidenceTTLSec     int // unquarantine_evidence_ttl_sec — §2.4's test-verified bypass recency bound
+
+	// Module 3 Phase 5 resource-protection + campaign-expiry dials (byosmtp_0042; §10.1).
+	MaxCampaignSize                int // max_campaign_size — §5.2 cap A (global; per-user override in user_config_overrides)
+	MaxQueuedJobs                  int // max_queued_jobs — §5.2 cap B (global; per-user override in user_config_overrides)
+	CampaignExpirySec              int // campaign_expiry_sec — §5.3's insert-time-frozen expiry window (global; per-user override)
+	CampaignExpirySweepIntervalMS  int // campaign_expiry_sweep_interval_ms — §5.3's fifth housekeeping loop's tick
 
 	// Phase 8 content-variation dials (all seventeen seeded sender_0020, appended to Chunk 1's
 	// version file — Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from fourteen to
@@ -253,9 +269,6 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.DailyResetHour, err = readIntKey(ctx, db, "daily_reset_hour"); err != nil {
 		return c, err
 	}
-	if c.QuarantineThreshold, err = readIntKey(ctx, db, "quarantine_threshold"); err != nil {
-		return c, err
-	}
 	if c.AccountRetentionWindowSec, err = readIntKey(ctx, db, "account_retention_window_sec"); err != nil {
 		return c, err
 	}
@@ -362,6 +375,39 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	}
 	c.VariationCSSMicroParams = readCSSMicroParams(ctx, db)
 
+	// Module 3 Phase 5's ten keys (byosmtp_0042). Missing keys are a hard error like every other
+	// dial above — the migration seeds them, so an absent row means a pre-0042 schema.
+	if c.QuarantineConsecutiveThreshold, err = readIntKey(ctx, db, "quarantine_consecutive_threshold"); err != nil {
+		return c, err
+	}
+	if c.QuarantineFailureRatePct, err = readIntKey(ctx, db, "quarantine_failure_rate_pct"); err != nil {
+		return c, err
+	}
+	if c.QuarantineFailureWindowSec, err = readIntKey(ctx, db, "quarantine_failure_window_sec"); err != nil {
+		return c, err
+	}
+	if c.QuarantineMinSample, err = readIntKey(ctx, db, "quarantine_min_sample"); err != nil {
+		return c, err
+	}
+	if c.UnquarantineMaxPerDay, err = readIntKey(ctx, db, "unquarantine_max_per_day"); err != nil {
+		return c, err
+	}
+	if c.UnquarantineEvidenceTTLSec, err = readIntKey(ctx, db, "unquarantine_evidence_ttl_sec"); err != nil {
+		return c, err
+	}
+	if c.MaxCampaignSize, err = readIntKey(ctx, db, "max_campaign_size"); err != nil {
+		return c, err
+	}
+	if c.MaxQueuedJobs, err = readIntKey(ctx, db, "max_queued_jobs"); err != nil {
+		return c, err
+	}
+	if c.CampaignExpirySec, err = readIntKey(ctx, db, "campaign_expiry_sec"); err != nil {
+		return c, err
+	}
+	if c.CampaignExpirySweepIntervalMS, err = readIntKey(ctx, db, "campaign_expiry_sweep_interval_ms"); err != nil {
+		return c, err
+	}
+
 	// Config-ordering INVARIANT (CLAUDE.md Rule 1, Phase 6 P6-11): the box's per-operation SMTP
 	// timeout MUST be strictly shorter than the job lease, so a genuinely account-caused hang
 	// surfaces as a box-REPORTED timeout (scored → quarantined, Phase 5) rather than an unscored
@@ -459,6 +505,13 @@ func validateConfigOrdering(c Config) error {
 		return &configOrderingError{detail: v.Detail()}
 	}
 	if v := configordering.CheckBufferTTLVsReconnectWindow(c.BoxOutcomeBufferTTLSec, c.StartupReconnectWindowSec); v != nil {
+		return &configOrderingError{detail: v.Detail()}
+	}
+	// Module 3 Phase 5 §10.4: quarantine_min_sample >= 1 and 1 <= quarantine_failure_rate_pct <= 100.
+	if v := configordering.CheckQuarantineMinSample(c.QuarantineMinSample); v != nil {
+		return &configOrderingError{detail: v.Detail()}
+	}
+	if v := configordering.CheckQuarantineFailureRatePct(c.QuarantineFailureRatePct); v != nil {
 		return &configOrderingError{detail: v.Detail()}
 	}
 	return nil
