@@ -192,12 +192,13 @@ func (v *Verifier) Verify(ctx context.Context, accountID, userID string, operati
 }
 
 // applyVerifyReport writes the outcome (§2.4) and returns the client-facing result. Writes the
-// 'verified' audit row on EVERY attempt, success or failure (M3-P3-OD-15, RULED) — the row's
-// to_flags JSONB carries {"outcome":"success"} or {"outcome":"failure","code":"verify_..."} so the
-// audit trail still distinguishes the two, and §3.3's rate limit (which counts every attempt, not
-// just successes — "each click is a real auth attempt against a live provider") has a real signal
-// to count regardless of which of Verify's THREE callers produced it (a genuine box report, the
-// no-box synthetic case above, or C3's test-button route calling this same function).
+// 'verified' audit row on EVERY attempt, success or failure (M3-P3-OD-15, RULED) — the outcome is
+// carried in the free-text `reason` column ("verify: success" / "verify: failure (code)"), NOT
+// to_flags/from_flags (writeVerifyAuditEvent's own comment explains why), so the audit trail still
+// distinguishes the two, and §3.3's rate limit (which counts every attempt, not just successes —
+// "each click is a real auth attempt against a live provider") has a real signal to count
+// regardless of which of Verify's THREE callers produced it (a genuine box report, the no-box
+// synthetic case above, or C3's test-button route calling this same function).
 func (v *Verifier) applyVerifyReport(ctx context.Context, acct accountForVerify, rep boxproto.VerifyReport) (VerifyResult, error) {
 	if rep.Outcome == boxproto.OutcomeAccepted {
 		if _, err := v.db.Exec(ctx,

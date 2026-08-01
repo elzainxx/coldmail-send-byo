@@ -4,7 +4,7 @@
 # Each config-seeding migration (Phase 1's sender_0010 onward) appends its keys here in the
 # SAME change, so the gate grows monotonically: 53 keys after sender_0021/G2 (amended from 50 —
 # P8-OD-1, Phase 8 grew from 14 to 17 keys post-Chunk-5), then 59 after Module 3 Phase 3's 0036
-# (+6 account-surface dials).
+# (+6 account-surface dials), then 60 after Phase 3's 0038 (+1, bulk_add_max_rows, M3-P3-OD-19).
 #
 # Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1).
 daily_limit_default
@@ -88,3 +88,7 @@ account_retention_window_sec
 bulk_add_verify_interval_ms
 account_purge_sweep_interval_ms
 account_purge_delete_batch_size
+
+# Module 3 Phase 3 — byosmtp_0038 (+1 key: the bulk-add row-count bound, M3-P3-OD-8/19).
+# Docs/phase-3-user-owned-accounts.md §4.2.
+bulk_add_max_rows

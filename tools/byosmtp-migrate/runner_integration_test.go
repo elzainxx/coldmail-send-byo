@@ -102,13 +102,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// then G3's own additions 0029-0034: 0029 user_settings, 0030 user_config_overrides, 0031
 	// user_suspensions, 0032 campaigns, 0033 notifications, 0034 widens
 	// account_events_action_check; then Phase 3's own 0035 (credential_verification_state enum +
-	// accounts columns), 0036 (the six account-surface config seeds), and 0037 (M3-P3-OD-17/18: a
-	// narrow INSERT-only grant on public.job_items so test-send can create its own job_item row).
-	// This is the executable expectation of the migration chain.
+	// accounts columns), 0036 (the six account-surface config seeds), 0037 (M3-P3-OD-17/18: a
+	// narrow INSERT-only grant on public.job_items so test-send can create its own job_item row),
+	// and 0038 (M3-P3-OD-8/19: the bulk_add_max_rows seed C4's row-count bound needed). This is
+	// the executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
-		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037"}
+		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -149,11 +150,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	// MINUS 1 at G2 (default_shared_pool_id deleted by 0028, M3-P2-OD-1) = 53, PLUS Phase 3's 6
 	// (0036: account_test_rate_limit_per_day, account_count_cap_per_user,
 	// account_retention_window_sec, bulk_add_verify_interval_ms, account_purge_sweep_interval_ms,
-	// account_purge_delete_batch_size) = 59. Phase 4 added NO config key (§0); Phase 7, Phase 9.5
-	// and sender_0023 are fully schema-neutral (config seeds only, no table); module 3's
-	// 0025-0027, 0029-0035 add no config key either.
-	if n := configKeyCount(t, admin); n != 59 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 59 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 6 Phase 3)", n)
+	// account_purge_delete_batch_size) = 59, PLUS Phase 3's 7th (0038: bulk_add_max_rows,
+	// M3-P3-OD-8/19 — discovered only while implementing C4, after 0036's six had already
+	// shipped) = 60. Phase 4 added NO config key (§0); Phase 7, Phase 9.5 and sender_0023 are
+	// fully schema-neutral (config seeds only, no table); module 3's 0025-0027, 0029-0035 add no
+	// config key either.
+	if n := configKeyCount(t, admin); n != 60 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 60 (14 foundation + 3 Phase 5 + 2 Phase 6 + 6 Phase 7 + 17 Phase 8 + 11 Phase 9.5 + 1 sender_0023 - 1 default_shared_pool_id at G2 + 7 Phase 3)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -390,6 +393,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0037" && hasTablePrivilege(t, admin, "byosmtp_module", "public.job_items", "INSERT") {
 			t.Fatal("after Down 0037: byosmtp_module still has INSERT on public.job_items (down did not revoke it)")
+		}
+		if v == "0038" && configKeyExists(t, admin, "bulk_add_max_rows") {
+			t.Fatal("after Down 0038: byosmtp.config still has bulk_add_max_rows (down did not delete it)")
 		}
 		if v == "0036" {
 			for _, key := range []string{"account_test_rate_limit_per_day", "account_count_cap_per_user",

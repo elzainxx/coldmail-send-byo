@@ -4,8 +4,10 @@
 **Owns:** the SPF/DMARC alignment gate on `byosmtp.accounts.from_address`, the four setup-time entry
 points that must pass through it, and the routing exclusion that makes a `blocked` verdict mean
 something.
-**Migration numbers:** `0038` (config seeds) then `0039` (routing-predicate change + backfill).
-Phase 1 claims `0025`–`0034`; Phase 3 claims `0035`–`0036`.
+**Migration numbers:** `0039` (config seeds) then `0040` (routing-predicate change + backfill).
+Phase 1 claims `0025`–`0034`; Phase 3 claims `0035`–`0037` (amended, M3-P3-OD-17/18 — C3 needed a
+third migration, the narrow `job_items` INSERT grant, discovered only while implementing test-send;
+see `Docs/phase-3-user-owned-accounts.md` §0.2).
 
 **The order is load-bearing, and an earlier draft had it reversed.** The config seeds must land
 *first*: §6.1's keys are consumed by the evaluator, and §8.2's recommended two-step deploy ships the
@@ -13,7 +15,7 @@ evaluator (and so the entry points, and so the config reads) **before** the pred
 keys after the predicate would mean a Brain whose evaluator loads config that does not exist yet — and
 a missing config key is a **hard error** at load, not a fallback (`dispatch/config.go:256-257`: *"A
 missing key is still a hard error (the migration seeds it); only a corrupt/edited value triggers the
-fallback"*). That is a fatal startup, not a degraded one. Numbering the seeds `0039` would have made
+fallback"*). That is a fatal startup, not a degraded one. Numbering the seeds `0040` would have made
 the recommended deploy sequence impossible to execute.
 
 ---
@@ -297,7 +299,7 @@ UI detail the next client can skip — the same handler-vs-store-layer mistake �
 acknowledgment is a required field on the write that sets a warned From, persisted alongside
 `from_verification_state = 'unaligned_warned'`, and absent acknowledgment the write is **refused**.
 Which columns carry it was **M3-P4-OD-10**, ruled 2026-07-30: two additive columns in **this phase's**
-`0039`, not a Phase 1 amendment. See §4.6.
+`0040`, not a Phase 1 amendment. See §4.6.
 
 **The real upgrade path, recorded as future work rather than built.** The ruling names it: *"sending
 a test through the actual account and parsing `Authentication-Results` is the only source of ground
@@ -672,7 +674,7 @@ build plan defers. Registered as future work, not reopened here.
 
 ### 4.6 The acknowledgment columns (M3-P4-OD-10, ruled 2026-07-30)
 
-**Two additive columns on `byosmtp.accounts`, added by this phase's own `0039`.** Phase 1 is not
+**Two additive columns on `byosmtp.accounts`, added by this phase's own `0040`.** Phase 1 is not
 amended. The ruling's reasoning, recorded because it generalizes past this phase: *"Phase 1 locked the
 schema as understood then. My Phase 4 ruling created a requirement it couldn't have anticipated, and
 an additive column in the discovering phase's own migration is exactly what additive-only is for."*
@@ -855,7 +857,7 @@ knowingly accepted."*
   kill switch is `from_gate_mode` (§6.2), which disables the whole gate.
 
 The columns carrying it are `from_warning_acknowledged_at` and `from_warning_acknowledged_for`, added
-by this phase's own `0039` — **M3-P4-OD-10, ruled 2026-07-30, specified in §4.6.**
+by this phase's own `0040` — **M3-P4-OD-10, ruled 2026-07-30, specified in §4.6.**
 
 ### 5.4 The PATCH-caused block is a distinct message
 
@@ -1257,7 +1259,7 @@ silently, which is the performance twin of the spinning-dispatcher failure.
 
 ### 8.2 The migration hazard, which is the sharpest thing in this phase
 
-`from_verification_state` defaults to `'unverified'`. The moment `0039` adds the predicate term,
+`from_verification_state` defaults to `'unverified'`. The moment `0040` adds the predicate term,
 **every existing account stops sending.** In a deployed system that is a silent, total dispatch halt
 caused by a metadata-only migration — jobs stay `queued`, nothing errors, and the cause is a
 `WHERE` clause.
@@ -1315,8 +1317,8 @@ response bodies and the behavior of routes Phase 3 already registered. Phase 3's
 extending that gate to the platform surface.
 
 **Grants (ADR-0008).** No new table and no new enum type: `from_verification_state` and
-`dmarc_policy` were created by Phase 1's `0025`, with `USAGE` settled there. `0038` inserts config
-rows; `0039` alters an index and a predicate. `TestGrantsInvariant` must be green regardless — it is
+`dmarc_policy` were created by Phase 1's `0025`, with `USAGE` settled there. `0039` inserts config
+rows; `0040` alters an index and a predicate. `TestGrantsInvariant` must be green regardless — it is
 the gate, not the checklist.
 
 **Rule 9 (account→job lock ordering).** Not engaged. The gate writes `accounts` only and writes no
@@ -1352,7 +1354,7 @@ and `smtp_host`, never the secret.
 |---|---|---|---|
 | M3-P4-OD-1 ✅ **RULED 2026-07-29** | The locked table says *"alignment fails → block"*. Per RFC 7489 §4.2's OR-disjunction, SPF evidence alone cannot establish a DMARC failure | §1.6 | **RULED: the locked rule was wrong.** *"DMARC passing on SPF-aligned **or** DKIM-aligned means DNS can never prove failure."* (1) The default DOWNGRADES to **warn + explicit acknowledgment** — *"a checkbox the user must tick, not a dismissible toast."* (2) BLOCK survives only for `p=reject` **AND no SPF record at all** **AND** no DKIM at any common selector. (3) The deciding argument is the design line: *"users control their own assets… make the failure visible and let them choose."* (4) Copy must match evidence: *"'we couldn't verify this will authenticate,' never 'this will fail.'"* (5) The `Authentication-Results` upgrade path is future work, not V1. Applied in §1.6, §5.2, §5.3, §5.3.1; creates **M3-P4-OD-10** |
 | M3-P4-OD-2 ✅ **RULED-ACCEPTED 2026-07-31** | Providers with unguessable per-identity selectors (SES, SendGrid, Postmark) make "no DKIM evidence" indistinguishable from "cannot look." Should they be exempt from BLOCK entirely? | §1.6 | **Still open, but much reduced by M3-P4-OD-1's ruling** — the motivating case (SES customer with DKIM and no SPF *include*) now warns rather than blocks, since BLOCK requires **no SPF record at all**. Residual case: `p=reject` + no SPF record + DKIM-only via an unguessable selector. Recommendation unchanged and now stronger: exempt them — the ruling's own standard is that BLOCK requires evidence approaching proof, and for these providers there is no evidence either way. **Approved as recommended: exempt them.** The generalised standard from M3-P4-OD-1 governs — block only on near-certain evidence, and copy says *"we couldn't verify"*, never *"this will fail"* — which for unguessable-selector providers means never blocking, because "cannot look" is not evidence of absence |
-| **M3-P4-OD-10** ✅ **RULED 2026-07-30** *(created by M3-P4-OD-1's ruling)* | The ruling makes **warn + acknowledgment** the default, and §5.3.1 requires the acknowledgment be persisted (state, not UI) and re-required when the verdict changes. **Phase 1 §4.4's column set predates the ruling and has no acknowledgment column**, so there is nowhere to store it | §1.6, §5.3.1, §4.6 | **RULED: add the columns in Phase 4's own `0039`. Do not amend Phase 1.** Three reasons given: (1) *"Phase 1 locked the schema as understood then. My Phase 4 ruling created a requirement it couldn't have anticipated, and an additive column in the discovering phase's own migration is exactly what additive-only is for."* (2) **Direct precedent:** module 2's Phase 5 added `consecutive_failures` + `throttle_paused_at` in `sender_0016` rather than reopening its Phase 1 — verified in tree (`db/migrations/sender_0016_accounts_scoring_columns.up.sql`), including the additive-only and no-new-GRANT rationale this migration reuses. (3) Phase 1's stale `'blocked'` comment is a **doc fix, not a schema change** — corrected in place, in Phase 1 §4.4. Columns specified in **§4.6**; unblocks `0039` without reopening a closed phase |
+| **M3-P4-OD-10** ✅ **RULED 2026-07-30** *(created by M3-P4-OD-1's ruling)* | The ruling makes **warn + acknowledgment** the default, and §5.3.1 requires the acknowledgment be persisted (state, not UI) and re-required when the verdict changes. **Phase 1 §4.4's column set predates the ruling and has no acknowledgment column**, so there is nowhere to store it | §1.6, §5.3.1, §4.6 | **RULED: add the columns in Phase 4's own `0040`. Do not amend Phase 1.** Three reasons given: (1) *"Phase 1 locked the schema as understood then. My Phase 4 ruling created a requirement it couldn't have anticipated, and an additive column in the discovering phase's own migration is exactly what additive-only is for."* (2) **Direct precedent:** module 2's Phase 5 added `consecutive_failures` + `throttle_paused_at` in `sender_0016` rather than reopening its Phase 1 — verified in tree (`db/migrations/sender_0016_accounts_scoring_columns.up.sql`), including the additive-only and no-new-GRANT rationale this migration reuses. (3) Phase 1's stale `'blocked'` comment is a **doc fix, not a schema change** — corrected in place, in Phase 1 §4.4. Columns specified in **§4.6**; unblocks `0040` without reopening a closed phase |
 | M3-P4-OD-3 ✅ **RULED 2026-07-31** | The five-place eligibility-predicate duplication. Consolidate to one shared definition before adding a sixth term, or add the term in five places and test agreement? | §8.1 | Consolidate first. Phase 4 is the second phase to hit this; the divergence failure is a silently spinning dispatcher. **RULED: (a) CONSOLIDATE first**, and the consolidation lands as its **OWN commit** before either new term — *Gate A/B discipline, so a failure is attributable.* Build order: consolidate → Phase 3's `credential_verification_state` (M3-P3-OD-4) → Phase 4's `from_verification_state`. **M3-P4-OD-4 (merged in) resolves with it:** deploy two-step with a real-gate backfill for residue; **never** fabricate `aligned` + `from_checked_at` (§8.2 option 2 stays rejected under Rule 5). Applied in §8.1, §8.2; Phase 3 §2.5/§6.2; Phase 8 §6.3 |
 | M3-P4-OD-4 ✅ **MERGED into M3-P4-OD-3, RULED 2026-07-31** | The predicate change halts dispatch for every `unverified` row. Which migration strategy? | §8.2 | Two-step deploy, real-gate backfill for residue. **Never** fabricate `aligned` + `from_checked_at` (Rule 5). **Merged into M3-P4-OD-3 and resolved with it 2026-07-31:** the two questions share one answer, because the build order the consolidation ruling fixes *is* the deploy strategy — commit 3 adds the term, and the residue is drained by a real gate run rather than by a backfill that asserts an outcome nobody observed. §8.2's option 2 (backfilling `aligned` with `from_checked_at = NOW()`) **stays rejected under Rule 5** — it fabricates an outcome the gate never produced, which is the same prohibition that governs the box's send outcomes |
 | M3-P4-OD-5 ✅ **RULED-ACCEPTED 2026-07-31** | `net.Resolver` exposes no TTLs, so the cache cannot honor real DNS TTLs. Accept a decoupled short TTL, or take on `miekg/dns`? | §6.5 | Accept decoupled + short. A DNS library is a real dependency for a cache whose worst case is latency. |
@@ -1426,11 +1428,11 @@ for the recommendation.
 12. `from_gate_mode` honored in all three positions, with safe-default degradation (T12).
 13. No DNS resolution reachable from `internal/dispatch/` (T6's static assertion).
 14. Docs updated in the same change: this file, `config-reference.md`, `config-manifest.txt`,
-    `config-consumers.txt`, the migration doc for `0038`/`0039`, and the user-facing copy contract
+    `config-consumers.txt`, the migration doc for `0039`/`0040`, and the user-facing copy contract
     (§5) — Rule 4. Plus the artifact M3-P4-OD-1's ruling created: `future-work.md`'s FW-M3-1 (the
     `Authentication-Results` upgrade path). Phase 1 §4.4's stale `'blocked'` enum comment is already
-    corrected — a doc fix, applied in place 2026-07-30, not carried by `0039`.
-15. **`0039` adds `from_warning_acknowledged_at` and `from_warning_acknowledged_for`** (§4.6) and its
+    corrected — a doc fix, applied in place 2026-07-30, not carried by `0040`.
+15. **`0040` adds `from_warning_acknowledged_at` and `from_warning_acknowledged_for`** (§4.6) and its
     header states the three things `sender_0016` states: additive-only, no new `GRANT` (table-level
     DML already covers new columns, so `TestGrantsInvariant` stays green *by construction* rather than
     by being edited), and the back-fill posture. M3-P4-OD-10 is **ruled** — this criterion is now about

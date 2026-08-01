@@ -116,6 +116,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/describe", s.requireAuth(s.handleDescribe))
 
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts", s.requireAuth(s.handleAccountCreate))
+	s.mux.HandleFunc("POST /v1/byosmtp/accounts/bulk", s.requireAuth(s.handleAccountBulkAdd))
 	s.mux.HandleFunc("GET /v1/byosmtp/accounts", s.requireAuth(s.handleAccountList))
 	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountGet))
 	s.mux.HandleFunc("PATCH /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountUpdate))

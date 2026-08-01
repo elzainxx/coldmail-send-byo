@@ -467,7 +467,7 @@ own §9 and §12 already cite it as a live artifact — §4.3(a) was simply neve
   and `0033` is the single create site (Phase 7 §8, §13; Phase 1 §4.6). It **blocked the migration
   chain**, so Phase 8 does not audit it as a polish leftover but as a **structural precondition**: if
   the tree still has two create sites, the chain does not apply, no clean-slate run can be green, and
-  item 2 of this same section fails. Verify it as applied — grep `0041` for `CREATE TABLE`/`CREATE TYPE`
+  item 2 of this same section fails. Verify it as applied — grep `0043` for `CREATE TABLE`/`CREATE TYPE`
   and expect nothing — rather than reading the register's ✅ (Rule 11).
 
 **(b) 64 unruled decisions cannot be closed by Phase 8, and Phase 8 must not pretend otherwise.** Rule 2
@@ -924,7 +924,7 @@ three resolutions are *conditional or ordered*, so Phase 8 checks the order held
 it. Specifically — that the envelope widening did not ship before the scrub (Phase 7 §12 criterion 6a),
 and that the consolidation landed as its own commit before either new term (Phase 4 §8.1's three-commit
 order). Both are checkable from git history, which is the point of having required separate commits.
-**A third duty, from the row added above:** confirm `0041` creates no type and no table (Phase 7 §12
+**A third duty, from the row added above:** confirm `0043` creates no type and no table (Phase 7 §12
 criterion 15) — checkable from the migration file itself, and the one item here whose failure mode is
 total rather than partial.
 
@@ -961,7 +961,7 @@ smuggled.
 **Phase 8 seeds no config key.** Nothing can be seeded-but-unconsumed. The inverse obligation is the live
 one: §1's config documentation must cover **every** dial, and the count is a fact — module 2's inherited
 54, minus **two** deleted keys — `default_shared_pool_id` (Phase 2, verified three ways in Phase 1 §2.4)
-and `quarantine_threshold` (Phase 5's `0039`, per M3-P5-OD-1's ruling) — plus Phase 3's 6, Phase 4's 7,
+and `quarantine_threshold` (Phase 5's `0041`, per M3-P5-OD-1's ruling) — plus Phase 3's 6, Phase 4's 7,
 Phase 5's 10, Phase 6's 0 (it makes six existing keys overridable and seeds none — its own §8 says
 *"**No new key**"*), Phase 7's **10**. That is **85** (54 − 2 + 6 + 7 + 10 + 0 + 10), and it is the number
 `config_drift` and `config_consumption` must both agree with.
@@ -1030,11 +1030,11 @@ The build plan's five, verbatim, plus what this document adds.
    is live today at `Docs/open-decisions.md` (§4.3(a)), so this criterion is met by moving it alongside
    the phase specs in §3's reorganisation commit and repointing the nine inbound references, **not** by
    building it. It is not met while a copy remains at the old path or any register still points there.
-3b. **`M3-P7-OD-9`'s ruling is APPLIED IN THE TREE**, not merely recorded — the `0033`/`0041`
+3b. **`M3-P7-OD-9`'s ruling is APPLIED IN THE TREE**, not merely recorded — the `0033`/`0043`
    `notifications` collision, **ruled (b) 2026-07-31** (Phase 7 §13). Separated from criterion 3 because
    it is **not** a documentation item: with two create sites the migration chain does not apply at all,
    so criterion 2's clean-slate run cannot be green. The check is mechanical and must be **run**, not
-   read: `byosmtp_0041_*.up.sql` contains no `CREATE TABLE` and no `CREATE TYPE`, and
+   read: `byosmtp_0042_*.up.sql` contains no `CREATE TABLE` and no `CREATE TYPE`, and
    `byosmtp.notifications` exists after `0033` with `condition`/`subject_type`/`payload`/`state`/
    `notified_at`. A ✅ in a register is not evidence (Rule 11).
 4. **"Interface inventory committed in module 2's format"** — with **M3-P8-OD-2 ruled** (§6.1: module 2

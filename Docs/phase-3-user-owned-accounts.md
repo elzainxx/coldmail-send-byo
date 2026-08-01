@@ -65,6 +65,14 @@ job_item row test-send itself creates needs (§3.2). Phase 4's doc, which had cl
 for unrelated work, is renumbered to `0038`/`0039` in the same change (M3-P3-OD-18) — see
 `Docs/phase-4-from-gate.md`'s own updated numbering.
 
+**Amended again (C4, M3-P3-OD-19, RULED):** Phase 3 needed a FOURTH migration — `0038`, seeding
+`bulk_add_max_rows` (§4.2, M3-P3-OD-8's ruled row-count bound), discovered only while implementing
+bulk-add: OD-8 mandates the bound but §7's original six-key table (migration `0036`) was already
+committed before OD-8's own bound requirement was worked through to a concrete key. Same cascade
+class as OD-18, one slot later — Phase 4's doc (already renumbered once by OD-18) shifts +1 again
+to `0039`/`0040`, and Phases 5/6/7 plus `plan-revision-log.md`'s chain table shift +1 in step, all
+in this same change. Phase 3's migration inventory is now `0035`–`0038`.
+
 | State | Where | Phase 1 §|
 |---|---|---|
 | `accounts_user_host_username_unique (user_id, smtp_host, smtp_username) WHERE deleted_at IS NULL` | `0027`, partial | §3.1 |
@@ -1527,3 +1535,63 @@ scope control, window-reset control), `TestAccountTest_AvailableWhileQuarantined
 account, the rate limit genuinely refusing a live click, and test-send's real send reaching `sent`
 with the recipient forced to the account's own `from_address` and `assigned_account_id` forced to
 the clicked account — never a different one.
+
+### 14.4 C4 closeout — bulk add (`POST .../bulk`)
+
+**What landed:** `handleAccountBulkAdd` accepts `{user_id, accounts: [...]}` and processes rows
+**strictly serially** (M3-P3-OD-7 — concurrency 1 across the WHOLE batch, never per-`smtp_host` in
+V1): each row runs through `createAccountRow` (the SAME transaction C1's single-create route uses,
+extracted into a shared helper in this chunk so the two paths cannot diverge on what "create"
+means) and, if created, the SAME `AccountVerifier.Verify` C1/C3 use — reused, not copied, for the
+third time this phase. A fixed `bulk_add_verify_interval_ms` sleep separates every consecutive
+row's attempt, including a row that failed validation and never reached the box (§4.1's own
+recommendation: strictly serial is a superset of the guarantee, simpler than per-host). No
+transaction spans the batch, so an earlier row's rejection (validation, duplicate, cap) never rolls
+back a later row's create — proved live: a 4-row batch with a duplicate at row 2 and a malformed
+port at row 3 still creates row 4. The account cap is evaluated per row as the batch proceeds, so a
+batch that crosses the cap mid-way adds rows up to it and rejects the rest, never pre-checking the
+whole batch and rejecting a partly-fitting file outright.
+
+**One real gap found while implementing, ruled the same day:**
+
+- **M3-P3-OD-8/19** — §4.2 flags a maximum-row-count bound as M3-P3-OD-8, already ruled ("Bound
+  yes; async is a new resource and past this phase"), but migration `0036` (Phase 3's second
+  migration) had already shipped its six dials before the row-count bound's concrete key was
+  settled — `bulk_add_max_rows` did not exist yet, and `0037` was already spent (C3's test-send
+  grant). Ruled: same cascade shape as M3-P3-OD-18, one migration slot later — Phase 3 takes a
+  FOURTH migration, `0038`, seeding `bulk_add_max_rows` (default `500`); Phase 4's doc (already
+  shifted once by OD-18) shifts again to `0039`/`0040`, cascading through Phases 5/6/7 and
+  `Docs/plan-revision-log.md`'s chain table in the same change. The sweep verifying this cascade
+  also found and fixed three genuinely stale `0041`→`0042`/`0033`→`0043`-class references OD-18's
+  own sweep had left behind in `phase-1-schema-delta.md` and `phase-8-polish-docs-close.md` —
+  found by re-verifying the cascade in the tree rather than trusting OD-18's own "swept" claim
+  (Rule 11).
+
+**The row-count bound is checked BEFORE any row is processed** — a batch over `bulk_add_max_rows`
+is rejected WHOLE with `422 unprocessable` (`batch_too_large`), never partially processed and then
+cut off; proved live with zero account rows created from a rejected over-bound batch, plus a
+control at exactly the bound (not over it) succeeding normally.
+
+**§4.3's UI copy contract** is declared on `describe`'s response as a new `bulk_add` object
+(`warning_code: "credentials_in_plaintext_file"` + a `warning_text` conveying all four required
+points — plaintext passwords, on-disk persistence, delete-after-upload, and "not a backup, keeping
+it is pure downside") — additive, versioned, and the only enforceable place the contract can live
+since the module has no UI of its own.
+
+**Pacing is proved as real elapsed wall-clock time across a real multi-row batch through the LIVE
+box + LIVE smtp-sink** (`tests/harness/phase3_verify.sh`), not the module's own log lines (§8.4's
+anti-vacuity note) and not a mocked sleep: a 3-row batch at `bulk_add_verify_interval_ms=3000`
+takes ~6s longer than the same batch at `0` (paced=6172ms, unpaced=168ms, gap=6004ms), comfortably
+clearing a 4000ms floor chosen well below the ~6000ms the pacer itself must add and well above
+plausible box/sink round-trip variance — collapsing the interval to 0 collapses the gap too, which
+is what makes the interval causal rather than incidental.
+
+**Verified:** clean-slate reset, full harness 84/84, all six CI gates green (`config_drift`/
+`config_consumption`: 60 keys; `contract_drift`: 15 platform routes now gated; `migration_lint`
+covers `0038`'s up/down anti-vacuity, and the up→down→up lifecycle test's hardcoded key-count
+expectation was updated from 59→60 in the same commit). New tests:
+`TestBulkAdd_PartialSuccessByRowIndex` (the exact §4.2 result vector by row index, plus a DB-level
+assertion that only the created rows' hosts exist), `TestBulkAdd_RowCountBound` (whole-batch reject
++ an at-the-bound control), `TestBulkAdd_RequiresTenantSelector`, `TestDescribe_BulkAddWarningContract`,
+plus `phase3_verify.sh`'s new LIVE assertions covering partial success, the row-count bound, and
+pacing as described above.

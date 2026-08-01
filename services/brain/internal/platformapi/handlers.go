@@ -266,6 +266,19 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			"unit_price_credits": unit,
 			"tiers":              describeTiers(unit),
 		},
+		// bulk_add's UI copy contract (Phase 3 §4.3): the module has no UI, so what it owns is the
+		// CONTRACT the UI must honor. warning_code is versioned and additive-only (Rule 5);
+		// warning_text is the required baseline the UI MUST display before the file picker and
+		// MUST NOT suppress or defer — a UI may reword it, but must convey all four points the
+		// text below states, especially the fourth ("the file is not a backup"), which is the one
+		// most likely to be silently dropped and the one that changes user behavior if it is.
+		"bulk_add": map[string]any{
+			"warning_code": "credentials_in_plaintext_file",
+			"warning_text": "The file you are about to upload contains plaintext SMTP passwords. " +
+				"It exists on your own disk (and anywhere it has been emailed or synced to) until you " +
+				"delete it. Delete it after upload. We store your credentials encrypted and never show " +
+				"them again, so this file is not a backup you can rely on — keeping it is pure downside.",
+		},
 	})
 }
 

@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 92 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 93 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -64,7 +64,13 @@ is the direct consequence: Phase 3 has already spent both its allotted migration
 `0036`), but Phase 4's own doc firmly claims `0037`/`0038` for unrelated work (12 references
 throughout `phase-4-from-gate.md`). Ruled the same day: Phase 3 takes `0037` for the grant; Phase
 4's doc is renumbered to `0038`/`0039` now, while the numbers are still planning text and before
-Phase 4 starts building against them.
+Phase 4 starts building against them. The 93rd,
+[M3-P3-OD-19](#m3-p3-od-19--ruled-2026-08-01-phase-3-takes-a-fourth-migration-0038-for-bulk_add_max_rows-phase-4-renumbers-again-to-00390040),
+found while wiring C4 (bulk add): §4.2's row-count bound (already ruled mandatory by M3-P3-OD-8)
+needs a real seeded key, `bulk_add_max_rows`, but `0036`'s six-key seed landed before OD-8's bound
+was worked through to a concrete key, and `0037` is already spent on the test-send grant. Ruled the
+same day, same reasoning as OD-18: Phase 3 takes `0038`; Phase 4's doc (already shifted once by
+OD-18) shifts again to `0039`/`0040`, and Phases 5/6/7 cascade +1 in step.
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -344,7 +350,7 @@ phase, answered by a different phase's ruling.
 | M3-P2-OD-8 | ruling 2026-07-30, in substance | The `RESERVED`-expiry gate extension is ruled; what remains is an ADR appending the invariant — a build task |
 | M3-P4-OD-1 | ruling 2026-07-29 | *"My locked rule was wrong. DMARC passing on SPF-aligned **or** DKIM-aligned means DNS can never prove failure."* Default → warn + explicit acknowledgment; BLOCK only for `p=reject` + no SPF record + no DKIM at any common selector; copy says *"we couldn't verify this will authenticate"*, never *"this will fail"* |
 | M3-P4-OD-9 | ruling 2026-07-29 | Gate at the **store layer for every writer, operator routes included**; break-glass is an explicit audited override with a required reason, never a silent reset |
-| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0038` |
+| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0039` (renumbered from `0038` by M3-P3-OD-18's cascade) |
 | M3-P6-OD-1 | ruling 2026-07-30 | Pacer shrink drops the **most-ready** lanes, keeps those still owing cooldown; selection by value, not slice position; the ADR states module 2's comment was aspirational, so this is a bug fix |
 | **M3-P3-OD-3** | **M3-P7-OD-1's ruling, 2026-07-31** | ⚠ **Provenance corrected — the earlier citation did not hold.** Verified directly on 2026-07-31: `phase-3-user-owned-accounts.md` §2.3 and §11 record *"allow, scrubbed, this surface only"* as a **recommendation**, with §2.3 saying explicitly *"widening it is not mine to decide silently."* There is **no dated ruling** in Phase 3. `phase-7-visibility-notifications-contract.md` §1.1 nonetheless asserted it was *"ruled"* and built on it — a recommendation promoted to a ruling by citation. **Corrected in Phase 7 §1.1.** The item is genuinely closed now because M3-P7-OD-1's ruling allows the widening on the **larger** send surface, which necessarily settles the verify surface; and it inherits the same sequencing — **after** M3-P7-OD-2's scrub |
 
@@ -897,6 +903,40 @@ no semantic content change.
 **Applied:** `phase-4-from-gate.md` (12 references), `phase-5-autonomous-behaviour-and-limits.md`,
 and `plan-revision-log.md`'s chain table all updated to the shifted numbering in the same change.
 Phase 3's own migration is `byosmtp_0037_test_send_job_items_grant`.
+
+---
+
+## M3-P3-OD-19 — RULED 2026-08-01: Phase 3 takes a fourth migration, `0038`, for `bulk_add_max_rows`; Phase 4 renumbers again to `0039`/`0040`
+
+The same cascade class as M3-P3-OD-18, one slot later. §4.2's bulk-add spec flags a row-count bound
+as **M3-P3-OD-8**, already ruled: *"Bound yes; async is a new resource and past this phase."* But
+`0036` (the six original config-dial seeds) shipped before OD-8's recommendation was worked through
+to a concrete key — `bulk_add_verify_interval_ms` (the pacing delay) was seeded there, but
+`bulk_add_max_rows` (the row-count cap itself) was not, since at that point in the build the row
+cap's exact shape (a hard reject above N rows, evaluated before the batch starts) had not yet been
+decided. C4 is where it is actually consumed, so C4 is where it must be seeded (Rule 1: no key
+without a consumer in the same commit) — a NEW migration, since `0036`/`0037` are already committed
+and this session's discipline never edits a shipped migration.
+
+**The question:** same shape as OD-18 — take the next free number (`0038`, forcing Phase 4's
+already-once-shifted doc to renumber again) or leave a gap.
+
+**RULED: take `0038`; Phase 4 renumbers again, same reasoning as OD-18.** Phase 4 has still not
+started building — its numbers are still planning text, not files on disk or `schema_migrations`
+rows — so a second renumber costs a second doc edit and nothing else, while a gap would be a second,
+compounding unexplained discontinuity. **Full cascade, verified rather than guessed at, exactly as
+OD-18's own precedent requires:** Phase 4 `0039`/`0040`, Phase 5 `0041`/`0042`, Phase 6 `0043`,
+Phase 7 `0043` (unchanged relative position — Phase 6 is still expected to write nothing structural,
+so Phase 7 continues to plan on taking Phase 6's number if Phase 6 does not use it).
+
+**Applied:** `phase-3-user-owned-accounts.md` §0.2, `phase-4-from-gate.md`, `phase-5-...md`,
+`phase-6-...md`, `phase-7-...md`, `phase-0-fork-and-baseline.md`, `phase-1-schema-delta.md`,
+`phase-8-polish-docs-close.md`, `module-3-build-plan.md`, and `plan-revision-log.md`'s chain table
+all updated to the shifted numbering in the same change — including three stale `0041`→`0042`-class
+references in `phase-1-schema-delta.md` and `phase-8-polish-docs-close.md` left behind by **OD-18's**
+own sweep (found while re-verifying this cascade, not by the OD-18 pass itself — Rule 11: a claimed
+sweep is re-checked in the tree, not trusted by citation). Phase 3's own fourth migration is
+`byosmtp_0038_bulk_add_max_rows_config`.
 
 ---
 

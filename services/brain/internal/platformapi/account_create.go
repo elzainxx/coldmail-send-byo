@@ -82,61 +82,10 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := req.UserID
 
-	accIDStr, accIDBytes, err := newUUIDv4()
-	if err != nil {
-		s.fail(w, r, newErr(codeInternalError, "uuid_generate_error: "+err.Error()))
-		return
-	}
-
-	secret := []byte(req.SMTPSecret)
-	ciphertext, nonce, err := s.enc.Encrypt(accIDBytes, secret)
-	zero(secret)
-	if err != nil {
-		s.fail(w, r, newErr(codeInternalError, "encrypt_error: "+err.Error()))
-		return
-	}
-	keyID := s.enc.KeyID()
-
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		s.fail(w, r, newErr(codeInternalError, "tx_begin_error: "+err.Error()))
-		return
-	}
-	defer tx.Rollback(context.Background())
-
-	// Serialize concurrent creates for THIS user (transaction-scoped advisory lock, auto-released
-	// on commit/rollback) — the account-cap check-then-insert race (§5.2, M3-P3-OD-9 ruled: the
-	// lock, not an accepted overshoot). Same pattern already in the tree at
-	// platformapi/store.go's one-campaign-per-user lock. Takes NO account row lock, so Rule 9 does
-	// not apply (the create path writes no jobs row either).
-	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtext('byosmtp.account_create:' || $1::text))`, userID); err != nil {
-		s.fail(w, r, newErr(codeInternalError, "advisory_lock_failed"))
-		return
-	}
-
-	if perr := s.checkAccountCapAndDuplicate(ctx, tx, userID, req.SMTPHost, req.SMTPUsername); perr != nil {
-		s.fail(w, r, perr)
-		return
-	}
-
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO byosmtp.accounts
-		   (id, user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce,
-		    from_address, from_name, daily_limit)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		accIDStr, userID, req.SMTPHost, port, req.SMTPUsername,
-		ciphertext, keyID, nonce, req.FromAddress, req.FromName, dailyLimit); err != nil {
-		s.fail(w, r, s.translateAccountWrite(err))
-		return
-	}
-	if err := writeAuditEvent(ctx, tx, accIDStr, userID, "created", nil, ptrSnapshot(false, nil, false, false), nil, requestIDFrom(r.Context())); err != nil {
-		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		s.fail(w, r, s.translateAccountWrite(err))
+	accIDStr, cerr := s.createAccountRow(ctx, userID, req.SMTPHost, port, req.SMTPUsername, req.SMTPSecret,
+		req.FromAddress, req.FromName, dailyLimit, requestIDFrom(r.Context()))
+	if cerr != nil {
+		s.fail(w, r, cerr)
 		return
 	}
 
@@ -153,6 +102,65 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, acc)
+}
+
+// createAccountRow runs the shared "create one account" transaction — advisory lock (account-cap
+// check-then-insert race, M3-P3-OD-9), cap + duplicate pre-check, INSERT, audit — used by BOTH
+// handleAccountCreate (C1, one row) and the bulk-add handler (C4, N rows), so the two paths cannot
+// diverge on what "create" means. Returns the new account id on success; on failure returns "" and
+// a clean *apiError the caller renders however its own response shape requires (a top-level error
+// envelope for create, a per-row result for bulk-add).
+func (s *Server) createAccountRow(ctx context.Context, userID, host string, port int, username, secret, fromAddress string, fromName *string, dailyLimit int, requestID string) (string, *apiError) {
+	accIDStr, accIDBytes, err := newUUIDv4()
+	if err != nil {
+		return "", newErr(codeInternalError, "uuid_generate_error: "+err.Error())
+	}
+
+	secretBytes := []byte(secret)
+	ciphertext, nonce, err := s.enc.Encrypt(accIDBytes, secretBytes)
+	zero(secretBytes)
+	if err != nil {
+		return "", newErr(codeInternalError, "encrypt_error: "+err.Error())
+	}
+	keyID := s.enc.KeyID()
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", newErr(codeInternalError, "tx_begin_error: "+err.Error())
+	}
+	defer tx.Rollback(context.Background())
+
+	// Serialize concurrent creates for THIS user (transaction-scoped advisory lock, auto-released
+	// on commit/rollback) — the account-cap check-then-insert race (§5.2, M3-P3-OD-9 ruled: the
+	// lock, not an accepted overshoot). Same pattern already in the tree at
+	// platformapi/store.go's one-campaign-per-user lock. Takes NO account row lock, so Rule 9 does
+	// not apply (the create path writes no jobs row either).
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('byosmtp.account_create:' || $1::text))`, userID); err != nil {
+		return "", newErr(codeInternalError, "advisory_lock_failed")
+	}
+
+	if perr := s.checkAccountCapAndDuplicate(ctx, tx, userID, host, username); perr != nil {
+		return "", perr
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO byosmtp.accounts
+		   (id, user_id, smtp_host, smtp_port, smtp_username,
+		    credential_ciphertext, credential_key_id, credential_nonce,
+		    from_address, from_name, daily_limit)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		accIDStr, userID, host, port, username,
+		ciphertext, keyID, nonce, fromAddress, fromName, dailyLimit); err != nil {
+		return "", s.translateAccountWrite(err)
+	}
+	if err := writeAuditEvent(ctx, tx, accIDStr, userID, "created", nil, ptrSnapshot(false, nil, false, false), nil, requestID); err != nil {
+		return "", newErr(codeInternalError, "audit_write_error: "+err.Error())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", s.translateAccountWrite(err)
+	}
+	return accIDStr, nil
 }
 
 // runVerifyOnAdd calls the injected AccountVerifier and applies nothing itself — Verify already

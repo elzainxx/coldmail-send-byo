@@ -137,3 +137,65 @@ INELIGIBLE_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localh
 AFTER_JOB_COUNT="$(PSQL "SELECT count(*) FROM byosmtp.jobs WHERE user_id='$SYSUSER'" || true)"
 [[ "$INELIGIBLE_CODE" == "409" ]] && ok "C3 test-send: an ineligible (quarantined) clicked account is refused outright (409)" || bad "C3 test-send: ineligible account returned $INELIGIBLE_CODE, want 409"
 [[ "$BEFORE_JOB_COUNT" == "$AFTER_JOB_COUNT" ]] && ok "C3 test-send: no job row created for the refused ineligible-account attempt" || bad "C3 test-send: job count changed ($BEFORE_JOB_COUNT->$AFTER_JOB_COUNT) despite the refusal — a job leaked through"
+
+# --- C4: bulk add — partial success by row index, live against the real box + real smtp-sink ---
+BULKUSER="$(PSQL "INSERT INTO public.users (email,is_active) VALUES ('bulkc4@example.com',true) RETURNING id" || true)"
+BULK_JSON="$(curl -s -X POST http://localhost:9080/v1/byosmtp/accounts/bulk -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$BULKUSER\",\"accounts\":[
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-c4-1@ourdomain.com\",\"smtp_secret\":\"canary-bulk-c4-1\",\"from_address\":\"bulk-c4-1@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-c4-1@ourdomain.com\",\"smtp_secret\":\"canary-bulk-c4-1-dup\",\"from_address\":\"bulk-c4-1@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":99999,\"smtp_username\":\"bulk-c4-3@ourdomain.com\",\"smtp_secret\":\"canary-bulk-c4-3\",\"from_address\":\"bulk-c4-3@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-c4-4@ourdomain.com\",\"smtp_secret\":\"canary-bulk-c4-4\",\"from_address\":\"bulk-c4-4@ourdomain.com\"}
+  ]}")"
+echo "$BULK_JSON" | grep -q '"row":1,"status":"created"' && ok "C4 (live): row 1 created" || bad "C4 (live): row 1 unexpected: $BULK_JSON"
+echo "$BULK_JSON" | grep -q '"row":2,"status":"rejected","code":"duplicate_account_for_user"' && ok "C4 (live): row 2 (duplicate of row 1) rejected" || bad "C4 (live): row 2 unexpected: $BULK_JSON"
+echo "$BULK_JSON" | grep -q '"row":3,"status":"rejected","code":"validation_failed"' && ok "C4 (live): row 3 (malformed port) rejected" || bad "C4 (live): row 3 unexpected: $BULK_JSON"
+echo "$BULK_JSON" | grep -q '"row":4,"status":"created"' && ok "C4 (live): row 4 created despite rows 2/3's earlier rejections (no batch-spanning transaction)" || bad "C4 (live): row 4 unexpected: $BULK_JSON"
+BULK_DB_COUNT="$(PSQL "SELECT count(*) FROM byosmtp.accounts WHERE user_id='$BULKUSER'" || true)"
+[[ "$BULK_DB_COUNT" == "2" ]] && ok "C4 (live): DB contains exactly the 2 created rows (1 and 4)" || bad "C4 (live): account count for bulk user = $BULK_DB_COUNT, want 2"
+
+# --- C4: the row-count bound rejects an over-limit batch WHOLE, before any row is processed ---
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 2::int) WHERE key='bulk_add_max_rows'" >/dev/null
+OVERBOUND_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:9080/v1/byosmtp/accounts/bulk -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$BULKUSER\",\"accounts\":[
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_username\":\"bulk-over-1@ourdomain.com\",\"smtp_secret\":\"s\",\"from_address\":\"bulk-over-1@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_username\":\"bulk-over-2@ourdomain.com\",\"smtp_secret\":\"s\",\"from_address\":\"bulk-over-2@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_username\":\"bulk-over-3@ourdomain.com\",\"smtp_secret\":\"s\",\"from_address\":\"bulk-over-3@ourdomain.com\"}
+  ]}")"
+[[ "$OVERBOUND_CODE" == "422" ]] && ok "C4 (live): a batch over bulk_add_max_rows is rejected whole (422)" || bad "C4 (live): over-bound batch returned $OVERBOUND_CODE, want 422"
+BULK_DB_COUNT_AFTER="$(PSQL "SELECT count(*) FROM byosmtp.accounts WHERE user_id='$BULKUSER'" || true)"
+[[ "$BULK_DB_COUNT_AFTER" == "2" ]] && ok "C4 (live): no rows created from the rejected over-bound batch" || bad "C4 (live): account count changed ($BULK_DB_COUNT->$BULK_DB_COUNT_AFTER) despite the whole-batch reject"
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 500::int) WHERE key='bulk_add_max_rows'" >/dev/null
+
+# --- C4: pacing is observable as real wall-clock elapsed time across a real multi-row batch,
+# through the REAL box + REAL smtp-sink — not the module's own log lines (§8.4 anti-vacuity note).
+# A high interval must make the request visibly slower than a 0ms control; collapsing pacing to 0
+# must collapse the elapsed time too, so the interval is causal, not incidental. ---
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 3000::int) WHERE key='bulk_add_verify_interval_ms'" >/dev/null
+PACED_START=$(date +%s%N)
+curl -s -o /dev/null -X POST http://localhost:9080/v1/byosmtp/accounts/bulk -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$BULKUSER\",\"accounts\":[
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-pace-1@ourdomain.com\",\"smtp_secret\":\"canary-bulk-pace-1\",\"from_address\":\"bulk-pace-1@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-pace-2@ourdomain.com\",\"smtp_secret\":\"canary-bulk-pace-2\",\"from_address\":\"bulk-pace-2@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-pace-3@ourdomain.com\",\"smtp_secret\":\"canary-bulk-pace-3\",\"from_address\":\"bulk-pace-3@ourdomain.com\"}
+  ]}"
+PACED_END=$(date +%s%N)
+PACED_MS=$(( (PACED_END - PACED_START) / 1000000 ))
+
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 0::int) WHERE key='bulk_add_verify_interval_ms'" >/dev/null
+UNPACED_START=$(date +%s%N)
+curl -s -o /dev/null -X POST http://localhost:9080/v1/byosmtp/accounts/bulk -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$BULKUSER\",\"accounts\":[
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-nopace-1@ourdomain.com\",\"smtp_secret\":\"canary-bulk-nopace-1\",\"from_address\":\"bulk-nopace-1@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-nopace-2@ourdomain.com\",\"smtp_secret\":\"canary-bulk-nopace-2\",\"from_address\":\"bulk-nopace-2@ourdomain.com\"},
+    {\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"bulk-nopace-3@ourdomain.com\",\"smtp_secret\":\"canary-bulk-nopace-3\",\"from_address\":\"bulk-nopace-3@ourdomain.com\"}
+  ]}"
+UNPACED_END=$(date +%s%N)
+UNPACED_MS=$(( (UNPACED_END - UNPACED_START) / 1000000 ))
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 2000::int) WHERE key='bulk_add_verify_interval_ms'" >/dev/null
+
+# 3 rows, interval=3000ms => >=2 inter-row gaps => paced request should take at least ~6s longer
+# than the unpaced one. A generous 4000ms margin absorbs real box/sink round-trip variance while
+# still being far below the ~6000ms the pacer itself must add.
+GAP_MS=$(( PACED_MS - UNPACED_MS ))
+[[ "$GAP_MS" -gt 4000 ]] && ok "C4 (live): pacing is observable as real elapsed time (paced=${PACED_MS}ms, unpaced=${UNPACED_MS}ms, gap=${GAP_MS}ms > 4000ms floor)" || bad "C4 (live): pacing not observed (paced=${PACED_MS}ms, unpaced=${UNPACED_MS}ms, gap=${GAP_MS}ms) — the interval may not be causal"
