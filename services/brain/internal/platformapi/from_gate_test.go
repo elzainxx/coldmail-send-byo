@@ -406,3 +406,208 @@ func TestFromGate_PatchUnacknowledgedWarnRefusesWholePatch(t *testing.T) {
 		t.Fatalf("after refused PATCH: from_address=%q, want the OLD address unchanged", get.str("from_address"))
 	}
 }
+
+// T7: the test button re-runs the From check and reports the current result. Create against a
+// zone that BLOCKs, then swap the account's underlying zone facts by changing smtp_host/username
+// to an aligned zone via a raw admin-DB-style PATCH is not available on this surface without
+// re-gating — so instead this test creates against a zone that starts WARN (via acknowledgment),
+// then verifies Test re-reports the SAME persisted verdict (proving it re-derives, not just
+// echoes stale columns) by asserting from_checked_at advances.
+func TestFromGate_T7_TestButtonReRunsAndReportsCurrentResult(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fromgatet7")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgt7@example.com")
+
+	create := e.do(t, "POST", "/v1/byosmtp/accounts", alignedFromReq(userID, nil)).requireStatus(t, 201)
+	acctID := create.str("id")
+	firstCheckedAt := create.body["from_alignment"].(map[string]any)["checked_at"]
+
+	time.Sleep(1100 * time.Millisecond) // ensure a real, observable timestamp difference
+	test := e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID, nil).requireStatus(t, 200)
+	align, ok := test.body["from_alignment"].(map[string]any)
+	if !ok {
+		t.Fatalf("test response missing from_alignment: %s", test.raw)
+	}
+	if align["state"] != "aligned" {
+		t.Fatalf("test re-check: got state=%v, want aligned (re-derived from the SAME real zone)", align["state"])
+	}
+
+	get := e.do(t, "GET", "/v1/byosmtp/accounts/"+acctID+"?user_id="+userID, nil).requireStatus(t, 200)
+	secondCheckedAt := get.body["from_alignment"].(map[string]any)["checked_at"]
+	if secondCheckedAt == firstCheckedAt {
+		t.Fatalf("from_checked_at did not advance after Test — got the SAME timestamp %v, want a re-check to have actually run", secondCheckedAt)
+	}
+}
+
+// T7's negative control: pressing Test with the resolver failing reports indeterminate, and the
+// verdict/from_checked_at stay UNTOUCHED — distinguishing "re-runs the check" from "recomputes
+// from stored columns."
+func TestFromGate_T7_TestButtonIndeterminateLeavesVerdictUntouched(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fromgatet7indeterm")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgt7indeterm@example.com")
+
+	create := e.do(t, "POST", "/v1/byosmtp/accounts", alignedFromReq(userID, nil)).requireStatus(t, 201)
+	acctID := create.str("id")
+	origCheckedAt := create.body["from_alignment"].(map[string]any)["checked_at"]
+
+	// Point the account at the black-hole zone WITHOUT re-triggering the gate (a raw DB write —
+	// the ONLY way to change from_address without going through the gated PATCH path). The test
+	// button re-checks the account's CURRENT from_address, so from_address itself must move to
+	// the black-hole zone for the DNS lookup to actually hang — smtp_host/smtp_username alone
+	// (the earlier version of this test) leave from_address pointed at the still-working
+	// alias-selfhosted.test domain, so the lookup would succeed rather than time out.
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.accounts SET smtp_host = 'blackhole.test', smtp_username = 'user@blackhole.test', from_address = 'user@blackhole.test' WHERE id = $1`, acctID); err != nil {
+		t.Fatalf("raw account update: %v", err)
+	}
+	e.setConfigInt(t, "from_dns_total_budget_ms", 500)
+
+	test := e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID, nil).requireStatus(t, 200)
+	align, _ := test.body["from_alignment"].(map[string]any)
+	if align["state"] != "indeterminate" {
+		t.Fatalf("test against a black-hole zone: got state=%v, want indeterminate", align["state"])
+	}
+
+	get := e.do(t, "GET", "/v1/byosmtp/accounts/"+acctID+"?user_id="+userID, nil).requireStatus(t, 200)
+	getAlign := get.body["from_alignment"].(map[string]any)
+	if getAlign["state"] != "aligned" {
+		t.Fatalf("after indeterminate Test: from_alignment.state=%v, want the OLD verdict (aligned) untouched", getAlign["state"])
+	}
+	if getAlign["checked_at"] != origCheckedAt {
+		t.Fatalf("after indeterminate Test: checked_at changed (%v -> %v), want untouched", origCheckedAt, getAlign["checked_at"])
+	}
+}
+
+// T13c (§4.6/M3-P4-OD-10's own load-bearing rationale): re-acknowledgment is required when the
+// VERDICT CHANGES, not merely when the check re-runs — proven purely BY DATA (the GENERATED
+// from_verdict_fingerprint column), not by any application-level "did it change" branch. A boolean
+// acknowledged flag could not distinguish these two cases; this test is what makes that design
+// choice load-bearing rather than redundant.
+//
+// Sequence: acknowledge a WARN against misaligned-none.test (p=none) — fingerprint F1. Swap the
+// account's underlying facts (raw DB write, same technique as the indeterminate test above — the
+// test button re-runs against whatever from_address is CURRENTLY stored, unconditionally, per
+// M3-P4-OD-17, so this simulates "a later re-check finds different DNS facts for the account")
+// to misaligned-quarantine.test (p=quarantine) — a DIFFERENT WARN shape, fingerprint F2 != F1.
+// Test-button WITHOUT re-acknowledging must leave the OLD acknowledgment (F1) paired against the
+// NEW fingerprint (F2) — mismatched, i.e. NOT acknowledged for the current verdict. Then
+// acknowledging on a SUBSEQUENT test-button call re-pairs it (F2). Finally, control (a): a further
+// mere re-run producing the SAME verdict again does not un-pair what step 3 just paired.
+func TestFromGate_T13c_ReacknowledgmentRequiredOnlyWhenVerdictChanges(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fromgatet13c")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgt13c@example.com")
+
+	create := e.do(t, "POST", "/v1/byosmtp/accounts",
+		fromGateCreateReq(userID, "user@misaligned-none.test", map[string]any{"acknowledge_alignment_warning": true})).
+		requireStatus(t, 201)
+	acctID := create.str("id")
+
+	fingerprint := func() string {
+		var fp string
+		if err := e.admin.QueryRow(context.Background(),
+			`SELECT from_verdict_fingerprint FROM byosmtp.accounts WHERE id=$1`, acctID).Scan(&fp); err != nil {
+			t.Fatalf("read fingerprint: %v", err)
+		}
+		return fp
+	}
+	ackFor := func() string {
+		var af *string
+		if err := e.admin.QueryRow(context.Background(),
+			`SELECT from_warning_acknowledged_for FROM byosmtp.accounts WHERE id=$1`, acctID).Scan(&af); err != nil {
+			t.Fatalf("read ack_for: %v", err)
+		}
+		if af == nil {
+			return ""
+		}
+		return *af
+	}
+
+	f1 := fingerprint()
+	if ackFor() != f1 {
+		t.Fatalf("setup: ack_for=%q does not match initial fingerprint=%q", ackFor(), f1)
+	}
+
+	// Swap the account's underlying facts to a zone that produces a DIFFERENT warn shape
+	// (p=quarantine vs p=none) — same technique as TestFromGate_T7_TestButtonIndeterminateLeavesVerdictUntouched.
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.accounts SET smtp_host = 'smtp.gmail.com', smtp_username = 'user@misaligned-quarantine.test', from_address = 'user@misaligned-quarantine.test' WHERE id = $1`, acctID); err != nil {
+		t.Fatalf("raw update: %v", err)
+	}
+
+	// Test-button re-run WITHOUT re-acknowledging: persists the fresh (different) verdict, but
+	// leaves the acknowledgment columns untouched — the OLD ack_for (F1) now mismatches the NEW
+	// fingerprint (F2), which is what makes the account non-routable again purely by data.
+	test := e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID, nil).requireStatus(t, 200)
+	align, _ := test.body["from_alignment"].(map[string]any)
+	if align["state"] != "unaligned_warned" {
+		t.Fatalf("re-run against misaligned-quarantine.test: got state=%v, want unaligned_warned", align["state"])
+	}
+	f2 := fingerprint()
+	if f2 == f1 {
+		t.Fatalf("CONTROL FAILED: fingerprint did not change (%q) after swapping to a different-policy WARN zone — this test proves nothing without a genuine verdict change", f2)
+	}
+	if ackFor() == f2 {
+		t.Fatalf("ack_for already matches the NEW fingerprint after an UNACKNOWLEDGED re-run — the old acknowledgment must not silently carry over to a changed verdict")
+	}
+	if ackFor() != f1 {
+		t.Fatalf("ack_for changed from the original F1 (%q) to %q despite no acknowledge_alignment_warning being sent on this call", f1, ackFor())
+	}
+
+	// Acknowledging on a SUBSEQUENT test-button call re-pairs the acknowledgment against the
+	// CURRENT (new) fingerprint.
+	e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID,
+		map[string]any{"acknowledge_alignment_warning": true}).requireStatus(t, 200)
+	if ackFor() != f2 {
+		t.Fatalf("after acknowledging the new verdict: ack_for=%q, want it to now equal the new fingerprint=%q", ackFor(), f2)
+	}
+
+	// CONTROL (a): a further mere re-run producing the SAME verdict again (no DNS/address change)
+	// does NOT un-pair what the previous call just paired — proving the invalidation is keyed on
+	// the verdict actually changing, not on every re-run resetting the acknowledgment.
+	e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID, nil).requireStatus(t, 200)
+	if ackFor() != f2 {
+		t.Fatalf("after a same-verdict re-run with no acknowledgment sent: ack_for=%q, want unchanged at %q (a same-verdict re-run must not invalidate an existing acknowledgment)", ackFor(), f2)
+	}
+}
+
+// M3-P4-OD-17: the test button always persists a FRESH warn verdict even when unacknowledged —
+// it does not refuse the call, unlike create/PATCH.
+func TestFromGate_M3P4OD17_TestButtonPersistsUnacknowledgedWarn(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fromgatet7unack")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgt7unack@example.com")
+
+	create := e.do(t, "POST", "/v1/byosmtp/accounts", alignedFromReq(userID, nil)).requireStatus(t, 201)
+	acctID := create.str("id")
+
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.accounts SET smtp_host = 'smtp.gmail.com', smtp_username = 'user@misaligned-none.test', from_address = 'user@misaligned-none.test' WHERE id = $1`, acctID); err != nil {
+		t.Fatalf("raw update: %v", err)
+	}
+
+	test := e.do(t, "POST", "/v1/byosmtp/accounts/"+acctID+"/test?user_id="+userID, nil) // no acknowledge_alignment_warning
+	if test.status != 200 {
+		t.Fatalf("test button on a fresh WARN with no acknowledgment: got status %d, want 200 (M3-P4-OD-17: always persists, never refuses): %s", test.status, test.raw)
+	}
+	align, _ := test.body["from_alignment"].(map[string]any)
+	if align["state"] != "unaligned_warned" {
+		t.Fatalf("test button: got state=%v, want unaligned_warned (persisted despite no acknowledgment)", align["state"])
+	}
+
+	// The account is non-routable — the persisted verdict has NO acknowledgment. Verified via the
+	// eligibility predicate directly (this package has no dispatcher to drive a real send).
+	var ackAt *string
+	if err := e.admin.QueryRow(context.Background(),
+		`SELECT from_warning_acknowledged_at::text FROM byosmtp.accounts WHERE id=$1`, acctID).Scan(&ackAt); err != nil {
+		t.Fatalf("read acknowledgment: %v", err)
+	}
+	if ackAt != nil {
+		t.Fatalf("from_warning_acknowledged_at is SET (%v) despite no acknowledgment being supplied", *ackAt)
+	}
+}

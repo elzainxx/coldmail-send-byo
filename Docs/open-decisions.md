@@ -1240,6 +1240,93 @@ and `Docs/plan-revision-log.md`'s chain table updated in the same change.
 
 ---
 
+## M3-P4-OD-17 — RULED 2026-08-01: the test button always persists a fresh verdict, even an unacknowledged WARN; it never refuses the call
+
+Found while wiring Chunk 3's test-button hook (§2.5). §2.5 says the test button re-runs the From
+check and "both verdicts are reported; both are persisted to their own column groups." §5.3.1 says
+re-acknowledgment is required when the verdict CHANGES, and names the test button (alongside
+PATCH) as one of the two paths that re-derive a verdict — implying the test button can itself
+produce a fresh WARN that needs acknowledging. But nothing in §2.5/§5.3.1 states what the test
+button accepts as an acknowledgment field, or what happens when a fresh WARN arrives unacknowledged.
+The route currently takes no request body at all.
+
+**The question, asked before implementing (Rule 2):** does the test button (a) accept the same
+`acknowledge_alignment_warning` field, persist a fresh WARN verdict regardless of whether it is
+acknowledged (leaving the account non-routable if not), or (b) refuse the whole call — like
+create/PATCH — when the fresh check would be WARN and unacknowledged, persisting nothing?
+
+**RULED: (a) — always persist the fresh verdict; an unacknowledged WARN persists but the account
+stays non-routable until a later Test/PATCH supplies the acknowledgment.** Reasoning:
+
+- **§2.5's own words are unconditional.** "Both verdicts are reported; both are persisted" names
+  no exception for an unacknowledged WARN — create/PATCH's refusal behavior is a DIFFERENT
+  mechanism (refusing to write the OTHER fields in the same request), and the test button has no
+  other fields to refuse. Refusing the whole call here would mean silently doing nothing on a
+  request whose entire purpose is "tell me what you found."
+- **The test button is named as THE on-demand re-verification mechanism** — §2.5: "the only
+  mechanism by which a user can clear a stale `blocked` after fixing their DNS." A test button
+  that can silently no-op on a fresh WARN (rather than reporting it) would contradict that framing:
+  the user pressed Test specifically to see the current state, and (b) would show them nothing new
+  while their account remains exactly as unroutable as before, indistinguishable from a request
+  that failed to run at all.
+- **No data is lost by persisting.** The account was already non-routable in every case (b) covers
+  in — either it was BLOCKED (about to warn) or already unacknowledged-warn from an earlier check.
+  Persisting the fresh verdict costs nothing extra in routability terms and gains the user the
+  actual, current, diagnosable state (`from_checked_at` advances, the copy names the real record
+  and policy) instead of a stale answer from whenever they last checked.
+
+**Applied:** `POST /v1/byosmtp/accounts/{id}/test` gains an optional
+`acknowledge_alignment_warning: true` field in its (previously empty) request body. The From check
+re-runs using the account's CURRENT `from_address`/`smtp_host`/`smtp_username` (the test button
+changes no fields — there is no "new" From to gate, only a re-check of the existing one). A
+definitive verdict (ALLOW/WARN/BLOCK) is always persisted, exactly as create/PATCH persist theirs;
+the acknowledgment pair is written in the SAME conditions create/PATCH use (WARN verdict AND the
+field is true) — never a route-specific exception. An indeterminate check leaves the verdict
+untouched (§4, already the existing behavior for ignorance) and is reported in the response
+alongside the credential verification result, distinguishing "the check ran and found X" from "the
+check could not run" — matching T7's own required behavior ("distinguishes 're-runs the check' from
+'recomputes from stored columns'").
+
+Not subject to `account_test_rate_limit_per_day` (§2.4's own precedent, restated): that limit
+exists for box-IP-reputation protection against repeated AUTH attempts, a risk the DNS check does
+not carry.
+
+---
+
+## M3-P4-OD-18 — RULED 2026-08-01: the test button reports both verdicts independently; a credential-verifier failure never hides an already-persisted From-gate result
+
+Found while testing Chunk 3's test-button wiring. The handler runs the From-gate re-check (which
+persists its verdict to the database, per M3-P4-OD-17) BEFORE the credential `Verify` call. But
+the existing (Phase 3) credential path returns a whole-request `500 internal_error
+verification_unavailable` when `s.verifier == nil` — a condition unrelated to Phase 4, present
+whenever no box verifier was wired. Under the code as first written, that 500 discarded the
+From-gate result from the RESPONSE entirely, even though the write had already committed to
+`byosmtp.accounts` — a caller pressing Test would see only a 500 and have no way to learn what the
+From check found without a separate GET.
+
+**The question, asked before implementing (Rule 2):** does credential-verifier unavailability
+still block the From-gate result from reaching the test-button response, or should the two
+verdicts be reported independently regardless of which one (if either) fails?
+
+**RULED: report both independently.** §2.5's own words are unconditional — "both verdicts are
+reported; both are persisted" — and name no exception for one check's transport failure hiding
+the other's real result. An already-committed database write being invisible in the response to
+the exact request that caused it is the kind of gap Rule 5's honesty framing exists to close: the
+caller asked a question, the system found a real answer, and discarding it because of an unrelated
+subsystem's unavailability contradicts the whole point of the button.
+
+**Applied:** the handler computes the From-gate result first (unchanged ordering), then attempts
+the credential Verify; if the credential check errors or the verifier is unavailable, the response
+is still `200` with the From-gate result under `from_alignment` and a `verification` block
+reporting the credential check's own unavailability as a field-level fact
+(`{"state": "unavailable", "code": "verification_unavailable"}`) rather than aborting the whole
+call. This is a narrowing of Phase 3's original all-or-nothing error shape for this ONE failure
+mode (credential-verifier unavailability) — every other test-button failure path (rate limit,
+account not found, malformed request) is unchanged, since those genuinely prevent BOTH checks from
+running at all, not just one of them.
+
+---
+
 ## Honest final position
 
 **Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which

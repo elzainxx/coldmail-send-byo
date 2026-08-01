@@ -33,8 +33,31 @@
 > (`'from_gate_overridden'`) required widening `account_events_action_check`, which Phase 4's
 > original two-migration allotment never anticipated. Phase 4 now claims `0039`–`0041`; Phase 5+
 > cascaded +1 again (the third such cascade this build, after M3-P3-OD-18/19) — see
-> `Docs/plan-revision-log.md`'s 2026-08-01 addendum for the full chain. Chunk 3 (the remaining §3
-> failure-mode edge cases and the test-button hook, §2.5) is not yet built.
+> `Docs/plan-revision-log.md`'s 2026-08-01 addendum for the full chain.
+>
+> **Chunk 3 update (2026-08-01):** the test-button hook (§2.5) landed — `POST .../test` re-runs the
+> From gate against the account's CURRENT stored From/host/username unconditionally, reports both
+> verdicts (credential + alignment) independently per M3-P4-OD-18 (a nil/erroring credential
+> verifier now surfaces as `verification.state="unavailable"` inside a 200, never a whole-request
+> 500 that would hide an already-persisted From-gate result), and always persists a fresh verdict
+> even when unacknowledged (M3-P4-OD-17), leaving the account non-routable rather than refusing the
+> call. §7.2's remaining test-table rows are closed: **T9** (`internal/dispatch`'s eligibility
+> predicate excludes `blocked` and unacknowledged `unaligned_warned`, with same-row controls
+> restoring routability), **T10** (already satisfied by Chunk 1's own deterministic `cache_test.go`
+> — confirmed, no new test needed), **T11** (the two Chunk 1 config-ordering invariants get their
+> own pure unit tests in `internal/configordering`, including the `==` boundary-accepted control),
+> **T13c** (re-acknowledgment is required only when the verdict genuinely CHANGES, not on a mere
+> re-run — proven purely by data via the GENERATED `from_verdict_fingerprint` column, with both of
+> §7.2's required controls), and **T6** (dispatch never resolves DNS: a static test asserts
+> `internal/fromgate` is absent from `internal/dispatch`'s real `go list -deps` production
+> dependency graph, and a behavioral test proves an `aligned` account keeps dispatching with a
+> negative control on an `unverified` one — both landed in `internal/dispatch` rather than the
+> `tests/harness` shell suite this section originally called for, since the dispatch package's own
+> Go test harness already drives a real `TryDispatch`/`recordingPusher` round trip end-to-end and
+> needed no live box/Mailpit to prove the property). 6 new tests across
+> `internal/{dispatch,configordering,platformapi}`, all green. Phase 4's implementation is now
+> complete pending the scoped agent-review pass (§2's bypass-surface question) and phase-end
+> verification.
 >
 > Original status below, retained for what it originally meant:
 >
@@ -1175,16 +1198,32 @@ ruling degrades to "warn and proceed" — which is the outcome it was chosen ove
 
 ### 7.3 Where these live
 
-T1–T5, T7, T10–T12 are Brain-side and belong in the dispatch/adminapi packages with the compose DNS
-service. T6 and T9 require a real send and belong in the real-infra harness (`tests/harness/`)
-alongside `phase3_send.sh`. T8 spans routes and belongs with the admin API tests.
+T1–T5, T7, T10–T12 are Brain-side and belong in the `internal/fromgate`/`platformapi`/`adminapi`
+packages with the compose DNS service. T8 spans routes and belongs with the admin API tests.
 
 Of the tests added by the ruling: T2b and T3c sit with T2 (same package, same zone fixtures). T3b is a
 copy assertion over the response builder and belongs beside it, not in the harness — it needs no DNS
-and no DB. T8c belongs with T8/T8b in the admin API tests. **T13, T13b, and T13c require a real send
-and a real Brain restart, so they belong in the real-infra harness with T6 and T9** — the whole point
-of T13 is that the acknowledgment is checked where dispatch happens, which a package test asserting a
-column cannot show.
+and no DB. T8c belongs with T8/T8b in the admin API tests.
+
+**As actually implemented (Chunks 2-3):** T9, T13, and T13c ended up in `internal/dispatch`'s own Go
+test package (`from_gate_eligibility_test.go`, alongside `eligibility_test.go`'s existing suite)
+rather than the shell-driven real-infra harness — the dispatch package already has a real
+Postgres-backed `TryDispatch`/`recordingPusher` round trip in-package (the same harness Phase 3's own
+eligibility tests use), and none of these three properties need a live box or Mailpit to observe: the
+job's state transition (`queued`→`sending`) IS the "actually sends" assertion the original §7.2
+language called for, proven against real dispatch code, not a stand-in. **T13b** landed in
+`platformapi` instead (`TestFromGate_T13b_AcknowledgmentPersistsAndIsReadable`, Chunk 2) reading the
+persisted acknowledgment columns directly after a fresh `newTestEnv` clone (a brand-new Server +
+Postgres connection, itself standing in for "not the same in-memory state") rather than literally
+killing and restarting a live Brain process — sufficient because neither `platformapi` nor
+`internal/dispatch` hold ANY in-memory cache of eligibility/acknowledgment state (the only cache in
+this phase, `fromGateCache`, caches DNS *lookup* results, never the acknowledgment or verdict
+columns), so there is no in-memory state for a literal process restart to distinguish from a fresh
+read that a fresh Postgres connection does not already rule out. **T6** similarly landed in
+`internal/dispatch` as two tests: a static one asserting `internal/fromgate` is absent from `go list
+-deps`'s report of the package's real production dependency graph, and a behavioral one driving
+`TryDispatch` for a verified account with a paired unverified-account negative control — both needed
+nothing the in-package harness didn't already have.
 
 No test asserts only "no error occurred." Every one asserts a concrete observed post-state — the
 verdict column, the routability, the query count, or the response substring.

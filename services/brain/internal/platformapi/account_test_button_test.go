@@ -4,7 +4,11 @@ package platformapi
 // the actual production Server. The test button reuses the SAME NewServer wiring as every other
 // platformapi test — this file's tests use a nil verifier/testSender (unavailable), which is
 // enough to prove the RATE LIMIT gate fires BEFORE any box work is attempted, since the limit
-// check runs first and returns 429 without ever reaching s.verifier.Verify.
+// check runs first and returns 429 without ever reaching s.verifier.Verify. A nil verifier no
+// longer produces a whole-request 500 (M3-P4-OD-18, Phase 4 C3): the response is 200 with
+// verification.state="unavailable" alongside whatever the From-gate found, since the two checks
+// are independent and one's unavailability must not hide the other's real, already-persisted
+// result.
 
 import (
 	"context"
@@ -12,11 +16,11 @@ import (
 )
 
 // TestAccountTest_RateLimitedPerAccount (T5) — with account_test_rate_limit_per_day=N, N calls
-// succeed (200, even though verification itself is "unavailable" here — the point is the RATE
-// GATE, which runs before verification), then the N+1th is refused 429 rate_limited. Control: a
-// second account belonging to the SAME user is still available after the first is limited (proves
-// per-account, not per-user/global). Second control: after the window, the same account succeeds
-// again.
+// succeed (200, with verification.state="unavailable" since this harness has no verifier — the
+// point is the RATE GATE, which runs before verification), then the N+1th is refused 429
+// rate_limited. Control: a second account belonging to the SAME user is still available after the
+// first is limited (proves per-account, not per-user/global). Second control: after the window,
+// the same account succeeds again.
 func TestAccountTest_RateLimitedPerAccount(t *testing.T) {
 	e := newTestEnv(t, "testbtn")
 	e.setConfigInt(t, "account_test_rate_limit_per_day", 2)
@@ -27,8 +31,8 @@ func TestAccountTest_RateLimitedPerAccount(t *testing.T) {
 	acctB := e.do(t, "POST", "/v1/byosmtp/accounts", seedAccountReq(userID, "smtp.testbtn-b.com", "testbtn-b")).
 		requireStatus(t, 201).str("id")
 
-	// The nil verifier means every call that gets PAST the rate gate fails with internal_error
-	// (test_send_unavailable-equivalent for /test) — but the rate limit's own accounting is via
+	// The nil verifier means every call that gets PAST the rate gate reports
+	// verification.state="unavailable" (M3-P4-OD-18) — but the rate limit's own accounting is via
 	// account_events rows this test seeds directly, isolating the RATE CHECK from verification
 	// availability. Seed N=2 prior 'verified' attempts directly (mirrors what two real test-button
 	// clicks would have left behind), then assert the 3rd click is refused BEFORE reaching the
@@ -87,7 +91,8 @@ func TestVerifyAttemptCountToday_OnlyCountsWithinWindow(t *testing.T) {
 
 // TestAccountTest_AvailableWhileQuarantined (§3.4) — the test route's predicate is user_id +
 // not-deleted ONLY: a quarantined account's test button still works (reaches the verifier —
-// unavailable here, so internal_error, but crucially NOT not_found/refused for being quarantined).
+// unavailable here, so verification.state="unavailable" in a 200, but crucially NOT
+// not_found/refused for being quarantined).
 func TestAccountTest_AvailableWhileQuarantined(t *testing.T) {
 	e := newTestEnv(t, "testbtnq")
 	userID := e.seedUser(t, "testbtnq@example.com")
