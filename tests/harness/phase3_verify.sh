@@ -199,3 +199,57 @@ PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 2000::int) WHERE
 # still being far below the ~6000ms the pacer itself must add.
 GAP_MS=$(( PACED_MS - UNPACED_MS ))
 [[ "$GAP_MS" -gt 4000 ]] && ok "C4 (live): pacing is observable as real elapsed time (paced=${PACED_MS}ms, unpaced=${UNPACED_MS}ms, gap=${GAP_MS}ms > 4000ms floor)" || bad "C4 (live): pacing not observed (paced=${PACED_MS}ms, unpaced=${UNPACED_MS}ms, gap=${GAP_MS}ms) — the interval may not be causal"
+
+# --- C5: soft delete via the real HTTP surface — retained, unusable, idempotent ---
+DELUSER="$(PSQL "INSERT INTO public.users (email,is_active) VALUES ('deletec5@example.com',true) RETURNING id" || true)"
+DELACCT_JSON="$(curl -s -X POST http://localhost:9080/v1/byosmtp/accounts -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"user_id\":\"$DELUSER\",\"smtp_host\":\"$VERIFY_HOST\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"delete-c5@ourdomain.com\",\"smtp_secret\":\"canary-delete-c5\",\"from_address\":\"delete-c5@ourdomain.com\"}")"
+DELACCT="$(echo "$DELACCT_JSON" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+DEL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://localhost:9080/v1/byosmtp/accounts/$DELACCT?user_id=$DELUSER" -H "Authorization: Bearer $PLTOK")"
+[[ "$DEL_CODE" == "204" ]] && ok "C5 (live): DELETE returned 204" || bad "C5 (live): DELETE returned $DEL_CODE, want 204"
+DEL_ROW_LIVE="$(PSQL "SELECT deleted_at IS NOT NULL AND purge_after IS NOT NULL FROM byosmtp.accounts WHERE id='$DELACCT'" || true)"
+[[ "$DEL_ROW_LIVE" == "t" ]] && ok "C5 (live): deleted_at/purge_after stamped on the real row" || bad "C5 (live): deletion columns not set"
+DEL_ROW_EXISTS="$(PSQL "SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE id='$DELACCT')" || true)"
+[[ "$DEL_ROW_EXISTS" == "t" ]] && ok "C5 (live): the account row PERSISTS through the retention window (soft delete, not hard)" || bad "C5 (live): the row was removed immediately — this must be a soft delete"
+GET_AFTER_DEL="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:9080/v1/byosmtp/accounts/$DELACCT?user_id=$DELUSER" -H "Authorization: Bearer $PLTOK")"
+[[ "$GET_AFTER_DEL" == "404" ]] && ok "C5 (live): GET on the deleted account returns 404 (unusable, §6.2)" || bad "C5 (live): GET after delete returned $GET_AFTER_DEL, want 404"
+REDEL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://localhost:9080/v1/byosmtp/accounts/$DELACCT?user_id=$DELUSER" -H "Authorization: Bearer $PLTOK")"
+[[ "$REDEL_CODE" == "404" ]] && ok "C5 (live): a second delete is idempotent (404, not a crash or a re-stamp)" || bad "C5 (live): second delete returned $REDEL_CODE, want 404"
+
+# --- C5: the deleted account is genuinely excluded from dispatch, on the REAL tick loop (never
+# claimed/selected) — and per M3-P4-OD-11's ruling (deletion has no automatic recovery timer, the
+# same shape as quarantine/disable/manual-pause), the terminal outcome is FAILED, not a silent
+# forever-WAIT. §8.6 originally described this as a WAIT before M3-P4-OD-11 was ruled; corrected
+# 2026-08-01 in both the doc and this assertion to match the ruling that actually governs it. ---
+DELJOB="$(PSQL "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status) VALUES ('$DELUSER','$DELUSER','waits@example.com','C5 wait','body','pending') RETURNING id" || true)"
+curl -s -X POST http://localhost:9080/v1/run -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+  -d "{\"job_item_id\":\"$DELJOB\",\"user_id\":\"$DELUSER\"}" >/dev/null
+sleep 3
+DELJOB_STATE="$(PSQL "SELECT state FROM byosmtp.jobs WHERE job_item_id='$DELJOB'" || true)"
+[[ "$DELJOB_STATE" == "failed" ]] && ok "C5 (live): a job for a deleted-account-only user FAILS promptly (M3-P4-OD-11: deletion has no auto-recovery timer), never claimed by the deleted account" || bad "C5 (live): job state=$DELJOB_STATE, want failed"
+
+# --- C5: the purge loop itself runs live, on a short account_purge_sweep_interval_ms, and hard-
+# deletes an account whose purge_after is already in the past — proving the FIFTH Brain loop is
+# actually wired and ticking, not merely that sweepExpiredAccounts works when called directly
+# (the dispatch package's own Go tests already prove that half). PurgeRunner.Run only re-reads the
+# interval AFTER a tick completes (same shape as every other loop in this codebase), and it already
+# ran its one startup tick minutes ago at the DEFAULT 1h interval — so setting the config alone
+# would not be observed until that hour elapses. Restart the brain container so its NEXT startup
+# tick (which every loop runs immediately, "a Brain that was down past a boundary has a backlog to
+# clear") picks up the fast interval already written to config. ---
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 2000::int) WHERE key='account_purge_sweep_interval_ms'" >/dev/null
+PSQL "UPDATE byosmtp.accounts SET deleted_at = NOW() - INTERVAL '2 hours', purge_after = NOW() - INTERVAL '1 hour' WHERE id='$DELACCT'" >/dev/null
+$DC restart brain >/dev/null 2>&1
+for _ in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9080/readyz 2>/dev/null || echo 000)"
+  [[ "$code" == "200" ]] && break
+  sleep 1
+done
+purged=0
+for _ in $(seq 1 15); do
+  still="$(PSQL "SELECT EXISTS(SELECT 1 FROM byosmtp.accounts WHERE id='$DELACCT')" || true)"
+  [[ "$still" == "f" ]] && { purged=1; break; }
+  sleep 1
+done
+[[ "$purged" == "1" ]] && ok "C5 (live): the purge loop (the FIFTH Brain loop) hard-deleted the expired account on its own startup tick after a restart, unattended" || bad "C5 (live): the account was never purged by the live loop within 15s of the restart (last check: still exists)"
+PSQL "UPDATE byosmtp.config SET value = jsonb_build_object('v', 3600000::int) WHERE key='account_purge_sweep_interval_ms'" >/dev/null

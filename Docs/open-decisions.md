@@ -1,6 +1,6 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 93 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-01): ALL 95 ITEMS ARE RULED.** The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -70,7 +70,15 @@ found while wiring C4 (bulk add): §4.2's row-count bound (already ruled mandato
 needs a real seeded key, `bulk_add_max_rows`, but `0036`'s six-key seed landed before OD-8's bound
 was worked through to a concrete key, and `0037` is already spent on the test-send grant. Ruled the
 same day, same reasoning as OD-18: Phase 3 takes `0038`; Phase 4's doc (already shifted once by
-OD-18) shifts again to `0039`/`0040`, and Phases 5/6/7 cascade +1 in step.
+OD-18) shifts again to `0039`/`0040`, and Phases 5/6/7 cascade +1 in step. The 94th,
+[M3-P3-OD-20](#m3-p3-od-20--ruled-2026-08-01-admin-created-accounts-also-run-verify-on-add), found
+while wiring C5's eligibility term: an admin-created account never ran verify-on-add at all and
+was permanently unroutable the moment the term landed. Ruled the same day: the admin surface also
+runs verify-on-add, sharing the same Verifier via a second adapter. The 95th,
+[M3-P3-OD-21](#m3-p3-od-21--ruled-2026-08-01-docs-consistency-correction-not-a-new-ruling-86t6-corrected-to-match-m3-p4-od-11),
+is a docs-consistency correction, not a design ruling: §8.6's own text still described the
+pre-M3-P4-OD-11 WAIT behavior for a deleted-only account; corrected to match the ruling that
+already governs it (FAIL, not WAIT).
 
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
@@ -937,6 +945,71 @@ references in `phase-1-schema-delta.md` and `phase-8-polish-docs-close.md` left 
 own sweep (found while re-verifying this cascade, not by the OD-18 pass itself — Rule 11: a claimed
 sweep is re-checked in the tree, not trusted by citation). Phase 3's own fourth migration is
 `byosmtp_0038_bulk_add_max_rows_config`.
+
+---
+
+## M3-P3-OD-20 — RULED 2026-08-01: admin-created accounts also run verify-on-add
+
+Found while wiring C5's eligibility term (M3-P3-OD-4's `credential_verification_state='verified'`
+addition to `accountBaseEligibilityFilter`, §6.2's forward-trace commit 2). Verified live: an
+account created via the OPERATOR admin surface (`POST /v1/admin/accounts`, Domain B,
+module-2-inherited and never touched by verify-on-add's own build in C2) is born
+`credential_verification_state='unverified'` — the column's default — with no code path that ever
+moves it to `'verified'`. Once the eligibility term landed, every admin-created account became
+permanently unroutable: a live send through an admin-created account failed with the job going
+`queued`→`failed`, cascading into SUITE 9's and SUITE 10's live send assertions (both fixtures use
+`POST /v1/admin/accounts`), all traced back to this single root cause.
+
+**The question:** should admin-created accounts also run verify-on-add (uniform rule, no
+special-casing by which surface created the row), bypass the term entirely (trust the operator,
+skip the check), or should the eligibility term be scoped to only apply to user-created accounts?
+
+**RULED: admin create also runs verify-on-add.** The SAME `dispatch.Verifier` C2/C3/C4 already
+share is wired into `adminapi.Server` too, via a second adapter (`adminVerifierAdapter` in
+`main.go`, mirroring `verifierAdapter`'s exact shape — OD-7 isolation means `adminapi` needs its
+own `AccountVerifier` interface + `VerifyResult` type, duplicated from `platformapi`'s, not
+shared). `adminapi.NewServer` gained a 4th param; its construction in `main.go` moved to AFTER the
+Verifier is built (previously constructed earlier in the file, before the Verifier existed at all).
+Bypassing the term for admin-created accounts was rejected on the same ground M3-P3-OD-4 itself
+already established: "a failed-verification account is NOT ROUTABLE" has no stated carve-out for
+who created the row, and inventing one here would silently reintroduce the exact unconfirmed-
+credential risk the term exists to close — just for the operator path specifically. Scoping the
+term to user-created accounts only was rejected as a bigger design fork than this phase's scope: it
+would give module 2's inherited operator model and module 3's user model two different eligibility
+rules over the SAME `byosmtp.accounts` table.
+
+**Applied:** `adminapi/server.go` (`AccountVerifier`, `VerifyResult`, `NewServer`'s 4th param),
+`adminapi/account_create.go` (`runVerifyOnAdd`, called after the create's own commit, same §2.5
+precedent — a verification problem never demotes a real create), `cmd/brain/main.go`
+(`adminVerifierAdapter`, admin-server construction relocated after the Verifier), and
+`adminapi/harness_test.go`'s one `NewServer` call site (`nil` — no adminapi test dispatches a real
+send, so a nil verifier is correct there, matching every other package's own test-harness
+precedent).
+
+---
+
+## M3-P3-OD-21 — RULED 2026-08-01 (docs-consistency correction, not a new ruling): §8.6/T6 corrected to match M3-P4-OD-11
+
+Found while live-verifying C5: `phase-3-user-owned-accounts.md` §8.6 (T6) states *"the dispatcher
+**waits** — the job stays `queued`... the exhaustion classifier's empty-chain branch is what
+fires"* for a user whose only account is soft-deleted. But **M3-P4-OD-11** (ruled the same day, in
+this same session, examining this EXACT scenario) rules the opposite: deletion has no automatic
+recovery timer — the same shape as quarantine/disable/manual-pause, all already
+`terminal_blocked` — so the correct, and actual, tick-loop outcome is `failed`, not a silent
+forever-`queued` WAIT. §8.6's text predates that ruling and was never corrected to match it. This
+was initially raised (by me) as if it were an unexamined code bug in `userHasAnyAccount`; it was
+not — M3-P4-OD-11 already reasoned through and settled this exact question, and the actual gap was
+purely in §8.6's stale prose. Recorded here as a correction rather than a new design ruling: no
+code changed, no reasoning was re-litigated, M3-P4-OD-11 stands as written.
+
+**Applied:** §8.6's dispositive description and its live verification in
+`tests/harness/phase3_verify.sh` both corrected from `queued`/WAIT to `failed`/FAIL. The Go-level
+T6 equivalent (`TestPurge_DeletedAccountNeverSelectedForSend`, `dispatch/purge_test.go`) needed no
+behavioral fix — it drives `TryDispatch`, which never calls `evaluateChain` at all and simply
+requeues to `queued` on exhaustion; the WAIT-vs-FAIL question only exists at the tick-loop level
+(`loop.go`'s `Tick`, gated by `evaluateChain`), so that Go test's `queued` assertion was already
+correct for the path it exercises — only its comment was clarified to state that distinction
+explicitly, so a future reader does not conflate the two mechanisms again.
 
 ---
 

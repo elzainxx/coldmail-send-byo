@@ -41,9 +41,15 @@ import (
 // isolation, OD-7's precedent) — so it carries its own literal copy, fixed in the same commit as
 // this consolidation and cross-referenced here so a future term addition is visible in review even
 // though it cannot be enforced by the compiler across that boundary.
+// credential_verification_state = 'verified' joins the base filter as commit 2 of Phase 4 §8.1's
+// three-commit order (M3-P3-OD-4, ruled): a failed-verification account is created and persisted
+// (§2.5 — not rolled back), but it is NOT ROUTABLE. This is a ONE-LINE addition to the single
+// consolidated definition, per the ruling — it does NOT re-open the five-hand-copied-site pattern
+// M3-P4-OD-3 already closed; every call site below inherits the term by construction.
 const accountBaseEligibilityFilter = `a.quarantined = FALSE
       AND a.disabled = FALSE
-      AND a.deleted_at IS NULL`
+      AND a.deleted_at IS NULL
+      AND a.credential_verification_state = 'verified'`
 
 // defaultAccountOrderBy is the one_by_one / fallback ORDER BY (§3, RULED — see P4-OD-1 below):
 // score DESC, then a DETERMINISTIC id ASC tiebreak — NOT RANDOM(). §3's literal SQL

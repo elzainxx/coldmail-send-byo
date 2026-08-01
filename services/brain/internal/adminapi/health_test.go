@@ -30,7 +30,10 @@ func (e *testEnv) seedHealthUser(t *testing.T) {
 }
 
 // seedHealthAccount seeds a real account owned by the system user with the given flags/counters
-// and returns its id.
+// and returns its id. credential_verification_state='verified' (+ credential_verified_at, the
+// CHECK pairing): M3-P3-OD-4's eligibility term means the column's 'unverified' default is now
+// STRUCTURALLY excluded from accountBaseEligibilityFilter, so this "normally healthy" fixture must
+// seed 'verified' explicitly — the same shape every other "eligible by default" flag already has.
 func (e *testEnv) seedHealthAccount(t *testing.T, paused, quarantined, disabled bool, dailySent, dailyLimit int) string {
 	t.Helper()
 	e.seedHealthUser(t)
@@ -39,11 +42,12 @@ func (e *testEnv) seedHealthAccount(t *testing.T, paused, quarantined, disabled 
 		`INSERT INTO byosmtp.accounts
 		   (user_id, smtp_host, smtp_port, smtp_username,
 		    credential_ciphertext, credential_key_id, credential_nonce, from_address,
-		    paused, pause_reason, quarantined, quarantine_reason, disabled, daily_sent_count, daily_limit, daily_reset_day)
+		    paused, pause_reason, quarantined, quarantine_reason, disabled, daily_sent_count, daily_limit, daily_reset_day,
+		    credential_verification_state, credential_verified_at)
 		 VALUES ($1,'smtp-sink',587,$2,'\x00','k','\x00','u@ourdomain.com',
 		         $3, (CASE WHEN $3 THEN 'manual' ELSE NULL END)::byosmtp.pause_reason,
 		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::byosmtp.quarantine_reason,
-		         $5, $6, $7, CURRENT_DATE)
+		         $5, $6, $7, CURRENT_DATE, 'verified', NOW())
 		 RETURNING id`,
 		sysUserHealth, "u-"+randHex(6)+"@ourdomain.com", paused, quarantined, disabled, dailySent, dailyLimit).Scan(&id); err != nil {
 		t.Fatalf("seed account: %v", err)
@@ -327,7 +331,8 @@ func TestHealth_DeletedAccountNeverCountsHealthy(t *testing.T) {
 	if err := e.admin.QueryRow(ctx,
 		`SELECT COUNT(*) FROM byosmtp.accounts
 		 WHERE paused=FALSE AND quarantined=FALSE AND disabled=FALSE
-		   AND deleted_at IS NULL AND daily_sent_count < daily_limit`).Scan(&wantHealthy); err != nil {
+		   AND deleted_at IS NULL AND credential_verification_state = 'verified'
+		   AND daily_sent_count < daily_limit`).Scan(&wantHealthy); err != nil {
 		t.Fatalf("direct healthy count: %v", err)
 	}
 	if wantHealthy != 1 {

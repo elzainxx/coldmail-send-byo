@@ -2,6 +2,7 @@ package adminapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 )
 
@@ -132,6 +133,13 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify-on-add is MANDATORY here too (Module 3 Phase 3 C5) — an admin-created account runs
+	// through the SAME box verification a user-created one does, never a special case. Runs AFTER
+	// the commit above, never inside its transaction, and its own failure is never surfaced as
+	// this request's error — the 201 always reflects the row that now exists, verified or not
+	// (§2.5's precedent, applied identically to this surface).
+	s.runVerifyOnAdd(ctx, accIDStr, userID)
+
 	acc, err := getAccount(ctx, s.db, accIDStr)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "account_reread_error: "+err.Error()))
@@ -140,6 +148,26 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 
 	s.logOK(requestIDFrom(r.Context()), r, "account_created id="+accIDStr)
 	writeJSON(w, http.StatusCreated, acc)
+}
+
+// runVerifyOnAdd calls the injected AccountVerifier and applies nothing itself — Verify already
+// wrote the outcome to byosmtp.accounts. A nil verifier (only in tests that don't wire one) or a
+// genuine Verify error (a DB write failure while applying the outcome, not a verification
+// FAILURE — that is a normal VerifyResult) is logged, never surfaced to the caller.
+func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
+	if s.verifier == nil {
+		log.Printf("adminapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified'", accountID)
+		return
+	}
+	opTimeout := 0
+	if row, err := getConfig(ctx, s.db, "smtp_operation_timeout_sec"); err == nil {
+		if n, ok := asInt(row.Value); ok {
+			opTimeout = int(n)
+		}
+	}
+	if _, err := s.verifier.Verify(ctx, accountID, userID, opTimeout); err != nil {
+		log.Printf("adminapi: verify-on-add for account %s failed to complete: %v", accountID, err)
+	}
 }
 
 // resolveDailyLimit returns the request value if present, else the config daily_limit_default.

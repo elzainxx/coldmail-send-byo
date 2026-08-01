@@ -5,10 +5,9 @@ package platformapi
 // SAME (host, username) under a DIFFERENT user is accepted — the two-layer shape (app pre-check +
 // unique-index backstop) inherited from module 2 §2.7.
 //
-// Control 2 (the soft-delete re-add case) lives in account_delete_test.go (C5) — soft delete does
-// not exist yet at C1, so that control cannot be constructed here. Controls 1 and 3 (the ones this
-// chunk's own code can prove) are covered below; §8.9's full three-control set is complete once C5
-// lands.
+// Control 2 (the soft-delete re-add case) lives in account_delete_test.go
+// (TestAccountUniqueness_SoftDeleteThenReAddSameMailbox, C5) — soft delete did not exist yet at C1,
+// so that control could not be constructed here. Controls 1 and 3 are covered below.
 
 import (
 	"context"

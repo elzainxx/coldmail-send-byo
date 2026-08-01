@@ -17,20 +17,46 @@ import (
 // account," not any end user's.
 const SystemUserID = "00000000-0000-0000-0000-000000000000"
 
+// AccountVerifier is the seam through which handleAccountCreate triggers a real box verification
+// (Module 3 Phase 3 C5) without adminapi importing internal/dispatch (OD-7's package-isolation
+// precedent — the SAME shape as platformapi.AccountVerifier; *dispatch.Verifier satisfies both
+// structurally via two separate adapter types in main.go, since the two interfaces cannot share a
+// definition across the package boundary). An admin-created account must verify exactly like a
+// user-created one: M3-P3-OD-4's eligibility term (credential_verification_state='verified')
+// applies uniformly, with no special-casing by which surface created the row.
+type AccountVerifier interface {
+	Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (VerifyResult, error)
+}
+
+// VerifyResult mirrors dispatch.VerifyResult's shape (duplicated per OD-7 isolation — the same
+// discipline platformapi.VerifyResult already follows).
+type VerifyResult struct {
+	Verified     bool
+	State        string
+	ExternalCode string
+	Message      string
+	SMTPResponse string
+}
+
 // Server is the operator admin API. It holds the DB pool (as byosmtp_module), the Encrypt-only
-// credential Encryptor, and the operator-key Authenticator. It registers its routes on a mux
-// that the Brain mounts under /v1/admin/*.
+// credential Encryptor, the operator-key Authenticator, and (Module 3 Phase 3 C5) the
+// AccountVerifier seam for verify-on-add. It registers its routes on a mux that the Brain mounts
+// under /v1/admin/*.
 type Server struct {
-	db   *pgxpool.Pool
-	enc  *Encryptor
-	auth *Authenticator
-	mux  *http.ServeMux
+	db       *pgxpool.Pool
+	enc      *Encryptor
+	auth     *Authenticator
+	verifier AccountVerifier
+	mux      *http.ServeMux
 }
 
 // NewServer wires the admin routes. db is the byosmtp_module pool (never superuser); enc is the
-// Encrypt-only credential primitive; auth is the operator-key gate.
-func NewServer(db *pgxpool.Pool, enc *Encryptor, auth *Authenticator) *Server {
-	s := &Server{db: db, enc: enc, auth: auth, mux: http.NewServeMux()}
+// Encrypt-only credential primitive; auth is the operator-key gate. verifier may be nil in tests
+// that don't exercise verify-on-add; handleAccountCreate treats a nil verifier as "verification
+// unavailable" (logged, never surfaced as a create failure — the same §2.5 precedent
+// platformapi's own create path already follows).
+func NewServer(db *pgxpool.Pool, enc *Encryptor, auth *Authenticator, verifier AccountVerifier) *Server {
+	s := &Server{db: db, enc: enc, auth: auth, verifier: verifier, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }

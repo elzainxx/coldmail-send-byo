@@ -120,6 +120,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/byosmtp/accounts", s.requireAuth(s.handleAccountList))
 	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountGet))
 	s.mux.HandleFunc("PATCH /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountUpdate))
+	s.mux.HandleFunc("DELETE /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountDelete))
 	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}/events", s.requireAuth(s.handleAccountEvents))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/disable", s.requireAuth(s.handleAccountDisable))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))

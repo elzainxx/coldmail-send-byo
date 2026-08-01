@@ -92,6 +92,16 @@ type Config struct {
 	VariationPrecedence           string   // variation_precedence — toggle 11
 	VariationThreadIndex          bool     // variation_thread_index — toggle 12, inert (P8-8)
 
+	// Module 3 Phase 3 §6.3 purge dials (byosmtp_0036; config-not-code). The purge loop is the
+	// FIFTH single-Brain loop (M3-P3-OD-10, ruled: separate from RetentionTick — a wedged purge is
+	// a PRIVACY failure, a wedged send-log sweep is a storage one; masking one behind the other's
+	// health is the wrong failure mode to accept). account_retention_window_sec is read by the
+	// platformapi delete handler (stamps purge_after AT DELETE TIME), not by this loop, but is
+	// listed here too since Config is the one place every seeded dial's Go home is documented.
+	AccountRetentionWindowSec    int // account_retention_window_sec — §6.1, stamped into purge_after at delete time (read by platformapi, not this loop)
+	AccountPurgeSweepIntervalMS  int // account_purge_sweep_interval_ms — the purge loop's tick (§6.3)
+	AccountPurgeDeleteBatchSize  int // account_purge_delete_batch_size — rows per purge DELETE batch (§6.3); <= 0 disables the sweep
+
 	// Phase 9.5 operability & control-plane safety dials (all eleven seeded sender_0021;
 	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
 	DispatchEnabled                 bool           // dispatch_enabled — B1 global panic switch (§1.1)
@@ -244,6 +254,15 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.QuarantineThreshold, err = readIntKey(ctx, db, "quarantine_threshold"); err != nil {
+		return c, err
+	}
+	if c.AccountRetentionWindowSec, err = readIntKey(ctx, db, "account_retention_window_sec"); err != nil {
+		return c, err
+	}
+	if c.AccountPurgeSweepIntervalMS, err = readIntKey(ctx, db, "account_purge_sweep_interval_ms"); err != nil {
+		return c, err
+	}
+	if c.AccountPurgeDeleteBatchSize, err = readIntKey(ctx, db, "account_purge_delete_batch_size"); err != nil {
 		return c, err
 	}
 	if c.ThrottlePauseSeconds, err = readIntKey(ctx, db, "throttle_pause_seconds"); err != nil {

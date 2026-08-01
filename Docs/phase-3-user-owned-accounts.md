@@ -1075,9 +1075,22 @@ the test's structure because it is the exact place a passing-for-the-wrong-reaso
 **already successfully sent** (so it is demonstrably eligible and demonstrably not excluded by any
 other predicate). Then soft-delete it and dispatch a job.
 
-**Dispositive:** the dispatcher **waits** — the job stays `queued`, no `assigned`, and the exhaustion
-classifier's empty-chain branch is what fires. Plus: the row still exists with `deleted_at` and
-`purge_after` set, and `GET` on it returns not-found through the user surface.
+**Dispositive:** the job is never claimed/sent by the deleted account. Plus: the row still exists
+with `deleted_at` and `purge_after` set, and `GET` on it returns not-found through the user
+surface.
+
+**Corrected 2026-08-01 (M3-P4-OD-11, ruled the same day, in a later phase than this section was
+originally written): the job's terminal outcome is `failed`, not a `queued` WAIT.** This section's
+first draft assumed the exhaustion classifier's empty-chain (zero-accounts) branch would fire for
+a deleted-only account, mirroring "no accounts at all." M3-P4-OD-11 examined exactly this question
+and ruled the opposite: deletion is a deliberate, user-initiated action with no automatic recovery
+timer — the same shape as quarantine/disable/manual-pause, all of which are already
+`terminal_blocked` — so `evaluateChain` correctly falls through past the self-recovering check
+(deletion has no timer to wait on) to `verdictFail`. Holding the job `queued` forever against an
+account the user themselves removed, with no operator-visible signal, is the wrong behavior; a
+prompt, refundable FAIL is. `userHasAnyAccount` (the genuine empty-chain check) deliberately still
+counts a deleted row — a user with one deleted account is not zero accounts, and routing them into
+that branch by mistake was M3-P4-OD-11's own explicit non-goal.
 
 **Control — the same account, undeleted, IS selected.** Set `deleted_at` back to NULL on the same
 fixture and assert the job is claimed and sent by that account.
@@ -1595,3 +1608,79 @@ assertion that only the created rows' hosts exist), `TestBulkAdd_RowCountBound` 
 + an at-the-bound control), `TestBulkAdd_RequiresTenantSelector`, `TestDescribe_BulkAddWarningContract`,
 plus `phase3_verify.sh`'s new LIVE assertions covering partial success, the row-count bound, and
 pacing as described above.
+
+### 14.5 C5 closeout — deletion, retention, and the purge loop (the last chunk)
+
+**What landed:** `DELETE /v1/byosmtp/accounts/{id}` (`handleAccountDelete`) is a soft delete —
+stamps `deleted_at`/`deleted_by`/`purge_after` (the last computed from the live
+`account_retention_window_sec`, AT DELETE TIME per §6.1) and returns `204`, leaving the row
+retained rather than removed. Idempotent by construction: the pre-read (`readFlags`, run INSIDE
+the delete's own transaction rather than on the bare pool — closing the same class of gap module
+2's own delete left open) already filters `deleted_at IS NULL`, so a second delete attempt returns
+the same `errAccountNotFound` a genuinely nonexistent id would, before the UPDATE ever runs. The
+eligibility predicate's forward-traced term (§2.5/§6.2, M3-P3-OD-4's own commit 2) landed here:
+`credential_verification_state = 'verified'` joins `accountBaseEligibilityFilter`
+(`dispatch/eligibility.go`) — the SAME consolidated constant `accountConsume`, `userHasEligible`,
+and `exhaustion.go`'s classifier all already share, so the term reaches every real production site
+by construction, not by remembering to touch five call sites. `adminapi/health_store.go`'s
+duplicated literal (OD-7 isolation — it cannot import `internal/dispatch`) gained the matching
+term in the same commit, per its own comment's standing instruction to do so.
+
+The purge loop (`dispatch/purge.go`) is the **fifth** single-Brain loop (M3-P3-OD-10, ruled
+separate from the retention sweep: a wedged purge is a privacy failure, a wedged send-log sweep is
+a storage one). It mirrors `retention.go`'s exact shape — fresh config each tick, the shared
+`DBHealth` outage gate, the ADR-0011 leadership gate, panic-recover, a batch-size safety cap that
+is logged (never silently truncated) on hit, `<= 0` disables the sweep rather than becoming an
+unbounded `DELETE`. The claim-then-delete is genuinely one statement (a bounded sub-SELECT feeding
+the DELETE), so there is no window between selecting a purge candidate and removing it — §6.3's
+"must be in one transaction" requirement is satisfied structurally, not by wrapping two statements
+in a `BEGIN`/`COMMIT`.
+
+**This is the heaviest `sender_0024`/ADR-0012 consumer in either module, exactly as the brief
+says** — every purged account with real job history exercises the append-only trigger's
+per-FK-column carve-out on `job_events`, proven directly (T7) rather than assumed: a fixture with a
+real, completed send is purged, and `job_events` survives with `account_id` nulled and every
+content column byte-identical, while the `account_events` `'deleted'` audit row (written before
+the soft-delete UPDATE, so it exists to outlive the purge) survives with the same FK nulling from
+`sender_0014`.
+
+**Two real gaps found while implementing, both ruled the same day:**
+
+1. **M3-P3-OD-20** — the eligibility term's own live verification (SUITE 9/10) failed immediately:
+   accounts created via the OPERATOR admin surface (`POST /v1/admin/accounts`) never ran
+   verify-on-add at all (a G2-era scoping decision, "All Phase 3" — never actually picked up by any
+   later chunk until now) and were born permanently `unverified`, hence permanently unroutable the
+   moment the term landed. Ruled: the admin surface also runs verify-on-add, sharing the exact same
+   `dispatch.Verifier` via a second adapter (`adminVerifierAdapter`) — one verification mechanism,
+   no special-casing by which surface created the row. `adminapi.NewServer` gained a 4th param, and
+   its construction in `main.go` moved to after the Verifier exists (it had been constructed
+   earlier in the file, before the Verifier was built at all — a genuine ordering bug this
+   discovery surfaced, not merely a missing feature).
+2. **M3-P3-OD-21** (a docs-consistency correction, not a new ruling) — §8.6 (T6) still described
+   the job for a deleted-only-account user as WAITing (`queued`), but **M3-P4-OD-11** — ruled
+   earlier the same day, in this same session, examining this exact scenario — already settled the
+   opposite: deletion has no automatic recovery timer, so the tick loop's `evaluateChain` correctly
+   returns FAIL, not WAIT, and the live job genuinely reaches `failed`. This was first raised as if
+   it were an unexamined code bug and nearly "fixed" by reverting `userHasAnyAccount` to exclude
+   deleted rows — which would have directly undone M3-P4-OD-11's own reasoning. Caught before
+   shipping: reverted the code change, corrected §8.6's stale text and the live assertion instead.
+
+**Verified:** clean-slate reset, full harness 91/91, all six CI gates green (`config_drift`/
+`config_consumption`: 60 keys — none RESERVED any longer, the last three purge/retention dials
+cleared in this commit; `contract_drift`: 16 platform routes now gated). New tests:
+`TestPurge_DeletedAccountNeverSelectedForSend` (T6), `TestPurge_HardDeletesAfterWindowAndPreservesJobHistory`
+(T7, the ADR-0012 half), `TestPurge_DisabledSweepNeverDeletes`, `TestPurge_LockOrder_AccountThenJobNoDeadlock`
+(T10 — forced interleave, `pg_stat_activity` scoped to both `datname` and a query-text fragment per
+Rule 10's addendum, plus a genuine cross-lock deadlock control proving `40P01` really can fire in
+this schema), `TestEligibility_UnverifiedAccountNeverSelected` (the new predicate term's own
+dispositive test, same-row control), `TestAccountDelete_SoftDeletesStampsRetentionAndBecomesUnusable`,
+`TestAccountDelete_CrossTenantIsNotFound`, `TestAccountUniqueness_SoftDeleteThenReAddSameMailbox`
+(T9's third control, promised since C1), plus `phase3_verify.sh`'s new LIVE assertions: a real
+soft-delete round trip, a real deleted-account-only send reaching `failed`, and the purge loop
+itself — restarted with a fast `account_purge_sweep_interval_ms` so its own startup tick (every
+loop in this codebase runs one immediately) proves the fifth loop is actually wired and ticking
+unattended, not merely that `sweepExpiredAccounts` works when called directly.
+
+**All five chunks (C1-C5) are now closed.** Full harness green, all six CI gates green, the
+one-definition eligibility site (`accountBaseEligibilityFilter`) carries the C5-added term with no
+out-of-phase logic anywhere in the tree.

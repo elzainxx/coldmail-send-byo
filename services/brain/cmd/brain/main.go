@@ -98,29 +98,12 @@ func main() {
 	}
 	log.Printf("kms dev key loaded (sole decryptor; %d bytes of key material held in-process, never logged)", decryptor.KeyLen())
 
-	// Admin API (Domain B, operator — Phase 2). Mounted under /v1/admin/* on the health server.
-	// It authenticates callers with a hashed operator bearer key and is the ONLY writer of
-	// account credentials — Encrypt-ONLY (OD-7: Decrypt stays Brain-only, the send path). The
-	// surface only mounts when an admin key hash is configured (fail-closed: no key => no admin
-	// surface). The credential Encrypt key material is loaded via a DELIBERATELY separate KMS
-	// entry point (never the decryptor) so the encrypt-only property is structural.
+	// Admin API construction is DEFERRED to just after the verify-on-add Verifier exists (below) —
+	// M3-P3-OD-4's eligibility term (credential_verification_state='verified') makes an
+	// admin-created account UNROUTABLE unless it too runs verify-on-add, and the admin server's own
+	// AccountVerifier param needs the Verifier built at line ~163. See the admin server construction
+	// after the verifier below; cfg.AdminEnabled/KMS/enc/auth setup for it stays wherever it was.
 	var adminHandler http.Handler
-	if cfg.AdminEnabled {
-		encKey, err := kms.LoadEncryptKey(cfg.KMSDevKeyFile)
-		if err != nil {
-			log.Fatalf("FATAL admin credential key load: %v", err)
-		}
-		enc, err := adminapi.NewEncryptor(encKey, cfg.CredentialKeyID)
-		if err != nil {
-			log.Fatalf("FATAL admin encryptor init: %v", err)
-		}
-		auth := adminapi.NewAuthenticator(cfg.AdminKeyHashes)
-		adminSrv := adminapi.NewServer(database.Pool, enc, auth)
-		adminHandler = adminSrv.Handler()
-		log.Printf("admin API mounted on %s under /v1/admin/* (operator-key auth; Encrypt-only; %d key(s) configured)", cfg.HealthAddr, len(cfg.AdminKeyHashes))
-	} else {
-		log.Printf("admin API NOT mounted (ADMIN_API_KEY_HASHES unset — operator surface disabled, fail-closed)")
-	}
 
 	// --- Phase 3: the minimal send path (dispatch + credential handoff + outcome handler) -------
 	// The credential DECRYPTOR is the sole decryptor (Rule 6). It is loaded via a DELIBERATELY
@@ -162,6 +145,36 @@ func main() {
 	// wired as the stream's VerifyHandler alongside the OutcomeHandler's ReportHandler.
 	verifier := dispatch.NewVerifier(database.Pool, dec, stream)
 	stream.SetOnVerify(verifier.HandleVerifyReport)
+
+	// Admin API (Domain B, operator — Phase 2). Mounted under /v1/admin/* on the health server.
+	// It authenticates callers with a hashed operator bearer key and is the ONLY writer of
+	// account credentials — Encrypt-ONLY (OD-7: Decrypt stays Brain-only, the send path). The
+	// surface only mounts when an admin key hash is configured (fail-closed: no key => no admin
+	// surface). The credential Encrypt key material is loaded via a DELIBERATELY separate KMS
+	// entry point (never the decryptor) so the encrypt-only property is structural.
+	//
+	// Module 3 Phase 3 C5: admin-created accounts now ALSO run verify-on-add, sharing the SAME
+	// Verifier the user-facing surface uses (verifierAdapter, below) — M3-P3-OD-4's eligibility
+	// term (credential_verification_state='verified') applies uniformly across BOTH surfaces; an
+	// admin-created account that never verifies is exactly as unroutable as a user-created one,
+	// with no special-casing by which surface created the row. Construction is deliberately
+	// AFTER the verifier exists (moved from its original position earlier in this file).
+	if cfg.AdminEnabled {
+		encKey, err := kms.LoadEncryptKey(cfg.KMSDevKeyFile)
+		if err != nil {
+			log.Fatalf("FATAL admin credential key load: %v", err)
+		}
+		adminEnc, err := adminapi.NewEncryptor(encKey, cfg.CredentialKeyID)
+		if err != nil {
+			log.Fatalf("FATAL admin encryptor init: %v", err)
+		}
+		adminAuth := adminapi.NewAuthenticator(cfg.AdminKeyHashes)
+		adminSrv := adminapi.NewServer(database.Pool, adminEnc, adminAuth, adminVerifierAdapter{verifier})
+		adminHandler = adminSrv.Handler()
+		log.Printf("admin API mounted on %s under /v1/admin/* (operator-key auth; Encrypt-only; %d key(s) configured)", cfg.HealthAddr, len(cfg.AdminKeyHashes))
+	} else {
+		log.Printf("admin API NOT mounted (ADMIN_API_KEY_HASHES unset — operator surface disabled, fail-closed)")
+	}
 
 	// Phase 7 (§2, P7-3): the Supabase-down gate. The dispatcher owns the ONE shared DBHealth so the
 	// dispatch loop, the reclaim loop and the retention sweep all pause on a single detection; the
@@ -216,6 +229,14 @@ func main() {
 	// is correct. Deliberately in-Brain rather than pg_cron (P7-7: one owner of byosmtp.* DML).
 	retention := dispatch.NewRetentionRunner(dispatcher)
 	go retention.Run(ctx)
+
+	// Module 3 Phase 3 (§6.3): the account purge sweep — a FIFTH single-Brain housekeeping loop
+	// that hard-DELETEs soft-deleted accounts past their purge_after retention window, removing
+	// the credential together with the record (no separate scrub step, Phase 1 §4.7). SEPARATE
+	// from the retention loop above (M3-P3-OD-10, ruled): a wedged purge is a privacy failure, a
+	// wedged send-log sweep is a storage one, and folding them would let one mask the other.
+	purger := dispatch.NewPurgeRunner(dispatcher)
+	go purger.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
 			log.Printf("boxlink stream server stopped: %v", err)
@@ -384,6 +405,28 @@ func (a verifierAdapter) Verify(ctx context.Context, accountID, userID string, o
 		return platformapi.VerifyResult{}, err
 	}
 	return platformapi.VerifyResult{
+		Verified:     r.Verified,
+		State:        r.State,
+		ExternalCode: r.ExternalCode,
+		Message:      r.Message,
+		SMTPResponse: r.SMTPResponse,
+	}, nil
+}
+
+// adminVerifierAdapter satisfies adminapi.AccountVerifier, wrapping the SAME *dispatch.Verifier
+// verifierAdapter wraps for platformapi — one Verifier, two adapters (OD-7 isolation: adminapi
+// cannot import internal/dispatch either, so it needs its own narrow interface + its own adapter
+// type, even though the underlying call is identical). Module 3 Phase 3 C5.
+type adminVerifierAdapter struct {
+	v *dispatch.Verifier
+}
+
+func (a adminVerifierAdapter) Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (adminapi.VerifyResult, error) {
+	r, err := a.v.Verify(ctx, accountID, userID, operationTimeoutSec)
+	if err != nil {
+		return adminapi.VerifyResult{}, err
+	}
+	return adminapi.VerifyResult{
 		Verified:     r.Verified,
 		State:        r.State,
 		ExternalCode: r.ExternalCode,

@@ -92,7 +92,7 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	log.SetOutput(logBuf)
 	t.Cleanup(func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) })
 
-	srv := NewServer(pool, enc, auth)
+	srv := NewServer(pool, enc, auth, nil) // verifier=nil: no box in these tests (CRUD-surface only, none dispatch)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

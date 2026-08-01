@@ -228,11 +228,17 @@ func (e *dispatchEnv) seedAccountForUser(t *testing.T, userID, secret string) st
 		t.Fatalf("encrypt: %v", err)
 	}
 	username := "u-" + id + "@ourdomain.com"
+	// credential_verification_state='verified' (+ credential_verified_at, the CHECK pairing):
+	// M3-P3-OD-4's eligibility term means an 'unverified' (the column default) account is now
+	// STRUCTURALLY ineligible, so every fixture that expects to be a normal, eligible account must
+	// seed 'verified' explicitly — the same shape as quarantined/disabled/deleted_at already
+	// defaulting to "eligible" and a dedicated test flipping ONE flag to prove exclusion.
 	_, err = e.admin.Exec(ctx,
 		`INSERT INTO byosmtp.accounts
 		   (id, user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
-		 VALUES ($1,$6,'smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester')`,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
+		    credential_verification_state, credential_verified_at)
+		 VALUES ($1,$6,'smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW())`,
 		id, ct, testKeyID, nonce, username, userID)
 	if err != nil {
 		t.Fatalf("seed account for user: %v", err)
@@ -257,11 +263,14 @@ func (e *dispatchEnv) seedAccount(t *testing.T, secret string) string {
 		t.Fatalf("encrypt: %v", err)
 	}
 	username := "u-" + id + "@ourdomain.com"
+	// credential_verification_state='verified' (+ credential_verified_at) — see
+	// seedAccountForUser's comment above; the same reasoning applies here.
 	_, err = e.admin.Exec(ctx,
 		`INSERT INTO byosmtp.accounts
 		   (id, user_id, smtp_host, smtp_port, smtp_username,
-		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name)
-		 VALUES ($1,'00000000-0000-0000-0000-000000000000','smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester')`,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
+		    credential_verification_state, credential_verified_at)
+		 VALUES ($1,'00000000-0000-0000-0000-000000000000','smtp-sink',587,$5,$2,$3,$4,'u@ourdomain.com','Tester','verified',NOW())`,
 		id, ct, testKeyID, nonce, username)
 	if err != nil {
 		t.Fatalf("seed account: %v", err)
