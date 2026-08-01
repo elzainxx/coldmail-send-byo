@@ -167,12 +167,17 @@ func (d *Dispatcher) logDispatchPausedByOperator() {
 // claimQuery is the LOCKED Phase 1 claim CTE (§5.1), LIMIT 1 in Phase 3. FOR UPDATE SKIP LOCKED
 // => exactly one claimer wins the row. It sets the lease from job_max_processing_time_sec and the
 // assigned box. The actor GUC ('dispatcher') must be set in the same tx (the trigger enforces it).
+// notSuspendedFragment (Module 3 Phase 5 §6.3) is included here too — the same reasoning as
+// claimForUserQuery's own comment: TryDispatch is a second, independent claim path, and "a filter
+// is not a gate" means the suspend predicate belongs in every statement that can claim a job, not
+// only in the live loop's ring-membership filter.
 const claimQuery = `
 WITH claimed AS (
-    SELECT id FROM byosmtp.jobs
-    WHERE state = 'queued' AND next_attempt_at <= NOW()
-      AND provider_message_id IS NULL
-    ORDER BY next_attempt_at ASC, created_at ASC
+    SELECT id FROM byosmtp.jobs j
+    WHERE j.state = 'queued' AND j.next_attempt_at <= NOW()
+      AND j.provider_message_id IS NULL
+      AND ` + notSuspendedFragment + `
+    ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )

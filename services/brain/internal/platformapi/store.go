@@ -29,6 +29,14 @@ const (
 // outright — no queueing, NO job row created (409 conflict, internal reason
 // 'user_campaign_active') — while a REPEAT `run` for the SAME campaign_id is unaffected (handled
 // above by the idempotent existing-job lookup) and always passes this gate.
+//
+// Module 3 Phase 5 additions, all inside the SAME advisory-locked transaction (§5.2/§5.3/§6.4):
+// the per-user suspend gate (a suspended user's enqueue is refused outright — accepting work into
+// a queue that cannot drain is not losslessness, it is a growing debt against the queue cap); the
+// campaign-size cap (A) and the user's total-live-queue cap (B), each resolved override→global;
+// and the campaign row upsert that freezes campaign_expiry_sec at the FIRST job of a campaign
+// (M3-P5-OD-6: the upsert is built now, but jobs.campaign_id gains no FK to campaigns in this
+// commit — that half of M3-P1-OD-4 stays open).
 func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID string, existing bool, e *apiError) {
 	// If a job for this job_item already exists FOR THIS TENANT, return it (idempotent, §6.2).
 	// Same-campaign reruns therefore never reach the advisory-lock gate below.
@@ -52,6 +60,18 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtext('byosmtp.campaign_start:' || $1::text))`, userID); err != nil {
 		return "", false, newErr(codeInternalError, "advisory_lock_failed")
+	}
+
+	// §6.4: a suspended user's enqueue is refused outright, under the SAME lock as the caps below
+	// — checked first since it needs nothing else read yet (cheapest gate, no wasted work).
+	var suspended bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM byosmtp.user_suspensions WHERE user_id=$1 AND suspended=TRUE)`, userID).
+		Scan(&suspended); err != nil {
+		return "", false, newErr(codeInternalError, "suspend_check_failed")
+	}
+	if suspended {
+		return "", false, newErr(codeConflict, "user_suspended")
 	}
 
 	// A DIFFERENT campaign already active for this user (any non-terminal job) → reject outright,
@@ -78,6 +98,43 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	}
 	if otherCampaignActive {
 		return "", false, newErr(codeConflict, "user_campaign_active")
+	}
+
+	// §5.2's two resource caps, each resolved override→global (§10.2 — Phase 6 owns consolidating
+	// the resolution path; this reads the two sites it needs directly). Evaluated per insert (§5.1:
+	// one job per /v1/run call, so a caller cannot under-declare its way past either cap).
+	maxCampaignSize, maxQueuedJobs, campaignExpirySec, cerr := s.resolveCampaignLimits(ctx, tx, userID)
+	if cerr != nil {
+		return "", false, cerr
+	}
+	var campaignSize int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM byosmtp.jobs WHERE campaign_id = $1`, campaignID).Scan(&campaignSize); err != nil {
+		return "", false, newErr(codeInternalError, "campaign_size_check_failed")
+	}
+	if campaignSize >= maxCampaignSize {
+		return "", false, newErr(codeConflict, "max_campaign_size_reached")
+	}
+	var queuedJobs int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM byosmtp.jobs WHERE user_id = $1 AND state IN ('queued','assigned','sending')`, userID).
+		Scan(&queuedJobs); err != nil {
+		return "", false, newErr(codeInternalError, "queued_jobs_check_failed")
+	}
+	if queuedJobs >= maxQueuedJobs {
+		return "", false, newErr(codeConflict, "max_queued_jobs_reached")
+	}
+
+	// §5.3: upsert the campaign row on the FIRST job of a campaign — expires_at is resolved and
+	// FROZEN here (a later config/override change never retroactively moves an already-started
+	// campaign's expiry). ON CONFLICT DO NOTHING: a second+ job of the same campaign leaves the
+	// existing row (and its already-frozen expires_at) untouched.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO byosmtp.campaigns (id, user_id, expires_at)
+		 VALUES ($1, $2, NOW() + make_interval(secs => $3))
+		 ON CONFLICT (id) DO NOTHING`,
+		campaignID, userID, campaignExpirySec); err != nil {
+		return "", false, newErr(codeInternalError, "campaign_upsert_failed")
 	}
 
 	// Freeze the denormalized copy from public.job_items into byosmtp.jobs (Phase 1 shape), but ONLY
@@ -116,6 +173,49 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 		return "", false, newErr(codeInternalError, "commit_failed")
 	}
 	return jobID, false, nil
+}
+
+// resolveCampaignLimits resolves the three §5.2/§5.3 dials for userID: per-user override
+// (byosmtp.user_config_overrides, NULL = inherit) if set, else the global byosmtp.config default.
+// Reads the globals fresh via s.readConfigInt (config-not-code; mirrors the existing
+// readAccountCountCap/resolveDailyLimit pattern on this surface) and the override row inside the
+// caller's transaction, so the override read is consistent with the rest of this call's work.
+// §10.2: this is ONE of the two sites Phase 5 needs this resolution at (the other is nowhere yet,
+// since Phase 5 has no second consumer) — Phase 6 owns consolidating into a single resolution path
+// once more call sites exist; this function is deliberately NOT exported or generalized past what
+// this call site needs today.
+func (s *Server) resolveCampaignLimits(ctx context.Context, tx pgxDB, userID string) (maxCampaignSize, maxQueuedJobs, campaignExpirySec int, e *apiError) {
+	globalCampaignSize, ok1, err := s.readConfigInt(ctx, "max_campaign_size")
+	if err != nil || !ok1 {
+		return 0, 0, 0, newErr(codeInternalError, "max_campaign_size_lookup_error")
+	}
+	globalQueuedJobs, ok2, err := s.readConfigInt(ctx, "max_queued_jobs")
+	if err != nil || !ok2 {
+		return 0, 0, 0, newErr(codeInternalError, "max_queued_jobs_lookup_error")
+	}
+	globalExpirySec, ok3, err := s.readConfigInt(ctx, "campaign_expiry_sec")
+	if err != nil || !ok3 {
+		return 0, 0, 0, newErr(codeInternalError, "campaign_expiry_sec_lookup_error")
+	}
+
+	var oCampaignSize, oQueuedJobs, oExpirySec *int
+	if err := tx.QueryRow(ctx,
+		`SELECT max_campaign_size, max_queued_jobs, campaign_expiry_sec FROM byosmtp.user_config_overrides WHERE user_id=$1`,
+		userID).Scan(&oCampaignSize, &oQueuedJobs, &oExpirySec); err != nil && !isNoRows(err) {
+		return 0, 0, 0, newErr(codeInternalError, "user_config_overrides_lookup_error")
+	}
+
+	maxCampaignSize, maxQueuedJobs, campaignExpirySec = globalCampaignSize, globalQueuedJobs, globalExpirySec
+	if oCampaignSize != nil {
+		maxCampaignSize = *oCampaignSize
+	}
+	if oQueuedJobs != nil {
+		maxQueuedJobs = *oQueuedJobs
+	}
+	if oExpirySec != nil {
+		campaignExpirySec = *oExpirySec
+	}
+	return maxCampaignSize, maxQueuedJobs, campaignExpirySec, nil
 }
 
 // jobIDByItem returns the existing sender job id for a job_item OWNED BY userID, if any.

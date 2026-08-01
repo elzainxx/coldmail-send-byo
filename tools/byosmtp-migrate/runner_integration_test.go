@@ -111,14 +111,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	// account_events_action_check for the operator break-glass override's own audit action,
 	// discovered only while wiring the store-layer gate onto the adminapi surface); then Phase 5's
 	// own 0042 (M3-P5-OD-1/§10.1: the ten dual-quarantine/un-quarantine/resource-protection config
-	// seeds, PLUS the DELETE of the now-unconsumed quarantine_threshold row) and 0043 (§1.3: the
-	// job_events account_id+created_at index the failure-rate window query needs). This is the
-	// executable expectation of the migration chain.
+	// seeds, PLUS the DELETE of the now-unconsumed quarantine_threshold row), 0043 (§1.3: the
+	// job_events account_id+created_at index the failure-rate window query needs), and 0044
+	// (M3-P5-OD-7: widen account_events_action_check for the per-user suspend/unsuspend audit
+	// actions, discovered only while implementing C2's suspend feature — the fourth such migration
+	// cascade in this build, after M3-P3-OD-18/19 and M3-P4-OD-16). This is the executable
+	// expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043"}
+		"0042", "0043", "0044"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -389,6 +392,11 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !indexExists(t, admin, "job_events_account_id_created_at_idx") {
 		t.Fatal("after Up: byosmtp.job_events_account_id_created_at_idx missing (0043 not applied)")
 	}
+	// 0044 (M3-P5-OD-7): the widened account_events_action_check accepts the suspend/unsuspend
+	// audit actions.
+	if !accountEventsActionAllowed(t, admin, "suspend") || !accountEventsActionAllowed(t, admin, "unsuspend") {
+		t.Fatal("after Up: account_events_action_check rejects \"suspend\"/\"unsuspend\" (0044 not applied)")
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -446,6 +454,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0038" && configKeyExists(t, admin, "bulk_add_max_rows") {
 			t.Fatal("after Down 0038: byosmtp.config still has bulk_add_max_rows (down did not delete it)")
+		}
+		if v == "0044" && (accountEventsActionAllowed(t, admin, "suspend") || accountEventsActionAllowed(t, admin, "unsuspend")) {
+			t.Fatal("after Down 0044: account_events_action_check still accepts \"suspend\"/\"unsuspend\" (down did not narrow it)")
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")

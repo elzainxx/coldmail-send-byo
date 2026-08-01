@@ -237,6 +237,13 @@ func main() {
 	// wedged send-log sweep is a storage one, and folding them would let one mask the other.
 	purger := dispatch.NewPurgeRunner(dispatcher)
 	go purger.Run(ctx)
+
+	// Module 3 Phase 5 (§5.3): the campaign expiry sweep — a genuinely periodic housekeeping loop,
+	// not a lazy claim-time check, because the pathological case it bounds (every account
+	// terminal_blocked or throttled) means the campaign's jobs are NEVER claimed, so a lazy check
+	// would never fire on precisely the campaign that most needs bounding.
+	campaignExpirer := dispatch.NewCampaignExpiryRunner(dispatcher)
+	go campaignExpirer.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
 			log.Printf("boxlink stream server stopped: %v", err)

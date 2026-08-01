@@ -1327,6 +1327,45 @@ running at all, not just one of them.
 
 ---
 
+## M3-P5-OD-6 — RULED 2026-08-02: build the campaign upsert now; defer `jobs.campaign_id`'s FK to `campaigns`
+
+M3-P1-OD-4 (Phase 1) recorded a RULED-YES-BUT-DEFERRED position on whether `jobs.campaign_id`
+gains a `REFERENCES byosmtp.campaigns(id) ON DELETE RESTRICT` FK — deferred specifically because
+the FK is only safe once `/v1/run` upserts the campaign row in the same transaction as the job
+insert (Phase 5 §5.3's own work), and adding the FK before that upsert exists would 23503 every
+job-creation path immediately. Phase 5 C2 is the phase that builds that upsert.
+
+**The question, asked before implementing (Rule 2):** now that the upsert genuinely exists, does
+this chunk also add the FK, discharging M3-P1-OD-4 for real? Doing so requires retrofitting a
+`campaigns` row insert/upsert into every direct `INSERT INTO byosmtp.jobs` site — not just
+`platformapi/store.go`'s production path, but four real-infra test-harness fixtures
+(`adminapi/health_test.go`, `dispatch/harness_test.go` (two call sites), `dispatch/
+send_test_action.go`, `platformapi/campaign_report_test.go`) — or each one 23503s on its very next
+run. §5.3's own text is explicit that this phase does not need the FK to satisfy its functional
+requirements: *"Phase 5 does not depend on the FK either way."*
+
+**RULED: build the upsert now (mandatory — §5.3's expiry-freezing requirement needs it
+regardless); defer the FK.** The FK's real benefit — "an expiry table whose row can be silently
+missing for a live campaign makes the un-gameable bound gameable by omission" — is genuine, but it
+is a hardening improvement over an already-functioning mechanism (the upsert itself closes the
+"missing row" gap for every path that goes through it; the FK would only additionally catch a
+*hypothetical future* path that inserts a job without going through the upsert). Given the spec's
+own text says Phase 5's correctness does not turn on this, and the retrofit touches five files
+including production write paths, the user chose to defer the FK as its own decision rather than
+have it land as a side effect of building the upsert. **M3-P1-OD-4 stays open, now for a future
+phase (or a dedicated follow-up) to pick up** — this is not a re-ruling of M3-P1-OD-4's "should the
+FK exist" question, only of "does Phase 5 C2 add it."
+
+**Applied:** `platformapi/store.go`'s `createJob` upserts a `byosmtp.campaigns` row (keyed on the
+campaign id `public.job_items.campaign_id` already carries, `campaign_expiry_sec` resolved
+override→global and frozen at `expires_at` on first insert) inside the SAME advisory-locked
+transaction, before the `jobs` INSERT — but `jobs.campaign_id` itself gains no new constraint. The
+test-harness fixture files are UNCHANGED (no upsert retrofit needed on any of them, since none of
+them need `campaign_expiry_sec` freezing to test what they test) and continue to insert
+`byosmtp.jobs` rows with whatever `campaign_id` they already use, exactly as before this chunk.
+
+---
+
 ## Honest final position
 
 **Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which

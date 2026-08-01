@@ -39,6 +39,22 @@ func decodeFlags(raw []byte) *flagsSnapshot {
 	return &f
 }
 
+// writeUserEvent inserts one account_events row for a USER-scoped action (Module 3 Phase 5 §6/§7's
+// suspend/unsuspend — M3-P1-OD-10, RULED: reuse account_events with account_id = NULL and user_id
+// = the subject, "account_id already nullable, carve-out already tested"). from_flags/to_flags are
+// both NULL — there is no accountFlagState-shaped before/after for a user-level action, and
+// inventing one would misrepresent what actually changed (the LOCKED flagsSnapshot shape every
+// events reader on this surface already decodes, M3-P3-OD-15's finding — a differently-shaped
+// payload silently corrupts on read, so this uses NEITHER shape rather than a wrong one).
+func writeUserEvent(ctx context.Context, tx pgx.Tx, userID, action string, reason *string, requestID string) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO byosmtp.account_events
+		   (account_id, user_id, actor, action, from_flags, to_flags, reason, request_id)
+		 VALUES (NULL, $1, 'admin', $2, NULL, NULL, $3, $4)`,
+		userID, action, reason, requestID)
+	return err
+}
+
 // writeAuditEvent inserts one account_events row inside the given tx. from/to may be nil (e.g.
 // create has no "from"; delete has no "to"). reason is the operator's internal note (never
 // surfaced in an error envelope); it and request_id bridge to the audit read (§7.4).

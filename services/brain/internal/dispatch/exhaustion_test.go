@@ -33,6 +33,13 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 		t.Fatalf("manual pause: %v", err)
 	}
 	job := e.seedQueuedJob(t, "x@example.com")
+	// Module 3 Phase 5 §5.4/T5a: stamp a REAL prior classified-failure class on the job before it
+	// exhausts, so the "last_error_class is the job's own last REAL class, never invented" check
+	// below has something genuine to assert against (m2 P5-14) — a freshly-seeded job's
+	// last_error_class is NULL by default, which would make that assertion vacuous.
+	if _, err := e.admin.Exec(ctx, `UPDATE byosmtp.jobs SET last_error_class='timeout' WHERE id=$1`, job); err != nil {
+		t.Fatalf("stamp prior real class: %v", err)
+	}
 
 	// One tick: the gate resolves the chain, finds it all terminal_blocked, and fails the job.
 	if _, _, err := e.d.Tick(ctx); err != nil {
@@ -41,6 +48,17 @@ func TestExhaustion_TerminalBlockedFails(t *testing.T) {
 
 	if s := e.jobStateStr(t, job); s != "failed" {
 		t.Fatalf("job state=%s, want failed (all accounts terminal_blocked §5.1)", s)
+	}
+	// T5a: last_error_class is the job's own last REAL class ('timeout', stamped above) — the
+	// exhaustion FAIL never overwrites it with a made-up value like 'accounts_exhausted' (which is
+	// not even a valid error_class enum member, m2 P5-14). The internal reason lives in
+	// last_error_message instead (asserted separately below via job_events, not this column).
+	var lastErrorClass *string
+	if err := e.admin.QueryRow(ctx, `SELECT last_error_class::text FROM byosmtp.jobs WHERE id=$1`, job).Scan(&lastErrorClass); err != nil {
+		t.Fatalf("read last_error_class: %v", err)
+	}
+	if lastErrorClass == nil || *lastErrorClass != "timeout" {
+		t.Fatalf("last_error_class=%v after exhaustion FAIL, want unchanged 'timeout' (the job's own last real class, never invented — m2 P5-14)", lastErrorClass)
 	}
 	// completed_at set (terminal CHECK), lease null, exactly one →failed event by dispatcher.
 	var completed, leaseNull bool

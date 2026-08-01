@@ -12,17 +12,36 @@ import (
 	"time"
 )
 
+// notSuspendedFragment is Module 3 Phase 5 §6.3's ONE shared SQL fragment: "a filter is not a
+// gate" — snapshotActiveUsers keeps a suspended user out of the LIVE loop's ring, but any OTHER
+// caller of a claim path bypasses a filter that lives only there. There are two claim SQL
+// constants (claimForUserQuery here, claimQuery in dispatch.go, used by TryDispatch — which
+// dispatch.go's own comment already documents as "no longer wired into main.go's live loop… but it
+// remains a public claim path any future caller could invoke directly, so it honors
+// dispatch_enabled too rather than relying on callers to remember the gate"). The suspend
+// predicate goes in BOTH statements for the identical reason, as ONE shared constant referenced by
+// both — not two hand-written copies, which would be the exact five-place-duplication hazard
+// Phase 4 §8.1 already flagged applied to a sixth place. A test asserts both paths refuse (§12,
+// T7b).
+const notSuspendedFragment = `NOT EXISTS (SELECT 1 FROM byosmtp.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)`
+
 // claimForUserQuery is the LOCKED per-user claim (§1.1, CLAIM_FOR_USER), backed by the additive
 // jobs_claim_by_user_idx (migration sender_0015). It keeps the Phase 1 draft 02 shape exactly —
 // FOR UPDATE SKIP LOCKED, ORDER BY next_attempt_at, created_at, the same lease — generalized with
 // a user_id predicate and a batch LIMIT. It sets ONLY state/lease/updated_at (no account, no box)
 // — box/account are resolved per job afterward (§1.3), so a job can legally sit `assigned` with
 // both assigned_account_id and assigned_box_id NULL between TXN 1 and TXN 2.
+//
+// notSuspendedFragment is included here too (§6.3) even though snapshotActiveUsers already
+// excludes a suspended user from the ring in the live loop — this statement is a second,
+// independent enforcement point so a bypass of the ring (a bug, or a future caller) still cannot
+// claim on behalf of a suspended user.
 const claimForUserQuery = `
 WITH claimed AS (
-    SELECT id FROM byosmtp.jobs
-    WHERE state = 'queued' AND next_attempt_at <= NOW() AND user_id = $1
-    ORDER BY next_attempt_at ASC, created_at ASC
+    SELECT id FROM byosmtp.jobs j
+    WHERE j.state = 'queued' AND j.next_attempt_at <= NOW() AND j.user_id = $1
+      AND ` + notSuspendedFragment + `
+    ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT $2
 )
@@ -253,11 +272,23 @@ func (d *Dispatcher) snapshotInFlight(ctx context.Context) (map[string]int, erro
 
 // snapshotActiveUsers is Phase A2 (§1.2): the distinct set of users with claimable work right now,
 // served by the existing jobs_claim_idx (next_attempt_at, created_at) WHERE state='queued'.
+//
+// Module 3 Phase 5 §6.2: a suspended user is excluded from THIS snapshot — not merely refused at
+// the claim statement — which is what makes suspension genuinely lossless. If the gate sat only in
+// the claim SQL, a suspended user whose accounts are ALL terminal_blocked would still reach
+// evaluateChain, which would still return FAIL, and failExhaustedJobs would transition their jobs
+// queued→failed: a suspension would DESTROY the user's queue, the exact opposite of "halt
+// losslessly, nothing fails, the same rows resume." The NOT EXISTS against user_suspensions
+// (served by the Phase 1 partial index, row-absent = not suspended = costs nothing for the common
+// case) keeps a suspended user out of the ring entirely, so neither evaluateChain nor
+// claimForUser ever runs for them.
 func (d *Dispatcher) snapshotActiveUsers(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := d.db.Query(ctx,
-		`SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state='queued' AND next_attempt_at <= NOW()`)
+		`SELECT DISTINCT j.user_id FROM byosmtp.jobs j
+		  WHERE j.state='queued' AND j.next_attempt_at <= NOW()
+		    AND NOT EXISTS (SELECT 1 FROM byosmtp.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)`)
 	if err != nil {
 		return nil, err
 	}

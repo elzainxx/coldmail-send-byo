@@ -54,6 +54,8 @@ if [[ "$adm_probe" == "401" ]]; then
     ["GET /v1/admin/config"]=1 ["GET /v1/admin/config/daily_limit_default"]=1
     ["PUT /v1/admin/config/daily_limit_default"]=1
     ["GET /v1/admin/health"]=1
+    ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/suspend"]=1
+    ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/unsuspend"]=1
   )
   for spec in "${!ADMIN_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -63,7 +65,7 @@ if [[ "$adm_probe" == "401" ]]; then
   # An UNDOCUMENTED admin path must NOT be gated as a real route — it should 404 (no handler).
   und_adm="$(adm GET /v1/admin/secret-undocumented)"
   [[ "$und_adm" == "404" ]] || { echo "contract_drift FAIL: undocumented admin path returned $und_adm, want 404 — surface wider than the contract"; fail=1; }
-  echo "contract_drift: Phase 2+9.5 admin surface mounted — 16 routes gated (401), undocumented 404."
+  echo "contract_drift: Phase 2+9.5+Phase5 admin surface mounted — 18 routes gated (401), undocumented 404."
 else
   echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
 fi
@@ -117,6 +119,7 @@ for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/admin/accounts" "/v1/admin/config" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
          "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
+         "/v1/admin/users/{id}/suspend" "/v1/admin/users/{id}/unsuspend" \
          "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
          "/v1/byosmtp/accounts" "/v1/byosmtp/accounts/{id}" \
          "/v1/byosmtp/accounts/{id}/events" "/v1/byosmtp/accounts/{id}/disable" \

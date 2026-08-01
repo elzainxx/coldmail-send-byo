@@ -120,6 +120,12 @@ func (s *Server) routes() {
 
 	// Observability (Phase 9.5 B3/B4, §3)
 	s.mux.HandleFunc("GET /v1/admin/health", s.requireAuth(s.handleHealth))
+
+	// Module 3 Phase 5 §6: per-user suspend — genuinely new operator surface, module 2 had no
+	// per-user concept at all. "Users control their own assets; the operator controls the shared
+	// substrate" — per-user suspension is explicitly named as an operator-only control.
+	s.mux.HandleFunc("POST /v1/admin/users/{id}/suspend", s.requireAuth(s.handleUserSuspend))
+	s.mux.HandleFunc("POST /v1/admin/users/{id}/unsuspend", s.requireAuth(s.handleUserUnsuspend))
 }
 
 // fail writes the clean external envelope for e and logs the internal reason against rid. It is
