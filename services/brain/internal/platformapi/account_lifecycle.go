@@ -164,7 +164,15 @@ func (s *Server) doLifecycleTransition(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, acc)
 }
 
-func (s *Server) handleAccountDisable(w http.ResponseWriter, r *http.Request) { s.doLifecycleTransition(w, r, specDisable) }
-func (s *Server) handleAccountEnable(w http.ResponseWriter, r *http.Request)  { s.doLifecycleTransition(w, r, specEnable) }
-func (s *Server) handleAccountPause(w http.ResponseWriter, r *http.Request)   { s.doLifecycleTransition(w, r, specPause) }
-func (s *Server) handleAccountUnpause(w http.ResponseWriter, r *http.Request) { s.doLifecycleTransition(w, r, specUnpause) }
+func (s *Server) handleAccountDisable(w http.ResponseWriter, r *http.Request) {
+	s.doLifecycleTransition(w, r, specDisable)
+}
+func (s *Server) handleAccountEnable(w http.ResponseWriter, r *http.Request) {
+	s.doLifecycleTransition(w, r, specEnable)
+}
+func (s *Server) handleAccountPause(w http.ResponseWriter, r *http.Request) {
+	s.doLifecycleTransition(w, r, specPause)
+}
+func (s *Server) handleAccountUnpause(w http.ResponseWriter, r *http.Request) {
+	s.doLifecycleTransition(w, r, specUnpause)
+}

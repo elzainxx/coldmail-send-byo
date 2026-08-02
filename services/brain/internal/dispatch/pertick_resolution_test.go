@@ -184,4 +184,3 @@ func TestPerTick_T7Control_ResolvingPerSiteCorruptsTheRegister(t *testing.T) {
 
 // timeAtT7Control is a fixed reference instant for the control test above (no real clock needed).
 func timeAtT7Control() time.Time { return time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC) }
-

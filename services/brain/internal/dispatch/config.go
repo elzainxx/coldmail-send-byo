@@ -27,12 +27,12 @@ import (
 // hardcoded. default_shared_pool_id's field/reader died at G2 (Docs/phase-2-strip-shared-pool.md
 // §1.2, M3-P2-OD-1) along with the rest of the pool layer.
 type Config struct {
-	JobMaxProcessingTimeSec   int     // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
-	DebugLogRetentionDays     int     // debug_log_retention_days — send_logs.ttl_expires_at (§7)
-	DispatchTickIntervalMS    int     // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
-	ConcurrencyPerUserDefault int     // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
-	DailyResetTimezone        string  // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
-	DailyResetHour            int     // daily_reset_hour — hour-of-day (0-23) the daily boundary falls at within DailyResetTimezone (§11, Phase 1; wired in the Config Consumption Sweep closeout — was seeded/validated since sender_0010 but never read)
+	JobMaxProcessingTimeSec   int    // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
+	DebugLogRetentionDays     int    // debug_log_retention_days — send_logs.ttl_expires_at (§7)
+	DispatchTickIntervalMS    int    // dispatch_tick_interval_ms — the polling loop period (§1.2, Phase 4)
+	ConcurrencyPerUserDefault int    // concurrency_per_user_default — the per-user lane ceiling (§6, Phase 4)
+	DailyResetTimezone        string // daily_reset_timezone — the lazy daily-reset boundary tz (§2.1, Phase 4)
+	DailyResetHour            int    // daily_reset_hour — hour-of-day (0-23) the daily boundary falls at within DailyResetTimezone (§11, Phase 1; wired in the Config Consumption Sweep closeout — was seeded/validated since sender_0010 but never read)
 
 	// Phase 6 pacing dials (both ALREADY seeded in Phase 1's sender_0010; Phase 6 consumes them
 	// unchanged — no re-seed, additive-only contract §5). They bound the per-lane random inter-send
@@ -79,10 +79,10 @@ type Config struct {
 	UnquarantineEvidenceTTLSec     int // unquarantine_evidence_ttl_sec — §2.4's test-verified bypass recency bound
 
 	// Module 3 Phase 5 resource-protection + campaign-expiry dials (byosmtp_0042; §10.1).
-	MaxCampaignSize                int // max_campaign_size — §5.2 cap A (global; per-user override in user_config_overrides)
-	MaxQueuedJobs                  int // max_queued_jobs — §5.2 cap B (global; per-user override in user_config_overrides)
-	CampaignExpirySec              int // campaign_expiry_sec — §5.3's insert-time-frozen expiry window (global; per-user override)
-	CampaignExpirySweepIntervalMS  int // campaign_expiry_sweep_interval_ms — §5.3's fifth housekeeping loop's tick
+	MaxCampaignSize               int // max_campaign_size — §5.2 cap A (global; per-user override in user_config_overrides)
+	MaxQueuedJobs                 int // max_queued_jobs — §5.2 cap B (global; per-user override in user_config_overrides)
+	CampaignExpirySec             int // campaign_expiry_sec — §5.3's insert-time-frozen expiry window (global; per-user override)
+	CampaignExpirySweepIntervalMS int // campaign_expiry_sweep_interval_ms — §5.3's fifth housekeeping loop's tick
 
 	// Phase 8 content-variation dials (all seventeen seeded sender_0020, appended to Chunk 1's
 	// version file — Docs/history/open-decisions.md P8-OD-1; amended 2026-07-26 from fourteen to
@@ -114,9 +114,9 @@ type Config struct {
 	// health is the wrong failure mode to accept). account_retention_window_sec is read by the
 	// platformapi delete handler (stamps purge_after AT DELETE TIME), not by this loop, but is
 	// listed here too since Config is the one place every seeded dial's Go home is documented.
-	AccountRetentionWindowSec    int // account_retention_window_sec — §6.1, stamped into purge_after at delete time (read by platformapi, not this loop)
-	AccountPurgeSweepIntervalMS  int // account_purge_sweep_interval_ms — the purge loop's tick (§6.3)
-	AccountPurgeDeleteBatchSize  int // account_purge_delete_batch_size — rows per purge DELETE batch (§6.3); <= 0 disables the sweep
+	AccountRetentionWindowSec   int // account_retention_window_sec — §6.1, stamped into purge_after at delete time (read by platformapi, not this loop)
+	AccountPurgeSweepIntervalMS int // account_purge_sweep_interval_ms — the purge loop's tick (§6.3)
+	AccountPurgeDeleteBatchSize int // account_purge_delete_batch_size — rows per purge DELETE batch (§6.3); <= 0 disables the sweep
 
 	// Phase 9.5 operability & control-plane safety dials (all eleven seeded sender_0021;
 	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
@@ -700,4 +700,3 @@ func readStringKey(ctx context.Context, db *pgxpool.Pool, key string) (string, e
 	}
 	return *wrap.V, nil
 }
-

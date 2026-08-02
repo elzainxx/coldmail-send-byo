@@ -180,4 +180,3 @@ func TestQuarantineRace_T11a_WithoutForUpdateTheUpdateIsLost(t *testing.T) {
 	// This IS the defect the control demonstrates — the account is now un-quarantined despite A's
 	// genuine auth_failure. It is the reason FOR UPDATE (proven load-bearing by T11 above) exists.
 }
-

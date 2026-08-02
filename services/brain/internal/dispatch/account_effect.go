@@ -204,13 +204,13 @@ func (h *OutcomeHandler) queryFailureRateWindow(ctx context.Context, tx pgx.Tx, 
 // account be quarantined as a result of this outcome, and under which reason?" — first match wins,
 // exactly §1.4's table:
 //
-//	0. before.Quarantined already TRUE       -> "" (idempotent, no re-trip, no second event)
-//	1. class == auth_failure                 -> "auth_failure" (immediate, regardless of streak/rate)
-//	2. consecutiveFailures (POST-increment, threaded from the SAME UPDATE that bumped it, never a
-//	   second read) >= quarantine_consecutive_threshold -> "consecutive_failures"
-//	3. window.attempts >= quarantine_min_sample AND
-//	   window.failures/attempts >= quarantine_failure_rate_pct/100 -> "failure_rate"
-//	4. otherwise                              -> ""
+//  0. before.Quarantined already TRUE       -> "" (idempotent, no re-trip, no second event)
+//  1. class == auth_failure                 -> "auth_failure" (immediate, regardless of streak/rate)
+//  2. consecutiveFailures (POST-increment, threaded from the SAME UPDATE that bumped it, never a
+//     second read) >= quarantine_consecutive_threshold -> "consecutive_failures"
+//  3. window.attempts >= quarantine_min_sample AND
+//     window.failures/attempts >= quarantine_failure_rate_pct/100 -> "failure_rate"
+//  4. otherwise                              -> ""
 //
 // The order of 1 before 2 is LOAD-BEARING (§1.4): an auth_failure on the Nth consecutive failure
 // satisfies both, and if the recorded reason were consecutive_failures the credential-update
