@@ -219,11 +219,11 @@ ALERT-only consumer). Seeded together in Phase 7's own migration, ahead of C2 (n
 (quote/health) landing the real consumers — same shape as Phase 3's `byosmtp_0036` and Module 3
 Phase 6's `byosmtp_0045` before their consumers shipped. **The five notification-delivery-loop keys
 were cleared by C2** (`internal/dispatch/notify.go`'s `NotificationRunner`, wired into
-`cmd/brain/main.go` as the sixth single-Brain housekeeping loop) — no `RESERVED` marker remains on
-them. The remaining five (the two throttle dials, the two quote dials, and
+`cmd/brain/main.go` as the sixth single-Brain housekeeping loop), and **the two quote-projection
+keys were cleared by C3's `quote` feasibility widening** (`internal/platformapi/quote_feasibility.go`)
+— no `RESERVED` marker remains on either group. The remaining three (the two throttle dials and
 `score_alert_threshold`) stay `RESERVED` with their original `Phase 8` expiry: their consumers are
-C3's scope (quote feasibility, health throttle aggregation, the score-warning digest event), not
-yet built.
+C3's remaining scope (health throttle aggregation, the score-warning digest event), not yet built.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
@@ -234,8 +234,8 @@ yet built.
 | `notification_tick_interval_sec` | `{"v":60}` | integer | byosmtp_0046 | Poll interval (sec) for the notification delivery loop. Consumed by `internal/dispatch/notify.go`'s `NotificationRunner.Run`/`tick`. Phase 7 §3.2. |
 | `destination_throttle_window_sec` | `{"v":3600}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — trailing window (sec) the operator health endpoint will use to aggregate per-destination-domain send volume/failure counts (`job_events.destination_domain`, added this same migration). Phase 7 §7, C3 scope. |
 | `destination_throttle_user_threshold` | `{"v":3}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — distinct-users-affected count inside the throttle window at or above which the health endpoint will surface a `destination_throttles` condition for that destination domain. Phase 7 §7, C3 scope. |
-| `quote_capacity_projection_enabled` | `{"v":true}` | boolean | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — toggles whether `/v1/quote` will project an estimated completion duration (feasibility framing: slow is feasible) rather than reporting only accept/reject. Phase 7 §4.2, C3 scope. |
-| `quote_long_duration_warn_sec` | `{"v":172800}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — projected-duration threshold (sec, default 48h) above which `/v1/quote`'s feasibility response will carry a `long_duration` entry in `warnings[]` rather than a bare projection. Phase 7 §4.3, C3 scope. |
+| `quote_capacity_projection_enabled` | `{"v":true}` | boolean | byosmtp_0046 | Toggles whether `/v1/quote` projects an estimated completion duration (feasibility framing: slow is feasible) rather than omitting `capacity.estimated_duration_sec`/`estimate_basis` entirely. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.2. |
+| `quote_long_duration_warn_sec` | `{"v":172800}` | integer | byosmtp_0046 | Projected-duration threshold (sec, default 48h) above which `/v1/quote`'s feasibility response carries a `long_duration` entry in `warnings[]` rather than a bare projection. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.3. |
 | `score_alert_threshold` | `{"v":30}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §3.1, C3 scope. |
 
 **Migration `byosmtp_0047_notification_state_suppressed`** adds the `'suppressed'` value to

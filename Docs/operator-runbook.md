@@ -239,10 +239,12 @@ A wall of `auth_failure` means a credential is wrong. `throttle` means the provi
 
 ### Step 7 — Is the user out of quota?
 
-**Be clear about this one: this module enforces no quota and no credit balance.** `POST /v1/quote`
-computes a cost from `unit_price_credits`, and that is the whole of the module's involvement with
-billing — `POST /v1/run` accepts a job without consulting any balance, and dispatch never checks
-one. So "out of quota" cannot be the cause of a stall *inside* this module.
+**Be clear about this one: this module enforces no quota and no credit balance.** Module 3 prices as
+a flat monthly subscription (M3-P7-OD-11) — `POST /v1/quote` is a feasibility check (Phase 7 §4), not
+a cost lookup; its retained `cost`/`unit_price_credits` fields are inert (seeded `0`) and exist only
+for contract compatibility with module 2's shape. `POST /v1/run` accepts a job without consulting any
+balance, and dispatch never checks one. So "out of quota" cannot be the cause of a stall *inside*
+this module.
 
 What it can be is a stall *upstream*: if the platform declines to call `run` because a tenant is out
 of credits, no jobs are created and `queue.queued` simply stays where it was. Check whether jobs are

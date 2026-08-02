@@ -14,11 +14,15 @@ import (
 )
 
 // defaultQuoteUnitCredits is the fallback used ONLY if unit_price_credits is unreadable (should
-// never happen post-sender_0021 — the key is seeded with this exact value). Not itself a tuning
+// never happen post-byosmtp_0048 — the key is seeded with this exact value). Not itself a tuning
 // dial: the real, live-retunable value is read fresh from byosmtp.config on every request via
 // readUnitPriceCredits (Phase 9.5 S10, §2.4) — config-not-code, no redeploy needed for a price
-// change to take effect.
-const defaultQuoteUnitCredits = 1
+// change to take effect. Zero (M3-P7-OD-11, byosmtp_0048): module 3 prices as a flat monthly
+// subscription (module-3-build-plan.md §1) — there is no per-recipient charge. cost/
+// unit_price_credits stay on the response (Rule 5 — never removed) but are retained purely for
+// contract compatibility with the additive four-field shape module 2 established; they are not
+// meaningful pricing under this module.
+const defaultQuoteUnitCredits = 0
 
 // defaultQuoteTier is the tier `quote` reports (Phase 9 §1.1's additive `tier` field). `quote`'s
 // request carries only recipient_count — no job_item_id/user_id context — so it cannot resolve
@@ -30,7 +34,9 @@ const defaultQuoteTier = "shared"
 // describeTiers is the SAME per-tier pricing shape quote's defaultQuoteTier draws from (Phase 9
 // §2.1/§2.2) — the single source of truth describe and quote share so they can never diverge.
 // unit is populated live per-request from readUnitPriceCredits; both tiers price IDENTICALLY in
-// V1 (stated honestly rather than inventing a price differentiator).
+// V1 (stated honestly rather than inventing a price differentiator). Zero by default
+// (M3-P7-OD-11): module 3's real pricing is a flat monthly subscription, so unit_price_credits is
+// retained here purely for Rule-5 contract compatibility with the field module 2 established.
 func describeTiers(unit int) []map[string]any {
 	return []map[string]any{
 		{"id": "shared", "unit_price_credits": unit, "description": "Base SMTP sending."},
@@ -41,10 +47,11 @@ func describeTiers(unit int) []map[string]any {
 // uuidRe validates a canonical hyphenated UUID (job_item_id / job_id inputs).
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// --- POST /v1/quote — recipient count → cost (trivial pass-through, §6.1) ---
+// --- POST /v1/quote — a FEASIBILITY check under module 3's flat-subscription pricing (Phase 7 §4) ---
 
 type quoteReq struct {
-	RecipientCount *int `json:"recipient_count"`
+	RecipientCount *int   `json:"recipient_count"`
+	UserID         string `json:"user_id"` // M3-P7-OD-5: every §4.2 field is per-user; module 2's quote takes no tenant context
 }
 
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
@@ -71,21 +78,47 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 			withDetails(fieldDetail{Field: "recipient_count", Issue: issueOutOfRange}))
 		return
 	}
+	// M3-P7-OD-5: user_id is a REQUIRED request field (additive to the request; a coordinated
+	// platform change, not assumed) — every §4.2 field (eligible accounts, caps, projected
+	// duration) is per-user, and module 2's own comment concedes it "cannot resolve which pool-kind
+	// tier a campaign will actually route to" without one. Same validation shape as run/report's
+	// user_id checks.
+	if req.UserID == "" {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_required").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueRequired}))
+		return
+	}
+	if !uuidRe.MatchString(req.UserID) {
+		s.fail(w, r, newErr(codeValidationFailed, "user_id_malformed").
+			withDetails(fieldDetail{Field: "user_id", Issue: issueMalformed}))
+		return
+	}
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
+
+	feas, ferr := s.computeQuoteFeasibility(ctx, req.UserID, *req.RecipientCount)
+	if ferr != nil {
+		s.fail(w, r, ferr)
+		return
+	}
+
 	unit := s.readUnitPriceCredits(ctx)
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"recipient_count": *req.RecipientCount,
-		"cost":            *req.RecipientCount * unit,
-		"currency":        "credits",
-		// Additive (Phase 9 §1.1): unit_price_credits/tier let the platform's preview/confirm-cost
-		// step show the caller WHY the number is what it is. quote has no tenant context in its
-		// request (recipient_count only), and both V1 tiers price identically (§2.1) — tier is
-		// therefore reported as the default base-campaign tier ("shared"), which never affects cost
-		// since both tiers charge the same unit_price_credits.
+		// cost/currency/unit_price_credits/tier are RETAINED (Rule 5 — never removed) but are
+		// INERT under module 3's flat monthly subscription (M3-P7-OD-11, module-3-build-plan.md
+		// §1: no per-send charge, no per-recipient price). unit_price_credits is seeded 0
+		// (byosmtp_0048), so cost is always 0 at the default; the fields exist purely for contract
+		// compatibility with the additive shape module 2 established.
+		"cost":               unit * (*req.RecipientCount),
+		"currency":           "credits",
 		"unit_price_credits": unit,
 		"tier":               defaultQuoteTier,
-	})
+	}
+	for k, v := range quoteFeasibilityJSON(feas) {
+		out[k] = v
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // --- POST /v1/run — accept a job, return immediately (async kickoff, §6.2) ---
@@ -261,11 +294,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 // --- GET /v1/describe — module self-description: capabilities + tiers/pricing (Phase 9 §2, finalized) ---
 
 // handleDescribe reports the module's honest self-description (Phase 9 §2.2): the tiers/pricing
-// shape, flat per-recipient pricing, and the capabilities the module actually implements — no
-// sequences, no open/click tracking, content variation present as operator-tunable behavior (no
-// per-toggle detail, Phase 8 §3). Reads the SAME live unit_price_credits quote (§1) multiplies by,
-// via describeTiers — single source of truth, so describe and quote can never disagree (Phase 9
-// §2.2, E2).
+// shape, flat SUBSCRIPTION pricing (M3-P7-OD-11 — module-3-build-plan.md §1: no per-send charge,
+// no per-recipient price), and the capabilities the module actually implements — no sequences, no
+// open/click tracking, content variation present as operator-tunable behavior (no per-toggle
+// detail, Phase 8 §3). Reads the SAME live unit_price_credits quote (§1) multiplies by, via
+// describeTiers — single source of truth, so describe and quote can never disagree (Phase 9 §2.2,
+// E2). unit_price_credits/tiers[].unit_price_credits are retained at 0 for Rule-5 contract
+// compatibility with module 2's additive shape, not meaningful pricing under this module.
 func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
@@ -283,7 +318,7 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		},
 		"pricing": map[string]any{
 			"currency":           "credits",
-			"model":              "flat_per_recipient",
+			"model":              "flat_subscription",
 			"unit_price_credits": unit,
 			"tiers":              describeTiers(unit),
 		},
@@ -303,12 +338,13 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// readUnitPriceCredits reads unit_price_credits fresh from byosmtp.config (Phase 9.5 S10, §2.4) —
-// live-retunable, no redeploy. platformapi does NOT import internal/dispatch's LoadConfig
-// (structural package isolation, OD-7's precedent — mirrors internal/adminapi's own local config
-// readers), so this is a minimal, scoped-to-one-key local reader. Falls back to the seeded default
-// on any read/parse failure rather than failing the request — quote/describe are read-mostly,
-// low-stakes endpoints and a transient config-read blip must not 500 every quote in flight.
+// readUnitPriceCredits reads unit_price_credits fresh from byosmtp.config (Phase 9.5 S10, §2.4;
+// zeroed under M3-P7-OD-11's flat-subscription ruling) — live-retunable, no redeploy. platformapi
+// does NOT import internal/dispatch's LoadConfig (structural package isolation, OD-7's precedent —
+// mirrors internal/adminapi's own local config readers), so this is a minimal, scoped-to-one-key
+// local reader. Falls back to the seeded default on any read/parse failure rather than failing the
+// request — quote/describe are read-mostly, low-stakes endpoints and a transient config-read blip
+// must not 500 every quote in flight.
 func (s *Server) readUnitPriceCredits(ctx context.Context) int {
 	var raw []byte
 	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = 'unit_price_credits'`).Scan(&raw); err != nil {

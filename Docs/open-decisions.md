@@ -115,8 +115,8 @@ each item's full context. Each points here.
 | `MERGED` — the same decision asked twice | 2 |
 | `RULED-ACCEPTED` 2026-07-31 — recommendation approved as written | **50** |
 | `RULED` 2026-07-31 — decided individually (7 BLOCKS + 5 RULE) | **12** |
-| **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop), **both ruled the same day found** | **2** |
-| **STILL NEEDING A RULING — all 81 items** | **0** |
+| **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop, M3-P7-OD-11 while starting the quote feasibility work), **all three ruled the same day found** | **3** |
+| **STILL NEEDING A RULING — all 82 items** | **0** |
 
 **Three ruled against my recommendation.** M3-P5-OD-1 (I recommended repurpose; ruled: split the
 key), M3-P7-OD-8 (I put (b) to the user; ruled: both), M3-P0-OD-11 (I offered no recommendation;
@@ -1512,12 +1512,55 @@ way.
 
 ---
 
+## M3-P7-OD-11 — RULED 2026-08-02: zero `unit_price_credits`; `quote`/`describe`'s cost fields become inert under the flat-subscription model
+
+**Raised while starting Phase 7 C3 (`quote` as a feasibility check, §4).**
+
+**The defect, as found.** `module-3-build-plan.md` §1 states plainly: *"Pricing is a flat monthly
+subscription, enforced by enabling or disabling the module per user. There is no per-send charge,
+no credits, and no per-recipient price."* Phase 7 §4.1 repeats this and states the consequence for
+the contract: *"there is no per-recipient price... the shape is additive: the cost fields stay
+(`cost: 0`, `currency: "credits"`, `unit_price_credits: 0`, `tier: "byosmtp"`) with a documented
+note that they are retained for contract compatibility and are not meaningful under this module's
+pricing."* But the CURRENTLY LIVE code (`platformapi/handlers.go`'s `handleQuote`/`handleDescribe`)
+charges `recipient_count × unit_price_credits` with a seeded default of `1` — real, non-zero,
+per-recipient billing — and three docs (`api-contract.md`, `operator-runbook.md`,
+`byosmtp-module-local-test-guide.md`) all describe this as **"finalized."** A behavioral test
+(`unitprice_test.go`'s `TestUnitPrice_QuoteAndDescribeReflectLiveConfig`) asserts the non-zero
+arithmetic directly. Two locked artifacts disagree, and — the same defect class as M3-P7-OD-9/-10 —
+neither side was diffed against the other before now.
+
+**The question:** three options — (a) zero `unit_price_credits`'s default and fix every
+consumer/doc/test to match the flat-subscription model Phase 7 §4.1 calls for, (b) leave pricing
+untouched and build the feasibility widening alongside it, deferring the contradiction as a fresh
+Open Decision, or (c) something else.
+
+**RULED: (a) — zero it out now, in this change.** **CLAUDE.md Rule 1: `default_value` is never
+mutated** — so this is NOT a `default_value` edit. It follows M3-P5-OD-1's own precedent for
+exactly this situation (`quarantine_threshold`'s meaning changed, so Phase 5 `DELETE`d the key and
+re-`INSERT`ed it fresh under its own new seed site): a new migration `DELETE`s the
+`unit_price_credits` row Phase 9.5's `sender_0021` seeded and re-`INSERT`s it fresh with
+`default_value = {"v":0}` — a NEW row's own default, at its own new seed site, never mutated again
+going forward. `quote`'s `cost`/`unit_price_credits` fields and `describe`'s
+`pricing.unit_price_credits`/`pricing.tiers[].unit_price_credits` are retained (Rule 5 — never
+removed) but now report `0` at the default, matching Phase 7 §4.1's own documented shape exactly.
+`handleQuote`/`describeTiers`'s doc comments are corrected to state the fields are retained for
+Rule-5 contract compatibility, not meaningful pricing. `unitprice_test.go` is rewritten to assert
+the NEW default (`0`) and that a live config write still moves both surfaces together (the property
+the test actually exists to prove — live-config responsiveness — is unchanged; only the arithmetic
+it asserts changes). `api-contract.md`, `operator-runbook.md`, and
+`byosmtp-module-local-test-guide.md` are corrected in the same change to state the flat-subscription
+model rather than describe the old per-recipient arithmetic as finalized.
+
+---
+
 ## Honest final position
 
-**Needs-user: empty.** All **81** items are disposed of — the original 79, plus **M3-P7-OD-9** and
-**M3-P7-OD-10**, both raised mid-build, reported as open, and ruled the same day they were found.
-Nothing is deferred, nothing is "awaiting ruling", and no item was closed on my authority. **Phase
-4's own build subsequently raised and ruled M3-P4-OD-12 the same day it was found** — see above.
+**Needs-user: empty.** All **82** items are disposed of — the original 79, plus **M3-P7-OD-9**,
+**M3-P7-OD-10**, and **M3-P7-OD-11**, all raised mid-build, reported as open, and ruled the same day
+they were found. Nothing is deferred, nothing is "awaiting ruling", and no item was closed on my
+authority. **Phase 4's own build subsequently raised and ruled M3-P4-OD-12 the same day it was
+found** — see above.
 
 **One correction I had to make against my own earlier report, stated plainly:** M3-P3-OD-3's closure
 rested on a citation I had accepted, and on direct verification the citation was wrong — Phase 3

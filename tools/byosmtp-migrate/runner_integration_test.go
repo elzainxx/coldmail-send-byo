@@ -121,7 +121,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -465,6 +465,12 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatalf("after Up: byosmtp.notification_state is missing pre-existing value %q — 0047's ADD VALUE must never remove one", v)
 		}
 	}
+	// 0048 (M3-P7-OD-11): unit_price_credits re-seeded at 0 (flat-subscription pricing, not a
+	// default_value mutation of the inherited sender_0021 row — that row is deleted and a fresh one
+	// inserted, per Rule 1 and M3-P5-OD-1's own precedent).
+	if v, d := configValueAndDefault(t, admin, "unit_price_credits"); v != `{"v": 0}` || d != `{"v": 0}` {
+		t.Fatalf("after Up: unit_price_credits value=%s default_value=%s, want both {\"v\": 0} (0048 not applied, or seeded the wrong shape)", v, d)
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -557,6 +563,13 @@ func TestRunnerLifecycle(t *testing.T) {
 		// something that cannot happen.
 		if v == "0047" && !enumValueExists(t, admin, "notification_state", "suppressed") {
 			t.Fatal("after Down 0047: byosmtp.notification_state is missing value 'suppressed' — impossible (Postgres has no DROP VALUE) unless the type itself was dropped/recreated, which 0047's down must not do")
+		}
+		// 0048's down restores the ORIGINAL sender_0021 row verbatim ({"v":1}) — a genuine reversal,
+		// unlike 0047's one-way-door enum value, since this migration only touches a table row.
+		if v == "0048" {
+			if v, d := configValueAndDefault(t, admin, "unit_price_credits"); v != `{"v": 1}` || d != `{"v": 1}` {
+				t.Fatalf("after Down 0048: unit_price_credits value=%s default_value=%s, want both {\"v\": 1} (down did not restore the original sender_0021 row)", v, d)
+			}
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")

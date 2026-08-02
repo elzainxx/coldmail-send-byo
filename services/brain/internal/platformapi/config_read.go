@@ -38,3 +38,19 @@ func (s *Server) readConfigString(ctx context.Context, key string) (string, bool
 	}
 	return *wrap.V, true, nil
 }
+
+// readConfigBool mirrors readConfigInt for a boolean-typed byosmtp.config row (Phase 7's
+// dispatch_enabled/quote_capacity_projection_enabled reads).
+func (s *Server) readConfigBool(ctx context.Context, key string) (bool, bool, error) {
+	var raw []byte
+	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key = $1`, key).Scan(&raw); err != nil {
+		return false, false, err
+	}
+	var wrap struct {
+		V *bool `json:"v"`
+	}
+	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil {
+		return false, false, nil
+	}
+	return *wrap.V, true, nil
+}

@@ -265,13 +265,19 @@ Do this by hand through the API, not through a script. You are testing whether t
 
 ### Stage 7 — The send path
 
-1. `GET /v1/describe` — tiers and pricing
-2. `POST /v1/quote` for N recipients
-   - **Pass:** `N × unit_price_credits`
+1. `GET /v1/describe` — tiers and pricing (`pricing.model` reads `"flat_subscription"` —
+   M3-P7-OD-11 — not a per-recipient rate)
+2. `POST /v1/quote` for N recipients, WITH `user_id` now required (M3-P7-OD-5) — a feasibility
+   check (Phase 7 §4), not a cost lookup
+   - **Pass:** `feasible:true` with `reasons: []`, plus the retained `cost` field reading `0`
+     (`N × unit_price_credits`, seeded `unit_price_credits=0` under the flat-subscription model —
+     `byosmtp_0048`)
    - Do it for several N including the edges — `0`, `1`, `250`, `10000` — and then retune
      `unit_price_credits` and re-quote. **Pass:** `0` is a valid count quoting `cost: 0` (not a
-     rejection), and the retuned price takes effect on the very next `quote` AND on `describe` with
-     **no redeploy** (config-not-code; the two read the same live key so they cannot disagree).
+     rejection), and the retuned price still takes effect on the very next `quote` AND on
+     `describe` with **no redeploy** (config-not-code; the two read the same live key so they
+     cannot disagree) — proving the field stays live-retunable even though module 3's own default
+     is 0.
    - Then push past the happy path and quote the values a caller will actually send by mistake:
      omitted, `null`, `-5`, `"7"` (a string), `2.5`, and an unknown extra field. Read the
      `details[]` array in each envelope, not just the status code. **Pass:** all rejected `400

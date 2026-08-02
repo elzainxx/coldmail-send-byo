@@ -1,35 +1,38 @@
 package platformapi
 
-// quote_test.go — Phase 9 Chunk 1 (§1.2): quote never under- or over-quotes, reconciled against
-// what run + report actually consume. Real Postgres, real HTTP against the actual production
-// Server (CLAUDE.md Rule 3) — no mocks.
+// quote_test.go — Phase 9 Chunk 1 (§1.2) + Phase 7 §4 (feasibility widening, M3-P7-OD-11's
+// flat-subscription ruling). Real Postgres, real HTTP against the actual production Server
+// (CLAUDE.md Rule 3) — no mocks.
 //
-// The correctness claim under test: cost = recipient_count * unit_price_credits, and that number
-// is EXACTLY what gets billed regardless of retries/requeues/reclaims/duplicate-run attempts,
-// because none of those create a second byosmtp.jobs row for the same job_item (Phase 3 §6.2's
-// job_item_id UNIQUE constraint) — they re-dispatch the SAME job. A rare accepted-duplicate
-// delivery (crash-after-250) is an extra DELIVERY, never an extra billed JOB (Phase 6 §2.6).
+// cost = recipient_count * unit_price_credits, and unit_price_credits is seeded 0 under module
+// 3's flat monthly subscription (byosmtp_0048) — cost is retained (Rule 5) but always 0 at the
+// default. The reconciliation claim below (never over/under-quotes billable JOB rows) is unrelated
+// to the pricing model and still holds: none of retries/requeues/reclaims/duplicate-run attempts
+// create a second byosmtp.jobs row for the same job_item (Phase 3 §6.2's job_item_id UNIQUE
+// constraint) — they re-dispatch the SAME job. A rare accepted-duplicate delivery (crash-after-250)
+// is an extra DELIVERY, never an extra billed JOB (Phase 6 §2.6).
 
 import (
 	"testing"
 )
 
-// TestQuote_MatchesRecipientCountTimesUnit — quote(N) == N * unit_price_credits, and the additive
-// unit_price_credits/tier fields are present (Phase 9 §1.1).
+// TestQuote_MatchesRecipientCountTimesUnit — quote(N) == N * unit_price_credits (0 at the seeded
+// default), and the additive unit_price_credits/tier fields are present (Phase 9 §1.1).
 func TestQuote_MatchesRecipientCountTimesUnit(t *testing.T) {
 	e := newTestEnv(t, "quotebasic")
-	resp := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 250}).requireStatus(t, 200)
-	if cost, ok := resp.body["cost"].(float64); !ok || cost != 250 {
-		t.Fatalf("cost=%v, want 250 (default unit_price_credits=1): %s", resp.body["cost"], resp.raw)
+	userID := e.seedUser(t, "quotebasic@example.com")
+	resp := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 250, "user_id": userID}).requireStatus(t, 200)
+	if cost, ok := resp.body["cost"].(float64); !ok || cost != 0 {
+		t.Fatalf("cost=%v, want 0 (default unit_price_credits=0, flat-subscription pricing): %s", resp.body["cost"], resp.raw)
 	}
-	if unit, ok := resp.body["unit_price_credits"].(float64); !ok || unit != 1 {
-		t.Fatalf("unit_price_credits=%v, want 1: %s", resp.body["unit_price_credits"], resp.raw)
+	if unit, ok := resp.body["unit_price_credits"].(float64); !ok || unit != 0 {
+		t.Fatalf("unit_price_credits=%v, want 0: %s", resp.body["unit_price_credits"], resp.raw)
 	}
 	if tier, ok := resp.body["tier"].(string); !ok || tier == "" {
 		t.Fatalf("tier missing from quote response: %s", resp.raw)
 	}
 	// quote is pure and idempotent — calling it again yields the SAME number, reserves nothing.
-	resp2 := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 250}).requireStatus(t, 200)
+	resp2 := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 250, "user_id": userID}).requireStatus(t, 200)
 	if resp2.body["cost"] != resp.body["cost"] {
 		t.Fatalf("quote is not idempotent: first=%v second=%v", resp.body["cost"], resp2.body["cost"])
 	}
@@ -53,9 +56,9 @@ func TestQuote_NeverOverOrUnderQuotesAcrossRetryAndDuplicateRun(t *testing.T) {
 	userU := e.seedUser(t, "quoterecon@example.com")
 	const n = 5
 
-	quoted := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": n}).requireStatus(t, 200)
-	if cost, ok := quoted.body["cost"].(float64); !ok || int(cost) != n {
-		t.Fatalf("quote(%d) cost=%v, want %d", n, quoted.body["cost"], n)
+	quoted := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": n, "user_id": userU}).requireStatus(t, 200)
+	if cost, ok := quoted.body["cost"].(float64); !ok || int(cost) != 0 {
+		t.Fatalf("quote(%d) cost=%v, want 0 (default unit_price_credits=0)", n, quoted.body["cost"])
 	}
 
 	jobIDs := make([]string, 0, n)

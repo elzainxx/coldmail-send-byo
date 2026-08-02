@@ -31,10 +31,11 @@ import (
 // and 0 is accepted as a legitimate count.
 func TestQuote_AbsentVsNegativeRecipientCountAreDistinctIssues(t *testing.T) {
 	e := newTestEnv(t, "quotevalidation")
+	userID := e.seedUser(t, "quotevalidation@example.com")
 
 	// Positive control FIRST: the endpoint works, so a rejection below is about the value, not the
 	// endpoint. 0 is VALID (a zero-recipient campaign costs 0) — the boundary next to the defect.
-	zero := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 0}).requireStatus(t, 200)
+	zero := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 0, "user_id": userID}).requireStatus(t, 200)
 	if cost, ok := zero.body["cost"].(float64); !ok || cost != 0 {
 		t.Fatalf("quote(0) cost=%v, want 0 — zero is a valid count, not a rejection: %s", zero.body["cost"], zero.raw)
 	}
@@ -93,15 +94,16 @@ func TestQuote_AbsentVsNegativeRecipientCountAreDistinctIssues(t *testing.T) {
 // Verified for both a string and a non-integer number.
 func TestQuote_WrongTypeRecipientCountNamesTheField(t *testing.T) {
 	e := newTestEnv(t, "quotewrongtype")
+	userID := e.seedUser(t, "quotewrongtype@example.com")
 
 	// Positive control: the correct type succeeds, so the rejections below are about the type.
-	ok := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 7}).requireStatus(t, 200)
-	if cost, _ := ok.body["cost"].(float64); cost != 7 {
-		t.Fatalf("quote(7) cost=%v, want 7: %s", ok.body["cost"], ok.raw)
+	ok := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": 7, "user_id": userID}).requireStatus(t, 200)
+	if cost, _ := ok.body["cost"].(float64); cost != 0 {
+		t.Fatalf("quote(7) cost=%v, want 0 (default unit_price_credits=0): %s", ok.body["cost"], ok.raw)
 	}
 
 	for _, bad := range []any{"7", 2.5, true, []any{7}, map[string]any{"v": 7}} {
-		r := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": bad}).requireStatus(t, 400)
+		r := e.do(t, "POST", "/v1/quote", map[string]any{"recipient_count": bad, "user_id": userID}).requireStatus(t, 400)
 		if r.errorCode() != codeValidationFailed {
 			t.Fatalf("recipient_count=%#v: code=%s, want %s", bad, r.errorCode(), codeValidationFailed)
 		}
