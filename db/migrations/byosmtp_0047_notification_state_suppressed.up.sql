@@ -1,0 +1,42 @@
+-- byosmtp_0047_notification_state_suppressed.up.sql — M3-P7-OD-10 RULED 2026-08-02.
+--
+-- THE DEFECT, as found while wiring Phase 7's notification delivery loop. Phase 7 §8's own
+-- "authoritative" DDL for byosmtp.notification_state is
+-- ('pending', 'delivered', 'failed', 'suppressed') — but the ENUM ACTUALLY MIGRATED by 0025/0033
+-- (per M3-P7-OD-9's earlier ruling, which made Phase 7 "own" the shape) is
+-- ('pending', 'delivered', 'cleared') — a THIRD, different vocabulary that matches neither
+-- document's DDL. Neither Phase 1's superseded draft nor Phase 7 §8 ever specified 'cleared' as a
+-- state value; both track clearing via the separate cleared_at TIMESTAMPTZ column instead. This is
+-- the same defect class M3-P7-OD-9 already found once (two designs, never diffed against each
+-- other) — found again here because nothing diffed the AUTHORITATIVE DDL against what actually
+-- landed in the tree once M3-P7-OD-9 was ruled.
+--
+-- WHY THIS BLOCKS THE DELIVERY LOOP. §3.2's own exit criterion (T2): "the other nine queue rows
+-- are state='suppressed' (not silently absent — the events must be traceable)." A digest that
+-- folds nine rows into one delivered message needs to mark the other nine as something other than
+-- 'pending' (or they get redelivered next tick) and something other than 'delivered' (they were
+-- not each their own message) — 'suppressed' is that third state, and it does not exist.
+--
+-- RULED 2026-08-02: add ONLY 'suppressed' (not the full four-value Phase 7 §8 set). Nothing in the
+-- delivery loop's design has a use for a 'failed' STATE value — a delivery attempt that errors
+-- (e.g. a transient DB error mid-UPDATE) simply leaves the row 'pending' for the next tick's retry,
+-- the same at-least-once-delivery shape every other housekeeping loop in this codebase already
+-- uses (retention/purge/campaign-expiry never mark a row "failed," they just retry it). Adding an
+-- unused enum value the moment it is speculatively convenient is exactly the "seeded but
+-- unconsumed" defect class CLAUDE.md Rule 1 exists to prevent, extended here to enum values rather
+-- than config keys. 'cleared' is UNCHANGED and remains the value ClearNotification's cleared_at
+-- convention... [see below] actually uses — module 3's own ClearNotification helper (notify.go)
+-- sets cleared_at directly and never touches `state`, matching the existing table's own
+-- notifications_live_dedup_idx (keyed on cleared_at IS NULL, not on state) — so 'cleared' as a
+-- STATE value is, and remains, unused by any code this build has written; it is left in place
+-- because removing an enum value is not possible in Postgres (no DROP VALUE) and it was already
+-- live before this migration.
+--
+-- ADDITIVE-ONLY (Rule 5): ALTER TYPE ... ADD VALUE never removes or renames an existing value.
+-- Cannot run inside the same transaction as its first use (PG12+) — this file adds the value and
+-- uses it NOWHERE; notify.go's first UPDATE ... SET state = 'suppressed' runs in a LATER
+-- transaction (the app's own, at delivery time), matching byosmtp_0025's own documented pattern for
+-- 'user' on event_actor.
+ALTER TYPE byosmtp.notification_state ADD VALUE 'suppressed';
+
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0047');

@@ -131,6 +131,16 @@ type Config struct {
 	VariationCommentIntensityRates  IntensityRates // variation_comment_intensity_rates — S11 (§2.4)
 	VariationZeroWidthRatePct       int            // variation_zero_width_rate_pct — S11 (§2.4)
 	VariationCSSMicroParams         CSSMicroParams // variation_css_micro_params — S11 (§2.4)
+
+	// Phase 7 notification delivery dials (byosmtp_0046; config-not-code, §8). The delivery loop's
+	// own kill switch, ticker, and the two windows (digest batching, dedup re-notify) plus the
+	// severity set that bypasses batching entirely.
+	NotificationsEnabled            bool     // notifications_enabled — §3.2 loop entry (Rule 7 kill switch)
+	NotificationTickIntervalSec     int      // notification_tick_interval_sec — the delivery loop's ticker
+	NotificationDigestWindowSec     int      // notification_digest_window_sec — §3.2 batching window (opens on the FIRST pending event)
+	NotificationDedupWindowSec      int      // notification_dedup_window_sec — §3.3 re-notify interval for an ongoing condition
+	NotificationImmediateSeverities []string // notification_immediate_severities — §3.1/§3.2 severities that bypass the digest window
+	ScoreAlertThreshold             int      // score_alert_threshold — §3.1's score-warning digest event; replaces quarantine_threshold (M3-P5-OD-1)
 }
 
 // IntensityRates is the §2.4 S11 inner shape of variation_comment_intensity_rates: percent (0-100)
@@ -405,6 +415,27 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.CampaignExpirySweepIntervalMS, err = readIntKey(ctx, db, "campaign_expiry_sweep_interval_ms"); err != nil {
+		return c, err
+	}
+
+	// Phase 7's six notification delivery keys (byosmtp_0046). Missing keys are a hard error like
+	// every other dial above — the migration seeds them, so an absent row means a pre-0046 schema.
+	if c.NotificationsEnabled, err = readBoolKey(ctx, db, "notifications_enabled"); err != nil {
+		return c, err
+	}
+	if c.NotificationTickIntervalSec, err = readIntKey(ctx, db, "notification_tick_interval_sec"); err != nil {
+		return c, err
+	}
+	if c.NotificationDigestWindowSec, err = readIntKey(ctx, db, "notification_digest_window_sec"); err != nil {
+		return c, err
+	}
+	if c.NotificationDedupWindowSec, err = readIntKey(ctx, db, "notification_dedup_window_sec"); err != nil {
+		return c, err
+	}
+	if c.NotificationImmediateSeverities, err = readStringArrayKey(ctx, db, "notification_immediate_severities"); err != nil {
+		return c, err
+	}
+	if c.ScoreAlertThreshold, err = readIntKey(ctx, db, "score_alert_threshold"); err != nil {
 		return c, err
 	}
 

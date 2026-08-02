@@ -121,7 +121,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046"}
+		"0042", "0043", "0044", "0045", "0046", "0047"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -454,6 +454,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	if v, d := configValueAndDefault(t, admin, "score_alert_threshold"); v != `{"v": 30}` || d != `{"v": 30}` {
 		t.Fatalf("after Up: score_alert_threshold value=%s default_value=%s, want both {\"v\": 30} (0046 seeded the wrong shape, or M3-P5-OD-1's inherited default was not carried)", v, d)
 	}
+	// 0047 (M3-P7-OD-10): notification_state gains 'suppressed', the digest-fold marker the delivery
+	// loop needs (§3.2's T2: folded rows must be traceable, not silently absent). The three
+	// pre-existing values (pending/delivered/cleared) are untouched by an ADD VALUE.
+	if !enumValueExists(t, admin, "notification_state", "suppressed") {
+		t.Fatal("after Up: byosmtp.notification_state is missing value 'suppressed' (0047 not applied)")
+	}
+	for _, v := range []string{"pending", "delivered", "cleared"} {
+		if !enumValueExists(t, admin, "notification_state", v) {
+			t.Fatalf("after Up: byosmtp.notification_state is missing pre-existing value %q — 0047's ADD VALUE must never remove one", v)
+		}
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -539,6 +550,13 @@ func TestRunnerLifecycle(t *testing.T) {
 					t.Fatalf("after Down 0046: byosmtp.config still has %q (down did not delete it)", key)
 				}
 			}
+		}
+		// 0047's down is the SAME one-way-door asymmetry as 0025's 'user' (M3-P7-OD-10, M3-P1-OD-7
+		// precedent): Postgres has no ALTER TYPE ... DROP VALUE, so 'suppressed' must SURVIVE in
+		// notification_state even after this down — asserting a reversal here would be asserting
+		// something that cannot happen.
+		if v == "0047" && !enumValueExists(t, admin, "notification_state", "suppressed") {
+			t.Fatal("after Down 0047: byosmtp.notification_state is missing value 'suppressed' — impossible (Postgres has no DROP VALUE) unless the type itself was dropped/recreated, which 0047's down must not do")
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")

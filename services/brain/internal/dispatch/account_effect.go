@@ -161,6 +161,20 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 		if err := h.writeSystemAccountEvent(ctx, tx, accountID, uid, before, after, reason); err != nil {
 			return err
 		}
+		// Phase 7 §3.1: "Account auto-quarantined (enforce mode)" is an IMMEDIATE-tier notification —
+		// capacity dropped without the user acting. dedup_key scopes the LIVE-row uniqueness to THIS
+		// account (notifications_live_dedup_idx is per (user_id, dedup_key)), so a different account's
+		// quarantine is never suppressed by this one. Fired only on the NEW-quarantine transition
+		// (newQuarantine, computed above) — quarantineDecision's own idempotence means this is not
+		// re-observed on a later outcome against an already-quarantined account, since dispatch
+		// structurally excludes a quarantined account from receiving further attempts.
+		if newQuarantine {
+			if err := EnqueueNotification(ctx, tx, uid, "account_quarantined", "account", &accountID,
+				"critical", "account_quarantined:"+accountID,
+				map[string]any{"account_id": accountID, "reason": reason}, cfg.NotificationDedupWindowSec); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

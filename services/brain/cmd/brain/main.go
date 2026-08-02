@@ -244,6 +244,15 @@ func main() {
 	// would never fire on precisely the campaign that most needs bounding.
 	campaignExpirer := dispatch.NewCampaignExpiryRunner(dispatcher)
 	go campaignExpirer.Run(ctx)
+
+	// Phase 7 (§3.2): the notification delivery loop — a SIXTH single-Brain housekeeping loop, on
+	// its OWN notification_tick_interval_sec ticker, never inside the dispatch tick and never
+	// poll-driven (module 2's fireWebhooks-on-health-poll shape is deliberately not reused here —
+	// nobody polling would mean nobody notified). Gated by its OWN kill switch
+	// (notifications_enabled), deliberately NOT coupled to dispatch_enabled — halting dispatch is
+	// exactly when a user most needs to be told something.
+	notifier := dispatch.NewNotificationRunner(dispatcher)
+	go notifier.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
 			log.Printf("boxlink stream server stopped: %v", err)

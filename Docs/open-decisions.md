@@ -115,8 +115,8 @@ each item's full context. Each points here.
 | `MERGED` — the same decision asked twice | 2 |
 | `RULED-ACCEPTED` 2026-07-31 — recommendation approved as written | **50** |
 | `RULED` 2026-07-31 — decided individually (7 BLOCKS + 5 RULE) | **12** |
-| **RAISED after the pass** — new, found by the Chunk 3 sweep (M3-P7-OD-9), **ruled the same day** | **1** |
-| **STILL NEEDING A RULING — all 80 items** | **0** |
+| **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop), **both ruled the same day found** | **2** |
+| **STILL NEEDING A RULING — all 81 items** | **0** |
 
 **Three ruled against my recommendation.** M3-P5-OD-1 (I recommended repurpose; ruled: split the
 key), M3-P7-OD-8 (I put (b) to the user; ruled: both), M3-P0-OD-11 (I offered no recommendation;
@@ -1469,12 +1469,55 @@ BEFORE the phase that would otherwise silently inherit a wrong assumption about 
 
 ---
 
+## M3-P7-OD-10 — RULED 2026-08-02: add ONLY `'suppressed'` to `notification_state`; `'failed'` is not built
+
+**Raised while wiring Phase 7's notification delivery loop (C2), found by diffing the AUTHORITATIVE
+DDL against what actually landed in the tree — the same defect class M3-P7-OD-9 already found once
+(two designs never diffed against each other), recurring because M3-P7-OD-9's own ruling was never
+re-verified against the migration it produced.**
+
+**The defect, as found.** Phase 7 §8's own "authoritative" DDL for `byosmtp.notification_state` (the
+block M3-P7-OD-9 designated as what `0033` must implement) is
+`('pending', 'delivered', 'failed', 'suppressed')`. The enum `0025` ACTUALLY created is
+`('pending', 'delivered', 'cleared')` — verified directly against the live database
+(`SELECT enumlabel FROM pg_enum WHERE enumtypid = 'byosmtp.notification_state'::regtype`), not
+assumed from the migration file. **Neither** document's DDL ever specified `'cleared'` as a state
+value; both Phase 1's superseded draft and Phase 7 §8 track clearing via a separate `cleared_at`
+TIMESTAMPTZ column, never a `state` value. So the live enum matches neither of the two documents it
+was supposedly built from — a third, undocumented vocabulary.
+
+**Why it blocks the delivery loop.** §3.2's own exit criterion (T2): a digest that folds N pending
+rows into one delivered message must mark the other N−1 as something other than `'pending'` (or
+they get redelivered next tick) and something other than `'delivered'` (they were not each their
+own message) — traceable, not silently absent. `'suppressed'` is that third state, and it did not
+exist to write.
+
+**The question:** three options — (a) add only `'suppressed'` (the delivery loop's actual need), (b)
+add the full Phase 7 §8 pair (`'failed'` + `'suppressed'`) for DDL fidelity even though nothing
+consumes `'failed'`, or (c) redesign the digest-suppression signal around the three existing values
+(e.g. a separate marker column) rather than touch the enum again.
+
+**RULED: (a) — add only `'suppressed'`.** `byosmtp_0047_notification_state_suppressed.{up,down}.sql`
+(additive `ALTER TYPE ... ADD VALUE`, Rule 5-safe; the down file documents the same
+cannot-truly-reverse asymmetry M3-P1-OD-7 already established for `event_actor`'s `'user'` value).
+`'failed'` is **not** added: nothing in the delivery loop's design has a use for it — a delivery
+attempt that errors mid-UPDATE simply leaves the row `'pending'` for the next tick's retry, the same
+at-least-once shape every other housekeeping loop in this codebase already uses (retention/purge/
+campaign-expiry never mark a row "failed," they just retry it) — seeding an unused enum value on
+spec-fidelity grounds alone is the "seeded but unconsumed" defect class (Rule 1) extended to enum
+values. `'cleared'` is left exactly as-is (Postgres has no `DROP VALUE`, and nothing this build
+writes uses it as a `state` value — clearing is tracked by `cleared_at`, matching both documents'
+actual intent); it was already live before this ruling and this migration does not touch it either
+way.
+
+---
+
 ## Honest final position
 
-**Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which
-this pass raised, reported as open, and had ruled the same day. Nothing is deferred, nothing is
-"awaiting ruling", and no item was closed on my authority. **Phase 4's own build subsequently
-raised and ruled M3-P4-OD-12 the same day it was found** — see above.
+**Needs-user: empty.** All **81** items are disposed of — the original 79, plus **M3-P7-OD-9** and
+**M3-P7-OD-10**, both raised mid-build, reported as open, and ruled the same day they were found.
+Nothing is deferred, nothing is "awaiting ruling", and no item was closed on my authority. **Phase
+4's own build subsequently raised and ruled M3-P4-OD-12 the same day it was found** — see above.
 
 **One correction I had to make against my own earlier report, stated plainly:** M3-P3-OD-3's closure
 rested on a citation I had accepted, and on direct verification the citation was wrong — Phase 3

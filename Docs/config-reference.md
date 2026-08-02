@@ -217,23 +217,36 @@ per-destination throttle-aggregation dials, the quote endpoint's capacity-projec
 M3-P5-OD-1's split: the score never independently quarantines, but Phase 7 gives it an independent
 ALERT-only consumer). Seeded together in Phase 7's own migration, ahead of C2 (notifications) and C3
 (quote/health) landing the real consumers — same shape as Phase 3's `byosmtp_0036` and Module 3
-Phase 6's `byosmtp_0045` before their consumers shipped. Each row below is marked RESERVED with an
-explicit `Phase 8` expiry (`config_consumption`'s M3-P2-OD-8 mechanism): the marker must be gone —
-either a real consumer lands, or the key/row/manifest/ledger entry is removed together — before
-Phase 8 begins.
+Phase 6's `byosmtp_0045` before their consumers shipped. **The five notification-delivery-loop keys
+were cleared by C2** (`internal/dispatch/notify.go`'s `NotificationRunner`, wired into
+`cmd/brain/main.go` as the sixth single-Brain housekeeping loop) — no `RESERVED` marker remains on
+them. The remaining five (the two throttle dials, the two quote dials, and
+`score_alert_threshold`) stay `RESERVED` with their original `Phase 8` expiry: their consumers are
+C3's scope (quote feasibility, health throttle aggregation, the score-warning digest event), not
+yet built.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
-| `notification_digest_window_sec` | `{"v":3600}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — batching window (sec) the notification delivery loop will hold non-immediate-severity events before folding them into one digest (e.g. ten accounts failing inside the window → one notification, not ten). Phase 7 §3.2, C2 scope. |
-| `notification_dedup_window_sec` | `{"v":86400}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — re-notify interval (sec) for an ongoing condition (same `dedup_key`) whose `notified_at` has aged past this window with no fresh notification. Phase 7 §3.3, C2 scope. |
-| `notification_immediate_severities` | `{"v":["critical"]}` | array<string> | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — severity tier(s) that will bypass `notification_digest_window_sec` and deliver immediately rather than being folded into the next digest. Phase 7 §3.1/§3.2, C2 scope. |
-| `notifications_enabled` | `{"v":true}` | boolean | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — kill switch for the notification delivery loop as a whole (the sixth single-Brain housekeeping loop, once it exists); `false` halts delivery cleanly with no event loss (events still persist to `byosmtp.notifications`, just undelivered). Phase 7 §3.2, C2 scope. |
-| `notification_tick_interval_sec` | `{"v":60}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — poll interval (sec) for the notification delivery loop. Phase 7 §3.2, C2 scope. |
+| `notification_digest_window_sec` | `{"v":3600}` | integer | byosmtp_0046 | Batching window (sec) the notification delivery loop holds non-immediate-severity events before folding them into one digest (e.g. ten accounts failing inside the window → one notification, not ten). Consumed by `internal/dispatch/notify.go`'s `deliverDigests`/`usersWithDueDigest`. Phase 7 §3.2. |
+| `notification_dedup_window_sec` | `{"v":86400}` | integer | byosmtp_0046 | Re-notify interval (sec) for an ongoing condition (same `dedup_key`) whose `notified_at` has aged past this window with no fresh notification. Consumed by `internal/dispatch/notify.go`'s `EnqueueNotification` (the re-notify reset, at the write site) and `deliverImmediate`/`deliverOneUserDigest`. Phase 7 §3.3. |
+| `notification_immediate_severities` | `{"v":["critical"]}` | array<string> | byosmtp_0046 | Severity tier(s) that bypass `notification_digest_window_sec` and deliver immediately rather than being folded into the next digest. Consumed by `internal/dispatch/notify.go`'s `deliverImmediate`/`usersWithDueDigest`. Phase 7 §3.1/§3.2. |
+| `notifications_enabled` | `{"v":true}` | boolean | byosmtp_0046 | Kill switch (Rule 7) for the notification delivery loop — the SIXTH single-Brain housekeeping loop. `false` halts delivery cleanly with no event loss (events still persist to `byosmtp.notifications`, just undelivered). Deliberately NOT coupled to `dispatch_enabled` — halting dispatch is exactly when a user most needs to be told something. Consumed by `internal/dispatch/notify.go`'s `NotificationRunner.tick`. Phase 7 §3.2. |
+| `notification_tick_interval_sec` | `{"v":60}` | integer | byosmtp_0046 | Poll interval (sec) for the notification delivery loop. Consumed by `internal/dispatch/notify.go`'s `NotificationRunner.Run`/`tick`. Phase 7 §3.2. |
 | `destination_throttle_window_sec` | `{"v":3600}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — trailing window (sec) the operator health endpoint will use to aggregate per-destination-domain send volume/failure counts (`job_events.destination_domain`, added this same migration). Phase 7 §7, C3 scope. |
 | `destination_throttle_user_threshold` | `{"v":3}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — distinct-users-affected count inside the throttle window at or above which the health endpoint will surface a `destination_throttles` condition for that destination domain. Phase 7 §7, C3 scope. |
 | `quote_capacity_projection_enabled` | `{"v":true}` | boolean | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — toggles whether `/v1/quote` will project an estimated completion duration (feasibility framing: slow is feasible) rather than reporting only accept/reject. Phase 7 §4.2, C3 scope. |
 | `quote_long_duration_warn_sec` | `{"v":172800}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — projected-duration threshold (sec, default 48h) above which `/v1/quote`'s feasibility response will carry a `long_duration` entry in `warnings[]` rather than a bare projection. Phase 7 §4.3, C3 scope. |
-| `score_alert_threshold` | `{"v":30}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §2.4, C2 scope. |
+| `score_alert_threshold` | `{"v":30}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §3.1, C3 scope. |
+
+**Migration `byosmtp_0047_notification_state_suppressed`** adds the `'suppressed'` value to
+`byosmtp.notification_state` (M3-P7-OD-10) — a real schema/spec drift found while wiring the
+delivery loop above: the enum `0025`/`0033` actually created was `(pending, delivered, cleared)`,
+matching neither Phase 1's superseded draft nor Phase 7 §8's own authoritative DDL
+`(pending, delivered, failed, suppressed)`. Only `'suppressed'` was added — nothing in the delivery
+loop's design has a use for `'failed'` (a delivery error simply leaves a row `'pending'` for the
+next tick's retry, the same shape every other housekeeping loop already uses); `'cleared'` is
+unchanged and remains unused as a `state` value (clearing is tracked by the separate `cleared_at`
+column). See `Docs/open-decisions.md#m3-p7-od-10` for the full ruling.
 
 ## All six config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs; Phase 5 §10.4 for the two quarantine dials)
 
