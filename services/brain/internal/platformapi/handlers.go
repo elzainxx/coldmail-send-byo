@@ -224,7 +224,11 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	// Clean external state (§6.3), WIDENED by Phase 7 §1.1 (M3-P7-OD-1, conditional on M3-P7-OD-2's
 	// scrub landing first — it has): job_id, state, provider_message_id (when sent), completed_at,
 	// attempt_count, smtp_response/error_class/failed_at (only on a real failure/bounce — never
-	// last_error_message, never error_reason, never a credential; §1.4/§1.5).
+	// last_error_message, never error_reason, never a credential; §1.4/§1.5), and by Phase 7 §2
+	// (M3-P7-OD-... attribution delta): account_id/account_username — omitted, not merely null,
+	// when the job has no assigned account (never dispatched, or requeued and cleared; §2.1's
+	// "nullable, and this is load-bearing"). account_id is a UUID string; account_username is the
+	// human-readable field users actually act on.
 	out := map[string]any{
 		"job_id":        rep.jobID,
 		"state":         rep.state,
@@ -235,6 +239,12 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	if rep.completedAt != nil {
 		out["completed_at"] = rep.completedAt.UTC()
+	}
+	if rep.accountID != nil {
+		out["account_id"] = *rep.accountID
+	}
+	if rep.accountUsername != nil {
+		out["account_username"] = *rep.accountUsername
 	}
 	if rep.failureDetail.SMTPResponse != nil {
 		out["smtp_response"] = *rep.failureDetail.SMTPResponse

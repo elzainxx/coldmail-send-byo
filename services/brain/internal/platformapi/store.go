@@ -231,17 +231,22 @@ func (s *Server) jobStateByItem(ctx context.Context, jobItemID, userID string) (
 	return state, true
 }
 
-// reportRow is the clean per-job report shape (§6.3), widened by Phase 7 §1.1/§1.5: the
-// failure-detail columns provider_text.go's accessor governs (see providerFailureSelectCols) are
-// read here — this function is P1's half of the "single named accessor" pattern, alongside
-// campaign_report.go's campaignItems for P2 — and exposed via failureDetail. The internal reason
-// column (§1.4) is never read here, by construction: this SELECT does not name it.
+// reportRow is the clean per-job report shape (§6.3), widened by Phase 7 §1.1/§1.5 (failure
+// detail) and §2 (per-account attribution). The failure-detail columns provider_text.go's
+// accessor governs (see providerFailureSelectCols) are read here — this function is P1's half of
+// the "single named accessor" pattern, alongside campaign_report.go's campaignItems for P2 — and
+// exposed via failureDetail. The internal reason column (§1.4) is never read here, by
+// construction: this SELECT does not name it. accountID/accountUsername are read via a LEFT JOIN
+// (§2.2) so a job with no assigned account (never dispatched, or requeued and cleared) reports
+// nulls rather than dropping the row or erroring.
 type reportRow struct {
 	jobID             string
 	state             string
 	providerMessageID *string
 	completedAt       *time.Time
 	attemptCount      int
+	accountID         *string
+	accountUsername   *string
 	failureDetail     providerFailureDetail
 }
 
@@ -251,6 +256,10 @@ type reportRow struct {
 // exists but belongs to another tenant matches 0 rows → (false) → the handler returns the SAME
 // 404-style not-found as a non-existent job, so a caller cannot distinguish "not mine" from "does
 // not exist" (no existence disclosure — OD-25).
+//
+// §2.2's LEFT JOIN: a job's account always belongs to the same user in module 3 (dispatch only
+// ever assigns a same-user account), but tenancy here is established by `j.user_id = $2` alone —
+// the join is never what makes this tenant-safe, it only supplies the username when present.
 func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string) (reportRow, bool, error) {
 	var (
 		rr           reportRow
@@ -258,18 +267,22 @@ func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string
 		errorClass   *string
 		err          error
 	)
+	const cols = `j.id, j.state::text, j.provider_message_id, j.completed_at, j.attempt_count,
+		             j.assigned_account_id, a.smtp_username, `
 	if jobID != "" {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count, `+providerFailureSelectCols+`
-			 FROM byosmtp.jobs WHERE id = $1 AND user_id = $2`, jobID, userID).
+			`SELECT `+cols+providerFailureSelectCols+`
+			 FROM byosmtp.jobs j LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
+			 WHERE j.id = $1 AND j.user_id = $2`, jobID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
-				&smtpResponse, &errorClass)
+				&rr.accountID, &rr.accountUsername, &smtpResponse, &errorClass)
 	} else {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count, `+providerFailureSelectCols+`
-			 FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).
+			`SELECT `+cols+providerFailureSelectCols+`
+			 FROM byosmtp.jobs j LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
+			 WHERE j.job_item_id = $1 AND j.user_id = $2`, jobItemID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
-				&smtpResponse, &errorClass)
+				&rr.accountID, &rr.accountUsername, &smtpResponse, &errorClass)
 	}
 	if err != nil {
 		if isNoRows(err) {

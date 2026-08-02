@@ -35,21 +35,39 @@ type campaignTotals struct {
 }
 
 // campaignItem mirrors one entry of §2.2's "items.results" array — the SAME clean external
-// per-job shape the single-job report already returns (§6.3), WIDENED by Phase 7 §1.1 exactly as
-// the single-job report is (SMTPResponse/ErrorClass/FailedAt — never last_error_message, never
-// error_reason, never a credential). Explicit nil (not an omitted key) on all three, matching
-// this struct's own existing null-handling convention for ProviderMessageID/CompletedAt — the
-// single-job report's map-based omit-the-key shape is a SEPARATE, deliberately inconsistent
-// contract (M3-P7-OD-4), not something this file should silently "fix" to match.
+// per-job shape the single-job report already returns (§6.3), WIDENED by Phase 7 §1.1
+// (SMTPResponse/ErrorClass/FailedAt — never last_error_message, never error_reason, never a
+// credential) and §2 (AccountID/AccountUsername — the per-account attribution delta). Explicit
+// nil (not an omitted key) on all five widened fields, matching this struct's own existing
+// null-handling convention for ProviderMessageID/CompletedAt — the single-job report's map-based
+// omit-the-key shape is a SEPARATE, deliberately inconsistent contract (M3-P7-OD-4), not
+// something this file should silently "fix" to match.
 type campaignItem struct {
 	JobItemID         string  `json:"job_item_id"`
 	State             string  `json:"state"`
 	ProviderMessageID *string `json:"provider_message_id"`
 	CompletedAt       *string `json:"completed_at"`
 	AttemptCount      int     `json:"attempt_count"`
+	AccountID         *string `json:"account_id"`
+	AccountUsername   *string `json:"account_username"`
 	SMTPResponse      *string `json:"smtp_response"`
 	ErrorClass        *string `json:"error_class"`
 	FailedAt          *string `json:"failed_at"`
+}
+
+// accountTotals mirrors one entry of §2.1's `totals_by_account[]` — the aggregate that answers
+// "3 of my 5 accounts are failing" without forcing every client to re-implement the same
+// per-item GROUP BY. AccountID/AccountUsername are never null in this slice: a row exists ONLY
+// for an account that has been assigned at least one job of this campaign (§2.2's GROUP BY), so
+// there is no "unassigned" bucket to represent — unassigned/queued jobs are already counted in
+// campaignTotals.Pending/WaitingForCapacity.
+type accountTotals struct {
+	AccountID       string `json:"account_id"`
+	AccountUsername string `json:"account_username"`
+	Sent            int    `json:"sent"`
+	Bounced         int    `json:"bounced"`
+	Failed          int    `json:"failed"`
+	InFlight        int    `json:"in_flight"`
 }
 
 // handleCampaignReport serves GET /v1/report?campaign_id=<id> (B8, §2.1-§2.4). Scoped to the
@@ -81,6 +99,11 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 		s.fail(w, r, newErr(codeInternalError, "campaign_report_totals_failed"))
 		return
 	}
+	totalsByAccount, err := s.campaignAccountTotals(ctx, campaignID, userID)
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "campaign_report_account_totals_failed"))
+		return
+	}
 	items, nextCursor, err := s.campaignItems(ctx, campaignID, userID, cur, pageSize)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "campaign_report_items_failed"))
@@ -99,9 +122,10 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"campaign_id":     campaignID,
-		"dispatch_paused": dispatchPaused,
-		"totals":          totals,
+		"campaign_id":       campaignID,
+		"dispatch_paused":   dispatchPaused,
+		"totals":            totals,
+		"totals_by_account": totalsByAccount,
 		"progress": map[string]any{
 			"terminal":          terminal,
 			"fraction_complete": fractionComplete,
@@ -181,6 +205,46 @@ FROM scoped`
 	return totals, nil
 }
 
+// campaignAccountTotals computes §2.1's `totals_by_account[]` — a SECOND `GROUP BY
+// assigned_account_id` query over the same jobs rows campaignTotals scans (§2.2: "not a rework
+// of the COUNT(*) FILTER totals — keeping them separate means the existing totals cannot regress
+// while the new aggregate is added"). INNER JOIN here, deliberately unlike campaignItems' LEFT
+// JOIN: a row in this slice exists only for an account that was actually assigned at least one
+// job of this campaign, so an unassigned/never-dispatched job (assigned_account_id IS NULL)
+// correctly contributes to no bucket rather than a spurious "account: null" entry.
+func (s *Server) campaignAccountTotals(ctx context.Context, campaignID, userID string) ([]accountTotals, error) {
+	const q = `
+SELECT a.id::text, a.smtp_username,
+       COUNT(*) FILTER (WHERE j.state = 'sent') AS sent,
+       COUNT(*) FILTER (WHERE j.state = 'bounced') AS bounced,
+       COUNT(*) FILTER (WHERE j.state = 'failed') AS failed,
+       COUNT(*) FILTER (WHERE j.state IN ('assigned', 'sending')) AS in_flight
+FROM byosmtp.jobs j
+JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
+WHERE j.campaign_id = $1 AND j.user_id = $2
+GROUP BY a.id, a.smtp_username
+ORDER BY a.smtp_username ASC`
+
+	rows, err := s.db.Query(ctx, q, campaignID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []accountTotals{}
+	for rows.Next() {
+		var at accountTotals
+		if err := rows.Scan(&at.AccountID, &at.AccountUsername, &at.Sent, &at.Bounced, &at.Failed, &at.InFlight); err != nil {
+			return nil, err
+		}
+		out = append(out, at)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // campaignEligibleAccountsSubquery is the real §4.1 eligibility predicate (Phase 4's
 // accountBaseEligibilityFilter, consolidated M3-P4-OD-3, plus the daily-reset/throttle cycle logic
 // from userHasEligibleQueryTmpl), scoped to the enclosing query's user_id ($2) and referencing the
@@ -231,11 +295,14 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	// The failure-detail columns provider_text.go's accessor governs are read HERE, via
 	// providerFailureSelectCols — this function is P2's half of §1.5's "single named accessor"
 	// (store.go's readReport is P1's half). The internal reason column is never named in this
-	// query, by construction.
+	// query, by construction. §2.2's LEFT JOIN (never INNER — an unassigned job must still appear
+	// in results[], or its count would silently disagree with totals.total).
 	q := `SELECT j.job_item_id::text, j.state::text, j.provider_message_id, j.completed_at, j.attempt_count,
+	             j.assigned_account_id, a.smtp_username,
 	             ` + providerFailureSelectCols + `,
 	             j.created_at, j.id::text
-	      FROM byosmtp.jobs j ` + where + `
+	      FROM byosmtp.jobs j LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
+	      ` + where + `
 	      ORDER BY j.created_at ASC, j.id ASC
 	      LIMIT $` + strconv.Itoa(limitParam)
 
@@ -253,6 +320,7 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 		var completedAt *time.Time
 		var smtpResponse, errorClass *string
 		if err := rows.Scan(&it.JobItemID, &it.State, &it.ProviderMessageID, &completedAt, &it.AttemptCount,
+			&it.AccountID, &it.AccountUsername,
 			&smtpResponse, &errorClass,
 			&lastCreatedAt, &lastID); err != nil {
 			return nil, nil, err
