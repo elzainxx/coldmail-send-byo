@@ -815,15 +815,19 @@ The build plan's four, verbatim, plus what this document adds:
    2026-07-30, §9.1.** Three questions, three answers, two corrections folded into this document
    (§3.2's grow direction, §3.5's state inventory). This criterion covers the *review*; the behaviour
    it examined is still owed a test (T7), and the two are not interchangeable.
-10. **M3-P6-OD-1's ruling is implemented and tested** — ✅ ruled 2026-07-30 (§3.3): `normalize` drops
-    the most-ready lanes and keeps the ones still owing cooldown, selected by value rather than slice
-    position. Green requires all three of: the code matches its own existing comment; **T7(d)** asserts
-    no surviving lane is readier than a dropped one; and T7(d)'s control (the current front-drop) is
-    shown to **fail** that assertion. Code-matches-comment alone is not enough — the front-drop can pass
-    (d) by coincidence on a badly seeded register.
-11. **The ADR records that module 2's `normalize` comment was aspirational, not descriptive** — i.e.
-    that module 3 fixed code to match an intended contract rather than changing a deliberate decision.
-    Without that sentence, a later reader diffing the two modules reads the change backwards.
+10. **M3-P6-OD-1's ruling is implemented and tested** — ✅ ruled 2026-07-30 (§3.3), **landed
+    2026-08-02**: `normalize` drops the most-ready lanes and keeps the ones still owing cooldown,
+    selected by value rather than slice position (`pacing.go`). All three required: the code matches
+    its own existing comment; **T7(d)**
+    (`TestPacerShrink_T7d_KeepsTheLanesOwingTheMostCooldown`) asserts no surviving lane is readier
+    than a dropped one; and T7(d)'s control
+    (`TestPacerShrink_T7dControl_TheOldFrontDropFailsThisAssertion`) shows the pre-fix front-drop
+    FAILS that same assertion on the identical seeded register. Green on real infra.
+11. **The ADR records that module 2's `normalize` comment was aspirational, not descriptive** —
+    **landed 2026-08-02: ADR-0013**
+    (`Docs/history/decisions/0013-pacer-shrink-selects-by-value-not-position.md`), stating exactly
+    that module 3 fixed code to match an intended contract rather than changing a deliberate
+    decision.
 12. **No test's control depends on an unstated random-draw probability** (§7.1). T3's control is 40
     draws (~1 in 75,000), and its spurious-failure rate is written down in the spec.
 13. Docs updated in the same change (§8), Rule 4.
@@ -839,7 +843,7 @@ The build plan's four, verbatim, plus what this document adds:
 
 | ID | Question | Where it bites | Recommendation |
 |---|---|---|---|
-| **M3-P6-OD-1** ✅ **RULED 2026-07-30** | On a ceiling **shrink**, which lanes does `normalize` keep? | §3.3. An admin lowering a user's concurrency is a routine support action, so the resize now happens on a normal path rather than never | **RULED: drop the most-ready lanes, keep the ones still owing cooldown** (option (a)). *"Dropping a lane that still owes cooldown forgives that cooldown. Dropping an already-ready lane costs nothing. Forgiving is the unsafe direction — same principle as the negative-cache-TTL call in Phase 4."* Module 2's `normalize` comment was **aspirational, not descriptive**: it states option (a) correctly and the code never implemented it, so this is a **bug fix**, not a behaviour change — the ADR must say so. Selection is by **value** (latest next-eligible times), not by slice position. Tested by T7(d) with the front-drop as its control |
+| **M3-P6-OD-1** ✅ **RULED 2026-07-30, LANDED 2026-08-02** | On a ceiling **shrink**, which lanes does `normalize` keep? | §3.3. An admin lowering a user's concurrency is a routine support action, so the resize now happens on a normal path rather than never | **RULED: drop the most-ready lanes, keep the ones still owing cooldown** (option (a)). *"Dropping a lane that still owes cooldown forgives that cooldown. Dropping an already-ready lane costs nothing. Forgiving is the unsafe direction — same principle as the negative-cache-TTL call in Phase 4."* Module 2's `normalize` comment was **aspirational, not descriptive**: it states option (a) correctly and the code never implemented it, so this is a **bug fix**, not a behaviour change — recorded in **ADR-0013**. Selection is by **value** (latest next-eligible times), not by slice position. Tested by T7(d) (`pacer_shrink_test.go`) with the front-drop as its control — both green on real infra |
 | **M3-P6-OD-2** ✅ **RULED-ACCEPTED 2026-07-31** | Does a per-user ceiling change need to be **observable** (an `account_events`/audit row), or is `updated_by` + `updated_at` on the row sufficient? | Support diagnosis: "why did this user's throughput change last Tuesday" is answerable from an audit trail and guesswork from a mutable row | `updated_by`/`updated_at` for V1. The row is admin-only and low-churn; a full audit trail is a Phase 7 visibility concern, not a Phase 6 blocker. **Approved as recommended** |
 | **M3-P6-OD-3** ✅ **RULED-ACCEPTED 2026-07-31** | Should the `routing_strategy` read fold into `ResolveUserConfig` to save a per-consume round-trip? | §5.2. The efficiency argument is real and will be raised again | **No.** `user_settings` is user-writable, `user_config_overrides` is admin-only, and §4.2's boundary rests on their being separately reached. One function reading both is one refactor from one function writing both. **Approved as recommended** |
 | **M3-P6-OD-4** ✅ **RULED-ACCEPTED 2026-07-31** | `p.slots` and `d.rrCursor` are unbounded maps keyed by user id with no eviction | §3.4, §5.4. Module 2's tenancy bounded this in practice; module 3's does not. Scope confirmed by §3.5's sweep: these two and no others (`fairCursor` is a scalar) | Register as future work, not a Phase 6 blocker: it is a slow leak with a small entry, not a correctness bug. Flagged now because Phase 6 is the phase that makes these maps genuinely per-tenant. **Approved as recommended** — it lands as a `future-work.md` entry in Phase 8's sweep, not as silent deferral |
