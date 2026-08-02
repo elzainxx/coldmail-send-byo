@@ -1,7 +1,11 @@
 # Phase 6 — Per-user config and routing
 
-> **STATUS: PLAN ONLY.** No code, no migrations, no file moves. This document specifies what
-> Phase 6 builds; it does not build it.
+> **Status (2026-08-02): CLOSED.** Both chunks (C1 the single resolution path + admin override
+> routes + user-owned routing_strategy; C2 the pacer resolve-once-per-tick fix + M3-P6-OD-1's
+> shrink-by-value semantics) are implemented and green on real infra — all 11 exit criteria (§11)
+> landed, including T1-T11 (T4 added at the post-implementation exit-criteria pass, §11 item 3),
+> the §9.2 post-implementation concurrency review (CLOSED, no gap), and two full clean-slate
+> harness + six-gates cycles (91/91 + all six gates, twice). Migration `0045` per M3-P6-OD-6.
 
 **Authority.** `Docs/module-3-build-plan.md`'s "Phase 6 — Per-user config and routing" section is
 what this document makes executable. Its four exit criteria are quoted verbatim in §11 and are not
