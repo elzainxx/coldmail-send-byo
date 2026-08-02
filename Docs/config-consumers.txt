@@ -104,3 +104,13 @@ max_queued_jobs|userconfig.Resolve
 campaign_expiry_sec|userconfig.Resolve
 campaign_expiry_sweep_interval_ms|CampaignExpiryRunner
 test_button_rate_limit_per_user_per_day|readTestButtonRateLimitPerUser
+notification_digest_window_sec|RESERVED|Phase 8
+notification_dedup_window_sec|RESERVED|Phase 8
+notification_immediate_severities|RESERVED|Phase 8
+notifications_enabled|RESERVED|Phase 8
+notification_tick_interval_sec|RESERVED|Phase 8
+destination_throttle_window_sec|RESERVED|Phase 8
+destination_throttle_user_threshold|RESERVED|Phase 8
+quote_capacity_projection_enabled|RESERVED|Phase 8
+quote_long_duration_warn_sec|RESERVED|Phase 8
+score_alert_threshold|RESERVED|Phase 8

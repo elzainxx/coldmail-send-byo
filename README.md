@@ -73,7 +73,7 @@ db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.
 db/preflight/             platform-table existence checks, run before migrating
 tools/                    byosmtp-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
-tests/harness/checks/     the 6 blocking CI gates
+tests/harness/checks/     the 7 blocking CI gates
 Docs/                     living documentation (operate + extend)
 Docs/history/             provenance — phase specs, ADRs, decision ledger, build record
 deploy/                   production override material
@@ -85,9 +85,10 @@ Tests run against real infrastructure — real Postgres, a real Brain↔box mTLS
 server. There are no mock-the-database or mock-the-box tests; that is a hard rule, not a
 preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite.
 
-Six blocking CI gates run on every push, each catching a specific class of drift (M3-P0-OD-10:
-this line was corrected from "Five" — `drain_grace` was already running in CI, `.github/workflows/
-real-infra.yml`, but never counted here):
+Seven blocking CI gates run on every push, each catching a specific class of drift (M3-P0-OD-10:
+the count was originally corrected from "Five" to "Six" — `drain_grace` was already running in CI,
+`.github/workflows/real-infra.yml`, but never counted here; Phase 7 added the seventh,
+`user_output_scrub`):
 
 | Gate | Fails when |
 |---|---|
@@ -97,5 +98,6 @@ real-infra.yml`, but never counted here):
 | `config_consumption` | a seeded key has no real consumer and is not marked RESERVED |
 | `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
 | `no_secret_leak` | the box registration token or its hash appears in service logs (the SMTP-credential canary scan lives in the send-path harness) |
+| `user_output_scrub` | `jobs.last_smtp_response` gains a reader outside its single named accessor, `jobs.last_error_message` gains a reader in `platformapi/`, a notification payload reads the raw column instead of the accessor, or `boxproto.Report.SMTPResponse` gains an unledgered consumer (Phase 7 §1.6) |
 
 Run any of them directly: `bash tests/harness/checks/<name>.sh`.

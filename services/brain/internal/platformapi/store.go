@@ -231,10 +231,11 @@ func (s *Server) jobStateByItem(ctx context.Context, jobItemID, userID string) (
 	return state, true
 }
 
-// reportRow is the clean per-job report shape (§6.3), widened by Phase 7 §1.1/§1.5:
-// last_smtp_response and error_class are read here (this function IS the "single named accessor"
-// for last_smtp_response on the P1 path, alongside campaign_report.go's campaignItems for P2) and
-// exposed via failureDetail — never last_error_message, never error_reason (§1.4).
+// reportRow is the clean per-job report shape (§6.3), widened by Phase 7 §1.1/§1.5: the
+// failure-detail columns provider_text.go's accessor governs (see providerFailureSelectCols) are
+// read here — this function is P1's half of the "single named accessor" pattern, alongside
+// campaign_report.go's campaignItems for P2 — and exposed via failureDetail. The internal reason
+// column (§1.4) is never read here, by construction: this SELECT does not name it.
 type reportRow struct {
 	jobID             string
 	state             string
@@ -245,11 +246,11 @@ type reportRow struct {
 }
 
 // readReport fetches the clean state for a job by job_id OR job_item_id, SCOPED to the calling
-// tenant (userID). Only the external-safe columns are selected (§6.3); last_error_message /
-// error_reason / credential are never read here — only the slug-free last_smtp_response (§1.4/
-// §1.5). A job that exists but belongs to another tenant matches 0 rows → (false) → the handler
-// returns the SAME 404-style not-found as a non-existent job, so a caller cannot distinguish "not
-// mine" from "does not exist" (no existence disclosure — OD-25).
+// tenant (userID). Only the external-safe columns are selected (§6.3, §1.4/§1.5) — the internal
+// reason column, the box's raw error slug, and any credential are never read here. A job that
+// exists but belongs to another tenant matches 0 rows → (false) → the handler returns the SAME
+// 404-style not-found as a non-existent job, so a caller cannot distinguish "not mine" from "does
+// not exist" (no existence disclosure — OD-25).
 func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string) (reportRow, bool, error) {
 	var (
 		rr           reportRow
@@ -259,15 +260,13 @@ func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string
 	)
 	if jobID != "" {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count,
-			        last_smtp_response, last_error_class::text
+			`SELECT id, state::text, provider_message_id, completed_at, attempt_count, `+providerFailureSelectCols+`
 			 FROM byosmtp.jobs WHERE id = $1 AND user_id = $2`, jobID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
 				&smtpResponse, &errorClass)
 	} else {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count,
-			        last_smtp_response, last_error_class::text
+			`SELECT id, state::text, provider_message_id, completed_at, attempt_count, `+providerFailureSelectCols+`
 			 FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).
 			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
 				&smtpResponse, &errorClass)

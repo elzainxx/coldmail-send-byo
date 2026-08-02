@@ -16,6 +16,17 @@ package platformapi
 
 import "time"
 
+// providerFailureSelectCols is the ONLY place the literal column name last_smtp_response may
+// appear in this package's SQL — §1.5/§1.6's mechanical closure grep
+// (`grep -rn "last_smtp_response" services/brain/internal/`) must return only the two write sites
+// (dispatch/outcome.go) and this one file. Callers (store.go's readReport for P1,
+// campaign_report.go's campaignItems for P2) splice this fragment into their own SELECT list by
+// name rather than spelling the column themselves, so the literal genuinely lives in exactly one
+// place — not merely "the decision of what to expose lives in one place while the column name is
+// still typed out twice." Ordered (last_smtp_response, last_error_class) — callers Scan into that
+// same order.
+const providerFailureSelectCols = `last_smtp_response, last_error_class::text`
+
 // providerFailureDetail is what P1/P2 are allowed to know about a job's most recent failure: the
 // scrubbed provider text, the error_class enum's own text value (a locked, additive-only Rule-5
 // contract value — not an internal reason slug; adminapi's health endpoint already exposes the

@@ -228,11 +228,12 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	}
 	args = append(args, pageSize+1)
 	limitParam := len(args)
-	// last_smtp_response/last_error_class are read HERE — this function is P2's half of §1.5's
-	// "single named accessor" (store.go's readReport is P1's half). Never last_error_message,
-	// never error_reason (§1.4).
+	// The failure-detail columns provider_text.go's accessor governs are read HERE, via
+	// providerFailureSelectCols — this function is P2's half of §1.5's "single named accessor"
+	// (store.go's readReport is P1's half). The internal reason column is never named in this
+	// query, by construction.
 	q := `SELECT j.job_item_id::text, j.state::text, j.provider_message_id, j.completed_at, j.attempt_count,
-	             j.last_smtp_response, j.last_error_class::text,
+	             ` + providerFailureSelectCols + `,
 	             j.created_at, j.id::text
 	      FROM byosmtp.jobs j ` + where + `
 	      ORDER BY j.created_at ASC, j.id ASC

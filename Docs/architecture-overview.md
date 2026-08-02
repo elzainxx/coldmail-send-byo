@@ -101,12 +101,18 @@ which.
 
 ## Build status and the two ceilings
 
-**The build is complete and sealed.** All eleven phases are implemented, tested against real
-infrastructure, and closed; the verdict is **GO** for a pilot. The full behavioral harness is green
-and all **six** CI gates pass (`config_drift`, `contract_drift`, `migration_lint`,
-`config_consumption`, `drain_grace`, `no_secret_leak` — this said "five" until 2026-07-29; the sixth
-has been in `.github/workflows/real-infra.yml` since it was added). Deferred work is registered in
-`future-work.md` rather than left implicit.
+**Status placeholder, flagged not fixed (found stale 2026-08-02):** this section's "eleven phases,
+complete and sealed" claim predates module 3's own phase count and does not match the tree's
+current build-in-progress state (Phase 7 is mid-build as of this edit) — likely carried over
+unedited from an earlier draft or module 2's own inherited text. Left as-found rather than silently
+rewritten, per Rule 2 (flag, don't silently fix) — this needs a deliberate pass once the build's own
+phase count and close status are known, not a guess made in passing while fixing an unrelated gate
+count below.
+
+The full behavioral harness is green and all **seven** CI gates pass (`config_drift`,
+`contract_drift`, `migration_lint`, `config_consumption`, `drain_grace`, `no_secret_leak`,
+`user_output_scrub` — this said "five" until 2026-07-29, "six" until Phase 7 added the seventh).
+Deferred work is registered in `future-work.md` rather than left implicit.
 
 **Open Decisions.** The pre-deploy gate walkthrough (`byosmtp-module-local-test-guide.md`) surfaced two
 new ones, **G11-OD-1** and **G12-OD-1**, and **both were ruled on 2026-07-29, implemented, tested on

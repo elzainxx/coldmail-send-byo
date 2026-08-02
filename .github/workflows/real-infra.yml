@@ -1,7 +1,7 @@
 # Real-infra CI (Phase 0). Runs on every push/PR; a passing run is a REQUIRED status check
 # on the default branch. Brings up the SAME compose stack devs run (base + harness override),
-# executes the real-infra behavioral harness, then the three BLOCKING drift gates. Nothing is
-# mocked — real Postgres + real Brain + real box + real Mailpit (CLAUDE.md Rule 3).
+# executes the real-infra behavioral harness, then the seven BLOCKING structural gates. Nothing
+# is mocked — real Postgres + real Brain + real box + real Mailpit (CLAUDE.md Rule 3).
 name: real-infra
 on: [push, pull_request]
 
@@ -59,6 +59,10 @@ jobs:
       - name: Security gate — no credential leak in service logs (BLOCKING)
         if: always()
         run: bash tests/harness/checks/no_secret_leak.sh
+
+      - name: Scrub gate — last_smtp_response has one reader, last_error_message has zero readers in platformapi/ (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/user_output_scrub.sh
 
       - name: Diagnostics on failure
         if: failure()

@@ -39,7 +39,12 @@ phase_index() { # $1=phase/gate label -> its index in PHASE_ORDER, or -1 if unre
   done
   echo -1
 }
-current_phase="$(cat "$PHASEFILE" 2>/dev/null | tr -d '[:space:]')"
+# Trim leading/trailing whitespace ONLY (not internal spaces — "Phase 7" is a two-token label and
+# tr -d '[:space:]' silently mangled it to "Phase7", which never matches PHASE_ORDER's "Phase 7".
+# Latent since this file's first version: every phase/gate label used here until now (G1-G4) was
+# single-token, so the bug never had a chance to fire — found only once current-phase.txt was
+# updated past G4 to a real "Phase N" label for the first time.
+current_phase="$(cat "$PHASEFILE" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 current_idx="$(phase_index "$current_phase")"
 if [[ "$current_idx" == "-1" ]]; then
   echo "config_consumption FAIL: $PHASEFILE contains '$current_phase', not one of: ${PHASE_ORDER[*]}"
