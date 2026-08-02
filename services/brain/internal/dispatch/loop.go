@@ -10,6 +10,8 @@ import (
 	"log"
 	"sort"
 	"time"
+
+	"github.com/byosmtp-module/brain/internal/userconfig"
 )
 
 // notSuspendedFragment is Module 3 Phase 5 §6.3's ONE shared SQL fragment: "a filter is not a
@@ -52,10 +54,14 @@ SET state = 'assigned',
 WHERE id IN (SELECT id FROM claimed)
 RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, reply_to`
 
-// ringSlot is one active user's turn this tick: how many lanes they may claim.
+// ringSlot is one active user's turn this tick: how many lanes they may claim, and the RESOLVED
+// per-user config this tick used to decide that grant. Module 3 Phase 6 §3.2: carrying uc alongside
+// the slot (rather than re-resolving at Phase C+D) is what makes the three pacer sites agree WITHIN
+// one tick — resolved once here in Phase B, threaded by parameter exactly like cfg, never re-read.
 type ringSlot struct {
 	userID string
 	grant  int
+	uc     userconfig.UserConfig
 }
 
 // Tick runs one full dispatch cycle (§1.2). It re-reads config fresh (Phase 2 OD-14 — a config
@@ -109,7 +115,26 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 	// other active user's gate evaluation unaffected.
 	var ring []ringSlot
 	for _, u := range activeUsers {
-		lanes := cfg.ConcurrencyPerUserDefault - inFlight[u]
+		// Module 3 Phase 6 §1/§3.2: resolve ONCE per user per tick, here — the ONLY resolution call
+		// for this user this tick. The result is carried in the ringSlot and threaded to Admit
+		// (below) and to claimForUser/Stamp in Phase C+D, never re-resolved at either site. Per
+		// §1.3 property 4, a resolution error is an infrastructure fault (not "no override," which
+		// userconfig.Resolve already treats as its own non-error default path) — same no-starvation
+		// disposition as an evaluateChain failure: skip this one user, leave the ring unaffected.
+		uc, ucErr := userconfig.Resolve(ctx, d.db, u, userconfig.Globals{
+			SendDelayMinSec:    cfg.SendDelayMinSec,
+			SendDelayMaxSec:    cfg.SendDelayMaxSec,
+			ConcurrencyPerUser: cfg.ConcurrencyPerUserDefault,
+			MaxCampaignSize:    cfg.MaxCampaignSize,
+			MaxQueuedJobs:      cfg.MaxQueuedJobs,
+			CampaignExpirySec:  cfg.CampaignExpirySec,
+		})
+		if ucErr != nil {
+			log.Printf("dispatch: userconfig.Resolve(%s) failed: %v — skipping this user for this tick", u, ucErr)
+			continue
+		}
+
+		lanes := uc.ConcurrencyPerUser - inFlight[u]
 		if lanes <= 0 {
 			continue
 		}
@@ -134,15 +159,15 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		case verdictClaim:
 			// Phase 6 pacing (§1): withhold the portion of this user's grant whose lanes are still
 			// cooling down. Admit returns min(lanes, paced-ready lanes) — a `min`, so it can only
-			// FURTHER delay a send, never raise the grant above Phase 4's DB-derived ceiling
+			// FURTHER delay a send, never raise the grant above the resolved per-user ceiling
 			// (`lanes`). A user with a positive lane count but no paced-ready slot this tick gets
 			// grant 0: their jobs stay queued, untouched (claimed on a later tick once a timer
 			// elapses) — the tick never blocks. Slots are stamped only on an ACTUAL push (Phase D).
-			paced := d.pace.Admit(u, cfg.ConcurrencyPerUserDefault, lanes)
+			paced := d.pace.Admit(u, uc.ConcurrencyPerUser, lanes)
 			if paced <= 0 {
 				continue
 			}
-			ring = append(ring, ringSlot{userID: u, grant: paced})
+			ring = append(ring, ringSlot{userID: u, grant: paced, uc: uc})
 		case verdictFail:
 			if err := d.failExhaustedJobs(ctx, u); err != nil {
 				log.Printf("dispatch: failExhaustedJobs(%s) failed: %v", u, err)
@@ -198,7 +223,11 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 				// A send actually fired: cost this user one lane's cooldown (a fresh uniform delay
 				// re-drawn per send, §1.1). Stamped ONLY on a real push, so a claim that returned
 				// fewer jobs than granted, or a requeued/failed handoff, never burns a lane's timer.
-				d.pace.Stamp(slot.userID, cfg.ConcurrencyPerUserDefault, cfg.SendDelayMinSec, cfg.SendDelayMaxSec)
+				// Module 3 Phase 6 §3.2: uses slot.uc — the SAME resolved value Phase B's Admit call
+				// used for this user this tick, never a fresh re-resolution — so Admit and Stamp can
+				// never disagree on the ceiling within one tick, even if an admin PUT lands between
+				// Phase B and this call (the exact race §3.2 exists to close).
+				d.pace.Stamp(slot.userID, slot.uc.ConcurrencyPerUser, slot.uc.SendDelayMinSec, slot.uc.SendDelayMaxSec)
 				pushed++
 			}
 		}

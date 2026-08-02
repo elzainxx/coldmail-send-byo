@@ -48,6 +48,14 @@ type recordingPusher struct {
 	extraBoxes []string        // additional registered box ids (Chunk 1 multi-box tests)
 	inFlightBy map[string]bool // per-box in-flight marker
 	failPush   bool
+
+	// onPush fires INSIDE PushJob, before it returns — the ONLY point in one Tick that sits between
+	// Phase B's Admit call and Phase D's Stamp call (resolveAndPush's push happens strictly after
+	// claimForUser/Admit and strictly before the caller's Stamp). Module 3 Phase 6 §3.2/T7 uses this
+	// to force an admin config write into that exact window without touching production code — a
+	// forced deterministic interleave (Rule 10), not a hoped-for one. nil in every test that doesn't
+	// need it (the common case; a nil check guards every call site below).
+	onPush func()
 }
 
 func (p *recordingPusher) PushJob(pj boxproto.PushJob, boxID string) error {
@@ -61,6 +69,9 @@ func (p *recordingPusher) PushJob(pj boxproto.PushJob, boxID string) error {
 		p.inFlightBy = map[string]bool{}
 	}
 	p.inFlightBy[boxID] = true
+	if p.onPush != nil {
+		p.onPush()
+	}
 	return nil
 }
 

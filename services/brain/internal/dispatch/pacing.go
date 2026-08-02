@@ -23,6 +23,7 @@ package dispatch
 
 import (
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"time"
 )
@@ -129,8 +130,21 @@ func (p *pacer) Stamp(userID string, ceiling, minSec, maxSec int) {
 
 // normalize returns user U's register resized to exactly `ceiling` slots (caller holds p.mu). New
 // slots are the zero time (before any wall clock → immediately ready, matching the restart-burst
-// and fresh-lane "first send fires immediately" contract, §1.1). Extra slots (a lowered ceiling)
-// are dropped from the front (the most-cooled-down), keeping the longest-cooling timers.
+// and fresh-lane "first send fires immediately" contract, §1.1).
+//
+// Extra slots (a lowered ceiling) are dropped BY VALUE, not by slice position — Module 3 Phase 6
+// §3.3/M3-P6-OD-1 (RULED): keep the `ceiling` slots that owe the MOST cooldown (the latest
+// next-eligible times) and drop the ones that are already most-ready. Dropping a lane that still
+// owes cooldown FORGIVES that cooldown; dropping an already-ready lane costs nothing — forgiving is
+// the unsafe direction (the same principle as the negative-cache-TTL call in Phase 4). This is a
+// BUG FIX, not a behavior change: the doc comment above this function has always described exactly
+// this contract ("dropped from the front (the most-cooled-down), keeping the longest-cooling
+// timers") — the code beneath it never implemented it, because slice position carries no readiness
+// meaning (Stamp advances THE EARLIEST slot and writes it back in place, so a slot's position in
+// the slice is an accident of prior resizes/stamps, not a readiness ordering). Selection is by
+// value: sort a COPY descending by next-eligible time (latest/most-cooling first) and keep the
+// first `ceiling` — the register is `ceiling`-sized, single-digit in practice, so a sort costs
+// nothing measurable, and normalize already runs under p.mu.
 func (p *pacer) normalize(userID string, ceiling int) []time.Time {
 	slots := p.slots[userID]
 	if len(slots) == ceiling {
@@ -141,7 +155,9 @@ func (p *pacer) normalize(userID string, ceiling int) []time.Time {
 			slots = append(slots, time.Time{}) // zero time → ready now
 		}
 	} else {
-		slots = slots[len(slots)-ceiling:]
+		kept := append([]time.Time{}, slots...)
+		sort.Slice(kept, func(i, j int) bool { return kept[i].After(kept[j]) }) // latest (most-cooling) first
+		slots = kept[:ceiling]
 	}
 	p.slots[userID] = slots
 	return slots
