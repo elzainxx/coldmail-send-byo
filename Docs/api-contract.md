@@ -189,6 +189,16 @@ Domain A, §5.3 of `Docs/phase-6-per-user-config-and-routing.md`):
 |---|---|---|
 | GET | `/v1/byosmtp/settings?user_id=<uuid>` | Read the caller's OWN `routing_strategy` (`random`/`round_robin`/`one_by_one`). Row absent → the table's own default (`round_robin`). |
 | PUT | `/v1/byosmtp/settings?user_id=<uuid>` | Set the caller's own `routing_strategy`. The tenant selector is the query parameter, taken from the session — never the request body, so a body-supplied `user_id` cannot redirect the write to another tenant. Accepts ONLY `routing_strategy`, validated against the enum; `400 validation_failed` for a missing/unrecognized value. This route CANNOT name an admin-owned dial (`send_delay_*`, `concurrency_per_user`, the resource caps) — not by a check, but structurally: `user_settings` and `user_config_overrides` are two different tables, and this handler decodes no field that could reach the other one. |
+| GET | `/v1/byosmtp/usage?user_id=<uuid>&from=<YYYY-MM-DD>&to=<YYYY-MM-DD>` | **Phase 7 §6** — per-user, per-UTC-day usage metrics for platform capacity planning under the flat-subscription model. `from`/`to` are inclusive UTC dates, both optional (default: the last 30 UTC days ending today — a bounded default so an unscoped request cannot force a full-history aggregation). Returns `{user_id, from, to, accounts_configured, accounts_eligible, days: [{date, messages_attempted, messages_sent, messages_bounced, messages_failed, campaigns_run, peak_concurrency_used, distinct_destination_domains}]}`. `accounts_configured`/`accounts_eligible` are a SNAPSHOT at reporting time (distinguishes "has N accounts" from "has N accounts that work"); the `days[]` metrics are DERIVED from `jobs`/`job_events` on every request — no counter table, no increment-on-send path, so a fixed aggregation bug can be re-run against history. Read-only, no text fields, no per-account rows — outside the leak surface by construction (`user_output_scrub` covers it). |
+
+**`GET /v1/describe`'s `extension_routes[]`** (Phase 7 §5.1) — everything above except the core
+four (`quote`/`run`/`report`/`describe` are implicit, uniform across modules) is ALSO declared in
+`describe`'s response, generated from the SAME registry `internal/platformapi/server.go`'s route
+mounting reads (`describe_routes.go`) — a route cannot be served without a `describe` declaration.
+Each entry carries `{id, method, path, auth:"platform_service_token", scope:"user", description,
+request_schema_ref?, response_schema_ref?}`; `schemas` holds the shapes those refs point into.
+Operator (`/v1/admin/*`) routes are NEVER declared here — `describe` is served on Domain A, and
+enumerating the admin surface to a platform token would be a free map of it.
 
 **Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
 
@@ -388,7 +398,7 @@ clamps to a max of **200**; a missing, zero, negative, or non-numeric `page_size
 back to the default (never a `400`). `cursor` is opaque (base64) — pass back exactly what
 `next_cursor` returned; a malformed `cursor` returns `400 validation_failed`. `next_cursor:null`
 means the last page.
-| GET | `/v1/describe` | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) |
+| GET | `/v1/describe` | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) + **`extension_routes[]`/`schemas`** (Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) |
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated
 > persistent stream on the boxlink stream port) carrying

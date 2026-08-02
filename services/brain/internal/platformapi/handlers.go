@@ -322,6 +322,12 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			"unit_price_credits": unit,
 			"tiers":              describeTiers(unit),
 		},
+		// Phase 7 §5.1: the extension routes beyond the core four, generated from the SAME slice
+		// server.go's routes() mounts (describe_routes.go) — cannot drift, by construction. NEVER
+		// includes an operator (/v1/admin/*) route (§5.1's security half: describe is served on
+		// Domain A, and enumerating the admin surface to a platform token is a free map of it).
+		"extension_routes": describeExtensionRoutesJSON(s.extensionRoutes()),
+		"schemas":          describeSchemas(),
 		// bulk_add's UI copy contract (Phase 3 §4.3): the module has no UI, so what it owns is the
 		// CONTRACT the UI must honor. warning_code is versioned and additive-only (Rule 5);
 		// warning_text is the required baseline the UI MUST display before the file picker and

@@ -142,27 +142,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/report", s.requireAuth(s.handleReport))
 	s.mux.HandleFunc("GET /v1/describe", s.requireAuth(s.handleDescribe))
 
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts", s.requireAuth(s.handleAccountCreate))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/bulk", s.requireAuth(s.handleAccountBulkAdd))
-	s.mux.HandleFunc("GET /v1/byosmtp/accounts", s.requireAuth(s.handleAccountList))
-	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountGet))
-	s.mux.HandleFunc("PATCH /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountUpdate))
-	s.mux.HandleFunc("DELETE /v1/byosmtp/accounts/{id}", s.requireAuth(s.handleAccountDelete))
-	s.mux.HandleFunc("GET /v1/byosmtp/accounts/{id}/events", s.requireAuth(s.handleAccountEvents))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/disable", s.requireAuth(s.handleAccountDisable))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
-	// Module 3 Phase 5 §2.1: the self-serve un-quarantine route, dropped from the account-
-	// lifecycle re-scope in Phase 3 pending this phase's rate-limit + test-verified-bypass design.
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unquarantine", s.requireAuth(s.handleAccountUnquarantine))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test", s.requireAuth(s.handleAccountTest))
-	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test-send", s.requireAuth(s.handleAccountTestSend))
-
-	// Module 3 Phase 6 §5.3: the user-owned routing_strategy write. A DIFFERENT table from the
-	// admin-only user_config_overrides dials (§4.2 writer #6) — structurally cannot reach a dial.
-	s.mux.HandleFunc("GET /v1/byosmtp/settings", s.requireAuth(s.handleUserSettingsGet))
-	s.mux.HandleFunc("PUT /v1/byosmtp/settings", s.requireAuth(s.handleUserSettingsPut))
+	// Every route beyond the core four (§5.1: quote/run/report/describe are implicit — uniform
+	// across modules) is declared ONCE in describe_routes.go's extensionRoutes() and mounted from
+	// that SAME slice here — Phase 7 §5.1's own requirement that describe be generated from the
+	// mux, not hand-maintained. A route cannot be served without a describe declaration, and a
+	// declaration cannot exist without the mux entry it names.
+	for _, rt := range s.extensionRoutes() {
+		s.mux.HandleFunc(rt.Method+" "+rt.Path, s.requireAuth(rt.Handler))
+	}
 }
 
 // dbCtx bounds a per-request DB operation.
