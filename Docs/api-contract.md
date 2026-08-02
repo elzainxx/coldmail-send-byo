@@ -249,7 +249,8 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
 | `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
 | `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
-| `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all three V1 conditions |
+| `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all four V1 conditions (adds `destination_throttles`, Phase 7 §7.1) |
+| `destination_throttles[]` | array | **Phase 7 §7** — `{destination_domain, window_sec, throttle_events, distinct_users_affected, distinct_accounts_affected, first_seen_at, last_seen_at}`, one row per destination domain with at least one `error_class='throttle'` event inside `destination_throttle_window_sec`. Sourced from `job_events.destination_domain` — **never `send_logs`** (M3-P7-OD-6: the aggregation must not depend on debug retention, since this diagnostic is the safeguard chosen INSTEAD of a per-destination cap). `distinct_users_affected` is the diagnostic field: one user throttled is that user's problem; several on the SAME domain means our box IPs are rate-limited. No response text of any kind — this feeds the untrusted alert webhook (Rule 5), and the entry surfaces in `active_conditions[]` (condition `destination_throttles`) only once `distinct_users_affected >= destination_throttle_user_threshold` |
 
 **`errors_last_window` counts one failure once.** It counts `byosmtp.job_events` rows in the window
 that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis

@@ -57,6 +57,21 @@ type healthResponse struct {
 	} `json:"shadow"`
 
 	ActiveConditions []activeConditionJSON `json:"active_conditions"`
+
+	DestinationThrottles []destinationThrottleJSON `json:"destination_throttles"`
+}
+
+// destinationThrottleJSON is §7's destination_throttles[] entry, field-for-field. Deliberately no
+// response-text field of any kind (Rule 5 — this feeds the alert webhook, untrusted egress; T9's
+// own assertion is that the field does not exist to leak into, not merely that it is empty).
+type destinationThrottleJSON struct {
+	DestinationDomain        string `json:"destination_domain"`
+	WindowSec                int    `json:"window_sec"`
+	ThrottleEvents           int    `json:"throttle_events"`
+	DistinctUsersAffected    int    `json:"distinct_users_affected"`
+	DistinctAccountsAffected int    `json:"distinct_accounts_affected"`
+	FirstSeenAt              string `json:"first_seen_at"`
+	LastSeenAt               string `json:"last_seen_at"`
 }
 
 // userHeadroomJSON is the G3 REAL REWRITE (M3-P2-OD-12) of the pre-G2 per-pool wire shape,
@@ -109,8 +124,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, newErr(codeInternalError, "health_autoquarantine_mode_read_failed: "+err.Error()))
 		return
 	}
+	throttleWindowSec, err := readConfigInt(ctx, s.db, "destination_throttle_window_sec")
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "health_throttle_window_read_failed: "+err.Error()))
+		return
+	}
 
-	snap, err := buildHealthSnapshot(ctx, s.db, windowSec, dispatchEnabled, autoquarantineMode)
+	snap, err := buildHealthSnapshot(ctx, s.db, windowSec, dispatchEnabled, autoquarantineMode, throttleWindowSec)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "health_snapshot_failed: "+err.Error()))
 		return
@@ -185,5 +205,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.ActiveConditions = conditions
+
+	resp.DestinationThrottles = make([]destinationThrottleJSON, 0, len(snap.DestinationThrottles))
+	for _, t := range snap.DestinationThrottles {
+		resp.DestinationThrottles = append(resp.DestinationThrottles, destinationThrottleJSON{
+			DestinationDomain:        t.DestinationDomain,
+			WindowSec:                t.WindowSec,
+			ThrottleEvents:           t.ThrottleEvents,
+			DistinctUsersAffected:    t.DistinctUsersAffected,
+			DistinctAccountsAffected: t.DistinctAccountsAffected,
+			FirstSeenAt:              t.FirstSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
+			LastSeenAt:               t.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -37,6 +37,8 @@ type healthSnapshot struct {
 	ErrorsLastWindow map[string]int
 
 	Shadow shadowSummary
+
+	DestinationThrottles []destinationThrottle
 }
 
 type queueCounts struct {
@@ -94,7 +96,11 @@ type shadowDecision struct {
 // buildHealthSnapshot runs every read for the §3.2 response. windowSec is health_metrics_window_sec
 // (already loaded by the caller); dispatchEnabled/autoquarantineMode are the live config values the
 // caller already read (single source of truth — this function does not re-read config).
-func buildHealthSnapshot(ctx context.Context, db *pgxpool.Pool, windowSec int, dispatchEnabled bool, autoquarantineMode string) (healthSnapshot, error) {
+// throttleWindowSec is Phase 7 §8's destination_throttle_window_sec, a SEPARATE window from
+// health_metrics_window_sec — the two dials govern independent audiences (the general health
+// snapshot's own cadence vs. §7's specific throttle-aggregation lookback) and must not be
+// conflated even though both default to 3600.
+func buildHealthSnapshot(ctx context.Context, db *pgxpool.Pool, windowSec int, dispatchEnabled bool, autoquarantineMode string, throttleWindowSec int) (healthSnapshot, error) {
 	snap := healthSnapshot{
 		GeneratedAt:    time.Now().UTC(),
 		WindowSec:      windowSec,
@@ -149,6 +155,12 @@ func buildHealthSnapshot(ctx context.Context, db *pgxpool.Pool, windowSec int, d
 		return snap, err
 	}
 	snap.Shadow = shadow
+
+	throttles, err := queryDestinationThrottles(ctx, db, throttleWindowSec)
+	if err != nil {
+		return snap, err
+	}
+	snap.DestinationThrottles = throttles
 
 	return snap, nil
 }

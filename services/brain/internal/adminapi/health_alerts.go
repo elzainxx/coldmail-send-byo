@@ -61,7 +61,43 @@ func buildActiveConditions(ctx context.Context, db *pgxpool.Pool, snap healthSna
 	}
 	conditions = append(conditions, bd...)
 
+	// Phase 7 §7.1: destination_throttles fires as an active condition (and therefore reaches the
+	// alert webhook) only once distinct_users_affected crosses destination_throttle_user_threshold
+	// — one user throttled on a destination is that user's problem; several is ours. The snapshot
+	// already computed EVERY domain's counts (§7's own health field); this is a pure filter over
+	// data already read, not a second query.
+	threshold, err := readConfigInt(ctx, db, "destination_throttle_user_threshold")
+	if err != nil {
+		return nil, err
+	}
+	dt := destinationThrottleConditions(snap.DestinationThrottles, threshold)
+	conditions = append(conditions, dt...)
+
 	return conditions, nil
+}
+
+// destinationThrottleConditions maps §7's per-domain throttle rows crossing threshold into §4.2's
+// active_conditions shape. Rule 5 (untrusted egress): Detail carries ONLY counts and the domain —
+// never a response string, matching every other field this condition's own struct exposes.
+func destinationThrottleConditions(throttles []destinationThrottle, threshold int) []activeConditionJSON {
+	var out []activeConditionJSON
+	for _, t := range throttles {
+		if t.DistinctUsersAffected < threshold {
+			continue
+		}
+		out = append(out, activeConditionJSON{
+			Condition: "destination_throttles",
+			Severity:  severityCritical,
+			Detail: map[string]any{
+				"destination_domain":         t.DestinationDomain,
+				"throttle_events":            t.ThrottleEvents,
+				"distinct_users_affected":    t.DistinctUsersAffected,
+				"distinct_accounts_affected": t.DistinctAccountsAffected,
+			},
+			Since: t.FirstSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	return out
 }
 
 // queryAccountQuarantinedConditions implements §4.1 row 2: a REAL enforce-mode quarantine only —
@@ -204,7 +240,7 @@ var defaultAlertDedup = newAlertDedup()
 // file adds later without one of those keys degrades to the empty string, which still dedups
 // correctly (one key per condition type in that case) rather than failing to build a key.
 func dedupKey(c activeConditionJSON) string {
-	for _, k := range []string{"account_id", "box_id"} {
+	for _, k := range []string{"account_id", "box_id", "destination_domain"} {
 		if v, ok := c.Detail[k]; ok {
 			return c.Condition + ":" + fmt.Sprint(v)
 		}
@@ -289,6 +325,10 @@ func webhookSubjectFrom(c activeConditionJSON) (subjectType, subjectID string) {
 		return "account", fmt.Sprint(c.Detail["account_id"])
 	case "box_death":
 		return "box", fmt.Sprint(c.Detail["box_id"])
+	case "destination_throttles":
+		// The domain IS the subject id (§7.1's own framing) — never a response string, matching
+		// the rest of this condition's Detail map.
+		return "destination_domain", fmt.Sprint(c.Detail["destination_domain"])
 	default:
 		return "unknown", ""
 	}

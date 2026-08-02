@@ -614,9 +614,9 @@ Reclaim handles the *jobs*. It does not bring the box back. Step in when:
 
 ## Alert conditions → triage
 
-`active_conditions[]` in the health snapshot carries the conditions an operator must not miss. Both
-are `critical`, both **clear automatically** when the underlying state resolves, and each names its
-subject so you can go straight to it.
+`active_conditions[]` in the health snapshot carries the conditions an operator must not miss. All
+three are `critical`, all **clear automatically** when the underlying state resolves, and each
+names its subject so you can go straight to it.
 
 If `alert_webhook_url` is set, each condition also POSTs once on its rising edge — deduplicated per
 `(condition, subject)` until it clears, so a persistent condition does not spam you. The payload
@@ -624,9 +624,13 @@ carries only the condition code, the subject id, and timestamps: no content, no 
 internal reasons. That is a trust-boundary rule, not a feature gap. Wiring it up is in
 [`monitoring.md`](./monitoring.md).
 
-> `pool_exhausted` was removed along with pools — it no longer exists as a condition. There is no
-> direct replacement shipping yet; a future `no_eligible_accounts` condition is planned for a later
-> phase but is not implemented today.
+> `pool_exhausted` was removed along with pools — it no longer exists as a condition. **Correction
+> (found stale 2026-08-02, Phase 7): the note below this used to say its replacement was "not
+> implemented today," which stopped being true once Phase 3+4 landed the real
+> `queue.waiting_for_capacity`/`no_eligible_accounts` eligibility rewrite (M3-P2-OD-12/M3-P4-OD-3)
+> — that signal is live in the snapshot fields above, it simply never became its own
+> `active_conditions[]` entry (a queued job waiting for capacity is not, by itself, the kind of
+> "operator must never miss" fact the three conditions below are).**
 
 ### `account_quarantined`
 
@@ -660,6 +664,30 @@ state, so it disappears the moment the box heartbeats again.
 
 **Triage:** go to [A box died](#a-box-died). Reclaim is already handling the jobs; your job is the
 box. Escalate immediately if `boxes.active` is 0.
+
+### `destination_throttles`
+
+```json
+{"condition":"destination_throttles","severity":"critical",
+ "detail":{"destination_domain":"gmail.com","throttle_events":47,
+           "distinct_users_affected":5,"distinct_accounts_affected":12},
+ "since":"..."}
+```
+
+**Means:** several DISTINCT users' accounts were throttled sending to the SAME destination domain
+within `destination_throttle_window_sec`, at or above `destination_throttle_user_threshold` users —
+the signal that OUR box IPs are being rate-limited by that provider, not that one user is sending
+too fast. One user throttled on a domain is invisible here by design (`accounts.paused` /
+`errors_last_window.throttle` already cover that per-user case); this condition exists specifically
+for the cross-user pattern no per-user view can see.
+
+**Triage:** check `destination_throttles[]` in the full snapshot for every affected domain (this
+condition only lists the ones AT OR ABOVE threshold; the full array shows every domain with any
+throttle activity in the window, useful for spotting a domain approaching threshold). If one
+provider dominates, consider whether the box IP pool needs rotation or a slower global pace toward
+that provider — a per-user pace change will not fix a shared-IP reputation problem. Never contains
+provider response text (Rule 5); if you need the actual SMTP response for one user's job, use
+`GET /v1/report` on that job, scoped to that tenant.
 
 ---
 
