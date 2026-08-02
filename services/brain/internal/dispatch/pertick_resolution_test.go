@@ -10,6 +10,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // TestPerTick_T7_ResolutionIsConsistentWithinOneTick drives ONE real Tick for a user with
@@ -103,4 +104,84 @@ func (e *dispatchEnv) pacerSlotCount(userID string) int {
 	defer e.d.pace.mu.Unlock()
 	return len(e.d.pace.slots[userID])
 }
+
+// TestPerTick_T7Control_ResolvingPerSiteCorruptsTheRegister is T7's REQUIRED control (§7): "resolve
+// per-site instead of once-per-tick, drive the same interleave, and each of (a)/(b)/(c) must FAIL."
+// Drives the pacer directly (white-box, same package) rather than forking Tick's own logic, which
+// isolates the EXACT defect §3.2 names.
+//
+// Setup mirrors a real tick with 3 lanes, all of which have ALREADY fired earlier in the SAME tick
+// (three prior Admit+Stamp rounds at the ORIGINAL ceiling=3, leaving all 3 lanes cooling — verified
+// live via the trace below). A 4th send then fires THIS SAME tick, but by the time its Stamp call
+// happens, ceiling has been RE-RESOLVED per-site to 8 (the buggy behavior) instead of the threaded
+// original value. normalize GROWS the register from 3 to 8, appending 5 zero-time
+// (immediately-ready) slots; Stamp's "advance the earliest" logic then picks one of THOSE fresh
+// appends (they tie-break first, being the only zero-valued slots once the original 3 are cooling)
+// — charging a lane that fired nothing while the account's TRUE capacity accounting is now wrong:
+// the register reports 7 of 8 lanes ready when the resolved ceiling for this tick was really 3.
+func TestPerTick_T7Control_ResolvingPerSiteCorruptsTheRegister(t *testing.T) {
+	base := timeAtT7Control()
+	p := &pacer{slots: map[string][]time.Time{}, now: func() time.Time { return base }, drawDelay: func(_, _ int) time.Duration { return 5 * time.Second }}
+
+	// Three real sends at the ORIGINAL ceiling (3): admit, then stamp each of the 3 lanes cooling.
+	admitted := p.Admit("u", 3, 3)
+	if admitted != 3 {
+		t.Fatalf("setup: Admit(ceiling=3) = %d, want 3", admitted)
+	}
+	p.Stamp("u", 3, 3, 7)
+	p.Stamp("u", 3, 3, 7)
+	p.Stamp("u", 3, 3, 7)
+	regBeforeGrow := len(p.slots["u"])
+	if regBeforeGrow != 3 {
+		t.Fatalf("setup: register length after 3 stamps = %d, want 3", regBeforeGrow)
+	}
+	for i, s := range p.slots["u"] {
+		if !s.After(base) {
+			t.Fatalf("setup: lane %d is not cooling after its own Stamp — setup broken, cannot demonstrate the defect", i)
+		}
+	}
+
+	// The BUGGY per-site behavior this control demonstrates: a 4th send's Stamp call is made with a
+	// ceiling RE-RESOLVED after a mid-tick config change (8), not the ORIGINAL value (3) every
+	// earlier call in this same tick used.
+	p.Stamp("u", 8, 3, 7)
+
+	// (b) FAILS: the register length changed mid-tick (3 -> 8), which the real fix (resolve once,
+	// thread the value) makes impossible.
+	regAfterGrow := len(p.slots["u"])
+	if regAfterGrow == 3 {
+		t.Fatal("control did not reproduce the defect: register length stayed 3 after a per-site-resolved Stamp(ceiling=8) — the control must actually corrupt the register, or it proves nothing")
+	}
+	if regAfterGrow != 8 {
+		t.Fatalf("register length after the buggy Stamp = %d, want 8 (grown to the NEW ceiling)", regAfterGrow)
+	}
+
+	// (c) FAILS: the lane Stamp actually advanced for the 4th send is one of the 5 FRESHLY APPENDED
+	// slots (indices 3-7, all zero time before this call) — a lane that fired NOTHING — rather than
+	// any accounting tied to the 3 lanes that had already fired. And the account's register now
+	// reports 4 of 8 lanes ready (the 4 untouched fresh appends), when the ceiling actually in effect
+	// for this tick's own Admit decisions was 3 — cooldowns silently invented, exactly §3.2's table.
+	slots := p.slots["u"]
+	freshAppendAdvanced := false
+	for i := 3; i < 8; i++ {
+		if slots[i].After(base) {
+			freshAppendAdvanced = true
+		}
+	}
+	if !freshAppendAdvanced {
+		t.Fatal("control did not reproduce the defect: Stamp did not advance any freshly-appended slot — the tie-break must land on a fresh append once all 3 original lanes are already cooling")
+	}
+	readyCount := 0
+	for _, s := range slots {
+		if !s.After(base) {
+			readyCount++
+		}
+	}
+	if readyCount != 4 {
+		t.Fatalf("ready-lane count after the buggy grow+stamp = %d, want 4 (the 4 untouched fresh appends — cooldowns silently invented on a ceiling this tick's Admit calls never actually resolved)", readyCount)
+	}
+}
+
+// timeAtT7Control is a fixed reference instant for the control test above (no real clock needed).
+func timeAtT7Control() time.Time { return time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC) }
 
