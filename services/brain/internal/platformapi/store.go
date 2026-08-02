@@ -231,35 +231,46 @@ func (s *Server) jobStateByItem(ctx context.Context, jobItemID, userID string) (
 	return state, true
 }
 
-// reportRow is the clean per-job report shape (§6.3).
+// reportRow is the clean per-job report shape (§6.3), widened by Phase 7 §1.1/§1.5:
+// last_smtp_response and error_class are read here (this function IS the "single named accessor"
+// for last_smtp_response on the P1 path, alongside campaign_report.go's campaignItems for P2) and
+// exposed via failureDetail — never last_error_message, never error_reason (§1.4).
 type reportRow struct {
 	jobID             string
 	state             string
 	providerMessageID *string
 	completedAt       *time.Time
 	attemptCount      int
+	failureDetail     providerFailureDetail
 }
 
 // readReport fetches the clean state for a job by job_id OR job_item_id, SCOPED to the calling
-// tenant (userID). Only the external-safe columns are selected (§6.3); the SMTP response / error
-// reason / credential are never read here. A job that exists but belongs to another tenant matches
-// 0 rows → (false) → the handler returns the SAME 404-style not-found as a non-existent job, so a
-// caller cannot distinguish "not mine" from "does not exist" (no existence disclosure — OD-25).
+// tenant (userID). Only the external-safe columns are selected (§6.3); last_error_message /
+// error_reason / credential are never read here — only the slug-free last_smtp_response (§1.4/
+// §1.5). A job that exists but belongs to another tenant matches 0 rows → (false) → the handler
+// returns the SAME 404-style not-found as a non-existent job, so a caller cannot distinguish "not
+// mine" from "does not exist" (no existence disclosure — OD-25).
 func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string) (reportRow, bool, error) {
 	var (
-		rr  reportRow
-		err error
+		rr           reportRow
+		smtpResponse *string
+		errorClass   *string
+		err          error
 	)
 	if jobID != "" {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count
+			`SELECT id, state::text, provider_message_id, completed_at, attempt_count,
+			        last_smtp_response, last_error_class::text
 			 FROM byosmtp.jobs WHERE id = $1 AND user_id = $2`, jobID, userID).
-			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount)
+			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
+				&smtpResponse, &errorClass)
 	} else {
 		err = s.db.QueryRow(ctx,
-			`SELECT id, state::text, provider_message_id, completed_at, attempt_count
+			`SELECT id, state::text, provider_message_id, completed_at, attempt_count,
+			        last_smtp_response, last_error_class::text
 			 FROM byosmtp.jobs WHERE job_item_id = $1 AND user_id = $2`, jobItemID, userID).
-			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount)
+			Scan(&rr.jobID, &rr.state, &rr.providerMessageID, &rr.completedAt, &rr.attemptCount,
+				&smtpResponse, &errorClass)
 	}
 	if err != nil {
 		if isNoRows(err) {
@@ -267,5 +278,6 @@ func (s *Server) readReport(ctx context.Context, jobID, jobItemID, userID string
 		}
 		return reportRow{}, false, err
 	}
+	rr.failureDetail = readProviderFailureDetail(rr.state, smtpResponse, errorClass, rr.completedAt)
 	return rr, true, nil
 }

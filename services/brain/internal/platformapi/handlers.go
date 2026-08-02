@@ -221,8 +221,10 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 			withDetails(fieldDetail{Field: field, Issue: issueNotFound}))
 		return
 	}
-	// Clean external state ONLY (§6.3): job_id, state, provider_message_id (when sent),
-	// completed_at, attempt_count. NEVER the SMTP text, error_reason, credential, or internal reason.
+	// Clean external state (§6.3), WIDENED by Phase 7 §1.1 (M3-P7-OD-1, conditional on M3-P7-OD-2's
+	// scrub landing first — it has): job_id, state, provider_message_id (when sent), completed_at,
+	// attempt_count, smtp_response/error_class/failed_at (only on a real failure/bounce — never
+	// last_error_message, never error_reason, never a credential; §1.4/§1.5).
 	out := map[string]any{
 		"job_id":        rep.jobID,
 		"state":         rep.state,
@@ -233,6 +235,15 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	}
 	if rep.completedAt != nil {
 		out["completed_at"] = rep.completedAt.UTC()
+	}
+	if rep.failureDetail.SMTPResponse != nil {
+		out["smtp_response"] = *rep.failureDetail.SMTPResponse
+	}
+	if rep.failureDetail.ErrorClass != nil {
+		out["error_class"] = *rep.failureDetail.ErrorClass
+	}
+	if rep.failureDetail.FailedAt != nil {
+		out["failed_at"] = rep.failureDetail.FailedAt.UTC()
 	}
 	writeJSON(w, http.StatusOK, out)
 }

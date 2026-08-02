@@ -35,13 +35,21 @@ type campaignTotals struct {
 }
 
 // campaignItem mirrors one entry of §2.2's "items.results" array — the SAME clean external
-// per-job shape the single-job report already returns (§6.3), never SMTP/error/credential detail.
+// per-job shape the single-job report already returns (§6.3), WIDENED by Phase 7 §1.1 exactly as
+// the single-job report is (SMTPResponse/ErrorClass/FailedAt — never last_error_message, never
+// error_reason, never a credential). Explicit nil (not an omitted key) on all three, matching
+// this struct's own existing null-handling convention for ProviderMessageID/CompletedAt — the
+// single-job report's map-based omit-the-key shape is a SEPARATE, deliberately inconsistent
+// contract (M3-P7-OD-4), not something this file should silently "fix" to match.
 type campaignItem struct {
 	JobItemID         string  `json:"job_item_id"`
 	State             string  `json:"state"`
 	ProviderMessageID *string `json:"provider_message_id"`
 	CompletedAt       *string `json:"completed_at"`
 	AttemptCount      int     `json:"attempt_count"`
+	SMTPResponse      *string `json:"smtp_response"`
+	ErrorClass        *string `json:"error_class"`
+	FailedAt          *string `json:"failed_at"`
 }
 
 // handleCampaignReport serves GET /v1/report?campaign_id=<id> (B8, §2.1-§2.4). Scoped to the
@@ -220,7 +228,11 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	}
 	args = append(args, pageSize+1)
 	limitParam := len(args)
+	// last_smtp_response/last_error_class are read HERE — this function is P2's half of §1.5's
+	// "single named accessor" (store.go's readReport is P1's half). Never last_error_message,
+	// never error_reason (§1.4).
 	q := `SELECT j.job_item_id::text, j.state::text, j.provider_message_id, j.completed_at, j.attempt_count,
+	             j.last_smtp_response, j.last_error_class::text,
 	             j.created_at, j.id::text
 	      FROM byosmtp.jobs j ` + where + `
 	      ORDER BY j.created_at ASC, j.id ASC
@@ -238,13 +250,22 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	for rows.Next() {
 		var it campaignItem
 		var completedAt *time.Time
+		var smtpResponse, errorClass *string
 		if err := rows.Scan(&it.JobItemID, &it.State, &it.ProviderMessageID, &completedAt, &it.AttemptCount,
+			&smtpResponse, &errorClass,
 			&lastCreatedAt, &lastID); err != nil {
 			return nil, nil, err
 		}
 		if completedAt != nil {
 			s := completedAt.UTC().Format("2006-01-02T15:04:05Z")
 			it.CompletedAt = &s
+		}
+		detail := readProviderFailureDetail(it.State, smtpResponse, errorClass, completedAt)
+		it.SMTPResponse = detail.SMTPResponse
+		it.ErrorClass = detail.ErrorClass
+		if detail.FailedAt != nil {
+			s := detail.FailedAt.UTC().Format("2006-01-02T15:04:05Z")
+			it.FailedAt = &s
 		}
 		items = append(items, it)
 	}
