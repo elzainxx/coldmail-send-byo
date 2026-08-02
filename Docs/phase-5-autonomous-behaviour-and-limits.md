@@ -1,7 +1,22 @@
 # Module 3 — Phase 5: Autonomous behaviour and resource protection
 
-**Status:** PLAN ONLY. No implementation. Rule 2 applies throughout: every contradiction found while
-writing this is registered in §15, not resolved.
+> **Status (2026-08-02): CLOSED.** All three chunks (C1 dual quarantine triggers + self-serve
+> un-quarantine + reason-scoped auto-clear; C2 resource caps + campaign expiry sweep + per-user
+> suspend; C3 shadow-mode review path + the full T1–T14 test suite) are implemented and green on
+> real infra. The scoped agent review (task #103: "can concurrent outcomes produce a lost update or
+> deadlock on account state?") found and fixed one gap — M3-P5-OD-3's ruled-but-unimplemented
+> `readFlags` lock, closed with `TestDoTransition_T15_...` — and confirmed no other lost-update/
+> deadlock hazard across the phase's new write paths. Phase-end verification (two full clean-slate
+> `reset → test → six gates` cycles) is green both times (harness 91/91, all six CI gates), after
+> fixing one pre-existing, unrelated shell-harness fixture gap (`from_gate_mode`, latent since
+> Phase 4). §15's Open Decisions are all ruled; none remain open. Rule 2 applied throughout while
+> writing the plan below: every contradiction found while writing this was registered in §15, not
+> resolved on this document's own authority.
+>
+> Original status line, retained for what it originally meant:
+>
+> **Status (original):** PLAN ONLY. No implementation. Rule 2 applies throughout: every
+> contradiction found while writing this is registered in §15, not resolved.
 
 **Migration numbers:** `0042` (config seeds, with their consumers), `0043` (the one index the
 failure-rate window needs), then `0044` (M3-P5-OD-7: widen `account_events_action_check` for C2's
