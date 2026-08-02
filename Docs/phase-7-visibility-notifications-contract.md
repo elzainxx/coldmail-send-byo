@@ -1289,6 +1289,45 @@ travel with the entry:
 
 Registered and ruled as **M3-P7-OD-8**.
 
+### 9.2 Follow-up scoped pass — C2/C3's new surfaces (2026-08-02)
+
+§9.1's pass ran before C2 (notifications) and C3 (quote feasibility, describe routes, usage
+reporting, health throttle patterns) existed. Per §0.1's own trigger rule (a phase qualifying on
+the security-surface test gets the review; C2/C3 each added a genuinely new user-facing surface
+reading from `byosmtp.jobs`/`job_events`), a second scoped pass ran against exactly those additions
+— the SAME single question, not a general re-audit: *can any credential material or raw SMTP
+provider-response text reach user-facing output, by any path, through this new code?*
+
+**Files in scope:** `internal/dispatch/notify.go` (the notification payload builder and its two
+call sites, `account_effect.go`/`campaign_expiry.go`), `internal/platformapi/usage.go`,
+`internal/platformapi/quote_feasibility.go`, `internal/platformapi/describe_routes.go`,
+`internal/adminapi/health_throttle.go` + its `health_alerts.go`/`health_handler.go` wiring.
+
+**ANSWERED. No findings survived refutation.** Every response-writing path was traced back to its
+inputs, not merely inspected:
+
+- **The notification `payload` column** has exactly two writers in this new code
+  (`account_effect.go`'s `{account_id, reason}` where `reason` is one of three FIXED slugs —
+  `auth_failure`/`consecutive_failures`/`failure_rate`, never a box-reported string — and
+  `campaign_expiry.go`'s `{campaign_id}`). Neither reads `last_smtp_response`, `last_error_message`,
+  or `boxproto.Report`. `user_output_scrub.sh` check 3 (which watches exactly this render path) was
+  run directly, not merely read, and passes.
+- **`destinationThrottle`/`webhookPayload.Detail`** populate only scalars (domain, counts, ISO
+  timestamps) at every construction site in `health_alerts.go`; the file imports no `boxproto`, so
+  it is structurally incapable of touching `SMTPResponse`.
+- **`usage.go`'s aggregation queries** select only `COUNT`/`GROUP BY` over `job_events`/`jobs` —
+  never a text column. `usage_test.go`'s `TestUsage_NoProviderTextOnFailedSends` behaviorally
+  confirms this against a fixture carrying a fake secret token in the provider response.
+- **`quote_feasibility.go`/`describe_routes.go`** compute caps/counts/durations and declare field
+  *names* for request-schema documentation (never actual credential values); no account/credential
+  row is read by `handleDescribe`.
+- **Every `s.fail(w, r, newErr(...))` call site** in the reviewed files passes only a fixed
+  internal-reason string, never `err.Error()` concatenated with SMTP/credential data; `writeError`
+  serializes only `{code, message, details, request_id}`.
+
+No exit criterion rests on a gap: the pass answered its question, the finding set is empty, and the
+emptiness was verified by tracing rather than by absence of search.
+
 ---
 
 ## 10. BEHAVIORAL TESTS
@@ -1316,8 +1355,20 @@ echo a chosen string. T2/T3 are real-infra harness tests against a running Brain
 **requires** the live stack). T4/T5/T6/T7 are API-layer tests against a real DB. T8 is **two** tests in
 one row and they live in different places: the constructor half is a box-side unit assertion (the one
 place in this phase where a pure-function test is the right tool, because the invariant *is* a
-constructor's argument order), and the end-to-end half needs the real box with captured stdio. T9 needs a
-webhook receiver container on the compose network. **T10** is split like T8: half (b) is a box-side unit
+constructor's argument order), and the end-to-end half needs the real box with captured stdio. **T9**
+needs a webhook receiver container on the compose network — run manually (2026-08-02) against the live
+dev stack using `tests/manual/webhook-receiver.py` (module 2's own Stage-10 precedent for this exact
+class of check): a real user/account/job was driven through a genuine `queued→sending→queued` throttle
+transition carrying a deliberately rich, echoing `last_error_message` (`"421 4.7.0 too many
+messages... secret-token-XYZ123"`), `alert_webhook_url` pointed at the receiver, `destination_throttle_user_threshold`
+lowered to 1, and `GET /v1/admin/health` polled to fire the webhook. The captured payload was exactly
+`{condition, severity, subject:{type,id}, detail:{destination_domain, distinct_accounts_affected,
+distinct_users_affected, throttle_events}, fired_at, module}` — no response text, no internal reason,
+no hostname; the secret token and the raw error text did not appear anywhere in the two delivered
+payloads (`destination_throttles` and the pre-existing `box_death`). All fixture data and config
+changes were reverted afterward; the receiver container was removed. Not automated (this class of test
+needs a live receiver on the compose network, matching Stage 10's own precedent, not a `go test` run).
+**T10** is split like T8: half (b) is a box-side unit
 assertion (the throw is a function property) and half (a) needs the real box↔Brain channel. **T11** is a
 real-infra harness test — it must run the actual retention sweep, since the failure it guards against is
 retention interacting with aggregation.
