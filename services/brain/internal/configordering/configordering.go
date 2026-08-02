@@ -119,3 +119,21 @@ func CheckQuarantineFailureRatePct(ratePct int) *Violation {
 	}
 	return nil
 }
+
+// CheckDelayOrder enforces Module 3 Phase 6 §4.4/M3-P1-OD-8's resolved-set ordering invariant:
+// send_delay_min_sec must not exceed send_delay_max_sec IN THE RESOLVED PAIR (per-user override ∪
+// global), not merely within one row. A per-user override table with no row-level view of the
+// global counterpart (or vice versa) can satisfy every individual CHECK constraint while the
+// resolved pair is inverted — the exact gap `user_config_overrides_delay_order_check` cannot close
+// on its own (Phase 1 §4.2's own documented limitation). Both callers (an override write validating
+// against the live globals, and a global write validating against every existing override row)
+// reduce to this one pairwise check, so the two directions can never define "inverted" differently.
+func CheckDelayOrder(minSec, maxSec int) *Violation {
+	if minSec > maxSec {
+		return &Violation{
+			Key: "send_delay_min_sec", Value: minSec, Constraint: "must be <=",
+			CounterpartKey: "send_delay_max_sec", CounterpartValue: maxSec,
+		}
+	}
+	return nil
+}

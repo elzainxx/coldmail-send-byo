@@ -15,9 +15,11 @@ package adminapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/byosmtp-module/brain/internal/configordering"
+	"github.com/jackc/pgx/v5"
 )
 
 // checkConfigOrderingOnWrite validates the RESULTING pair for a PUT to key with candidate value
@@ -96,6 +98,34 @@ func checkConfigOrderingOnWrite(ctx context.Context, db pgxDB, key string, newVa
 		return newErr(codeConfigOrderingViolation, "config_ordering_violation: "+v.Detail()).
 			withMessage("quarantine_failure_rate_pct must be between 1 and 100 inclusive.").
 			withDetails(fieldDetail{Field: "value", Issue: issueConflict})
+	case "send_delay_min_sec":
+		counterpartKey = "send_delay_max_sec"
+		max, err := readConfigIntDirect(ctx, db, counterpartKey)
+		if err != nil {
+			return counterpartReadErr(counterpartKey, err)
+		}
+		counterpartVal = max
+		v = configordering.CheckDelayOrder(newValue, max)
+		explain = "send_delay_min_sec must stay at or below send_delay_max_sec"
+		// §4.4 direction 2: this global write must ALSO not invert the RESOLVED pair for any user
+		// who has overridden ONLY send_delay_max_sec — the row-level CHECK on
+		// user_config_overrides cannot see this global at all. Checked here (v is still the
+		// global-only verdict above; a nil v does not exempt this check).
+		if operr := checkGlobalDelayWriteAgainstAllOverrides(ctx, db, "send_delay_min_sec", newValue); operr != nil {
+			return operr
+		}
+	case "send_delay_max_sec":
+		counterpartKey = "send_delay_min_sec"
+		min, err := readConfigIntDirect(ctx, db, counterpartKey)
+		if err != nil {
+			return counterpartReadErr(counterpartKey, err)
+		}
+		counterpartVal = min
+		v = configordering.CheckDelayOrder(min, newValue)
+		explain = "send_delay_max_sec must stay at or above send_delay_min_sec"
+		if operr := checkGlobalDelayWriteAgainstAllOverrides(ctx, db, "send_delay_max_sec", newValue); operr != nil {
+			return operr
+		}
 	default:
 		return nil // no ordering counterpart for this key
 	}
@@ -113,6 +143,57 @@ func checkConfigOrderingOnWrite(ctx context.Context, db pgxDB, key string, newVa
 // a validation question — fail closed (reject the write) rather than silently skip the check.
 func counterpartReadErr(counterpartKey string, err error) *apiError {
 	return newErr(codeInternalError, "config_ordering_counterpart_read_failed key="+counterpartKey+": "+err.Error())
+}
+
+// checkGlobalDelayWriteAgainstAllOverrides is Module 3 Phase 6 §4.4 direction 2 — "a global PUT
+// must validate against EVERY existing override row, or lowering the global send_delay_max_sec
+// inverts the pair for every user who overrode only the min." A row-level CHECK on
+// user_config_overrides cannot see this write at all (it lives in a different table), so this is
+// the ONLY enforcement point for this direction. writtenField is "send_delay_min_sec" or
+// "send_delay_max_sec"; newValue is the candidate value about to be written to the global.
+//
+// Only override rows that INHERIT the column being written are at risk — a row that overrides that
+// same column is unaffected by the global changing (its own value still wins). One indexed-free
+// scan of user_config_overrides (config writes are rare operator actions, never hot-path, §4.4) is
+// enough; no per-row loop needed.
+func checkGlobalDelayWriteAgainstAllOverrides(ctx context.Context, db pgxDB, writtenField string, newValue int) *apiError {
+	var query string
+	var otherCounterpartKey string
+	switch writtenField {
+	case "send_delay_min_sec":
+		otherCounterpartKey = "send_delay_max_sec"
+		query = `SELECT user_id, COALESCE(send_delay_max_sec, (SELECT (value->>'v')::int FROM byosmtp.config WHERE key='send_delay_max_sec'))
+		           FROM byosmtp.user_config_overrides
+		          WHERE send_delay_min_sec IS NULL
+		            AND COALESCE(send_delay_max_sec, (SELECT (value->>'v')::int FROM byosmtp.config WHERE key='send_delay_max_sec')) < $1
+		          LIMIT 1`
+	case "send_delay_max_sec":
+		otherCounterpartKey = "send_delay_min_sec"
+		query = `SELECT user_id, COALESCE(send_delay_min_sec, (SELECT (value->>'v')::int FROM byosmtp.config WHERE key='send_delay_min_sec'))
+		           FROM byosmtp.user_config_overrides
+		          WHERE send_delay_max_sec IS NULL
+		            AND COALESCE(send_delay_min_sec, (SELECT (value->>'v')::int FROM byosmtp.config WHERE key='send_delay_min_sec')) > $1
+		          LIMIT 1`
+	default:
+		return nil
+	}
+	var offendingUserID string
+	var otherResolved int
+	err := db.QueryRow(ctx, query, newValue).Scan(&offendingUserID, &otherResolved)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // no override row would be inverted by this write
+		}
+		return newErr(codeInternalError, "override_resolved_check_error: "+err.Error())
+	}
+	v := &configordering.Violation{
+		Key: writtenField, Value: newValue, Constraint: "must not invert the resolved pacing pair for",
+		CounterpartKey: "user " + offendingUserID + "'s resolved " + otherCounterpartKey, CounterpartValue: otherResolved,
+	}
+	return newErr(codeConfigOrderingViolation, "config_ordering_violation: "+v.Detail()).
+		withMessage(fmt.Sprintf("Lowering/raising %s would invert the resolved pacing pair for at least one user (id=%s) who has overridden only %s.",
+			writtenField, offendingUserID, otherCounterpartKey)).
+		withDetails(fieldDetail{Field: "value", Issue: issueConflict})
 }
 
 // readConfigIntDirect reads one integer-typed byosmtp.config key's CURRENT value, unwrapping the

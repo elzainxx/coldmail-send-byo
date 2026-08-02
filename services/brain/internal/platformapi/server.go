@@ -158,6 +158,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/unquarantine", s.requireAuth(s.handleAccountUnquarantine))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test", s.requireAuth(s.handleAccountTest))
 	s.mux.HandleFunc("POST /v1/byosmtp/accounts/{id}/test-send", s.requireAuth(s.handleAccountTestSend))
+
+	// Module 3 Phase 6 §5.3: the user-owned routing_strategy write. A DIFFERENT table from the
+	// admin-only user_config_overrides dials (§4.2 writer #6) — structurally cannot reach a dial.
+	s.mux.HandleFunc("GET /v1/byosmtp/settings", s.requireAuth(s.handleUserSettingsGet))
+	s.mux.HandleFunc("PUT /v1/byosmtp/settings", s.requireAuth(s.handleUserSettingsPut))
 }
 
 // dbCtx bounds a per-request DB operation.

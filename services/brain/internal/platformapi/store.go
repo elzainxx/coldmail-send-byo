@@ -3,6 +3,8 @@ package platformapi
 import (
 	"context"
 	"time"
+
+	"github.com/byosmtp-module/brain/internal/userconfig"
 )
 
 // SQLSTATE constants (never surfaced; used to translate to clean codes).
@@ -175,15 +177,13 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	return jobID, false, nil
 }
 
-// resolveCampaignLimits resolves the three §5.2/§5.3 dials for userID: per-user override
-// (byosmtp.user_config_overrides, NULL = inherit) if set, else the global byosmtp.config default.
-// Reads the globals fresh via s.readConfigInt (config-not-code; mirrors the existing
-// readAccountCountCap/resolveDailyLimit pattern on this surface) and the override row inside the
-// caller's transaction, so the override read is consistent with the rest of this call's work.
-// §10.2: this is ONE of the two sites Phase 5 needs this resolution at (the other is nowhere yet,
-// since Phase 5 has no second consumer) — Phase 6 owns consolidating into a single resolution path
-// once more call sites exist; this function is deliberately NOT exported or generalized past what
-// this call site needs today.
+// resolveCampaignLimits resolves the three §5.2/§5.3 dials for userID through userconfig.Resolve —
+// Module 3 Phase 6 §1's ONE resolution path (`ResolveUserConfig`'s contract). This function used to
+// carry its own inline override→global logic (a deliberate Phase 5 §10.2 placeholder: "Phase 6
+// consolidates. Noted here so Phase 6 knows this site exists.") — deleted, not merely supplemented,
+// per §1.4/§9 check 1's mechanical requirement (`grep` for a second resolver must return nothing).
+// The other three dials (SendDelayMinSec/SendDelayMaxSec/ConcurrencyPerUser) are irrelevant to this
+// call site and simply ignored — this function still returns only the three createJob needs.
 func (s *Server) resolveCampaignLimits(ctx context.Context, tx pgxDB, userID string) (maxCampaignSize, maxQueuedJobs, campaignExpirySec int, e *apiError) {
 	globalCampaignSize, ok1, err := s.readConfigInt(ctx, "max_campaign_size")
 	if err != nil || !ok1 {
@@ -198,24 +198,15 @@ func (s *Server) resolveCampaignLimits(ctx context.Context, tx pgxDB, userID str
 		return 0, 0, 0, newErr(codeInternalError, "campaign_expiry_sec_lookup_error")
 	}
 
-	var oCampaignSize, oQueuedJobs, oExpirySec *int
-	if err := tx.QueryRow(ctx,
-		`SELECT max_campaign_size, max_queued_jobs, campaign_expiry_sec FROM byosmtp.user_config_overrides WHERE user_id=$1`,
-		userID).Scan(&oCampaignSize, &oQueuedJobs, &oExpirySec); err != nil && !isNoRows(err) {
+	uc, err := userconfig.Resolve(ctx, tx, userID, userconfig.Globals{
+		MaxCampaignSize:   globalCampaignSize,
+		MaxQueuedJobs:     globalQueuedJobs,
+		CampaignExpirySec: globalExpirySec,
+	})
+	if err != nil {
 		return 0, 0, 0, newErr(codeInternalError, "user_config_overrides_lookup_error")
 	}
-
-	maxCampaignSize, maxQueuedJobs, campaignExpirySec = globalCampaignSize, globalQueuedJobs, globalExpirySec
-	if oCampaignSize != nil {
-		maxCampaignSize = *oCampaignSize
-	}
-	if oQueuedJobs != nil {
-		maxQueuedJobs = *oQueuedJobs
-	}
-	if oExpirySec != nil {
-		campaignExpirySec = *oExpirySec
-	}
-	return maxCampaignSize, maxQueuedJobs, campaignExpirySec, nil
+	return uc.MaxCampaignSize, uc.MaxQueuedJobs, uc.CampaignExpirySec, nil
 }
 
 // jobIDByItem returns the existing sender job id for a job_item OWNED BY userID, if any.

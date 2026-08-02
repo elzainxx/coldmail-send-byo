@@ -87,45 +87,75 @@ func (s *Server) newFromGateCacheFromConfig() *fromgate.Cache {
 // Handler exposes the mux so the Brain can mount it (e.g. under a parent mux).
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// routes registers every Phase 2 route (method + path patterns, Go 1.22+ mux). Every route is
-// behind requireAuth (the operator-key gate). Additive-only: routes never rename; later phases
-// add. The served set here must match Docs/api-contract.md (the contract_drift gate).
+// route is one (method, pattern, handler) registration. adminRoutes is the SINGLE declared list
+// routes() mounts from — Module 3 Phase 6 §4.1's T10 requirement ("enumerate the mux's registered
+// routes... this is the test that makes the 19th route safe") needs one source of truth to
+// enumerate, not a second hand-copied list that could itself drift from what routes() actually
+// mounts. adminRoutesTest.go (test-only) iterates this exact slice.
+type route struct {
+	method  string
+	pattern string
+	handler http.HandlerFunc
+}
+
+// adminRoutes is every Phase 2+ route (method + path patterns, Go 1.22+ mux). Every route is
+// mounted behind requireAuth (the operator-key gate) by routes() below — none bypasses it, since
+// routes() has no other way to reach s.mux.HandleFunc. Additive-only: routes never rename; later
+// phases add. The served set here must match Docs/api-contract.md (the contract_drift gate).
+func (s *Server) adminRoutes() []route {
+	return []route{
+		// Accounts
+		{"POST", "/v1/admin/accounts", s.handleAccountCreate},
+		{"GET", "/v1/admin/accounts", s.handleAccountList},
+		{"GET", "/v1/admin/accounts/{id}", s.handleAccountGet},
+		{"PATCH", "/v1/admin/accounts/{id}", s.handleAccountUpdate},
+		{"DELETE", "/v1/admin/accounts/{id}", s.handleAccountDelete},
+		{"GET", "/v1/admin/accounts/{id}/events", s.handleAccountEvents},
+
+		// Account lifecycle transitions (manual, audited)
+		{"POST", "/v1/admin/accounts/{id}/quarantine", s.handleAccountQuarantine},
+		{"POST", "/v1/admin/accounts/{id}/unquarantine", s.handleAccountUnquarantine},
+		{"POST", "/v1/admin/accounts/{id}/disable", s.handleAccountDisable},
+		{"POST", "/v1/admin/accounts/{id}/enable", s.handleAccountEnable},
+		{"POST", "/v1/admin/accounts/{id}/pause", s.handleAccountPause},
+		{"POST", "/v1/admin/accounts/{id}/unpause", s.handleAccountUnpause},
+
+		// Pools — UNMOUNTED AT G2 (Docs/phase-2-strip-shared-pool.md §2.4, per the user's ruling on
+		// M3-P2-OD-10: kept mounted through G1 only because ~150 HTTP-level fixture sites depended
+		// on POST /v1/admin/pools until the account write-path rewrite landed. That rewrite landed
+		// in the SAME commit, so the fixture dependency is gone and the five routes were removed
+		// together with pool_handlers.go/pool_store.go/pool_list_update.go.
+
+		// Config
+		{"GET", "/v1/admin/config", s.handleConfigList},
+		{"GET", "/v1/admin/config/{key}", s.handleConfigGet},
+		{"PUT", "/v1/admin/config/{key}", s.handleConfigPut},
+
+		// Observability (Phase 9.5 B3/B4, §3)
+		{"GET", "/v1/admin/health", s.handleHealth},
+
+		// Module 3 Phase 5 §6: per-user suspend — genuinely new operator surface, module 2 had no
+		// per-user concept at all. "Users control their own assets; the operator controls the
+		// shared substrate" — per-user suspension is explicitly named as an operator-only control.
+		{"POST", "/v1/admin/users/{id}/suspend", s.handleUserSuspend},
+		{"POST", "/v1/admin/users/{id}/unsuspend", s.handleUserUnsuspend},
+
+		// Module 3 Phase 6 §4: the per-user config override write path — admin-only, per §4.2's
+		// structural boundary (a different table from the user-owned routing_strategy setting).
+		{"GET", "/v1/admin/users/{id}/config", s.handleUserConfigOverrideGet},
+		{"PUT", "/v1/admin/users/{id}/config", s.handleUserConfigOverridePut},
+		{"DELETE", "/v1/admin/users/{id}/config/{dial}", s.handleUserConfigOverrideDelete},
+	}
+}
+
+// routes mounts every entry of adminRoutes() on the mux, each wrapped in requireAuth (the operator-
+// key gate) — no route reaches s.mux.HandleFunc any other way, so a route present in adminRoutes()
+// is structurally guaranteed to be authenticated (§4.1's "per-handler decorator, not middleware"
+// risk is closed by construction: there is exactly one call site that can register a route at all).
 func (s *Server) routes() {
-	// Accounts
-	s.mux.HandleFunc("POST /v1/admin/accounts", s.requireAuth(s.handleAccountCreate))
-	s.mux.HandleFunc("GET /v1/admin/accounts", s.requireAuth(s.handleAccountList))
-	s.mux.HandleFunc("GET /v1/admin/accounts/{id}", s.requireAuth(s.handleAccountGet))
-	s.mux.HandleFunc("PATCH /v1/admin/accounts/{id}", s.requireAuth(s.handleAccountUpdate))
-	s.mux.HandleFunc("DELETE /v1/admin/accounts/{id}", s.requireAuth(s.handleAccountDelete))
-	s.mux.HandleFunc("GET /v1/admin/accounts/{id}/events", s.requireAuth(s.handleAccountEvents))
-
-	// Account lifecycle transitions (manual, audited)
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/quarantine", s.requireAuth(s.handleAccountQuarantine))
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/unquarantine", s.requireAuth(s.handleAccountUnquarantine))
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/disable", s.requireAuth(s.handleAccountDisable))
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/enable", s.requireAuth(s.handleAccountEnable))
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/pause", s.requireAuth(s.handleAccountPause))
-	s.mux.HandleFunc("POST /v1/admin/accounts/{id}/unpause", s.requireAuth(s.handleAccountUnpause))
-
-	// Pools — UNMOUNTED AT G2 (Docs/phase-2-strip-shared-pool.md §2.4, per the user's ruling on
-	// M3-P2-OD-10: kept mounted through G1 only because ~150 HTTP-level fixture sites depended on
-	// POST /v1/admin/pools until the account write-path rewrite landed. That rewrite is this
-	// commit, so the fixture dependency is gone and the five routes are removed together with
-	// pool_handlers.go/pool_store.go/pool_list_update.go (deleted in this same commit).
-
-	// Config
-	s.mux.HandleFunc("GET /v1/admin/config", s.requireAuth(s.handleConfigList))
-	s.mux.HandleFunc("GET /v1/admin/config/{key}", s.requireAuth(s.handleConfigGet))
-	s.mux.HandleFunc("PUT /v1/admin/config/{key}", s.requireAuth(s.handleConfigPut))
-
-	// Observability (Phase 9.5 B3/B4, §3)
-	s.mux.HandleFunc("GET /v1/admin/health", s.requireAuth(s.handleHealth))
-
-	// Module 3 Phase 5 §6: per-user suspend — genuinely new operator surface, module 2 had no
-	// per-user concept at all. "Users control their own assets; the operator controls the shared
-	// substrate" — per-user suspension is explicitly named as an operator-only control.
-	s.mux.HandleFunc("POST /v1/admin/users/{id}/suspend", s.requireAuth(s.handleUserSuspend))
-	s.mux.HandleFunc("POST /v1/admin/users/{id}/unsuspend", s.requireAuth(s.handleUserUnsuspend))
+	for _, rt := range s.adminRoutes() {
+		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.requireAuth(rt.handler))
+	}
 }
 
 // fail writes the clean external envelope for e and logs the internal reason against rid. It is
