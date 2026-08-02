@@ -62,6 +62,15 @@ for _ in $(seq 1 30); do
 done
 [[ "$registered" == "1" ]] && ok "P3: box registered on the mTLS send stream (live row: active + heartbeat newer than this run)" || bad "P3: box did not register on the send stream"
 
+# from_gate_mode defaults to 'enforce' (byosmtp_0039's seed, Phase 4). This suite's fixture
+# account uses smtp-sink/ourdomain.com, which has no real SPF/DMARC alignment with that host, so
+# an enforced gate would refuse account creation with 422 acknowledge_alignment_warning-required —
+# not a send-path failure, just this suite's own fixture not being gate-clean. Every Go test
+# harness (adminapi/platformapi/dispatch newTestEnv) already disables this for the identical
+# reason (see their own harness_test.go comments); the shell harness needs the same override,
+# same as phase3_verify.sh's own config pokes for its own fixtures.
+PSQL "UPDATE byosmtp.config SET value = '{\"v\":\"off\"}' WHERE key = 'from_gate_mode'" >/dev/null
+
 # --- fixtures: one eligible account owned by the system user, targeting the sink, via the ADMIN
 # API. Re-keyed at G2 (Docs/phase-2-strip-shared-pool.md §6): base routing now reaches an account
 # directly by user_id — no pool, no default_shared_pool_id operator setup step. ---

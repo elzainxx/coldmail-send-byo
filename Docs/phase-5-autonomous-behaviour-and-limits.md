@@ -1250,6 +1250,23 @@ items).
     procedure (§8.3).
 14. **Open decisions discharged** — §15 empty or ruled.
 
+**Phase-end verification (2026-08-02):** two full clean-slate cycles (`scripts/dev.sh reset` →
+`scripts/dev.sh test` → all six blocking CI gates), both green — harness 91/91 both times, gates
+(`config_drift`/`contract_drift`/`migration_lint`/`config_consumption`/`drain_grace`/
+`no_secret_leak`) all green both times. The FIRST clean-slate run surfaced one genuine pre-existing
+gap, unrelated to anything Phase 5 built: `tests/harness/phase3_send.sh` creates its fixture
+account (`smtp-sink`/`ourdomain.com`) without disabling `from_gate_mode`, which has defaulted to
+`enforce` since Phase 4's `0039` — every Go test harness (`adminapi`/`platformapi`/`dispatch`
+`newTestEnv`) already flips this off for the identical reason, but the shell harness never did,
+so this gap has been latent since Phase 4 closed and was only caught now because phase-end
+verification runs the *actual* clean-slate shell harness rather than trusting a prior green claim.
+**Fixed** in the same pass: `phase3_send.sh` now sets `from_gate_mode='off'` before creating its
+fixture account, mirroring the Go harnesses' own comment. The cascade this one unlocked-gate call
+produced (account creation 422 → every downstream assertion in Suites 9/10 reading empty/garbage
+state, including a `RAW8T3: unbound variable` in `phase8_variation.sh`) is exactly the "one root
+cause, not N failures" pattern this build has hit before (Phase 4's own `aa69f36` note on
+`config_consumption`) — read sceptically, not by failure count.
+
 ---
 
 ## §15 Open decisions
