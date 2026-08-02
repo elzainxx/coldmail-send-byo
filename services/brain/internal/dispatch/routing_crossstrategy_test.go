@@ -102,6 +102,62 @@ func TestRouting_T3_RoundRobinExactCycle_WithRandomControl(t *testing.T) {
 	}
 }
 
+// TestRouting_T4_RandomEveryAccountUsedNoStarvation_WithRoundRobinCycleControl — random: over
+// enough draws every account is used and none is starved (§7 T4). Per §7's explicit instruction,
+// this does NOT assert a uniformity statistic (module 2's inherited TestRouting_Random already
+// does that, and the spec calls that "a flaky test of Postgres' RANDOM(), not of this phase") —
+// the only assertion here is "every account got at least one draw." Control (§7, from the other
+// side of T3's control): the exact draw sequence must NOT equal the round_robin ascending-id
+// cycle — the property random structurally should not reproduce.
+func TestRouting_T4_RandomEveryAccountUsedNoStarvation_WithRoundRobinCycleControl(t *testing.T) {
+	e := newDispatchEnv(t, "t4random")
+	accts := make([]string, 4)
+	for i := range accts {
+		accts[i] = e.seedAccount(t, "sec")
+		e.setAccountDailyState(t, accts[i], 1000, 0, todayUTC(), false, nil)
+	}
+	sortedAccts := append([]string{}, accts...)
+	for i := 0; i < len(sortedAccts); i++ {
+		for j := i + 1; j < len(sortedAccts); j++ {
+			if sortedAccts[j] < sortedAccts[i] {
+				sortedAccts[i], sortedAccts[j] = sortedAccts[j], sortedAccts[i]
+			}
+		}
+	}
+
+	var seq []string
+	counts := map[string]int{}
+	for i := 0; i < 40; i++ {
+		a, ok, err := e.userConsumeWithStrategy(context.Background(), systemUserID, "random")
+		if err != nil || !ok {
+			t.Fatalf("random consume %d: ok=%v err=%v", i, ok, err)
+		}
+		seq = append(seq, a.id)
+		counts[a.id]++
+	}
+	for _, id := range accts {
+		if counts[id] == 0 {
+			t.Fatalf("account %s was never picked in 40 random draws across 4 accounts — starved", id)
+		}
+	}
+
+	// CONTROL: the exact sequence must not equal the round_robin ascending-id cycle from either
+	// possible starting offset — matching any offset at (1/4)^39 odds would mean this control
+	// proves nothing (§7.1's reasoning, mirrored from T3's control).
+	for startIdx := range sortedAccts {
+		matchesCycle := true
+		for i, got := range seq {
+			if got != sortedAccts[(startIdx+i)%len(sortedAccts)] {
+				matchesCycle = false
+				break
+			}
+		}
+		if matchesCycle {
+			t.Fatalf("control: random's sequence exactly reproduced the round_robin cycle at offset %d — (1/4)^39 odds against genuine randomness; the control proves nothing if this ever fires", startIdx)
+		}
+	}
+}
+
 // TestRouting_T5_OneByOneMaximalSkew_VersusT3Uniform — one_by_one's distribution is MAXIMALLY
 // skewed (all draws on the leader until exhausted, §7's own framing) — the exact opposite of T3's
 // uniform round_robin claim. Asserting both on the SAME two-account fixture is the strongest

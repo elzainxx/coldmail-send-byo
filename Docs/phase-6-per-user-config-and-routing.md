@@ -800,7 +800,15 @@ The build plan's four, verbatim, plus what this document adds:
    same load in the same run as the control.
 2. **"With no override, the global default applies"** — T2, including the precedence control.
 3. **"Each strategy distributes as specified over a real multi-account run"** — T3, T4, T5, each
-   carrying a cross-strategy control so no assertion is one all three strategies satisfy.
+   carrying a cross-strategy control so no assertion is one all three strategies satisfy. **Landed
+   2026-08-02:** `TestRouting_T4_RandomEveryAccountUsedNoStarvation_WithRoundRobinCycleControl`
+   (`routing_crossstrategy_test.go`) was the one of the three actually missing — the file's own
+   header comment claimed "T3/T4/T5" coverage but only implemented two tests, found during the
+   post-implementation exit-criteria pass. Added: every account used in 40 random draws (no
+   uniformity statistic, per §7's own instruction — module 2's inherited `TestRouting_Random`
+   already covers that, separately, and is explicitly NOT what this exit criterion needed), with
+   the required control that the exact sequence does not reproduce the round_robin ascending-id
+   cycle at any rotation offset. Green on real infra alongside T3/T5.
 4. **"Users cannot reach pacing or concurrency through any route"** — T6's five enumerated attempts
    with the admin-can control, T10's route-coverage assertion, and the structural two-table separation
    (§4.2).
