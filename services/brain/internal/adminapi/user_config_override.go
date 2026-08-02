@@ -17,6 +17,7 @@ import (
 	"net/http"
 
 	"github.com/byosmtp-module/brain/internal/configordering"
+	"github.com/byosmtp-module/brain/internal/userconfig"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -300,24 +301,15 @@ func clearUserConfigOverrideDial(ctx context.Context, db pgxDB, userID, actorID,
 // transaction, under the config-write serializer's lock — never a fresh, out-of-transaction
 // counterpart read (the exact defect Phase 10's R4 gate found for the global-only case, reused here
 // because the pair being validated now spans two tables instead of one column pair).
+//
+// Delegates the resolution itself to internal/userconfig.ResolveDelayPair — the SAME function
+// checkGlobalDelayWriteAgainstAllOverrides (config_ordering_write.go, §4.4 direction 2) calls, so
+// the two directions of this one invariant can never silently disagree on what "resolved" means.
 func checkResolvedDelayOrderOnOverrideWrite(ctx context.Context, tx pgxDB, userID string, req userConfigOverrideReq) *apiError {
 	// Only relevant when this write touches at least one of the pacing-delay columns — a write to,
 	// say, max_queued_jobs alone cannot invert a pacing pair it does not touch.
 	if req.SendDelayMinSec == nil && req.SendDelayMaxSec == nil {
 		return nil
-	}
-	var curMin, curMax *int
-	if err := tx.QueryRow(ctx,
-		`SELECT send_delay_min_sec, send_delay_max_sec FROM byosmtp.user_config_overrides WHERE user_id=$1`, userID).
-		Scan(&curMin, &curMax); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return newErr(codeInternalError, "override_read_error: "+err.Error())
-	}
-	resolvedMin, resolvedMax := curMin, curMax
-	if req.SendDelayMinSec != nil {
-		resolvedMin = req.SendDelayMinSec
-	}
-	if req.SendDelayMaxSec != nil {
-		resolvedMax = req.SendDelayMaxSec
 	}
 	globalMin, err := readConfigIntDirect(ctx, tx, "send_delay_min_sec")
 	if err != nil {
@@ -327,14 +319,12 @@ func checkResolvedDelayOrderOnOverrideWrite(ctx context.Context, tx pgxDB, userI
 	if err != nil {
 		return newErr(codeInternalError, "send_delay_max_sec_lookup_error: "+err.Error())
 	}
-	effMin, effMax := globalMin, globalMax
-	if resolvedMin != nil {
-		effMin = *resolvedMin
+	pair, err := userconfig.ResolveDelayPair(ctx, tx, userID, req.SendDelayMinSec, req.SendDelayMaxSec,
+		userconfig.Globals{SendDelayMinSec: globalMin, SendDelayMaxSec: globalMax})
+	if err != nil {
+		return newErr(codeInternalError, "override_read_error: "+err.Error())
 	}
-	if resolvedMax != nil {
-		effMax = *resolvedMax
-	}
-	if v := configordering.CheckDelayOrder(effMin, effMax); v != nil {
+	if v := configordering.CheckDelayOrder(pair.Min, pair.Max); v != nil {
 		return newErr(codeConfigOrderingViolation, "config_ordering_violation: "+v.Detail()).
 			withMessage("This override would make send_delay_min_sec greater than the resolved send_delay_max_sec.").
 			withDetails(fieldDetail{Field: "send_delay_min_sec", Issue: issueConflict})

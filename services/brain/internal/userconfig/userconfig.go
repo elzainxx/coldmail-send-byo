@@ -28,6 +28,7 @@ import (
 // prevent).
 type pgxDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // Globals is the six global byosmtp.config values Resolve falls back to when no override is set.
@@ -99,6 +100,98 @@ func Resolve(ctx context.Context, db pgxDB, userID string, g Globals) (UserConfi
 		uc.CampaignExpirySec = *oCampaignExpiry
 	}
 	return uc, nil
+}
+
+// ResolvedDelayPair is the RESOLVED (override ∪ global) send-delay pair for one user — the exact
+// shape §4.4/M3-P1-OD-8's ordering invariant is checked against. Returned by ResolveDelayPair so
+// every caller checking the resolved-set ordering (both the override-write direction and the
+// global-write direction) shares the SAME override→global fallback logic, rather than each
+// re-implementing it as its own SQL COALESCE (§1.1: "no consumer applies its own COALESCE" — a rule
+// this package's own callers must follow as much as any other).
+type ResolvedDelayPair struct {
+	UserID string
+	Min    int
+	Max    int
+}
+
+// ResolveDelayPair resolves send_delay_min_sec/send_delay_max_sec for ONE user, given a candidate
+// override value for one of the two fields (nil = use the user's current stored override/global,
+// unchanged) — used by the override-write direction (§4.4 direction 1) to compute the pair a
+// pending write would produce, BEFORE that write lands.
+func ResolveDelayPair(ctx context.Context, db pgxDB, userID string, candidateMin, candidateMax *int, g Globals) (ResolvedDelayPair, error) {
+	var oMin, oMax *int
+	err := db.QueryRow(ctx,
+		`SELECT send_delay_min_sec, send_delay_max_sec FROM byosmtp.user_config_overrides WHERE user_id = $1`, userID).
+		Scan(&oMin, &oMax)
+	if err != nil && err != pgx.ErrNoRows {
+		return ResolvedDelayPair{}, err
+	}
+	pair := ResolvedDelayPair{UserID: userID, Min: g.SendDelayMinSec, Max: g.SendDelayMaxSec}
+	if oMin != nil {
+		pair.Min = *oMin
+	}
+	if oMax != nil {
+		pair.Max = *oMax
+	}
+	if candidateMin != nil {
+		pair.Min = *candidateMin
+	}
+	if candidateMax != nil {
+		pair.Max = *candidateMax
+	}
+	return pair, nil
+}
+
+// FindDelayPairInvertedByGlobalWrite is §4.4 direction 2's single enforcement point: "a global PUT
+// must validate against EVERY existing override row, or lowering the global send_delay_max_sec
+// inverts the pair for every user who overrode only the min." changedField is "send_delay_min_sec"
+// or "send_delay_max_sec"; candidateValue is the value about to be written to that GLOBAL key.
+// Returns the first override row whose RESOLVED pair the candidate global write would invert, or
+// found=false if none would be. Only rows that INHERIT the column being written are at risk — a row
+// that overrides that same column is unaffected by the global changing (its own value still wins),
+// so this scans only those.
+func FindDelayPairInvertedByGlobalWrite(ctx context.Context, db pgxDB, changedField string, candidateValue int, g Globals) (pair ResolvedDelayPair, found bool, err error) {
+	var rows pgx.Rows
+	switch changedField {
+	case "send_delay_min_sec":
+		rows, err = db.Query(ctx,
+			`SELECT user_id, send_delay_max_sec FROM byosmtp.user_config_overrides WHERE send_delay_min_sec IS NULL`)
+	case "send_delay_max_sec":
+		rows, err = db.Query(ctx,
+			`SELECT user_id, send_delay_min_sec FROM byosmtp.user_config_overrides WHERE send_delay_max_sec IS NULL`)
+	default:
+		return ResolvedDelayPair{}, false, nil
+	}
+	if err != nil {
+		return ResolvedDelayPair{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID string
+		var otherOverride *int
+		if err := rows.Scan(&userID, &otherOverride); err != nil {
+			return ResolvedDelayPair{}, false, err
+		}
+		p := ResolvedDelayPair{UserID: userID}
+		switch changedField {
+		case "send_delay_min_sec":
+			p.Min = candidateValue
+			p.Max = g.SendDelayMaxSec
+			if otherOverride != nil {
+				p.Max = *otherOverride
+			}
+		case "send_delay_max_sec":
+			p.Max = candidateValue
+			p.Min = g.SendDelayMinSec
+			if otherOverride != nil {
+				p.Min = *otherOverride
+			}
+		}
+		if p.Min > p.Max {
+			return p, true, rows.Err()
+		}
+	}
+	return ResolvedDelayPair{}, false, rows.Err()
 }
 
 var (
