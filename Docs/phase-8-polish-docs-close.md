@@ -467,8 +467,9 @@ own §9 and §12 already cite it as a live artifact — §4.3(a) was simply neve
   and `0033` is the single create site (Phase 7 §8, §13; Phase 1 §4.6). It **blocked the migration
   chain**, so Phase 8 does not audit it as a polish leftover but as a **structural precondition**: if
   the tree still has two create sites, the chain does not apply, no clean-slate run can be green, and
-  item 2 of this same section fails. Verify it as applied — grep `0045` (renumbered from `0044` by
-  M3-P5-OD-7's cascade) for `CREATE TABLE`/`CREATE TYPE` and expect nothing — rather than reading the
+  item 2 of this same section fails. Verify it as applied — grep `0046` (renumbered from `0044` by
+  M3-P5-OD-7's cascade, then from `0045` by M3-P6-OD-6's cascade) for `CREATE TABLE`/`CREATE TYPE`
+  and expect nothing — rather than reading the
   register's ✅ (Rule 11).
 
 **(b) 64 unruled decisions cannot be closed by Phase 8, and Phase 8 must not pretend otherwise.** Rule 2
@@ -925,8 +926,9 @@ three resolutions are *conditional or ordered*, so Phase 8 checks the order held
 it. Specifically — that the envelope widening did not ship before the scrub (Phase 7 §12 criterion 6a),
 and that the consolidation landed as its own commit before either new term (Phase 4 §8.1's three-commit
 order). Both are checkable from git history, which is the point of having required separate commits.
-**A third duty, from the row added above:** confirm `0045` (renumbered from `0044` by M3-P5-OD-7's
-cascade) creates no type and no table (Phase 7 §12 criterion 15) — checkable from the migration file
+**A third duty, from the row added above:** confirm `0046` (renumbered from `0044` by M3-P5-OD-7's
+cascade, then from `0045` by M3-P6-OD-6's cascade) creates no type and no table (Phase 7 §12
+criterion 15) — checkable from the migration file
 itself, and the one item here whose failure mode is total rather than partial.
 
 Order within the phase, dependency-first (module 2's chunk order, for the same reason): **§3 reorganise
@@ -1032,11 +1034,12 @@ The build plan's five, verbatim, plus what this document adds.
    the phase specs in §3's reorganisation commit and repointing the nine inbound references, **not** by
    building it. It is not met while a copy remains at the old path or any register still points there.
 3b. **`M3-P7-OD-9`'s ruling is APPLIED IN THE TREE**, not merely recorded — the `0033`/`0044`
-   (renumbered `0045` by M3-P5-OD-7's cascade) `notifications` collision, **ruled (b) 2026-07-31**
+   (renumbered `0045` by M3-P5-OD-7's cascade, then `0046` by M3-P6-OD-6's cascade)
+   `notifications` collision, **ruled (b) 2026-07-31**
    (Phase 7 §13). Separated from criterion 3 because
    it is **not** a documentation item: with two create sites the migration chain does not apply at all,
    so criterion 2's clean-slate run cannot be green. The check is mechanical and must be **run**, not
-   read: `byosmtp_0045_*.up.sql` contains no `CREATE TABLE` and no `CREATE TYPE`, and
+   read: `byosmtp_0046_*.up.sql` contains no `CREATE TABLE` and no `CREATE TYPE`, and
    `byosmtp.notifications` exists after `0033` with `condition`/`subject_type`/`payload`/`state`/
    `notified_at`. A ✅ in a register is not evidence (Rule 11).
 4. **"Interface inventory committed in module 2's format"** — with **M3-P8-OD-2 ruled** (§6.1: module 2

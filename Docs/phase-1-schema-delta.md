@@ -451,7 +451,8 @@ both `REVOKE UPDATE, DELETE`, and `sender_0024`'s per-column FK carve-out are in
 
 > **Scope of "verbatim" — narrowed 2026-07-31 (M3-P7-OD-6).** The *enforcement* is verbatim, and
 > that is what this paragraph claims. The state-change trigger's **body** is not verbatim for the
-> whole chain: Phase 7's `0045` (renumbered from `0044` by M3-P5-OD-7's cascade) does a
+> whole chain: Phase 7's `0046` (renumbered from `0044` by M3-P5-OD-7's cascade, then from `0045`
+> by M3-P6-OD-6's cascade) does a
 > `CREATE OR REPLACE` on `fn_job_events_on_state_change` to populate the new
 > `job_events.destination_domain`. Nothing
 > about append-only changes — the `REVOKE`, the reject-trigger, the FK carve-out and the
@@ -737,8 +738,8 @@ an operator webhook, not for user-facing notification of "everything actionable"
 
 > **M3-P7-OD-9, RULED 2026-07-31: (b) — PHASE 7 OWNS THE SHAPE. `0033` REMAINS the single create
 > site.** The SQL below is **superseded**; the authoritative DDL is **Phase 7 §8**, and `0033` carries
-> *that* DDL rather than this one. Phase 7's `0045` (renumbered from `0044` by M3-P5-OD-7's
-> cascade) creates **neither** the enum nor the table.
+> *that* DDL rather than this one. Phase 7's `0046` (renumbered from `0044` by M3-P5-OD-7's
+> cascade, then from `0045` by M3-P6-OD-6's cascade) creates **neither** the enum nor the table.
 >
 > **Why (b) rather than (a) or (c).** Phase 7's shape must win on the merits: `notification_dedup_window_sec`
 > re-notifies off `notified_at`, `notification_immediate_severities` defaults to `["critical"]`, and the
@@ -767,7 +768,8 @@ an operator webhook, not for user-facing notification of "everything actionable"
 > **unchanged** — still `default`, still full DML, still no append-only trigger; and `subject_id` stays
 > deliberately un-FK'd for the same ADR-0009/ADR-0012 reason. `0025`'s `CREATE TYPE × 5` becomes
 > **× 6**, because `notification_state` joins the enum migration where `notification_severity` already
-> sits. Phase 7: `0045` (renumbered from `0044`) drops both `CREATE`s and keeps only its
+> sits. Phase 7: `0046` (renumbered from `0044` by M3-P5-OD-7's cascade, then from `0045` by
+> M3-P6-OD-6's cascade) drops both `CREATE`s and keeps only its
 > `jobs`/`job_events` work.
 >
 > Two Phase 1 details are **deliberately preserved** rather than dropped with the shape, because Phase
@@ -1043,7 +1045,7 @@ Ten migrations, `0025`–`0034`. Ordering constraints, each with a reason:
 | `0030` | `..._create_user_config_overrides.{up,down}.sql` | §4.2 | `DROP TABLE` |
 | `0031` | `..._create_user_suspensions.{up,down}.sql` | §4.5 | `DROP TABLE` |
 | `0032` | `..._create_campaigns.{up,down}.sql` | §4.3; **plus `jobs_campaign_fk` if M3-P1-OD-4 is ruled yes** | `DROP TABLE` (+ `DROP CONSTRAINT jobs_campaign_fk` first) |
-| `0033` | `..._create_notifications.{up,down}.sql` | **Phase 7 §8's DDL**, not §4.6's superseded block — M3-P7-OD-9 ruled (b) 2026-07-31. `0033` keeps its number and remains the **single** create site; Phase 7's `0045` (renumbered from `0044` by M3-P5-OD-7's cascade) creates neither the enum nor the table. Carries the two constraints Phase 7 omitted (`…_subject_pairing_check` re-keyed to `subject_type`, `…_seen_order_check`) | `DROP TABLE` |
+| `0033` | `..._create_notifications.{up,down}.sql` | **Phase 7 §8's DDL**, not §4.6's superseded block — M3-P7-OD-9 ruled (b) 2026-07-31. `0033` keeps its number and remains the **single** create site; Phase 7's `0046` (renumbered from `0044` by M3-P5-OD-7's cascade, then from `0045` by M3-P6-OD-6's cascade) creates neither the enum nor the table. Carries the two constraints Phase 7 omitted (`…_subject_pairing_check` re-keyed to `subject_type`, `…_seen_order_check`) | `DROP TABLE` |
 | `0034` | `..._account_events_action_widen.{up,down}.sql` | §3.4 | restores the `0014` CHECK |
 
 Every up file ends with `INSERT INTO byosmtp.schema_migrations (version) VALUES ('00NN');` and every
