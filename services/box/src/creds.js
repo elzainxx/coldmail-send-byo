@@ -4,6 +4,18 @@
 // and are zeroed on EVERY exit path. The box has NO DB and NO KMS — it can only ever
 // RECEIVE a decrypted credential from the Brain over mTLS at send time (Phase 5+).
 
+// CredentialZeroedError is thrown by use() on an already-zeroed buffer (Phase 7 §9.1,
+// M3-P7-OD-8). A distinguishable class — not a bare Error — so callers up the stack (smtp.js's
+// scrubSecret, stream.js's #runJob/#runVerify) can recognize this specific fault and let it
+// propagate as a NO-REPORT exit rather than folding it into a generic SMTPError and sending a
+// fabricated outcome (Rule 5: never invent an outcome the box did not report).
+export class CredentialZeroedError extends Error {
+  constructor() {
+    super("credential already zeroed");
+    this.name = "CredentialZeroedError";
+  }
+}
+
 export class MemoryCredential {
   #buf; // Buffer | null — the only place the plaintext ever lives
 
@@ -14,7 +26,7 @@ export class MemoryCredential {
 
   /** Use the secret within a callback; never returns it to a caller that could log it. */
   use(fn) {
-    if (this.#buf === null) throw new Error("credential already zeroed");
+    if (this.#buf === null) throw new CredentialZeroedError();
     return fn(this.#buf);
   }
 

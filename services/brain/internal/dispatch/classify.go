@@ -91,12 +91,15 @@ func classifyReport(rep boxproto.Report) string {
 	// Row 3 — auth_failure: an authentication/credential fault (an ACCOUNT fault, not a recipient
 	// fault) → requeue + quarantine. Triggers: auth reply codes (535/534/530, and 538
 	// encryption-required-for-auth), auth enhanced codes (5.7.8/5.7.0/5.7.11), the box's
-	// auth_failed slug, or starttls_unavailable (Phase 3 aborted BEFORE AUTH on a port that
-	// required it — the credential could not be presented securely, so the account is unusable as
-	// configured; §1.1 note). A pure connectivity TLS handshake failure is NOT here — it is row 6.
+	// auth_failed slug, starttls_unavailable (Phase 3 aborted BEFORE AUTH on a port that required
+	// it), or auth_mechanism_unsupported (Phase 7 §1.3, M3-P7-OD-2: the server advertised neither
+	// LOGIN nor PLAIN, so the credential could not be presented in any mechanism this box speaks) —
+	// each case the credential could not be presented securely/at all, so the account is unusable
+	// as configured; §1.1 note. A pure connectivity TLS handshake failure is NOT here — it is row 6.
 	if code == 535 || code == 534 || code == 530 || code == 538 ||
 		enhancedIn(enhanced, "5.7.8", "5.7.0", "5.7.11") ||
-		reason == boxproto.ReasonAuthFailed || reason == boxproto.ReasonStartTLSUnavail {
+		reason == boxproto.ReasonAuthFailed || reason == boxproto.ReasonStartTLSUnavail ||
+		reason == reasonAuthMechanismUnsupported {
 		return classAuthFailure
 	}
 
@@ -151,6 +154,10 @@ const (
 	reasonConnectionClosed = "connection_closed"
 	reasonWriteFailed      = "write_failed"
 	reasonStartTLSFailed   = "starttls_failed"
+	// reasonAuthMechanismUnsupported (Phase 7 §1.3, M3-P7-OD-2): the server's EHLO advertised
+	// neither AUTH LOGIN nor AUTH PLAIN, so the box could not present the credential in any
+	// mechanism it speaks — an account-configuration fault (row 3, auth_failure), not connectivity.
+	reasonAuthMechanismUnsupported = "auth_mechanism_unsupported"
 )
 
 // parseReplyCode extracts the leading 3-digit SMTP reply code from a (possibly multiline) raw

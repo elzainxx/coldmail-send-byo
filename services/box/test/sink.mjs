@@ -20,10 +20,22 @@ const certDir = path.resolve(here, "../../../secrets/dev/certs");
 export function startSink(opts = {}) {
   const advertiseStartTLS = opts.advertiseStartTLS !== false; // default true
   const authResult = opts.authResult || "ok"; // "ok" | "fail"
+  // authMechanisms: which mechanisms the EHLO response advertises, and in which order (the box's
+  // chooseAuthMechanism prefers LOGIN when offered — Phase 7 §1.3, M3-P7-OD-2). Default both, LOGIN
+  // first (today's existing behavior, unchanged for any server that already worked). Pass
+  // ["PLAIN"] to force the box down the PLAIN path, or [] to test the no-mechanism-in-common case.
+  const authMechanisms = opts.authMechanisms || ["LOGIN", "PLAIN"];
   // echoAuthInError: a hostile/verbose server that quotes the received AUTH argument (the
-  // base64-encoded password) back in its 535 text. Used to prove scrubSecret redacts the base64
-  // form, not just the plaintext (§4.4). Default false (well-behaved server).
+  // base64-encoded password for LOGIN, or the full base64 blob for PLAIN) back in its 535 text.
+  // Used to prove scrubSecret redacts the base64 form, not just the plaintext (§4.4/§1.3).
+  // Default false (well-behaved server).
   const echoAuthInError = opts.echoAuthInError === true;
+  // echoUsernameInError: a REAL provider-shaped response that ALSO echoes the username in
+  // plaintext (Phase 7 §10 T1's own required fixture: "a genuine provider-shaped response that
+  // echoes the username, verbatim from Google's form ... extended to also echo the offending
+  // base64 argument"). The username is not a secret (M3-P7-OD-3) and must SURVIVE the scrub;
+  // this option produces the realistic response shape a scrub test needs to prove that against.
+  const echoUsernameInError = opts.echoUsernameInError === true;
   // captureData: record the full DATA payload (dot-unstuffed, joined lines) so a test can assert
   // on the ACTUAL delivered body — the only real proof a message was genuinely sent with specific
   // content (Module 3 Phase 3 T3b's negative control on the dataBytes hazard).
@@ -84,7 +96,7 @@ export function startSink(opts = {}) {
     if (up.startsWith("EHLO") || up.startsWith("HELO")) {
       const caps = ["250-test-sink greets you"];
       if (advertiseStartTLS && !isTls) caps.push("250-STARTTLS");
-      caps.push("250-AUTH LOGIN PLAIN");
+      if (authMechanisms.length > 0) caps.push("250-AUTH " + authMechanisms.join(" "));
       caps.push("250 8BITMIME");
       write(sock, caps.join("\r\n"));
     } else if (up === "STARTTLS") {
@@ -93,11 +105,35 @@ export function startSink(opts = {}) {
       const secure = new tls.TLSSocket(sock, { isServer: true, ...tlsOpts });
       tlsActive = true;
       handleConn(secure, true);
+    } else if (up.startsWith("AUTH PLAIN ")) {
+      // AUTH PLAIN is a ONE-SHOT: the base64("\0"+user+"\0"+pass) blob rides on the AUTH line
+      // itself (RFC 4616), no 334 continuation. `line` here is "AUTH PLAIN <blob>" verbatim, so
+      // the offending argument for an echo is the blob substring after the mechanism name.
+      const blob = line.slice("AUTH PLAIN ".length);
+      if (authResult === "fail") {
+        if (echoUsernameInError) {
+          // Real provider shape (Phase 7 §10 T1): Google-style prose PLUS the echoed raw
+          // argument. Decode the blob to extract the plaintext username for the prose half —
+          // a real server has the username in hand at auth-decision time regardless of mechanism.
+          const parts = Buffer.from(blob, "base64").toString("utf8").split("\0");
+          const plainUser = parts[1] || "";
+          write(sock, `535-5.7.8 Username and Password not accepted for ${plainUser}. Learn more at\r\n535 5.7.8  https://support.example.com/mail/?p=BadCredentials, argument '${blob}'`);
+        } else if (echoAuthInError) {
+          write(sock, `535 5.7.8 Authentication failed for argument '${blob}'`);
+        } else {
+          write(sock, "535 5.7.8 Authentication credentials invalid");
+        }
+      } else {
+        write(sock, "235 2.7.0 Authentication successful");
+      }
     } else if (up.startsWith("AUTH")) {
       // AUTH LOGIN: reply 334, then username(334), then password → 235/535.
       write(sock, "334 VXNlcm5hbWU6"); // "Username:"
       sock._authStep = "user";
     } else if (sock._authStep === "user") {
+      // `line` here is base64(username) — decode it now so a later echo can quote the PLAINTEXT
+      // username (a real provider has already decoded it by auth-decision time).
+      sock._authUser = Buffer.from(line, "base64").toString("utf8");
       write(sock, "334 UGFzc3dvcmQ6"); // "Password:"
       sock._authStep = "pass";
     } else if (sock._authStep === "pass") {
@@ -105,8 +141,13 @@ export function startSink(opts = {}) {
       if (authResult === "fail") {
         // `line` here is the base64-encoded password the client just sent. A hostile server may
         // echo it in the error; a well-behaved one does not.
-        if (echoAuthInError) write(sock, `535 5.7.8 Authentication failed for argument '${line}'`);
-        else write(sock, "535 5.7.8 Authentication credentials invalid");
+        if (echoUsernameInError) {
+          write(sock, `535-5.7.8 Username and Password not accepted for ${sock._authUser || ""}. Learn more at\r\n535 5.7.8  https://support.example.com/mail/?p=BadCredentials, argument '${line}'`);
+        } else if (echoAuthInError) {
+          write(sock, `535 5.7.8 Authentication failed for argument '${line}'`);
+        } else {
+          write(sock, "535 5.7.8 Authentication credentials invalid");
+        }
       } else {
         write(sock, "235 2.7.0 Authentication successful");
       }

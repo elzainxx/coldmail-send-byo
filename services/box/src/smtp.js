@@ -14,6 +14,7 @@
 
 import net from "node:net";
 import tls from "node:tls";
+import { CredentialZeroedError } from "./creds.js";
 
 // SMTPError carries an internal error_reason slug (§2.4) plus the last SMTP response line. It is
 // deliberately built to NEVER carry the credential (only the server's own response text).
@@ -211,8 +212,18 @@ export async function runSmtpSession(job, credential, opts = {}) {
       ehlo = expect(await ehloOrHelo(conn, heloName, timeoutMs), [250], "ehlo_failed");
     }
 
-    // 4) AUTH — now, and only now, is the credential put on the wire (over TLS). AUTH LOGIN.
-    const authReply = await doAuthLogin(conn, username, credential, timeoutMs);
+    // 4) AUTH — now, and only now, is the credential put on the wire (over TLS). The MECHANISM is
+    // the server's choice (Phase 7 §1.3, M3-P7-OD-2): prefer LOGIN when advertised (no behavior
+    // change for any server that already worked), fall back to PLAIN when only PLAIN is offered.
+    // Neither offered is a clean, named failure — never a silent LOGIN attempt against a server
+    // that never advertised it.
+    const authMechanism = chooseAuthMechanism(ehlo.text);
+    if (!authMechanism) {
+      throw new SMTPError("auth_mechanism_unsupported", ehlo.text);
+    }
+    const authReply = authMechanism === "LOGIN"
+      ? await doAuthLogin(conn, username, credential, timeoutMs)
+      : await doAuthPlain(conn, username, credential, timeoutMs);
 
     // VERIFY STOPS HERE (§2.2). This is the entire mechanism: a `return` before step 5, the first
     // recipient-bearing command — not a body-assembly skip further down, where dotStuff's
@@ -223,7 +234,7 @@ export async function runSmtpSession(job, credential, opts = {}) {
     // AUTH's result IS the entire outcome. A verify's QUIT gets the full per-operation timeoutMs.
     if (stopAfterAuth) {
       try { await withTimeout(conn.write("QUIT").then(() => conn.read()), timeoutMs); } catch { /* best-effort */ }
-      return { smtpResponse: scrubSecret(authReply.text, credential) };
+      return { smtpResponse: scrubSecret(authReply.text, credential, username) };
     }
 
     // 5) MAIL FROM.
@@ -251,11 +262,17 @@ export async function runSmtpSession(job, credential, opts = {}) {
     // only slow down freeing this connection for no benefit. Not a tunable send-behavior dial.
     try { await withTimeout(conn.write("QUIT").then(() => conn.read()), 2000); } catch { /* ignore */ }
 
-    return { smtpResponse: scrubSecret(dataReply.text, credential) };
+    return { smtpResponse: scrubSecret(dataReply.text, credential, username) };
   } catch (e) {
+    // M3-P7-OD-8: a CredentialZeroedError means scrubSecret ran against an already-zeroed
+    // buffer — the ordering invariant this session's report assembly depends on has broken.
+    // Propagate it AS ITSELF, never re-mapped to an SMTPError: the caller (stream.js) must send
+    // NO report at all on this path (Rule 5 — never invent an outcome), not a fabricated failure
+    // report whose smtp_response happens to be empty.
+    if (e instanceof CredentialZeroedError) throw e;
     // Re-map generic errors to an SMTPError; scrub any credential from the response text.
     if (e instanceof SMTPError) {
-      e.smtpResponse = scrubSecret(e.smtpResponse, credential);
+      e.smtpResponse = scrubSecret(e.smtpResponse, credential, username);
       throw e;
     }
     throw new SMTPError("timeout", "");
@@ -294,6 +311,28 @@ function advertisesStartTLS(ehloText) {
   return /(^|\n)\d{3}[ -]STARTTLS\b/i.test(ehloText);
 }
 
+// advertisedAuthMechanisms parses the EHLO response's "250-AUTH ..." line (RFC 4954) into the
+// set of mechanism names the server offers, e.g. "250-AUTH LOGIN PLAIN" -> ["LOGIN","PLAIN"].
+// Some servers use the obsolete "250-AUTH=LOGIN PLAIN" form; both are accepted.
+function advertisedAuthMechanisms(ehloText) {
+  const m = /(^|\n)\d{3}[ -]AUTH[= ]+([A-Z0-9=_-]+(?:\s+[A-Z0-9=_-]+)*)/i.exec(ehloText);
+  if (!m) return [];
+  return m[2].trim().split(/\s+/).map((s) => s.toUpperCase());
+}
+
+// chooseAuthMechanism picks which AUTH mechanism to speak (Phase 7 §1.3, M3-P7-OD-2: AUTH PLAIN
+// is in scope — "users bring their own servers, so the mechanism is the provider's choice", not
+// module 3's). Prefers LOGIN when advertised (the mechanism this box has always spoken, so a
+// server offering both sees no behavior change); falls back to PLAIN when the server offers PLAIN
+// but not LOGIN. A server offering NEITHER is a clean, named failure rather than a silent
+// LOGIN attempt against a server that never advertised it.
+function chooseAuthMechanism(ehloText) {
+  const offered = advertisedAuthMechanisms(ehloText);
+  if (offered.includes("LOGIN")) return "LOGIN";
+  if (offered.includes("PLAIN")) return "PLAIN";
+  return null;
+}
+
 // doAuthLogin runs AUTH LOGIN (base64 username then password). The password is read from the
 // MemoryCredential and base64-encoded in a transient Buffer that is zeroed immediately. On a
 // non-235 reply it throws auth_failed WITHOUT including the credential.
@@ -317,9 +356,29 @@ async function doAuthLogin(conn, username, credential, timeoutMs) {
   const authReply = await withTimeout(conn.read(), timeoutMs);
   if (authReply.code !== 235) {
     // NEVER include the credential; only the server's own response text (scrubbed defensively).
-    throw new SMTPError("auth_failed", scrubSecret(authReply.text, credential));
+    throw new SMTPError("auth_failed", scrubSecret(authReply.text, credential, username));
   }
   return authReply;
+}
+
+// doAuthPlain runs AUTH PLAIN (RFC 4616): one base64("\0"+username+"\0"+password) blob sent as
+// the SASL initial response on the AUTH PLAIN line itself (no continuation round trip, unlike
+// LOGIN's two-step 334/334). Phase 7 §1.3/M3-P7-OD-2: module 3 ships PLAIN because the remote
+// server — not this box — chooses which mechanisms it advertises. The transient blob buffer is
+// dropped immediately after use (the durable secret lives only in the MemoryCredential, zeroed by
+// the caller).
+async function doAuthPlain(conn, username, credential, timeoutMs) {
+  let blob = null;
+  await credential.use((buf) => {
+    blob = Buffer.concat([Buffer.from("\0" + username + "\0", "utf8"), buf]).toString("base64");
+  });
+  const start = await cmd(conn, "AUTH PLAIN " + blob, timeoutMs);
+  blob = null;
+
+  if (start.code !== 235) {
+    throw new SMTPError("auth_failed", scrubSecret(start.text, credential, username));
+  }
+  return start;
 }
 
 // sendingDomain extracts the domain from an email address for the HELO name (§4.1).
@@ -333,29 +392,83 @@ function dotStuff(data) {
   return String(data).replace(/\r\n/g, "\n").replace(/\n/g, "\r\n").replace(/(^|\r\n)\./g, "$1..");
 }
 
-// scrubSecret removes the credential from a string defense-in-depth (§4.4). It reads the secret
-// from the MemoryCredential ONLY to redact it; if the buffer is already zeroed it is a no-op.
-// CRITICAL: the credential travels the AUTH exchange BASE64-encoded (AUTH LOGIN sends
-// base64(password)), so a server that echoes the offending AUTH argument in its error text
-// returns the base64 form — NOT the plaintext. We therefore redact BOTH the utf8 plaintext AND
-// its base64 / base64url encodings, so a `535` that quotes the sent line cannot carry a decodable
-// secret into report.smtp_response → send_logs. Never logs.
-function scrubSecret(text, credential) {
+// scrubSecret removes the credential from a string defense-in-depth (§4.4; extended Phase 7 §1.3,
+// M3-P7-OD-2). It reads the secret from the MemoryCredential ONLY to redact it.
+//
+// CRITICAL: the credential travels the AUTH exchange BASE64-encoded, and WHICH encoding depends
+// on the mechanism — the remote server's choice, not this box's (§1.3's general lesson: "a scrub
+// is complete only against the set of encodings the credential can take on the wire, and in
+// module 3 that set is chosen by a party we do not control"). AUTH LOGIN sends base64(password)
+// alone, always at a 3-byte-group-aligned offset (offset 0). AUTH PLAIN sends
+// base64("\0"+username+"\0"+password) as ONE blob — base64 groups bytes in 3s, so the password's
+// bytes inside that blob start at whichever of the three possible alignments
+// (len("\0"+username+"\0") mod 3) the username's length produces, and at a non-zero alignment
+// base64(password) alone is NOT a substring of the blob's base64 text (verified by execution,
+// §1.3 GAP 1) — each alignment produces a genuinely different character run that must be computed
+// and redacted separately; there is no way to derive one alignment's needle from another's.
+//
+// Redacted forms, all computed from the SAME underlying plaintext buffer:
+//   1. utf8 plaintext
+//   2. base64(password) at offset 0 (AUTH LOGIN's wire form; also PLAIN's alignment when
+//      len("\0"+username+"\0") % 3 == 0)
+//   3. base64url variant of #2
+//   4-5. base64(password) as it appears when password is preceded by 1 or 2 extra bytes before
+//      the next 3-byte boundary — the other two alignments AUTH PLAIN's blob can produce
+//   6. the FULL AUTH PLAIN blob base64("\0"+username+"\0"+password), when username is known —
+//      strictly stronger than redacting a substring, since a server echoing the whole argument is
+//      redacted whole rather than relying on the substring match to land inside it
+//
+// M3-P7-OD-8 (fail-closed beats fail-silent on a credential path): if the buffer is ALREADY
+// ZEROED, credential.use() throws (creds.js) and this function lets that THROW PROPAGATE rather
+// than catching it and returning the input unchanged. Module 2 returned the input unchanged on a
+// zeroed buffer — a scrub moved (by a future edit) to after the zero would silently return raw
+// provider text and report success. module 3 fails closed instead: the caller's report never
+// reaches Brain, which reclaims the job by lease expiry rather than fabricating an outcome (Rule
+// 5) — safe because the caller's own `finally` still zeroes on this throw path (Rule 6). Never
+// logs.
+function scrubSecret(text, credential, username) {
   if (!text) return text || "";
   const forms = [];
-  try {
-    credential.use((buf) => {
-      forms.push(buf.toString("utf8"));                                  // plaintext
-      const b64 = buf.toString("base64");
-      forms.push(b64);                                                   // AUTH LOGIN wire form
-      forms.push(b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")); // base64url
-    });
-  } catch {
-    return text; // already zeroed — nothing to scrub against
-  }
+  credential.use((buf) => {
+    forms.push(buf.toString("utf8")); // plaintext
+
+    const b64 = buf.toString("base64");
+    forms.push(b64); // AUTH LOGIN wire form (offset 0)
+    forms.push(b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")); // base64url
+
+    // AUTH PLAIN's other two byte alignments (offsets 1 and 2): base64 groups bytes in 3s, so
+    // when the password does not start at a 3-byte boundary inside the blob, only the password's
+    // bytes that fall on a CLEAN 3-byte group of their own re-encode to the same characters
+    // regardless of what precedes them — the bytes straddling a group boundary depend on
+    // neighboring bytes too and cannot be redacted by a fixed substring. Dropping `skip` leading
+    // bytes (the ones that would straddle) and encoding what's left of a whole-group length
+    // isolates exactly that safely-redactable middle slice. A password under 3 bytes at a given
+    // alignment has no such slice at all (null) — every one of its bytes straddles — so there is
+    // nothing to redact at that alignment and the form is skipped, not a false empty match.
+    for (const skip of [1, 2]) {
+      const usableLen = Math.floor((buf.length - skip) / 3) * 3;
+      if (usableLen > 0) {
+        forms.push(buf.slice(skip, skip + usableLen).toString("base64"));
+      }
+    }
+
+    // The full AUTH PLAIN blob, when the username is known — strictly stronger than a substring
+    // match, since it also catches a server echoing the entire AUTH argument verbatim.
+    if (username) {
+      forms.push(Buffer.concat([Buffer.from("\0" + username + "\0", "utf8"), buf]).toString("base64"));
+    }
+  });
+  // LONGEST FIRST. The full-blob form fully contains every middle-slice form as a substring, so
+  // redacting a shorter needle first can consume characters the full-blob needle needed for its
+  // own exact match — the full-blob redaction then silently fails to fire, leaving whatever
+  // shorter needle didn't cover (verified by execution: a shortest-first order left 2 raw
+  // password bytes decodable in the surviving blob prefix). Sorting longest-first guarantees the
+  // strongest, most specific match consumes the text before any shorter substring of it gets a
+  // chance to fragment it.
+  const bySize = forms.filter(Boolean).sort((a, b) => b.length - a.length);
   let out = text;
-  for (const f of forms) {
-    if (f && out.includes(f)) out = out.split(f).join("[redacted]");
+  for (const f of bySize) {
+    if (out.includes(f)) out = out.split(f).join("[redacted]");
   }
   return out;
 }

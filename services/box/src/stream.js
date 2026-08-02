@@ -23,7 +23,7 @@
 
 import tls from "node:tls";
 import fs from "node:fs";
-import { MemoryCredential } from "./creds.js";
+import { MemoryCredential, CredentialZeroedError } from "./creds.js";
 import { runSmtpSession, SMTPError } from "./smtp.js";
 import { assembleDataBytes } from "./assemble.js";
 
@@ -350,7 +350,13 @@ export class BoxStream {
         }
       }
     } catch (e) {
-      if (e instanceof SMTPError && e.reason === "bounced") {
+      if (e instanceof CredentialZeroedError) {
+        // M3-P7-OD-8: the scrub ran against an already-zeroed buffer — report stays UNDEFINED.
+        // Rule 5 (never invent an outcome the box did not report): sending an "error"/"timeout"
+        // report here would be exactly that fabrication, since the box never actually observed
+        // this outcome from the provider — it observed its own broken zeroing-order invariant.
+        // Brain reclaims the job by lease expiry instead, the same as a box that crashed outright.
+      } else if (e instanceof SMTPError && e.reason === "bounced") {
         report = {
           type: "report", request_id: pj.request_id, job_id: jobId, attempt_token: pj.attempt_token,
           outcome: "bounced", smtp_response: e.smtpResponse || "", error_reason: null,
@@ -361,13 +367,15 @@ export class BoxStream {
         report = { type: "report", request_id: pj.request_id, job_id: jobId, attempt_token: pj.attempt_token, outcome: "error", smtp_response: resp, error_reason: reason };
       }
     } finally {
-      // LOCKED: zero the plaintext on EVERY exit path (§4.4, S3).
+      // LOCKED: zero the plaintext on EVERY exit path (§4.4, S3) — including the
+      // CredentialZeroedError path above, where it is already zeroed and this is a no-op (idempotent).
       credential.zero();
       if (this.onZeroed) { try { this.onZeroed(jobId); } catch { /* test hook only */ } }
     }
     // Buffer-then-send (P7-4): retain the outcome (never the credential — already zeroed above) so a
-    // lost send is replayed on reconnect, until the Brain acks it.
-    this.#bufferAndSend(report);
+    // lost send is replayed on reconnect, until the Brain acks it. `report` is undefined only on
+    // the CredentialZeroedError path above, which sends nothing — never invent an outcome (Rule 5).
+    if (report) this.#bufferAndSend(report);
   }
 
   // #runVerify is the credential lifecycle boundary for a VERIFY (Phase 3 §2.2), mirroring #runJob's
@@ -407,17 +415,22 @@ export class BoxStream {
         error_reason: null,
       };
     } catch (e) {
-      const reason = e instanceof SMTPError ? e.reason : "timeout";
-      const resp = e instanceof SMTPError ? (e.smtpResponse || "") : "";
-      report = {
-        type: "verify_report", request_id: pv.request_id, account_id: pv.account_id,
-        attempt_token: pv.attempt_token, outcome: "error", smtp_response: resp, error_reason: reason,
-      };
+      if (e instanceof CredentialZeroedError) {
+        // M3-P7-OD-8: same no-report exit as #runJob's identical branch — never invent an outcome
+        // the box did not report (Rule 5). `report` stays undefined.
+      } else {
+        const reason = e instanceof SMTPError ? e.reason : "timeout";
+        const resp = e instanceof SMTPError ? (e.smtpResponse || "") : "";
+        report = {
+          type: "verify_report", request_id: pv.request_id, account_id: pv.account_id,
+          attempt_token: pv.attempt_token, outcome: "error", smtp_response: resp, error_reason: reason,
+        };
+      }
     } finally {
       credential.zero();
       if (this.onZeroed) { try { this.onZeroed(pv.request_id); } catch { /* test hook only */ } }
     }
-    this.#send(report);
+    if (report) this.#send(report);
   }
 
   // replayNow re-sends all still-unacked buffered outcomes (pruning expired ones first). The box does
