@@ -62,7 +62,7 @@ CREATE INDEX account_events_user_id_created_at_idx
 -- genuine content mutation. This preserves the defense-in-depth backstop AND lets the audit
 -- survive the account delete. Content immutability (you cannot alter WHAT happened) is fully
 -- kept: action/reason/flags/timestamps can never change. (Flagged, not silently fixed — see
--- Docs/history/open-decisions.md OD-23 and Docs/history/decisions/0009-*.md.)
+-- Docs/history/open-decisions.md OD-23 and Docs/history/module-2/decisions/0009-*.md.)
 CREATE OR REPLACE FUNCTION byosmtp.fn_account_events_reject_update()
 RETURNS TRIGGER AS $$
 BEGIN

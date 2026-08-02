@@ -15,7 +15,7 @@ package dispatch
 //	            /accounts/{id}/unpause refuses it (422 not_manual_pause, Phase 2 §837) because a
 //	            self-clearing pause is not an operator's to lift. Only the daily reset clears it.
 //
-// Shape B is deliberate and locked (Docs/history/phase-1-data-model.md decisions #17 and #19: "lowering
+// Shape B is deliberate and locked (Docs/history/module-2/phase-1-data-model.md decisions #17 and #19: "lowering
 // can make an account immediately ineligible until reset — expected admin behavior"). So this test
 // does NOT assert a fix; it PINS the asymmetry, because the runbook now documents it as the reason an
 // operator must add an account rather than wait or hand-edit `paused`. Found walking Stage 8 of

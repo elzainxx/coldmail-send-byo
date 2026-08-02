@@ -22,25 +22,35 @@ change it — but it is not the manual.
 
 ## What is in here
 
+**Note (2026-08-02, M3-P0-OD-9 landed):** this directory holds module 3's own provenance now.
+Module 2's phase specs, ADRs 0000–0012, build plan, pre-live gates, and final revision report were
+relocated to `module-2/` — see that subdirectory's own README for the full scope and rationale.
+What is left at this top level is module 3's own material, plus the two module-2 files the ruling
+kept here for path-stable citation (`open-decisions.md`, `phase-build-record.md` — module 2's own,
+referenced by path from module 3's docs but not module 3's record; see `module-2/README.md`'s
+explanation of why those two specifically were NOT carried into `module-2/`).
+
 | File / dir | What it is | Consult it when |
 |---|---|---|
-| `phase-0-groundwork.md` … `phase-9_5-operability-and-control-plane-safety.md` | The **locked phase specs** — the design of record, written before the code. **Never edited during build work** — see CLAUDE.md. **12 files for 11 phases**, which is deliberate and worth knowing before you count them: Phase 9 has *two* (`phase-9-polish-and-documentation.md` plus `phase-9-contract-and-doc-completions.md`, split out when the contract/doc completions were separated), Phase 9.5 has its own, and **Phase 10 has none** — it was the close-out phase and its scope arrived as an instruction rather than a locked spec, so its record is `phase-build-record.md`'s "Phase 10 state" section. | You need the authoritative intent behind a behavior, or the §-reference a code comment cites. |
-| `phase-build-record.md` | The **build diary** — what each phase actually landed, chunk by chunk, plus what each review gate found and how it was fixed. Split out of the living `architecture-overview.md` in Phase 10. | You want to know which phase introduced something, or what a review pass caught. |
-| `open-decisions.md` | The **flag-don't-fix ledger**. Every contradiction, ambiguity, and locked-fact conflict found across all phases, with its ruling and disposition. CLAUDE.md Rule 2's artifact. | You hit something that looks wrong and want to know whether it was already ruled on. |
-| `decisions/NNNN-*.md` | **ADRs** — the formal record for decisions that resolved an ambiguity or locked a trade-off. Append-only; superseding writes a new ADR and flips the old one's status. | You want the Context/Decision/Consequences for a specific settled trade-off. |
-| `definition-of-done.md` | The **nine-item DoD gate** every phase was held to, with each phase's tick-off. | You are auditing whether a phase genuinely closed. |
-| `pre-live-gates.md` | The original **G1–G4 pre-live gate** table (platform-coordination sign-offs). Superseded operationally by `../go-live-checklist.md`, which is the ordered version an operator actually works through. | You want the reasoning behind a go-live item, not the checklist form. |
-| `sender-module-build-plan.md`, `final-revision-report.md` | The **pre-build planning artifacts** — the original phase decomposition and the pre-build revision review whose findings produced Phase 9.5. | Archaeology on why the phase set is shaped the way it is. |
-| `phase1-drafts/` | Working drafts that fed the Phase 1 data-model spec. | Rarely. Superseded by `phase-1-data-model.md`. |
+| `module-2/` | **Module 2's carried-across provenance** — its ADRs (`decisions/0000`–`0012`) and the phase specs for subsystems module 3 inherited, plus its own `definition-of-done.md` and pre-build planning artifacts. Its own README explains scope and the double-stale-path hazard. **Not module 3's record.** | You hit an inherited-code comment citing an ADR number or a module-2 §-reference and need the source. |
+| `decisions/NNNN-*.md` | **Module 3's own ADRs**, numbered from `0013` (module 2's ADRs 0000–0012 live in `module-2/decisions/`, not renumbered, not added to). Append-only; superseding writes a new ADR and flips the old one's status. | You want the Context/Decision/Consequences for a module-3-specific settled trade-off. |
+| `definition-of-done.md` | **Module 3's own** nine-item DoD gate, vocabulary-adapted (`byosmtp.*`, module 3's own additive-only framing per CLAUDE.md Rule 5 / M3-P1-OD-3). Per-phase tick-offs are NOT centralized here — each phase spec records its own DoD status inline. Module 2's original copy (with its own tick-off history) is `module-2/definition-of-done.md`. | You are checking what the nine DoD items require, or which phase doc to consult for its own tick-off. |
+| `open-decisions.md` | **Module 2's own** flag-don't-fix ledger, carried at this path (not moved into `module-2/`) because module 3's own inherited-code comments cite it directly by this exact path. Module 3's own, actively-growing ledger is `Docs/open-decisions.md` (top-level, living) — do not confuse the two. | An inherited-code comment or migration cites `Docs/history/open-decisions.md` and you need the source ruling. |
+| `phase-build-record.md` | **Module 2's own** build diary, carried at this path for the same path-citation reason as `open-decisions.md` above. Not module 3's build diary. | You want to know which module-2 phase introduced something a comment cites this file for. |
 | `mailflow-worker (Sender Inspiration)/` | A **reference codebase** (not part of this repo; gitignored, has its own nested `.git`). The content-variation and header-engineering implementations were adapted from it. | You are changing variation logic and want the original reference. |
 
-## A note on paths inside these files
+## A note on paths inside module-2's carried-across files
 
-These documents were written when everything lived flat in `Docs/`. Phase 10 moved the historical
-material into `Docs/history/`, so internal references of the form `Docs/open-decisions.md` or
-`Docs/phase-4-dispatcher-and-routing.md` now resolve to `Docs/history/…`.
+`module-2/`'s files were written when everything in module 2 lived flat in its own `Docs/`, then
+moved into module 2's own `Docs/history/`, then carried into module 3's `Docs/history/module-2/` —
+two layers of stale path. **Deliberately left as-written** at both layers, for the same reason
+module 2 itself gave: rewriting a build record so its paths match a later directory layout is how
+provenance quietly becomes fiction. See `module-2/README.md` for the exact resolution rule.
 
-**The historical text was deliberately left as-written.** Rewriting a build record so its paths
-match a later directory layout is how provenance quietly becomes fiction — the record should say
-what it said at the time. Living docs, code comments, and CI gates were updated; the archive was
-not. If a path in here does not resolve, prepend `history/`.
+`open-decisions.md` and `phase-build-record.md` at THIS top level are module 2's own files, carried
+at their original relative path rather than into `module-2/`, specifically so that direct citations
+in module 3's inherited code (`Docs/history/open-decisions.md P8-OD-1`, etc.) keep resolving without
+a rewrite. Internal references inside those two files of the form `Docs/open-decisions.md` or
+`Docs/phase-4-dispatcher-and-routing.md` are module 2's own historical-layer paths and were,
+likewise, deliberately left as-written — prepend `module-2/` (phase specs, ADRs) or resolve against
+`Codmailling 2` directly (module 2's own ledger/build-record self-references) as appropriate.

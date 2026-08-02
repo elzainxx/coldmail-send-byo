@@ -112,7 +112,7 @@ verified, not assumed.
 - No change is complete until its docs are updated in the same PR. Docs never go
   stale; a diff that changes behavior without changing docs is incomplete.
 - The docs discipline (structure, ownership, staleness gate) is defined in the
-  Phase-0 documentation section (`Docs/history/phase-0-groundwork.md` §3) and the living docs
+  Phase-0 documentation section (`Docs/history/module-2/phase-0-groundwork.md` §3) and the living docs
   under `Docs/`. Follow it.
 
 ## 5. Contracts, errors, and honesty

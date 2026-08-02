@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# load_e11.sh — Phase 9.5 B6 / E11 (Docs/history/phase-9_5-operability-and-control-plane-safety.md §7):
+# load_e11.sh — Phase 9.5 B6 / E11 (Docs/history/module-2/phase-9_5-operability-and-control-plane-safety.md §7):
 # the single-Brain throughput-ceiling LOAD test. A BEFORE-YOU-SCALE gate, NOT a launch blocker
 # (§7 "Classification") — it does not run inside tests/harness/run.sh's default suite and its
 # result is a RECORDED NUMBER, not a pass/fail. Invoke explicitly:

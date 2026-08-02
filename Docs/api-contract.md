@@ -168,6 +168,28 @@ distinct — asserted behaviorally, not by convention. Flag names are already pu
 read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
 the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
 
+**Module 3 Phase 6 — per-user config overrides** (`byosmtp.user_config_overrides`; admin-only, §4 of
+`Docs/phase-6-per-user-config-and-routing.md`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/admin/users/{id}/config` | Read the user's current overrides — every field `null` if never overridden (not an error; absence is the common case). |
+| PUT | `/v1/admin/users/{id}/config` | Set one or more of the six overridable dials (`send_delay_min_sec`, `send_delay_max_sec`, `concurrency_per_user`, `max_campaign_size`, `max_queued_jobs`, `campaign_expiry_sec`). Absent fields are left untouched — a partial `PUT` does not clear the others. `400 validation_failed` if no field is present, or a field's value is out of its structural domain. `400 config_ordering_violation` if the resulting RESOLVED pair (this write ∪ current row ∪ current globals) would invert `send_delay_min_sec > send_delay_max_sec` — validated under the SAME advisory lock the global config `PUT` uses, so a concurrent global-lower and override-raise cannot both commit an inverted pair. |
+| DELETE | `/v1/admin/users/{id}/config/{dial}` | Clear ONE override column back to NULL (inherit the global). `404 not_found` for an unrecognized `{dial}` name. |
+
+The write path is store-layer gated: every write requires an admin actor identity, and a caller
+cannot satisfy that requirement by supplying the target user's own id (no self-service override).
+There is no break-glass variant for this surface — an admin override write is already the
+privileged path.
+
+**Module 3 Phase 6 — the user-owned routing strategy** (`byosmtp.user_settings`; user-writable,
+Domain A, §5.3 of `Docs/phase-6-per-user-config-and-routing.md`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/byosmtp/settings?user_id=<uuid>` | Read the caller's OWN `routing_strategy` (`random`/`round_robin`/`one_by_one`). Row absent → the table's own default (`round_robin`). |
+| PUT | `/v1/byosmtp/settings?user_id=<uuid>` | Set the caller's own `routing_strategy`. The tenant selector is the query parameter, taken from the session — never the request body, so a body-supplied `user_id` cannot redirect the write to another tenant. Accepts ONLY `routing_strategy`, validated against the enum; `400 validation_failed` for a missing/unrecognized value. This route CANNOT name an admin-owned dial (`send_delay_*`, `concurrency_per_user`, the resource caps) — not by a check, but structurally: `user_settings` and `user_config_overrides` are two different tables, and this handler decodes no field that could reach the other one. |
+
 **Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
 
 The `PUT` request body is `{"value": <v>}` — the bare JSON value at `value`, **not** the stored

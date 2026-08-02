@@ -312,8 +312,19 @@ read this directory to understand the system."*
 
 **What moves to `Docs/history/` at Phase 8:** module 3's eight phase specs (`phase-0-fork-and-baseline.md`
 through `phase-8-polish-docs-close.md` — including this file), `module-3-build-plan.md`, the module 3
-ADRs, the module 3 decision ledger, and whatever module 2 provenance M3-P0-OD-9's ruling carried across
-into `Docs/history/module-2/`.
+ADRs, and the module 3 decision ledger.
+
+**The module 2 provenance half landed early, not here.** The `Docs/history/module-2/` half of this
+plan — whatever module 2 provenance M3-P0-OD-9's ruling carried across — was originally planned for
+this phase, but was found genuinely unbuilt (a byte-identical copy of module 2's ENTIRE
+`Docs/history/`, not the ruling's narrower admitted subset) by **Phase 6's phase-start mechanical
+landing check**, and landed there instead, on 2026-08-02 — four phases early. By the time Phase 8
+runs, `Docs/history/module-2/` already exists with module 2's 12 phase specs, `phase1-drafts/`, and
+13 ADRs, plus a README stating the ruling's required framing; module 2's `open-decisions.md` and
+`phase-build-record.md` were deliberately left at `Docs/history/`'s top level (not moved into
+`module-2/`) because inherited code cites them there by literal path. Phase 8's own job here is
+therefore reduced to moving module 3's OWN phase specs/ADRs/ledger alongside the already-landed
+module-2 provenance — not to build the module-2 half itself.
 
 **What stays living:** §1's five operational docs, §2's copy contract, `config-reference.md`,
 `api-contract.md` (§6), `architecture-overview.md`, `future-work.md` (§4),
@@ -1145,7 +1156,10 @@ below now states the ruling and what Phase 8 does with it, rather than the branc
   stating explicitly that it does **not** reopen key removal generally. Phase 8's doc sweep verifies that
   ADR exists and says that.
 - **M3-P0-OD-9** (scope of module 2 provenance carried across) — §3.1's `Docs/history/module-2/` contents
-  are exactly what that ruling admits.
+  are exactly what that ruling admits. **Landed early:** this landed at Phase 6's phase-start
+  mechanical landing check (2026-08-02), not deferred to this phase as §3.1 originally planned — see
+  §3.1's note. Phase 8's doc sweep here confirms the already-landed contents match the ruling rather
+  than building them.
 - **M3-P0-OD-10** (module 2's README says five CI gates; CI has run six) — §7.4's competing "first
   manifest entry" claim, and exit criterion 6's gate count.
 - **M3-P2-OD-1** (`default_shared_pool_id`'s RESERVED disposition and the time-boxed expiry check) —

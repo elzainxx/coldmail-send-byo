@@ -10,7 +10,7 @@ unchanged**. This document specifies only what is dropped, changed, and added.
 
 **Sources, cited not restated.** `module-3-build-plan.md` (Phase 1 *Builds* / *Locked here* /
 *Exit criteria*; the *Locked decisions* section), `phase-0-fork-and-baseline.md` (§2 rename table, §
-open-decisions register M3-P0-OD-1…11), module 2 `Docs/history/phase-1-data-model.md` (the inherited
+open-decisions register M3-P0-OD-1…11), module 2 `Docs/history/module-2/phase-1-data-model.md` (the inherited
 schema), module 2 `db/migrations/sender_0000`–`sender_0024`, module 2 ADR-0008 / ADR-0010 / ADR-0012,
 module 2 `CLAUDE.md` Rules 1/2/3/5/9/10.
 

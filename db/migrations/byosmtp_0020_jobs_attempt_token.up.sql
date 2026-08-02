@@ -71,7 +71,7 @@ COMMENT ON COLUMN byosmtp.jobs.attempt_token IS
 -- pre-9.5 phase that already touches the push_job wire contract and owns migration 0020"). Rather
 -- than open a second `sender_0020` (impossible — versions are unique) or renumber a committed,
 -- self-tracking migration (forbidden — migrations are immutable once applied/committed, and
--- Docs/history/phase-9-polish-and-documentation.md §6.7/§6.8 + config-reference.md already cite
+-- Docs/history/module-2/phase-9-polish-and-documentation.md §6.7/§6.8 + config-reference.md already cite
 -- `sender_0020` as Phase 8's ONE migration), these fourteen INSERTs are appended to THIS SAME
 -- file. The chain stays contiguous (...0019 -> 0020 -> 0021 for Phase 9.5) and every doc that
 -- already says "Phase 8 = sender_0020" remains true.

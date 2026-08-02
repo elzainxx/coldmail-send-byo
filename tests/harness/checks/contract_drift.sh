@@ -56,6 +56,9 @@ if [[ "$adm_probe" == "401" ]]; then
     ["GET /v1/admin/health"]=1
     ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/suspend"]=1
     ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/unsuspend"]=1
+    ["GET /v1/admin/users/00000000-0000-0000-0000-000000000000/config"]=1
+    ["PUT /v1/admin/users/00000000-0000-0000-0000-000000000000/config"]=1
+    ["DELETE /v1/admin/users/00000000-0000-0000-0000-000000000000/config/concurrency_per_user"]=1
   )
   for spec in "${!ADMIN_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -65,7 +68,7 @@ if [[ "$adm_probe" == "401" ]]; then
   # An UNDOCUMENTED admin path must NOT be gated as a real route — it should 404 (no handler).
   und_adm="$(adm GET /v1/admin/secret-undocumented)"
   [[ "$und_adm" == "404" ]] || { echo "contract_drift FAIL: undocumented admin path returned $und_adm, want 404 — surface wider than the contract"; fail=1; }
-  echo "contract_drift: Phase 2+9.5+Phase5 admin surface mounted — 18 routes gated (401), undocumented 404."
+  echo "contract_drift: Phase 2+9.5+Phase5+Phase6 admin surface mounted — 21 routes gated (401), undocumented 404."
 else
   echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
 fi
@@ -95,6 +98,7 @@ if [[ "$pf_probe" == "401" ]]; then
     ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/test-send"]=1
     ["POST /v1/byosmtp/accounts/bulk"]=1
     ["DELETE /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/byosmtp/settings"]=1 ["PUT /v1/byosmtp/settings"]=1
   )
   for spec in "${!PLATFORM_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -105,7 +109,7 @@ if [[ "$pf_probe" == "401" ]]; then
   # here at all, so an unauthenticated probe 404s (no handler), never 401 (gated-but-present).
   und_pf="$(pf POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
   [[ "$und_pf" == "404" ]] || { echo "contract_drift FAIL: .../quarantine on the platform surface returned $und_pf, want 404 — this route must not exist on Domain A"; fail=1; }
-  echo "contract_drift: Phase 3 platform surface mounted — 17 routes gated (401), quarantine correctly absent (404)."
+  echo "contract_drift: Phase 3+Phase6 platform surface mounted — 19 routes gated (401), quarantine correctly absent (404)."
 else
   echo "contract_drift: platform surface not mounted (POST /v1/run -> $pf_probe); skipping Phase 3 route checks (set PLATFORM_TOKEN_HASHES to enable)."
 fi
@@ -120,13 +124,14 @@ for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
          "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
          "/v1/admin/users/{id}/suspend" "/v1/admin/users/{id}/unsuspend" \
+         "/v1/admin/users/{id}/config" \
          "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
          "/v1/byosmtp/accounts" "/v1/byosmtp/accounts/{id}" \
          "/v1/byosmtp/accounts/{id}/events" "/v1/byosmtp/accounts/{id}/disable" \
          "/v1/byosmtp/accounts/{id}/pause" "/v1/byosmtp/accounts/{id}/unpause" \
          "/v1/byosmtp/accounts/{id}/unquarantine" \
          "/v1/byosmtp/accounts/{id}/test" "/v1/byosmtp/accounts/{id}/test-send" \
-         "/v1/byosmtp/accounts/bulk"; do
+         "/v1/byosmtp/accounts/bulk" "/v1/byosmtp/settings"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 

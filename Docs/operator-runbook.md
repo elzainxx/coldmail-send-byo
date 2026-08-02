@@ -204,7 +204,7 @@ Read the right-hand column. It splits into two fundamentally different situation
 > So on a `paused: daily_limit` row there is no same-day admin action that re-opens it: the daily
 > reset is the only thing that clears it (`daily_reset_day < today` → `paused=false,
 > pause_reason=NULL`, lazily on the next claim). This is deliberate, not a gap — locked in Phase 1
-> (`Docs/history/phase-1-data-model.md`, decisions #17 and #19: "lowering can make an account
+> (`Docs/history/module-2/phase-1-data-model.md`, decisions #17 and #19: "lowering can make an account
 > immediately ineligible until reset — expected admin behavior"), and the `/unpause` refusal is the
 > Phase 2 §837 `not_manual_pause` rule. **If you need that capacity back before the reset, add an
 > account — do not go hand-editing `paused` in the database.**

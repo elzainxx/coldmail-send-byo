@@ -156,7 +156,7 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 Every item in the ledger across phases 0–10 (including 9.5) is ruled and closed **except one**, which
 is left open because it is the user's call and not a build decision:
 
-- **R2-5** — `Docs/history/phase-9-polish-and-documentation.md` §5.3's quick-reference table shows
+- **R2-5** — `Docs/history/module-2/phase-9-polish-and-documentation.md` §5.3's quick-reference table shows
   `run`'s request body as `{job_item_id}`, omitting the required `user_id`. It is a **stale example in
   a locked spec**. CLAUDE.md forbids editing a locked phase spec as part of build work, and the
   authoritative living contract ([`api-contract.md`](./api-contract.md) — the document

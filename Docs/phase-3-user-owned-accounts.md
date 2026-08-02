@@ -14,7 +14,7 @@ Two things are inherited and are **not** redesigned here. They are cited, not re
 - **Credential intake** — AES-256-GCM, AAD-bound to `account.id ‖ credential_key_id`, app-side UUID
   so the AAD exists before encryption, write-only `smtp_secret`, `has_credential` as the only read
   signal, Encrypt-only IAM on the admin service, plaintext zeroed after Encrypt.
-  Module 2 `Docs/history/phase-2-account-management.md` §2.6, implemented at
+  Module 2 `Docs/history/module-2/phase-2-account-management.md` §2.6, implemented at
   `adminapi/account_create.go:121` and `account_update.go:215`.
 - **The structural omit-means-unchanged rule**, the two-vocabulary error envelope, the account
   lifecycle transitions, and `account_events` auditing. Module 2 §1.2, §2.4, §7.
@@ -840,7 +840,7 @@ dependency, traced end to end:
 - Effect from module 2's Phase 1 through Phase 10: `DELETE /v1/admin/accounts/{id}` returned **500**
   for any account that had ever been assigned a job, and `204` only for accounts with no
   `job_events` rows (SET NULL matches nothing → no UPDATE → no trigger).
-- ADR-0012 (`Docs/history/decisions/0012-…`), ruled option **(A)** on 2026-07-29 and shipped as
+- ADR-0012 (`Docs/history/module-2/decisions/0012-…`), ruled option **(A)** on 2026-07-29 and shipped as
   `sender_0024` (module 2 commit `21b65e6`): a `CREATE OR REPLACE` of the same function with a
   **per-FK-column carve-out** — each of `account_id` and `box_id` may go non-NULL → NULL, at least
   one must actually change, and **every content column must be byte-identical**; otherwise the
