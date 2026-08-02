@@ -238,3 +238,37 @@ This entry is the module-3-side record of what happened to four of its rows once
 | **Dedicated → dedicated fallback** (`:54`) | **Retired.** No fallback ladder exists to extend — `dispatch/pool.go`'s dedicated→shared chain-walk (the whole concept) was deleted at G1. |
 | **Per-pool variation scope** (`:57`) | **Re-scoped to per-user variation scope.** `byosmtp.user_settings` (Phase 1 §4.1, landing at G3) now gives per-user scoping a place to live — a resolution order (user overrides global overrides default) is the open design question this item always named, unchanged by the re-scope. |
 | **A one-call tenant-erasure path** (`:73` in §2's own numbering — actually the ADR-0012 audit-asymmetry entry, not literally under §2, but disposed of by the same drop) | **NOT resolved as a side effect**, contrary to what dropping `pools` alone would have done. **M3-P1-OD-12 ruled the guard restored deliberately**: `0027` (this phase's own migration) changes `accounts_user_fk` from the inherited `CASCADE` to `RESTRICT`, so `DELETE FROM public.users` while any account remains is still refused — by design, not by an accidentally-load-bearing pool FK. The three-step accounts→pools→user erasure sequence does not collapse to one step. The audit-asymmetry warning (deleting an **account** keeps `job_events` rows FK-nulled; deleting the **user** would remove them outright, `job_events_user_fk` being `CASCADE`) stays live precisely because the RESTRICT keeps that path refused. |
+
+### FW-M3-3 — `pacer.slots` and `dispatch.rrCursor` are unbounded per-user in-memory maps
+
+**Registered:** 2026-08-02, by M3-P6-OD-1's ruling (`Docs/phase-6-per-user-config-and-routing.md`
+§3.4, §5.4). Found missing from this file on 2026-08-02 by Phase 6's mechanical landing check — the
+ruling's own text names `future-work.md` as this entry's home, and it was never actually written
+here.
+
+**What it is.** `internal/dispatch/pacing.go`'s `pacer.slots` (the per-user cooldown-timer register)
+and `internal/dispatch/eligibility.go`'s `Dispatcher.rrCursor` (the per-user round-robin cursor) are
+both `map[string]...` keyed by user id, with no eviction. Every distinct user id that ever gets
+admitted to a dispatch tick (`pacer.slots`) or ever uses `round_robin` (`rrCursor`) leaves a small,
+permanent entry — the process never frees either map's entries for a user who stops sending or is
+deleted. `Dispatcher.fairCursor` (a single scalar, not a map) is NOT in scope — confirmed by
+Phase 6 §3.5's own complete sweep of in-memory dispatch state, which found exactly these two maps
+and nothing else.
+
+**Why it is not a Phase 6 blocker.** Module 2's own tenancy model never exercised this in practice —
+one operator, a handful of pools, a key space that never grew unboundedly. Phase 6 is the phase that
+makes these maps genuinely **per-tenant** for the first time (one entry per distinct user, not per
+pool), which is why it surfaces here rather than earlier — but the growth rate is bounded by "one
+small entry per user who has ever sent," which for any realistic tenant count is a slow leak
+measured in KB per thousand users, not a correctness bug or an operational emergency.
+
+**What eviction would need.** A user who is deleted (Phase 3's soft-delete + purge) or who simply
+stops being active is the natural eviction trigger — either a periodic sweep keyed off
+`byosmtp.accounts`/`public.users` liveness, or a bounded LRU on both maps sized to a config-not-code
+dial. Either design needs its own decision about acceptable staleness (an evicted-then-returning
+user's cooldown/cursor state resets to empty, which is observably different from "never evicted" —
+whether that's acceptable is a product question, not an engineering one).
+
+**Trigger to revisit.** Sustained production tenant counts high enough that the two maps' aggregate
+memory becomes measurable against the Brain's own footprint, or a tenant-churn pattern (many
+short-lived users) that makes the "slow" in "slow leak" no longer true.

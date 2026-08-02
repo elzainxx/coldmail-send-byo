@@ -592,6 +592,18 @@ empty; `go vet` clean in all four modules; `go mod tidy` produces no diff; `npm 
 inapplicable while the box ships `dependencies: {}` (**verify that is still true** — Phase 3 through
 Phase 7 all touch the box, and a single added dependency changes this from "inapplicable" to "unaudited").
 
+**`x/net/publicsuffix` re-vendor check (M3-P4-OD-7, ruled 2026-07-31).** Phase 4's From-gate uses
+`golang.org/x/net/publicsuffix` for eTLD+1 extraction; that package bundles a Public Suffix List
+snapshot updated only by module version bump, not fetched live — a documented staleness risk
+(`Docs/phase-4-from-gate.md` §1.3, §10). The ruling's own text requires this hygiene sweep to check
+whether a newer `x/net` release with a fresher PSL snapshot is available: run `go list -m -u
+golang.org/x/net` from `services/brain/`, and if a newer minor/patch version exists, bump it (a pure
+dependency-version change, not a behavior change) and re-run the From-gate's own test suite to
+confirm nothing regresses against the newer snapshot. If no newer version exists, record that the
+check ran and found nothing to bump — a check that never leaves a trace of having run is
+indistinguishable from a check that never ran (this repo's own Rule-11 lesson, applied to a
+dependency-freshness check rather than a code ruling).
+
 ---
 
 ## 6. THE INTERFACE INVENTORY

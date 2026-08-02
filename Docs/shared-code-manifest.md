@@ -87,7 +87,7 @@ marking rather than rewriting when it is found.
 
 ## Seeded findings — the module 2 bug log, carried from Phase 8 §7.4
 
-Five entries, each found by a specific phase's planning work rather than by auditing module 2 for
+Seven entries, each found by a specific phase's planning work rather than by auditing module 2 for
 its own sake. This is a record for the all-modules polish pass, not a work queue — module 2 is
 sealed and these are not module 3's bugs to fix in module 2's tree. Module 3's own disposition
 (fixed / deliberately not back-ported / still latent) is stated per entry so a future reader does
@@ -98,14 +98,22 @@ not have to re-derive it.
    no assertion checks. Found by Phase 2 §1.3 (M3-P2-OD-2, ruled 2026-07-30). Module 3's Phase 2
    (G1) removes the 5 pool routes and corrects the printed literal to **16** in that same commit,
    along with `api-contract.md`. **Present, unfixed in module 2.**
-2. **`pacer.normalize`'s shrink comment is aspirational, not descriptive.** It states "drop the
+2. **`README.md`'s "Five blocking CI gates" is stale; CI has run six since `drain_grace` landed.**
+   `README.md:88` and its table both list five gates; module 2's own Stage 1 note corrected
+   `architecture-overview.md` to six but never touched the README. Found during Phase 0's own Gate
+   B execution (M3-P0-OD-10, ruled 2026-07-31) — the second discovery, after entry 1's
+   `contract_drift.sh` off-by-one (M3-P2-OD-2, ruled 2026-07-30, the earlier claim, per Phase 8
+   §7.4's discovery-date ordering). **Fixed in module 3** as a one-line Gate-B exception to
+   "identity changes only" (a factual correction, not a rename) — module 3's `README.md` states
+   "Six blocking CI gates" with a `drain_grace` row in the table. **Present, unfixed in module 2.**
+3. **`pacer.normalize`'s shrink comment is aspirational, not descriptive.** It states "drop the
    most-ready lanes, keep the ones still owing cooldown," but the code does a positional
    `slots[len-ceiling:]` front-drop, which can forgive cooldown a lane still owes. Found by Phase 6
    §3.3 (M3-P6-OD-1, ruled 2026-07-30), because Phase 6 puts ceiling *shrink* on a normal
    admin-support path for the first time. Module 3 fixes this **as a bug fix, not a behavior
    change** — the ADR records why — selecting by value rather than slice position, tested by T7(d)
    with the front-drop as its own negative control. **Present, unfixed in module 2.**
-3. **The credential scrub is complete only for AUTH LOGIN.** AUTH PLAIN's base64 blob defeats it:
+4. **The credential scrub is complete only for AUTH LOGIN.** AUTH PLAIN's base64 blob defeats it:
    verified by execution, the password's known bytes are absent from the AUTH PLAIN wire form at
    the offset the LOGIN-shaped search expects, because base64's 3-byte grouping means the
    password's bytes never start at a multiple of 3 once prefixed by `\0username\0`. Found by Phase
@@ -116,24 +124,24 @@ not have to re-derive it.
    **deliberately not done** — it would widen module 2's scrub for a mechanism module 2 never
    speaks, maintaining a code path that closes no threat there. Trigger to revisit: module 2
    gaining user-supplied SMTP hosts.
-4. **`SMTPError`'s eleven safe `console.*` sites depend on constructor argument order.**
+5. **`SMTPError`'s eleven safe `console.*` sites depend on constructor argument order.**
    `super(reason)` makes `e.message` the internal slug, with the provider response on a separate
    `.smtpResponse` field; a transposed constructor call is syntactically valid, passes every
    existing test, and would break all eleven log sites **silently**. Found by Phase 7 §10 T8.
    **Present, untested in module 2** — nothing there would catch a future transposition. Module 3
    pins it with an explicit assertion (construct with a known credential; assert `e.message` equals
    the reason and contains none of it) plus a transposition as its own negative control.
-5. **The box-side scrub is correct only by statement ordering nothing enforces.** In `stream.js`'s
+6. **The box-side scrub is correct only by statement ordering nothing enforces.** In `stream.js`'s
    `finally`, the report is assembled before `credential.zero()` runs, and `scrubSecret` returns
    text **unchanged** on an already-zeroed buffer — so a scrub moved to after the zero would return
    raw provider text and still report success. Found by Phase 7 §9.1 (M3-P7-OD-8, ruled
    2026-07-31). **Present, unfixed, and silent in module 2 today** — this is the strongest
-   back-port candidate in the log, unlike entry 3: it is not closed by module 2's own threat model,
+   back-port candidate in the log, unlike entry 4: it is not closed by module 2's own threat model,
    it is a live risk that a future edit reordering two statements would trip with nothing to catch
    it. Module 3 fixes it two ways (assert the ordering; `scrubSecret` throws on a zeroed buffer) —
    a **behavior change**, not a bug fix, hence its own divergence row above rather than a "rename
    only" entry.
-6. **Neither CI workflow builds the migration runner binary its own harness depends on.**
+7. **Neither CI workflow builds the migration runner binary its own harness depends on.**
    `tests/harness/run.sh` calls a host-built `tools/*-migrate/bin/*-migrate` binary three times to
    build migrated template databases gating 141 tests across four Go packages
    (`TEST_TEMPLATE_DB`); `.github/workflows/real-infra.yml` runs `gofmt`/`go vet` then

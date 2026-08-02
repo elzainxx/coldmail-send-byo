@@ -164,6 +164,46 @@ clean-slate, and that is Phase 0's own exit criterion. `run.sh` and the CI workf
 before Phase 0 closed. This section is left as the historical record of Gate A's own evidence and is
 not rewritten; see M3-P0-OD-12 for the fix and its own from-a-deleted-binary verification.
 
+## Gate B evidence — observed, not predicted (added 2026-08-02, landing-check backfill)
+
+**This section was missing from the original Gate B commit** (`f7be832`, "Gate B: rename module
+identity sender -> byosmtp, nothing else") — the rename genuinely happened and was genuinely
+verified against real infra, but the evidence lived only in that commit's own message, never
+transcribed here where §7's exit criteria expect it. Found by Phase 6's now-permanent mechanical
+landing check (M3-P0-OD-1): §7's Gate B checkboxes were still all unchecked despite the work being
+done. Backfilled from `f7be832`'s commit message, which is the authoritative record — nothing new
+was run to produce this section; it restates what that commit already proved.
+
+- `git diff <module3-fork-point tag>..f7be832` — identity literals only (schema/role/table names,
+  Go module paths + import statements, npm package name, binary/dir rename, CODEOWNERS handles,
+  advisory-lock band, host ports, dev CA CN, systemd unit names, the `"module"` wire-identity
+  string). Verified by **reading** the diff, not just the file list — no behavior change present.
+- Residual-literal sweep: `sender` schema renamed across ~1,105 non-`Docs/` occurrences in ~169
+  files; migration FILENAMES deliberately kept the `sender_NNNN` prefix (M3-P0-OD-4's deferral to
+  Phase 1) — only file contents were renamed.
+- Full harness (`bash scripts/dev.sh test`) — **58 passed, 0 failed, zero SKIP** — run **twice**:
+  once on first bring-up after the rename, once again after a genuine `down -v` clean-slate reset.
+  Both runs green.
+- All **six** CI gates green, both times (first bring-up and after the clean-slate reset):
+  `config_drift`, `contract_drift`, `migration_lint`, `config_consumption`, `drain_grace`,
+  `no_secret_leak`.
+- Clean-slate reset: migration status **25 applied, 0 pending** against the reset stack; both boxes
+  `active` with zero registration eviction churn.
+- `gofmt -l` empty across all four Go modules (after `gofmt -w` fixed alignment drift the longer
+  `byosmtp` identifier introduced); `go vet ./...` clean in all four. Box Node suite **78/78**.
+- `docker compose config` (base + harness override) resolves with no warnings.
+- Three real gaps the mechanical rename pass missed on its first attempt, caught only by actually
+  bringing the stack up rather than trusting a clean diff: (1) two `CREATE`/`DROP SCHEMA`
+  statements whose `sender` token had a `NOT EXISTS`/`IF EXISTS` clause between the keyword and the
+  name, breaking migration `0000`'s naive regex and failing bring-up outright; (2)
+  `migration_lint.sh` still grepped migration file CONTENT for the pre-rename tracking-table name;
+  (3) three SQL/test-helper-argument sites in `tools/byosmtp-migrate`'s own integration tests that
+  would have silently queried a schema that no longer existed. All three fixed in the same commit.
+
+**§7's Gate A and Gate B checkboxes are checked off below against this evidence and Gate A's own
+section above** — neither list was ever literally ticked in `phase-0-fork-and-baseline.md` despite
+every item being satisfied; see that document's own updated §7 for the tick-off.
+
 ## Known limits of this evidence
 
 Module 2 has **never sent through a real provider** — this baseline is Mailpit-green only. Every

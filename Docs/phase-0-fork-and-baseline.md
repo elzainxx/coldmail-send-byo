@@ -573,33 +573,50 @@ recorded at the fork point**, not predicted — module 2's last recorded whole-h
 whatever Gate A produces. Recording it is the point; asserting it in advance would be inventing
 evidence.
 
+> **Tick-off backfilled 2026-08-02** by Phase 6's now-permanent mechanical landing check
+> (M3-P0-OD-1): every item below was genuinely satisfied at the time (Gate A's evidence is
+> `Docs/fork-point.md`'s own section above the "Gate B evidence" heading; Gate B's evidence is
+> that same document's "Gate B evidence" section, backfilled the same day from commit `f7be832`'s
+> message), but the checkboxes themselves were never literally ticked — a real gap the ledger's
+> own "RULED-ACCEPTED" status word did not reveal until something actually re-checked the boxes
+> against the tree, per CLAUDE.md Rule 11.
+
 ### Gate A — inheritance (byte-identical tree, zero edits)
 
-- [ ] `git status --porcelain` empty; `git rev-parse HEAD` equals the recorded fork-point SHA
-- [ ] `bash scripts/dev.sh certs` mints CA + leaves + dev KMS key + box tokens + admin/platform keys and writes `.env` — no external secret needed
-- [ ] `bash scripts/dev.sh up` brings up `postgres → migrate → brain → box → smtp-sink`, all healthchecks satisfied (`up -d --wait` returns 0)
-- [ ] `bash scripts/dev.sh test` — **all 10 suites green, zero failures, zero skips.** Skips confirmed **by reading the log**, not by an absent-`SKIP` grep (module 2's Stage 1 recorded exactly this trap: the only `SKIP` string was a test *name*)
-- [ ] All **six** gates green, run individually: `config_drift`, `contract_drift`, `migration_lint`, `config_consumption`, `drain_grace`, `no_secret_leak`
-- [ ] `gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness` empty; `go vet ./...` clean in all four modules
-- [ ] Box Node suite green (`node --test "test/*.test.mjs"`)
-- [ ] **Clean-slate reset from an empty volume:** `bash scripts/dev.sh reset` (down `-v` → postgres → `migrate` → seed → full stack) completes, then `byosmtp-migrate status` reports **25 applied, 0 pending** (`0000`–`0024`) and the full harness is re-run green *from that clean slate* — not from a warm stack
-- [ ] Both boxes `active` after reset, each registered exactly **once** (`--profile multibox`), zero eviction churn
-- [ ] `docker compose config` resolves with no warnings on the base + `tests/harness/compose.test.yml` override
-- [ ] Gate A results written into `Docs/fork-point.md` **with the observed numbers**, and committed
+- [x] `git status --porcelain` empty; `git rev-parse HEAD` equals the recorded fork-point SHA — `Docs/fork-point.md` §"Tree identity"
+- [x] `bash scripts/dev.sh certs` mints CA + leaves + dev KMS key + box tokens + admin/platform keys and writes `.env` — no external secret needed — `Docs/fork-point.md` §"Stack + harness"
+- [x] `bash scripts/dev.sh up` brings up `postgres → migrate → brain → box → smtp-sink`, all healthchecks satisfied (`up -d --wait` returns 0) — `Docs/fork-point.md` §"Stack + harness"
+- [x] `bash scripts/dev.sh test` — **all 10 suites green, zero failures, zero skips.** Skips confirmed **by reading the log**, not by an absent-`SKIP` grep (module 2's Stage 1 recorded exactly this trap: the only `SKIP` string was a test *name*) — `Docs/fork-point.md`: **58 passed, 0 failed**, zero SKIP confirmed by reading
+- [x] All **six** gates green, run individually: `config_drift`, `contract_drift`, `migration_lint`, `config_consumption`, `drain_grace`, `no_secret_leak` — `Docs/fork-point.md` §"Stack + harness"
+- [x] `gofmt -l services/brain tools/sender-migrate tools/provision-box tests/harness` empty; `go vet ./...` clean in all four modules — `Docs/fork-point.md` §"Stack + harness"
+- [x] Box Node suite green (`node --test "test/*.test.mjs"`) — `Docs/fork-point.md`: **78 passed, 0 failed, 0 skipped**
+- [x] **Clean-slate reset from an empty volume:** `bash scripts/dev.sh reset` (down `-v` → postgres → `migrate` → seed → full stack) completes, then `byosmtp-migrate status` reports **25 applied, 0 pending** (`0000`–`0024`) and the full harness is re-run green *from that clean slate* — not from a warm stack — `Docs/fork-point.md` §"Clean-slate reset"
+- [x] Both boxes `active` after reset, each registered exactly **once** (`--profile multibox`), zero eviction churn — `Docs/fork-point.md` §"Clean-slate reset"
+- [x] `docker compose config` resolves with no warnings on the base + `tests/harness/compose.test.yml` override — `Docs/fork-point.md` §"Stack + harness"
+- [x] Gate A results written into `Docs/fork-point.md` **with the observed numbers**, and committed
 
 ### Gate B — identity (rename applied, nothing else)
 
-- [ ] Every §2.1–§2.3 row applied; `git diff <fork-point>..HEAD` contains **only** identity changes — no behaviour change is present in the diff, verified by reading it
-- [ ] Residual-literal sweep clean: no `sender-module`, `sender_owner`, `sender_module`, `github.com/sender-module`, `@sender-module`, `sender-dev-ca`, or `sender_migtest`/`sender_template` outside `Docs/history/` (module-2 provenance, deliberately left as-written) and outside migration filenames (**M3-P0-OD-4**)
-- [ ] Schema sweep: 1,097 `byosmtp.<object>` references resolve; zero references to schema `sender`
-- [ ] Every Gate A checkbox re-run and green on the renamed tree, **including the clean-slate reset** — a rename that breaks migration application must be caught here, not at Phase 1
-- [ ] `Docs/advisory-locks.md` rewritten to module 3's band; no module-2 key literal remains in code or docs
-- [ ] `CLAUDE.md` adapted per §4: rules 1–4, 6–11 and the DoD verbatim; title, status block, design line, inherited-unchanged list, deleted list, and standing invariants updated; Rule 5's enum sentence left verbatim with **M3-P0-OD-7** flagged
-- [ ] `Docs/fork-point.md` and `Docs/shared-code-manifest.md` committed
-- [ ] Module 3's Open Decisions ledger exists and contains this register
-- [ ] §6's not-touched list verified against the diff: zero migrations added, zero config keys seeded, zero routes added, zero tests rewritten
-- [ ] Module 2 tagged `module3-fork-point`; the tag resolves to the recorded SHA
-- [ ] **DoD tick-off recorded** for Phase 0 against all nine items, with explicit "not applicable, because…" wherever there is nothing to bind to — a ✅ meaning "N/A" is only honest if it says which (module 2's DoD preamble). Phase 0 seeds no config key (DoD-4), adds no tuning constant (DoD-5), and adds no lock (DoD-2's race-test clause).
+- [x] Every §2.1–§2.3 row applied; `git diff <fork-point>..HEAD` contains **only** identity changes — no behaviour change is present in the diff, verified by reading it — commit `f7be832`; `Docs/fork-point.md` §"Gate B evidence"
+- [x] Residual-literal sweep clean: no `sender-module`, `sender_owner`, `sender_module`, `github.com/sender-module`, `@sender-module`, `sender-dev-ca`, or `sender_migtest`/`sender_template` outside `Docs/history/` (module-2 provenance, deliberately left as-written) and outside migration filenames (**M3-P0-OD-4**) — commit `f7be832`'s "Do-not-rename list verified untouched" section
+- [x] Schema sweep: 1,097 `byosmtp.<object>` references resolve; zero references to schema `sender` — commit `f7be832`: ~1,105 non-`Docs/` occurrences renamed across ~169 files (the ~1,097 estimate undercounted)
+- [x] Every Gate A checkbox re-run and green on the renamed tree, **including the clean-slate reset** — a rename that breaks migration application must be caught here, not at Phase 1 — `Docs/fork-point.md` §"Gate B evidence": harness 58/58 twice, six gates green both times, migration status 25/0 pending
+- [x] `Docs/advisory-locks.md` rewritten to module 3's band; no module-2 key literal remains in code or docs — commit `f7be832`'s advisory-lock band section (`8_1/2/3_000_000_00x`)
+- [x] `CLAUDE.md` adapted per §4: rules 1–4, 6–11 and the DoD verbatim; title, status block, design line, inherited-unchanged list, deleted list, and standing invariants updated; Rule 5's enum sentence left verbatim with **M3-P0-OD-7** flagged — verified in tree
+- [x] `Docs/fork-point.md` and `Docs/shared-code-manifest.md` committed — both present in tree, both tracked
+- [x] Module 3's Open Decisions ledger exists and contains this register — `Docs/open-decisions.md`
+- [x] §6's not-touched list verified against the diff: zero migrations added, zero config keys seeded, zero routes added, zero tests rewritten — commit `f7be832`'s diff is identity-literals-only, confirmed by reading
+- [x] Module 2 tagged `module3-fork-point`; the tag resolves to the recorded SHA — `Docs/fork-point.md` §"The fork-point commit"
+- [x] **DoD tick-off recorded** for Phase 0 against all nine items, with explicit "not applicable, because…" wherever there is nothing to bind to — a ✅ meaning "N/A" is only honest if it says which (module 2's DoD preamble). Phase 0 seeds no config key (DoD-4), adds no tuning constant (DoD-5), and adds no lock (DoD-2's race-test clause). Full tick-off:
+  - DoD-1 (spec written): ✅ this document.
+  - DoD-2 (real behavioral tests green on real infra): ✅ Gate A's + Gate B's harness/gate runs above; N/A for the race-test clause specifically — Phase 0 adds no account/job lock.
+  - DoD-3 (docs updated in the same change): ✅ this document, `Docs/fork-point.md`, `Docs/shared-code-manifest.md`, `CLAUDE.md`, `Docs/advisory-locks.md`, `Docs/open-decisions.md`.
+  - DoD-4 (config keys seeded + documented): N/A — Phase 0 seeds no config key (§6's not-touched list).
+  - DoD-5 (no hardcoded tuning constants): N/A — Phase 0 adds no tuning constant.
+  - DoD-6 (Open Decisions discharged or ruled): ✅ this register, all items ruled or explicitly deferred.
+  - DoD-7 (additive-only + migration chain intact): ✅ migration filenames untouched (M3-P0-OD-4's deferral); chain applies 25/0 pending both before and after the rename.
+  - DoD-8 (security properties re-verified): ✅ Gate A's + Gate B's full harness runs include the mTLS/KMS/credential-boundary suites unchanged.
+  - DoD-9 (control-plane safety controls honored): N/A — Phase 0 adds no autonomous subsystem; the singleton-lock/kill-switch dials are inherited unchanged and covered by the harness runs above.
 
 ---
 
