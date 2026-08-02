@@ -304,7 +304,7 @@ approval changed none of it.
 
 | ID | Question | **RULED-ACCEPTED** |
 |---|---|---|
-| M3-P5-OD-3 | `doTransition`'s precondition reads unlocked, so two concurrent admin calls both write | Fix in Phase 5, own commit, own two-connection test: add `FOR UPDATE` to `readFlags`. Lock order unaffected (no job row written, so Rule 9 does not apply) |
+| M3-P5-OD-3 | `doTransition`'s precondition reads unlocked, so two concurrent admin calls both write | Fix in Phase 5, own commit, own two-connection test: add `FOR UPDATE` to `readFlags`. Lock order unaffected (no job row written, so Rule 9 does not apply). **FIXED 2026-08-02**: `readFlags` (account_store.go) now takes `FOR UPDATE`; `TestDoTransition_T15_ConcurrentQuarantineCallsYieldExactlyOneSuccess` (account_lifecycle_race_test.go) proves it with a forced two-connection interleave. Found not-yet-implemented by the Phase 5 closeout's scoped concurrency review (agent review, task #103) despite this ledger reading RULED-ACCEPTED — fixed in the same pass, per Rule 11 |
 | M3-P5-OD-4 | Ten keys where the brief named eight | Adopt both extras (`unquarantine_evidence_ttl_sec`, `campaign_expiry_sweep_interval_ms`). Each has a live consumer at its seeding commit |
 | M3-P5-OD-5 | A fifth single-Brain housekeeping loop | Adopt, sharing the DB-outage gate and drain flag, with a test asserting it pauses under a simulated outage. Rule 7 forbids a second *dispatch* path; this is not one |
 

@@ -177,10 +177,22 @@ type accountFlags struct {
 
 // readFlags loads the current status flags of an account (for lifecycle preconditions + audit
 // snapshots). Uses the given pgxDB (pool or tx). errAccountNotFound if absent.
+//
+// FOR UPDATE is LOAD-BEARING (M3-P5-OD-3, RULED): doTransition (account_lifecycle.go) is the ONE
+// caller, and it evaluates spec.precondition against this read, then writes a CONSTANT LITERAL
+// setClause (e.g. "quarantined = TRUE") — not a SQL expression derived from the row. Without a
+// lock, two concurrent admin calls to the same transition (or two DIFFERENT transitions on the same
+// account, e.g. quarantine racing unquarantine) can both read the same pre-race snapshot, both pass
+// the precondition, and both write — one silently overwriting the other's flags and producing a
+// duplicate/incorrect account_events row where the loser should have gotten a 422 refusal. FOR
+// UPDATE serializes concurrent doTransition calls on the account row: the second read blocks until
+// the first commits, then re-reads the fresh post-commit flags, so the precondition can never
+// re-evaluate against stale state. No job row is written here, so Rule 9's account→job ordering
+// does not apply (nothing to order against).
 func readFlags(ctx context.Context, db pgxDB, id string) (accountFlags, error) {
 	var f accountFlags
 	err := db.QueryRow(ctx,
-		"SELECT paused, pause_reason, quarantined, disabled FROM byosmtp.accounts WHERE id=$1", id).
+		"SELECT paused, pause_reason, quarantined, disabled FROM byosmtp.accounts WHERE id=$1 FOR UPDATE", id).
 		Scan(&f.Paused, &f.PauseReason, &f.Quarantined, &f.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return f, errAccountNotFound
