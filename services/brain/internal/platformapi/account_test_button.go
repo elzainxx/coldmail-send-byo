@@ -86,6 +86,25 @@ func (s *Server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// M3-P3-OD-6 (landed Phase 6): the AGGREGATE companion to the per-account limit above — a
+	// per-account cap alone does not bound a tenant clicking each of 200 accounts once. Checked
+	// SEPARATELY (not folded into the per-account query) so the external code and refusal shape
+	// stay identical regardless of WHICH ceiling was hit; whichever limit is reached first refuses.
+	userLimit, err := s.readTestButtonRateLimitPerUser(ctx)
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "rate_limit_lookup_error: "+err.Error()))
+		return
+	}
+	userCount, err := s.verifyAttemptCountTodayForUser(ctx, userID)
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "rate_limit_count_error: "+err.Error()))
+		return
+	}
+	if userCount >= userLimit {
+		s.fail(w, r, newErr(codeRateLimited, "test_button_rate_limited"))
+		return
+	}
+
 	// The From-gate re-check — NOT subject to the rate limit above (§2.4's precedent). Runs on
 	// r.Context() (unbounded), not dbCtx's 10s window — see platformapi's createAccountRow for why
 	// (from_dns_total_budget_ms defaults to 15s). M3-P4-OD-17: always persisted, an unacknowledged
@@ -206,5 +225,32 @@ func (s *Server) verifyAttemptCountToday(ctx context.Context, accountID string) 
 		`SELECT count(*) FROM byosmtp.account_events
 		  WHERE account_id = $1 AND action = 'verified' AND created_at >= NOW() - INTERVAL '24 hours'`,
 		accountID).Scan(&n)
+	return n, err
+}
+
+// readTestButtonRateLimitPerUser reads test_button_rate_limit_per_user_per_day fresh from
+// byosmtp.config (M3-P3-OD-6's aggregate companion, byosmtp_0045).
+func (s *Server) readTestButtonRateLimitPerUser(ctx context.Context) (int, error) {
+	n, ok, err := s.readConfigInt(ctx, "test_button_rate_limit_per_user_per_day")
+	if err != nil || !ok {
+		return defaultTestButtonRateLimitPerUser, nil
+	}
+	return n, nil
+}
+
+// defaultTestButtonRateLimitPerUser mirrors migration 0045's seeded default_value (used ONLY as
+// the unreadable-config fallback).
+const defaultTestButtonRateLimitPerUser = 20
+
+// verifyAttemptCountTodayForUser counts ALL 'verified' account_events rows ACROSS EVERY account
+// owned by userID in the trailing 24h — the aggregate form of verifyAttemptCountToday (M3-P3-OD-6).
+// account_events.user_id is its own stamped column (Phase 2 §3.1, sender_0014), served by the
+// existing account_events_user_id_created_at_idx — no join to byosmtp.accounts needed.
+func (s *Server) verifyAttemptCountTodayForUser(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx,
+		`SELECT count(*) FROM byosmtp.account_events
+		  WHERE user_id = $1 AND action = 'verified' AND created_at >= NOW() - INTERVAL '24 hours'`,
+		userID).Scan(&n)
 	return n, err
 }

@@ -122,3 +122,4 @@ max_campaign_size
 max_queued_jobs
 campaign_expiry_sec
 campaign_expiry_sweep_interval_ms
+test_button_rate_limit_per_user_per_day

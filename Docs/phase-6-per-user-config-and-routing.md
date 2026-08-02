@@ -779,12 +779,16 @@ Small, and it is worth naming what makes it small: the tables already exist (§0
 |---|---|---|
 | `0045` | Whatever M3-P6-OD-2 requires — expected to be **nothing structural**. **M3-P6-OD-1 no longer contributes:** its ruling (§3.3) selects among lanes already in the in-memory register, so it persists nothing and adds no column | mirror |
 
-**Phase 6 may need no migration at all**, and after the OD-1 ruling that is now the *likely* outcome
-rather than merely the honest expectation: it is a code-and-boundary phase over Phase 1's schema, and
-the one open decision that could plausibly have demanded persisted state has been ruled in a direction
-that does not. If it needs none, `0045` is **not written** — an empty migration to fill a number is
-chain noise, and the next phase simply takes `0045`. Numbers are not reserved by being mentioned in a
-plan. **Phase 7 should therefore plan on `0045` being available.**
+**Prediction revised 2026-08-02 (M3-P6-OD-6, RULED): `0045` IS used, but not for anything this
+section anticipated.** This section originally predicted Phase 6 would need no migration at all, and
+told Phase 7 to plan on `0045` being free. That held for Phase 6's own C1/C2 work — neither needed a
+migration. But Phase 6's own **phase-start mechanical landing check** (a new standing practice:
+before implementing, grep every prior RULED-ACCEPTED decision's claimed artifact, since a ledger
+status word is not evidence a fix landed — CLAUDE.md Rule 11) found **M3-P3-OD-6** (the per-user
+aggregate test-button rate limit, ruled 2026-07-31 in Phase 3, never built) genuinely missing. `0045`
+seeds its one config key (`test_button_rate_limit_per_user_per_day`) — see
+`Docs/phase-3-user-owned-accounts.md`'s own updated ledger row. **Phase 7 must NOT plan on `0045`
+being available — it takes `0046`.**
 
 ---
 

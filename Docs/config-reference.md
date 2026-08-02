@@ -199,6 +199,16 @@ phase, §4 — its one consumer branch is removed, so the key would otherwise fa
 | `campaign_expiry_sec` | `{"v":604800}` | integer | byosmtp_0042 | Seconds after a campaign's first job is accepted before it expires (default 7 days) — the un-gameable bound on a campaign stuck WAITing on self-recovering accounts forever. Resolved override -> global and FROZEN at insert time. Admin-writable per-user override in `byosmtp.user_config_overrides.campaign_expiry_sec` (NULL = inherit this global). Consumed by `platformapi/store.go`'s insert-time freeze. Phase 5 §5.3. |
 | `campaign_expiry_sweep_interval_ms` | `{"v":60000}` | integer | byosmtp_0042 | How often (ms) the campaign-expiry sweep loop ticks (the fifth single-Brain housekeeping loop) — must be a genuine periodic sweep, not a lazy check at the claim point, since the pathological case it bounds means jobs are never claimed. M3-P5-OD-4 (adopted addition). Consumed by `dispatch/campaign_expiry.go`'s `CampaignExpiryRunner`. Phase 5 §5.3. |
 
+## Module 3 Phase 6 state (+1 key, `byosmtp_0045`)
+
+M3-P3-OD-6's aggregate companion to the per-account test-button rate limit, landed by Phase 6's
+phase-start mechanical landing check (a ledger status of RULED-ACCEPTED is not evidence a key was
+actually seeded — CLAUDE.md Rule 11) rather than by Phase 6's own new feature work.
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `test_button_rate_limit_per_user_per_day` | `{"v":20}` | integer | byosmtp_0045 | Max verify-only test-button attempts across ALL of a user's accounts, per day (`429 rate_limited`, same external code as the per-account limit) — a 200-account tenant clicking each once is still bounded. Aggregate companion to `account_test_rate_limit_per_day` (byosmtp_0036). **GLOBAL ONLY** (M3-P3-OD-6/M3-P6-OD-5's own posture). Consumed by `platformapi/account_test_button.go`'s `readTestButtonRateLimitPerUser`/`verifyAttemptCountTodayForUser`. |
+
 ## All six config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs; Phase 5 §10.4 for the two quarantine dials)
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**

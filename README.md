@@ -73,7 +73,7 @@ db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.
 db/preflight/             platform-table existence checks, run before migrating
 tools/                    byosmtp-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
-tests/harness/checks/     the 5 blocking CI gates
+tests/harness/checks/     the 6 blocking CI gates
 Docs/                     living documentation (operate + extend)
 Docs/history/             provenance — phase specs, ADRs, decision ledger, build record
 deploy/                   production override material
@@ -85,7 +85,9 @@ Tests run against real infrastructure — real Postgres, a real Brain↔box mTLS
 server. There are no mock-the-database or mock-the-box tests; that is a hard rule, not a
 preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite.
 
-Five blocking CI gates run on every push, each catching a specific class of drift:
+Six blocking CI gates run on every push, each catching a specific class of drift (M3-P0-OD-10:
+this line was corrected from "Five" — `drain_grace` was already running in CI, `.github/workflows/
+real-infra.yml`, but never counted here):
 
 | Gate | Fails when |
 |---|---|
@@ -93,6 +95,7 @@ Five blocking CI gates run on every push, each catching a specific class of drif
 | `contract_drift` | a served route is undocumented in `api-contract.md`, or vice versa |
 | `migration_lint` | the migration chain has a gap, a missing `.down.sql`, or a non-self-tracking file |
 | `config_consumption` | a seeded key has no real consumer and is not marked RESERVED |
+| `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
 | `no_secret_leak` | the box registration token or its hash appears in service logs (the SMTP-credential canary scan lives in the send-path harness) |
 
 Run any of them directly: `bash tests/harness/checks/<name>.sh`.

@@ -116,16 +116,32 @@ verified, not assumed.
   under `Docs/`. Follow it.
 
 ## 5. Contracts, errors, and honesty
-> **M3-P0-OD-7 (flagged, not resolved here):** this rule's enum sentence, inherited verbatim
-> below, names `pool_kind` as additive-only-forever — but module 3's Phase 1 drops pools
-> entirely, which the rule as written would forbid. Phase 0 leaves the text below untouched and
-> does not resolve the contradiction on its own authority (Rule 2); the ruling belongs to
-> Phase 1, which is where the reset-baseline reading (module 3 has no deployed history yet, so
-> the clock resets to its own six surviving enums) is actually decided and recorded.
+> **M3-P1-OD-3 (RULED 2026-07-29, amendment landed 2026-08-02):** the enum sentence below is
+> inherited from module 2 and once named `pool_kind` as additive-only-forever — but module 3's
+> Phase 1 drops pools (the enum, the table, the `accounts.pool_id` column, the
+> `default_shared_pool_id` config key, and five routes) entirely, which the rule as inherited
+> would forbid. **Ruled, verbatim:** *"Additive-only exists to protect consumers from breaking
+> changes. Module 3 has none — no platform, no UI, nothing coded against it. The fork is the
+> baseline reset. Additive-only applies from module 3's own baseline forward, not retroactively
+> across a fork boundary."* This is a **fork-time-only exemption**: it covers exactly the five
+> removals above (`0025`-`0028`) and closed at Phase 1's own gate sequence (G1→G4, now CLOSED).
+> It was extended narrowly ONE more time, for `quarantine_threshold` only (Phase 5, M3-P5-OD-1 —
+> a key that never had a module 3 consumer at any point, so dropping it is removing dead
+> inheritance, not breaking a live contract; that ADR states the extension explicitly does not
+> reopen the exemption generally). Past those two points, Rule 5 applies with NO exception:
+> module 3's own contracts, from its own baseline forward, are additive-only forever, exactly
+> like module 2's. This paragraph IS the amendment M3-P1-OD-3's own ruling required ("Amend Rule
+> 5's enum sentence... by reviewed PR, recording the fork-time-only expiry") — found not yet
+> landed by Phase 6's phase-start mechanical landing check, four days after the ruling's own
+> stated deadline (Phase 1's close) had already passed.
 - Contracts (API request/response shapes, event/message schemas, DB columns, enums)
   are ADDITIVE-ONLY and VERSIONED. Never rename; never repurpose; never remove.
-  The 7 enums (job_state, error_class, pool_kind, routing_strategy, box_status,
-  event_actor, pause_reason) are additive-only forever.
+  Module 3's enums, from its Phase 1 baseline forward, are additive-only forever: the six
+  surviving from module 2's original seven (job_state, error_class, routing_strategy,
+  box_status, event_actor, pause_reason — `pool_kind` did not survive the fork) plus every
+  enum module 3 itself has since added (quarantine_reason, from_verification_state,
+  dmarc_policy, suspend_reason, notification_severity, notification_state,
+  credential_verification_state, and any added after this amendment).
 - TWO-VOCABULARY ERROR RULE: an internal reason is NEVER serialized to a client.
   Client error envelopes carry ONLY {external code, message, request_id}. NEVER
   emit credentials, ciphertext, key-ids, SQL, SQLSTATE, stack traces, internal

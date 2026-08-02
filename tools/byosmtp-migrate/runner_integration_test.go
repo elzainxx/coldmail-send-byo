@@ -121,7 +121,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044"}
+		"0042", "0043", "0044", "0045"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -171,8 +171,11 @@ func TestRunnerLifecycle(t *testing.T) {
 	// (config seeds only, no table); module 3's 0025-0027, 0029-0035 add no config key either.
 	// 0042 (M3-P5-OD-1/§10.1) then SEEDS TEN and DELETES ONE (quarantine_threshold, its
 	// consumer branch removed by this same phase's account_effect.go change): 67 - 1 + 10 = 76.
-	if n := configKeyCount(t, admin); n != 76 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 76 (67 pre-Phase-5 + 10 Phase 5 seeds - 1 quarantine_threshold dropped, M3-P5-OD-1)", n)
+	// PLUS Phase 6's ONE (0045: test_button_rate_limit_per_user_per_day, M3-P3-OD-6's aggregate
+	// test-button companion, landed by Phase 6's phase-start mechanical landing check rather than
+	// by Phase 6's own new work) = 77.
+	if n := configKeyCount(t, admin); n != 77 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 77 (76 pre-Phase-6 + 1 Phase 6 seed, M3-P3-OD-6)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -397,6 +400,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !accountEventsActionAllowed(t, admin, "suspend") || !accountEventsActionAllowed(t, admin, "unsuspend") {
 		t.Fatal("after Up: account_events_action_check rejects \"suspend\"/\"unsuspend\" (0044 not applied)")
 	}
+	// 0045 (Module 3 Phase 6, M3-P3-OD-6's aggregate test-button companion).
+	if !configKeyExists(t, admin, "test_button_rate_limit_per_user_per_day") {
+		t.Fatal("after Up: byosmtp.config missing \"test_button_rate_limit_per_user_per_day\" (0045 not applied)")
+	}
+	if v, d := configValueAndDefault(t, admin, "test_button_rate_limit_per_user_per_day"); v != `{"v": 20}` || d != `{"v": 20}` {
+		t.Fatalf("after Up: test_button_rate_limit_per_user_per_day value=%s default_value=%s, want both {\"v\": 20} (0045 seeded the wrong shape)", v, d)
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -457,6 +467,9 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0044" && (accountEventsActionAllowed(t, admin, "suspend") || accountEventsActionAllowed(t, admin, "unsuspend")) {
 			t.Fatal("after Down 0044: account_events_action_check still accepts \"suspend\"/\"unsuspend\" (down did not narrow it)")
+		}
+		if v == "0045" && configKeyExists(t, admin, "test_button_rate_limit_per_user_per_day") {
+			t.Fatal("after Down 0045: byosmtp.config still has test_button_rate_limit_per_user_per_day (down did not delete it)")
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")

@@ -312,3 +312,27 @@ Phase 5 `0042`–`0044`; Phase 6 `0045` **only if needed**; Phase 7 `0045`. Ever
 "Migration numbers:" header was updated in the same change as this finding, per this file's own
 standing convention — this addendum records the chain's CURRENT state without rewriting either
 historical table above, both of which remain accurate records of what was true when each was written.
+
+## Addendum, 2026-08-02 (later same day) — a FIFTH cascade, and the first triggered by a landing check rather than in-flight implementation
+
+The chain stated at the close of the previous addendum ("Phase 6 `0045` only if needed; Phase 7
+`0045`") is **superseded** again, hours later, by a fifth build-time finding — **M3-P6-OD-6**. Unlike
+the first four (each found while IMPLEMENTING the phase that needed the extra migration), this one was
+found by a NEW standing practice this phase introduced: before starting Phase 6's own implementation
+work, a mechanical landing check grepped every prior RULED-ACCEPTED decision across phases 0-5 for its
+claimed artifact, rather than trusting the ledger's status word (CLAUDE.md Rule 11 — a status word is
+not evidence a fix landed; this build has now hit that exact gap twice, M3-P5-OD-3 and M3-P4-OD-3's own
+self-documented miss).
+
+- **M3-P6-OD-6** (2026-08-02): the landing check found **M3-P3-OD-6** (the per-user aggregate
+  test-button rate limit, ruled 2026-07-31 in Phase 3) genuinely unbuilt — no config key, no consumer,
+  nowhere. Landing it needs one seeded config key (`test_button_rate_limit_per_user_per_day`), which
+  needs a migration. Phase 6's own §10 had predicted it would need none and told Phase 7 to plan on
+  `0045` being free; that prediction is now void. Phase 6 takes `0045` (already written and applied as
+  `db/migrations/byosmtp_0045_test_button_per_user_limit.{up,down}.sql`); Phase 7 shifts +1 to `0046`.
+
+**The chain as of this addendum:** Phase 1 `0025`–`0034`; Phase 3 `0035`–`0038`; Phase 4 `0039`–`0041`;
+Phase 5 `0042`–`0044`; Phase 6 `0045`; Phase 7 `0046`. This is the FIFTH such cascade in this build
+(after M3-P3-OD-18, M3-P3-OD-19, M3-P4-OD-16, M3-P5-OD-7) and, notably, the first one a process
+improvement (the landing check) caught BEFORE a later phase inherited the wrong assumption — the
+previous four were each found only once the phase that needed the number was already mid-build.

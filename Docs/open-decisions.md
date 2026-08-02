@@ -284,7 +284,7 @@ approval changed none of it.
 | M3-P3-OD-5 | May `test-send` target an arbitrary recipient? | Own `from_address` only. Arbitrary makes it a one-message relay |
 | M3-P3-OD-7 | Bulk-add pacing per `smtp_host` or strictly serial? | Strictly serial for V1 — a superset of the guarantee |
 | M3-P3-OD-8 | A `bulk_add_max_rows` bound; does bulk-add go async? | Bound yes; async is a new resource and past this phase |
-| M3-P3-OD-9 | Advisory lock around the account-cap check-then-insert? | The lock — a cap you can beat by double-clicking is not a cap. **Merged in (M3-P3-OD-6):** yes to a per-user aggregate test-button limit, valued together with this cap and Phase 5's un-quarantine limit |
+| M3-P3-OD-9 | Advisory lock around the account-cap check-then-insert? | The lock — a cap you can beat by double-clicking is not a cap. **Merged in (M3-P3-OD-6):** yes to a per-user aggregate test-button limit, valued together with this cap and Phase 5's un-quarantine limit. **M3-P3-OD-6 landed 2026-08-02 in Phase 6** (`test_button_rate_limit_per_user_per_day`, `byosmtp_0045`) — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED |
 | M3-P3-OD-10 | Purge as a fifth Brain loop or a sweep inside `RetentionTick`? | Fifth loop — a purge failure must not be masked by a healthy log sweep |
 | M3-P3-OD-11 | Extend `contract_drift.sh` to the platform-surface account routes? | Yes. A route no gate enumerates is a route whose auth nobody checks. Needs an ADR under Rule 8 |
 | M3-P3-OD-12 | A new verify timeout key, or reuse `smtp_operation_timeout_sec`? | Reuse — a verify's operations are a strict prefix of a send's |
@@ -358,7 +358,7 @@ phase, answered by a different phase's ruling.
 | M3-P2-OD-8 | ruling 2026-07-30, in substance | The `RESERVED`-expiry gate extension is ruled; what remains is an ADR appending the invariant — a build task |
 | M3-P4-OD-1 | ruling 2026-07-29 | *"My locked rule was wrong. DMARC passing on SPF-aligned **or** DKIM-aligned means DNS can never prove failure."* Default → warn + explicit acknowledgment; BLOCK only for `p=reject` + no SPF record + no DKIM at any common selector; copy says *"we couldn't verify this will authenticate"*, never *"this will fail"* |
 | M3-P4-OD-9 | ruling 2026-07-29 | Gate at the **store layer for every writer, operator routes included**; break-glass is an explicit audited override with a required reason, never a silent reset |
-| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0039` (renumbered from `0038` by M3-P3-OD-18's cascade) |
+| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0040` (renumbered from `0038` by M3-P3-OD-18's cascade). **Number corrected 2026-08-02** — this row previously said `0039`; the columns actually landed in `byosmtp_0040_from_gate_predicate.up.sql` (`0039` holds only the config-key seeds). Found by the Phase 6 phase-start mechanical landing check (a status word is not evidence a fix exists — every other citation of this ruling in the tree, including the migration file's own header comment, already said `0040`; only this row was stale) |
 | M3-P6-OD-1 | ruling 2026-07-30 | Pacer shrink drops the **most-ready** lanes, keeps those still owing cooldown; selection by value, not slice position; the ADR states module 2's comment was aspirational, so this is a bug fix |
 | **M3-P3-OD-3** | **M3-P7-OD-1's ruling, 2026-07-31** | ⚠ **Provenance corrected — the earlier citation did not hold.** Verified directly on 2026-07-31: `phase-3-user-owned-accounts.md` §2.3 and §11 record *"allow, scrubbed, this surface only"* as a **recommendation**, with §2.3 saying explicitly *"widening it is not mine to decide silently."* There is **no dated ruling** in Phase 3. `phase-7-visibility-notifications-contract.md` §1.1 nonetheless asserted it was *"ruled"* and built on it — a recommendation promoted to a ruling by citation. **Corrected in Phase 7 §1.1.** The item is genuinely closed now because M3-P7-OD-1's ruling allows the widening on the **larger** send surface, which necessarily settles the verify surface; and it inherits the same sequencing — **after** M3-P7-OD-2's scrub |
 
@@ -1408,6 +1408,40 @@ structural, per Phase 6 §10's "the next phase simply takes it" logic).
 `Docs/phase-7-visibility-notifications-contract.md`, `Docs/phase-0-fork-and-baseline.md`,
 `Docs/phase-1-schema-delta.md`, `Docs/phase-8-polish-docs-close.md`, and
 `Docs/plan-revision-log.md`'s chain table updated in the same change.
+
+---
+
+## M3-P6-OD-6 — RULED 2026-08-02: Phase 6 takes `0045` after all, for M3-P3-OD-6's landed fix; Phase 7 renumbers to `0046`
+
+The FIFTH instance of this build's recurring migration-cascade class (after M3-P3-OD-18, M3-P3-OD-19,
+M3-P4-OD-16, and M3-P5-OD-7) — but a different TRIGGER than the previous four: not a schema need
+discovered while implementing Phase 6's own C1/C2 work (Phase 6 §10 correctly predicted it would need
+no migration for those), but Phase 6's own phase-start mechanical landing check finding **M3-P3-OD-6**
+(the per-user aggregate test-button rate limit, ruled 2026-07-31 in Phase 3, never built — a ledger
+status of RULED-ACCEPTED is not evidence a key was seeded, CLAUDE.md Rule 11) genuinely missing.
+
+Landing it needs one seeded config key (`test_button_rate_limit_per_user_per_day`) — a migration, not
+a code-only fix. Phase 6 §10 had explicitly told Phase 7 to plan on `0045` being free ("the next
+phase simply takes it"); that expectation no longer holds.
+
+**The question:** take `0045` for this fix (cascading Phase 7 from `0045` to `0046`), or fold it into
+whatever Phase 6 eventually needs `0045` for (nothing, per §10) — i.e., is there anywhere else to put
+it?
+
+**RULED: take `0045`.** There is nowhere else to put it — Phase 6 itself needs no migration for its
+own C1/C2 work, so `0045` was sitting unclaimed exactly as §10 predicted; M3-P3-OD-6's fix is the
+first real content to occupy it, and it is Phase 6 (the phase whose landing check found the gap) that
+should carry it, not a later phase. Applied: `byosmtp_0045_test_button_per_user_limit.{up,down}.sql`
+(already written and applied). **Cascade: Phase 7's own migration shifts from `0045` to `0046`.**
+`Docs/phase-6-per-user-config-and-routing.md` §10, `Docs/phase-7-visibility-notifications-contract.md`
+(migration number, §8's DDL section, M3-P7-OD-6/M3-P7-OD-9's own rulings which cite `0045` by number),
+and `Docs/plan-revision-log.md`'s chain table updated in the same change.
+
+**This is now the FIFTH such cascade in this build** — after M3-P3-OD-18, M3-P3-OD-19, M3-P4-OD-16,
+and M3-P5-OD-7 — the first one triggered by a landing-check finding rather than an in-flight
+implementation discovery, which is itself worth naming: the landing-check discipline (grep every
+prior ruling's claimed artifact before building the next phase) surfaces exactly this class of gap
+BEFORE the phase that would otherwise silently inherit a wrong assumption about a free migration slot.
 
 ---
 
