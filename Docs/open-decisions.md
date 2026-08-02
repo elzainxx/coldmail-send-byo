@@ -1366,6 +1366,51 @@ them need `campaign_expiry_sec` freezing to test what they test) and continue to
 
 ---
 
+## M3-P5-OD-7 — RULED 2026-08-02: Phase 5 takes a THIRD migration, `0044`, for the suspend/unsuspend audit-action widen; Phase 6+ renumbers again
+
+The same cascade class as M3-P3-OD-18/19 and M3-P4-OD-16, one phase later, and the FOURTH instance
+of it in this build. Found only while implementing C2's per-user suspend (§6/§7): the mechanism's
+own audit trail needs two new `account_events` action values, `'suspend'`/`'unsuspend'`, so a
+suspend/reinstate is its own distinct, queryable event rather than buried inside a generic
+`'updated'` row — the same reasoning M3-P4-OD-16 already established for `'from_gate_overridden'`,
+and the same class of schema need `0034`/`0041` themselves widened `account_events_action_check`
+for. Widening the CHECK requires a migration (`DROP CONSTRAINT` + `ADD CONSTRAINT`, mirroring
+`byosmtp_0034`/`byosmtp_0041`'s own precedent), and Phase 5's doc had allotted exactly two slots
+(`0042` config seeds, `0043` the failure-rate window's index) — this schema need was not
+anticipated when that allotment was written, discovered only once the suspend audit write was
+actually wired up rather than foreseen from the spec.
+
+**The question, asked before implementing (Rule 2):** take the next free number (`0044`, cascading
+Phase 6/7 by +1 again) or fold the widen into one of the two already-allotted migrations?
+
+**RULED: take `0044`; Phase 6+ renumbers again, same reasoning as M3-P3-OD-18/19 and
+M3-P4-OD-16.** Folding into `0042` or `0043` was rejected for the same reason OD-16 rejected folding
+into `0040`: each of Phase 5's two allotted migrations is already a deliberate, singular unit of
+work (`0042` the ten config-dial seeds plus the `quarantine_threshold` drop, §10.1; `0043` the one
+index the failure-rate window needs, §1.3) — bundling an unrelated CHECK-constraint widen for a
+different feature entirely into either one makes a future `git bisect`-style "which change caused
+this" question ambiguous in exactly the way the separateness discipline exists to prevent. Phase 6
+and Phase 7 have not started building (no files on disk, no `schema_migrations` rows), so the
+cascade costs only a doc-reference relabel.
+
+**This is now the FOURTH such cascade in this build** — after M3-P3-OD-18, M3-P3-OD-19, and
+M3-P4-OD-16 — each found only while implementing the phase that needed the extra migration, never
+anticipated at planning time, and each ruled the same day rather than left as a gap.
+
+**Applied:** Phase 5's own third migration is `byosmtp_0044_account_events_suspend_action`
+(already written and applied — `db/migrations/byosmtp_0044_account_events_suspend_action.{up,down}.sql`
+— so this migration itself is NOT renumbered; only the phases downstream of it shift). Cascade:
+Phase 6's expected migration shifts from `0044` to `0045` (still expected to write nothing
+structural, per Phase 6 §10's own conclusion); Phase 7's own migration shifts from `0044` to `0045`
+(unchanged relative position — still expected to take Phase 6's number if Phase 6 writes nothing
+structural, per Phase 6 §10's "the next phase simply takes it" logic).
+`Docs/phase-5-autonomous-behaviour-and-limits.md`, `Docs/phase-6-per-user-config-and-routing.md`,
+`Docs/phase-7-visibility-notifications-contract.md`, `Docs/phase-0-fork-and-baseline.md`,
+`Docs/phase-1-schema-delta.md`, `Docs/phase-8-polish-docs-close.md`, and
+`Docs/plan-revision-log.md`'s chain table updated in the same change.
+
+---
+
 ## Honest final position
 
 **Needs-user: empty.** All **80** items are disposed of — the original 79, plus **M3-P7-OD-9**, which

@@ -3,8 +3,17 @@
 **Status:** PLAN ONLY. No implementation. Rule 2 applies throughout: every contradiction found while
 writing this is registered in §15, not resolved.
 
-**Migration numbers:** `0042` (config seeds, with their consumers) then `0043` (the one index the
-failure-rate window needs). Phase 4 ended at `0040`.
+**Migration numbers:** `0042` (config seeds, with their consumers), `0043` (the one index the
+failure-rate window needs), then `0044` (M3-P5-OD-7: widen `account_events_action_check` for C2's
+per-user suspend audit actions). Phase 4 ended at `0040`.
+
+> **Cascade note (2026-08-02, M3-P5-OD-7).** While implementing C2's per-user suspend, the
+> `'suspend'`/`'unsuspend'` audit actions §6/§7 need turned out to require a THIRD migration —
+> the same class of gap as M3-P3-OD-18/19 and M3-P4-OD-16, found only once the suspend audit write
+> was actually wired up rather than anticipated when this document's original two-migration
+> allotment was written. Phase 5 now claims `0042`–`0044`, not `0042`–`0043`. Phase 6's expected
+> migration shifts from `0044` to `0045`; Phase 7's shifts from `0044` to `0045` or later, per
+> Phase 6's own §10 conclusion. Full reasoning: `Docs/open-decisions.md#m3-p5-od-7`.
 
 **What this phase is.** Module 2's quarantine was an operator-only lockout protecting the operator's
 pool. Module 3's is a **user-resettable circuit breaker on the user's own account**. Same machinery,
@@ -856,9 +865,11 @@ is validated at the write path too, not only at load.
 
 ## §11 Migrations
 
-Two files. Phase 5 removes **no schema object** — no table, column, enum value, index, or constraint
-is dropped, and module 3's additive-only clock runs from its own `0025` baseline with the fork-time
-removal exemption **expired at Phase 1's close** (M3-P1-OD-3).
+Three files. Phase 5 removes **no schema object** — no table, column, enum value, index, or
+constraint is dropped, and module 3's additive-only clock runs from its own `0025` baseline with
+the fork-time removal exemption **expired at Phase 1's close** (M3-P1-OD-3). The third file
+(`0044`) is a CHECK-constraint widen, additive in effect, mirroring `0034`/`0041`'s own precedent —
+found while implementing C2, ruled the same day as **M3-P5-OD-7**.
 
 **One config ROW is deleted, and that is a different thing from a schema removal** — reconciled with
 §10.1 on 2026-07-31, which previously contradicted this section outright. `0042` drops the inherited
@@ -872,17 +883,21 @@ a Rule 5 waiver — and why "Phase 5 removes nothing" was the wrong sentence eve
 |---|---|---|---|
 | `0042` | `..._seed_phase5_config.{up,down}.sql` | Ten `INSERT INTO byosmtp.config` rows (§10.1), **plus `DELETE FROM byosmtp.config WHERE key = 'quarantine_threshold'`** and the removal of its `config-consumers.txt` line (M3-P5-OD-1) | `DELETE` the ten keys **and re-`INSERT` `quarantine_threshold`** with its inherited `default_value` and description — `default_value` is never mutated (Rule 1), so the down file restores it verbatim from its seed site, `sender_0010:31` — `('quarantine_threshold', '{"v": 30}', '{"v": 30}', 'account_status_score below which account is auto-quarantined', 'integer')` |
 | `0043` | `..._job_events_account_window_idx.{up,down}.sql` | `job_events_account_id_created_at_idx` (§1.3) | `DROP INDEX` |
+| `0044` | `..._account_events_suspend_action.{up,down}.sql` | Widens `account_events_action_check` with `'suspend'`/`'unsuspend'` (§6/§7's per-user suspend audit actions, M3-P5-OD-7) — `account_id` NULL, `user_id` carries the tenant, the exact shape M3-P1-OD-10 already ruled safe | `DROP`+`ADD CONSTRAINT` restoring the `0041` CHECK verbatim (no `'suspend'`/`'unsuspend'`) |
 
 Both reverse cleanly, so Phase 5 adds **no** new one-way door to the chain. `sender_0017` is the
-template for `0042`; `sender_0011` for `0043`.
+template for `0042`; `sender_0011` for `0043`; `0034`/`0041` are the precedent for `0044`'s
+DROP+ADD CHECK widen.
 
 **No new table ⇒ no new grants**, so ADR-0008's grants invariant has nothing to gain here — but
 `TestGrantsInvariant` must be green regardless, and §14 requires it. **No new enum value**: §1.4's four
 reasons are Phase 1 `0025`'s four `quarantine_reason` values, §2.5's actor is Phase 1's `'user'`, and
 §3.2's audit action is Phase 1 `0034`'s `'credential_updated'`. That Phase 1 anticipated all three
-is the reason this phase is two files.
+is why the phase was originally expected to need only two files — `0044`'s two new **action**
+values (not enum values; `account_events.action` is a CHECK, not an enum) are the one thing Phase 1
+did not anticipate, per M3-P5-OD-7.
 
-The chain-lint `wantChain` literal gains `0042` and `0043`
+The chain-lint `wantChain` literal gains `0042`, `0043`, and `0044`
 (`tests/harness/checks/migration_lint.sh` extracts it from `runner_integration_test.go`).
 
 ---
@@ -1217,7 +1232,7 @@ items).
 10. **Every config key has a real consumer at its seeding commit** — `config_consumption` and
     `config_drift` both green, no `RESERVED` marker introduced. Conditional on **M3-P5-OD-1**.
 11. **Ordering invariants rejected, not clamped** — T10, both directions.
-12. **Migrations apply, are idempotent, and reverse cleanly**; `wantChain` gains `0042`/`0043`;
+12. **Migrations apply, are idempotent, and reverse cleanly**; `wantChain` gains `0042`/`0043`/`0044`;
     `TestGrantsInvariant` green.
 13. **Docs updated in the same change** — `config-reference.md` (ten rows),
     `config-consumers.txt` (ten lines), the account-state doc, and the operator runbook's shadow-review

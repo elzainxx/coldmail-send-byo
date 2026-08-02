@@ -1,9 +1,17 @@
 # Phase 7 — Visibility, notifications, and the contract surface
 
 **Status:** PLAN ONLY. No code, no migration, no config row is written by this document.
-**Depends on:** Phases 1–6. **Migration number:** `0044` (Phase 6 is expected to write none — Phase 6
+**Depends on:** Phases 1–6. **Migration number:** `0045` (Phase 6 is expected to write none — Phase 6
 §10, updated after the M3-P6-OD-1 ruling removed the one thing that could have demanded persisted
 state).
+
+> **Cascade note (2026-08-02, M3-P5-OD-7).** Phase 5's C2 (per-user suspend) needed a third
+> migration (`0044`, widening `account_events_action_check`), unanticipated when Phase 5 was
+> planned at two migrations. Phase 6's expected number shifted from `0044` to `0045`; Phase 7's own
+> migration — this section, and every `byosmtp_0044_*` filename reference below — shifts from `0044`
+> to `0045` in step, taking Phase 6's number per Phase 6 §10's own "the next phase simply takes it"
+> logic (Phase 6 is still expected to write nothing structural). Full reasoning:
+> `Docs/open-decisions.md#m3-p5-od-7`.
 **Inherited without re-derivation, per the brief:** the two-vocabulary error envelope (CLAUDE.md
 Rule 5), the box-side credential scrub (`scrubSecret`, Phase 3 §2.4), and the report contract's
 current shape. This document does not re-invent any of the three; it states precisely how each one
@@ -312,7 +320,7 @@ code itself. Concretely:
   `last_error_message` cannot provide. Since `send_logs` is TTL'd (`retention.go`) and the user-facing
   error must outlive a debug retention window, this is the one place the phase plausibly needs a
   column: **`jobs.last_smtp_response`**, provider text only, no slug, ≤2000 to mirror the existing
-  bound. That is migration `0044`'s content (§8).
+  bound. That is migration `0045`'s content (§8).
 - **Rule 5's two-vocabulary rule gets its enforcement from the column split, not from discipline at
   the serializer.** A future handler that grabs the wrong column then leaks a slug; a handler that can
   only reach a slug-free column cannot. This is Phase 4 §2.2's structural-over-procedural lesson
@@ -845,7 +853,7 @@ because they generalize:
    debug-retention setting."* That is the decisive one: the build plan declined the cap **because** this
    signal exists, so the signal cannot be the thing that silently degrades.
 
-Schema, in `0044` (§8):
+Schema, in `0045` (§8):
 
 ```sql
 -- The domain the throttle was observed against. Denormalized deliberately: the
@@ -889,7 +897,7 @@ likewise untouched — this column is not an FK.
 
 ---
 
-## 8. CONFIG DIALS AND MIGRATION `0044`
+## 8. CONFIG DIALS AND MIGRATION `0045`
 
 Rule 1: every tunable is a seeded row with a documented `default_value` and a `value_type`, JSONB-wrapped
 `{"v": …}`. **Every key below names its consumer at the seeding commit** — mandatory check 2 (§9).
@@ -930,14 +938,14 @@ classification is a judgment that will be revised in production, and Rule 1 forb
 runtime behavior. The per-event tier from §3.1 is the seeded **default**; the dial is what lets an
 operator move an event between tiers without a deploy.
 
-**Migration `0044`:**
+**Migration `0045`:**
 
 > ### ✅ RESOLVED — M3-P7-OD-9 RULED (b) 2026-07-31. **This shape wins; `0033` carries it.**
 >
 > **The ruling.** Phase 7's design is authoritative, and **Phase 1's `0033` is the single create
-> site** — it carries the DDL below. `0044` therefore creates **neither** `notification_severity` nor
+> site** — it carries the DDL below. `0045` therefore creates **neither** `notification_severity` nor
 > `notifications`, and `notification_state` moves into `0025` with Phase 1's other new enums (Phase 1
-> §4.6, §6). The two `CREATE`s below are struck from `0044` and reproduced here **only** as the
+> §4.6, §6). The two `CREATE`s below are struck from `0045` and reproduced here **only** as the
 > authoritative shape for `0033` to implement; §3's behaviour reads them unchanged.
 >
 > **Why this shape wins on the merits, not by seniority.** §3.3's dedup re-notifies off `notified_at`
@@ -979,7 +987,7 @@ operator move an event between tiers without a deploy.
 ```sql
 -- byosmtp_0033_create_notifications.up.sql — PHASE 1 carries this DDL.
 -- M3-P7-OD-9 RULED (b) 2026-07-31: this shape is authoritative, and 0033 is the SINGLE create site.
--- 0044 creates neither object. The two CREATE TYPEs move to 0025 with Phase 1's other new enums
+-- 0045 creates neither object. The two CREATE TYPEs move to 0025 with Phase 1's other new enums
 -- (Phase 1 §6), because 0025 exists precisely so ALTER TYPE ... ADD VALUE is not in the same
 -- transaction as its first use; a type created in 0033 and used in 0033 is fine, but splitting the
 -- enums across two migrations for no reason is the kind of drift the single-create-site ruling ends.
@@ -1030,12 +1038,12 @@ CREATE UNIQUE INDEX notifications_live_dedup_idx
     ON byosmtp.notifications (user_id, dedup_key) WHERE cleared_at IS NULL;
 CREATE INDEX notifications_pending_idx
     ON byosmtp.notifications (user_id, severity, first_seen_at) WHERE state = 'pending';
--- ^^^ END of what 0033 carries. Everything below is byosmtp_0044's own content. ^^^
+-- ^^^ END of what 0033 carries. Everything below is byosmtp_0045's own content. ^^^
 
 -- ============================================================================
--- byosmtp_0044_visibility.up.sql — Phase 7's OWN migration.
+-- byosmtp_0045_visibility.up.sql — Phase 7's OWN migration.
 -- Note the filename: the notification objects moved to 0033 (M3-P7-OD-9), so
--- "_notifications_and_visibility" would misdescribe it. 0044 creates NO table
+-- "_notifications_and_visibility" would misdescribe it. 0045 creates NO table
 -- and NO type; it is three ALTERs, two indexes, and one function replacement.
 -- ============================================================================
 
@@ -1102,7 +1110,7 @@ ALTER FUNCTION byosmtp.fn_job_events_on_state_change() OWNER TO byosmtp_owner;
 -- No CREATE TRIGGER: the inherited trigger already points at this function by name.
 ```
 
-**And the down file** — `byosmtp_0044_notifications_and_visibility.down.sql`, per the
+**And the down file** — `byosmtp_0045_visibility.down.sql`, per the
 convention module 2 holds for all 25 of its migrations (see the T-note below): drop the
 notifications table, its indexes and the two enums, drop both new `job_events` objects, drop
 `jobs.last_smtp_response`, and `CREATE OR REPLACE` the state-change function back to **`0022`'s**
@@ -1392,11 +1400,11 @@ The build plan's five, verbatim, plus what this document adds:
     than merely recorded: the aggregation is the safeguard the build plan chose **instead of** a
     per-destination cap, so a version of it that silently truncates when an operator tunes debug retention
     is the *no silent caps* failure mode wearing the safeguard's name. It also carries the writer: the
-    criterion is not met by the column existing — `0044` must **populate** it
+    criterion is not met by the column existing — `0045` must **populate** it
     (`fn_job_events_on_state_change`, §8), because `job_events` has no other writer and an
     always-NULL column would satisfy every schema assertion while reporting zero throttles forever.
-15. **`0044` creates NO type and NO table** — M3-P7-OD-9's ruling (b), verifiable mechanically: a grep
-    of `byosmtp_0044_*.up.sql` for `CREATE TABLE` / `CREATE TYPE` returns **nothing**, and
+15. **`0045` creates NO type and NO table** — M3-P7-OD-9's ruling (b), verifiable mechanically: a grep
+    of `byosmtp_0045_*.up.sql` for `CREATE TABLE` / `CREATE TYPE` returns **nothing**, and
     `byosmtp.notifications` exists after `0033` with Phase 7 §8's column set (`condition`,
     `subject_type`, `payload`, `state`, `notified_at`) and both carried constraints. Stated as a
     criterion rather than left to the migration doc because the failure it guards is total — two create
@@ -1415,7 +1423,8 @@ The build plan's five, verbatim, plus what this document adds:
 > and Phase 8 §1.5/§6.3; both are now decided, and **-2 sequences before -1**.
 >
 > **⛔ A NINTH was RAISED on 2026-07-31 and is NOT ruled: M3-P7-OD-9**, found by the Chunk 3
-> cross-plan sweep. It BLOCKS `0044`. It is new rather than a revision because reconciling the two
+> cross-plan sweep. It BLOCKS `0045` (renumbered from `0044` by M3-P5-OD-7's cascade). It is new
+> rather than a revision because reconciling the two
 > `notifications` designs means choosing which one survives — a meaning change, which the revision
 > brief routes to the ledger rather than to a revision commit.
 
@@ -1426,11 +1435,11 @@ The build plan's five, verbatim, plus what this document adds:
 | **M3-P7-OD-3** ✅ **RULED-ACCEPTED 2026-07-31** | Does the **username** pass through to user-facing output? `scrubSecret` never redacts it (verified) and real providers echo it routinely | §1.3 GAP 2. Not a credential leak — it is a PII decision, and it also decides T1's assertion shape | **Pass it through, and assert it SURVIVES.** The audience is the account's own owner, and the username is stored unencrypted. Asserting survival protects the diagnostic value from a future over-eager scrub. Would **not** be acceptable on a shared or operator-broadcast surface |
 | **M3-P7-OD-4** ✅ **RULED-ACCEPTED 2026-07-31** | Module 2's two report shapes disagree on null handling: the single-job report **omits** `provider_message_id`/`completed_at` when nil; `campaignItem` emits explicit **null** | §2.1. Module 3 inherits both | **Do not fix it.** A client distinguishing absent from null would break. Logged for Phase 8's interface comparison, where the whole family can be reconciled at once |
 | **M3-P7-OD-5** ✅ **RULED-ACCEPTED 2026-07-31** | `quote` gains a **required** `user_id` request field. Module 2's takes only `recipient_count` and its own comment concedes it therefore cannot resolve tenant context | §4.3. Every field in §4.2 is per-user, so module 3 cannot inherit the omission | **Add it as required.** Rule 5 governs response contracts; a new required **request** field is a coordinated platform change. Registered because the core four are meant to be **uniform** across modules, and this makes module 3's `quote` request diverge — a data point for the same comparison as §2.1 |
-| **M3-P7-OD-6** ✅ **RULED 2026-07-31** | §7's throttle aggregation needs the **recipient domain**, which lives in TTL'd `send_logs`. At default values the 1-hour window sits well inside the TTL — but the two are independently tunable | §7. A retention change silently truncates an operator diagnostic | **Denormalize the domain** onto `job_events.metadata` (or a dedicated column) so the aggregation does not depend on debug retention. Alternative: a load-time ordering invariant (`destination_throttle_window_sec` < the retention window) in the Rule 1 style. Either is fine; **"happens to work at the defaults" is not** — that is the *no silent caps* failure mode. **RULED: DENORMALIZE** — a dedicated `job_events.destination_domain` column with a partial index, and the aggregation never reads `send_logs`. Two recorded grounds: *"two config-ordering invariants already exist and both are recurring hazards; a column removes the dependency instead of adding a third guard"*, and decisively *"this diagnostic is the safeguard chosen INSTEAD of a per-destination cap, so it must not hinge on a debug-retention setting."* Applied in §7, `0044`, new test **T11** |
+| **M3-P7-OD-6** ✅ **RULED 2026-07-31** | §7's throttle aggregation needs the **recipient domain**, which lives in TTL'd `send_logs`. At default values the 1-hour window sits well inside the TTL — but the two are independently tunable | §7. A retention change silently truncates an operator diagnostic | **Denormalize the domain** onto `job_events.metadata` (or a dedicated column) so the aggregation does not depend on debug retention. Alternative: a load-time ordering invariant (`destination_throttle_window_sec` < the retention window) in the Rule 1 style. Either is fine; **"happens to work at the defaults" is not** — that is the *no silent caps* failure mode. **RULED: DENORMALIZE** — a dedicated `job_events.destination_domain` column with a partial index, and the aggregation never reads `send_logs`. Two recorded grounds: *"two config-ordering invariants already exist and both are recurring hazards; a column removes the dependency instead of adding a third guard"*, and decisively *"this diagnostic is the safeguard chosen INSTEAD of a per-destination cap, so it must not hinge on a debug-retention setting."* Applied in §7, `0045` (renumbered from `0044` by M3-P5-OD-7's cascade), new test **T11** |
 | **M3-P7-OD-7** ✅ **RULED-ACCEPTED 2026-07-31** | Should `notification_digest_window_sec` be per-user overridable (Phase 6's machinery makes it cheap)? | §8. A user wanting instant everything is a real request | **Not in V1.** Per-user notification preferences are a product feature with a UI and a preference model, not a config dial. Registered so that "Phase 6 made dials overridable" is not read as an invitation |
 | **M3-P7-OD-8** ✅ **RULED 2026-07-31** | The box-side scrub is correct only by **statement ordering that nothing enforces**: the report is assembled before `credential.zero()` in `stream.js`'s `finally`, and `scrubSecret` returns text **unchanged** on an already-zeroed buffer (`catch { return text; }`) | §9.1. Confirmed by the review pass, not introduced by it. The failure mode is **silent** — a scrub moved after the zero returns raw provider text and reports success. Harmless while the text went to a TTL'd table; not harmless once §1 points it at a user | **Assert the dependency, do not merely document it** (exit criterion 13): T1's control observes `scrubSecret` no-op'ing on a zeroed buffer. Optionally strengthen structurally — have `scrubSecret` **throw** rather than return the input when the buffer is zeroed, so the ordering bug becomes a crash instead of a leak. That is a module 2 behaviour change and therefore a ruling, not an implementation detail. **RULED: DO BOTH.** *"Fail-closed beats fail-silent on a credential path."* `scrubSecret` **throws** on a zeroed buffer, and the ordering is asserted. **Log it as a shared-code manifest divergence** (Phase 8 §7) — module 3's fails closed where module 2's returns its input. Safe under Rule 5 (the box reports no outcome; Brain reclaims by lease expiry rather than fabricating one) and Rule 6 (the zeroing `finally` still runs on the throw path). Applied in §9.1, new test **T10**, §12 criterion 13 |
 
-| **M3-P7-OD-9** ✅ **RULED (b) 2026-07-31** | **Phase 1's `0033` and Phase 7's `0044` both created `byosmtp.notification_severity` and `byosmtp.notifications`, with incompatible shapes** — severity vocabulary (`immediate`/`digest`/`info` vs `critical`/`warning`/`info`), column names (`condition_code`/`subject_kind` vs `condition`/`subject_type`), dedup predicate (open **and** undelivered vs merely uncleared), and Phase 7's `payload JSONB` / `notification_state`, which Phase 1 had no analogue for. Postgres rejects the duplicate outright, so the chain did not apply at all | §8's `0044`; Phase 1 §4.6 and §6's `0025`/`0033` rows; §§3.1/3.2/3.3, whose delivery loop reads whichever column set survives | **RULED (b): PHASE 7's SHAPE WINS, and `0033` is the SINGLE create site.** `0044` creates neither object; `notification_state` moves into `0025`. **On the merits, not by seniority:** §3.3's dedup re-notifies off `notified_at` and `notification_immediate_severities` defaults to `["critical"]`, both presuming severity and tier are **independent** axes — Phase 1's enum conflates them, so (c) would invalidate a seeded default and its consumer, and (a) would rename four columns plus rewrite an enum one phase after creating them, with **no `ALTER TYPE … RENAME VALUE`** available under Rule 5. **The ledger's (b) is applied in a CORRECTED form:** it said *strike `0033`'s objects entirely*, but module 2's runner **hard-errors on a chain gap** (`tools/sender-migrate/contiguity_test.go`), so striking `0033` leaves `0032 → 0034` and reproduces the very failure this item exists to fix — `0033` keeps its number, only its DDL changes, and Phase 1 loses no exit criterion. **Two Phase 1 constraints are CARRIED** (subject both-or-neither re-keyed to `subject_type`; `last_seen_at >= first_seen_at`) because the dispute was about vocabulary, not invariants; `occurrence_count` and `digest_id` are **dropped** — no Phase 7 behaviour reads either. Applied in §8, §12's new criterion 15, Phase 1 §4.6/§5.3/§6 |
+| **M3-P7-OD-9** ✅ **RULED (b) 2026-07-31** | **Phase 1's `0033` and Phase 7's `0044` (renumbered `0045` by M3-P5-OD-7's cascade) both created `byosmtp.notification_severity` and `byosmtp.notifications`, with incompatible shapes** — severity vocabulary (`immediate`/`digest`/`info` vs `critical`/`warning`/`info`), column names (`condition_code`/`subject_kind` vs `condition`/`subject_type`), dedup predicate (open **and** undelivered vs merely uncleared), and Phase 7's `payload JSONB` / `notification_state`, which Phase 1 had no analogue for. Postgres rejects the duplicate outright, so the chain did not apply at all | §8's `0045`; Phase 1 §4.6 and §6's `0025`/`0033` rows; §§3.1/3.2/3.3, whose delivery loop reads whichever column set survives | **RULED (b): PHASE 7's SHAPE WINS, and `0033` is the SINGLE create site.** `0045` creates neither object; `notification_state` moves into `0025`. **On the merits, not by seniority:** §3.3's dedup re-notifies off `notified_at` and `notification_immediate_severities` defaults to `["critical"]`, both presuming severity and tier are **independent** axes — Phase 1's enum conflates them, so (c) would invalidate a seeded default and its consumer, and (a) would rename four columns plus rewrite an enum one phase after creating them, with **no `ALTER TYPE … RENAME VALUE`** available under Rule 5. **The ledger's (b) is applied in a CORRECTED form:** it said *strike `0033`'s objects entirely*, but module 2's runner **hard-errors on a chain gap** (`tools/sender-migrate/contiguity_test.go`), so striking `0033` leaves `0032 → 0034` and reproduces the very failure this item exists to fix — `0033` keeps its number, only its DDL changes, and Phase 1 loses no exit criterion. **Two Phase 1 constraints are CARRIED** (subject both-or-neither re-keyed to `subject_type`; `last_seen_at >= first_seen_at`) because the dispute was about vocabulary, not invariants; `occurrence_count` and `digest_id` are **dropped** — no Phase 7 behaviour reads either. Applied in §8, §12's new criterion 15, Phase 1 §4.6/§5.3/§6 |
 
 **Inherited open decisions this phase depends on, not owned by it:**
 

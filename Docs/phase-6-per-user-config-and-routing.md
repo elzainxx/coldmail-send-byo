@@ -7,7 +7,13 @@
 what this document makes executable. Its four exit criteria are quoted verbatim in §11 and are not
 reinterpreted.
 
-**Migration numbers:** `0044` only, and it is a *small* one (§10). Phases 1–5 consumed `0025`–`0043`.
+**Migration numbers:** `0045` only, and it is a *small* one (§10). Phases 1–5 consumed `0025`–`0044`.
+
+> **Cascade note (2026-08-02, M3-P5-OD-7).** Phase 5's C2 (per-user suspend) needed a third
+> migration (`0044`, widening `account_events_action_check` for `'suspend'`/`'unsuspend'`),
+> unanticipated when Phase 5 was planned at two migrations. Phase 6's expected number shifts from
+> `0044` to `0045`, same reasoning as the M3-P3-OD-18/19 and M3-P4-OD-16 cascades before it. Full
+> reasoning: `Docs/open-decisions.md#m3-p5-od-7`.
 
 **The one-sentence scope.** Module 2 had one operator tuning a single global config. Module 3 has many
 users whose needs genuinely conflict — a 1-SMTP user and a 20-SMTP user cannot share one pacing
@@ -694,7 +700,7 @@ fail.
   appended to** (§1.4), or the manifest will assert the duplication Phase 6 exists to remove.
 - `api-contract.md` — the two new admin routes and the user-facing settings write. Module 2's
   `contract_drift` gate compares the served route set against this file, so an unlisted route fails CI.
-- The migration doc for `0044`.
+- The migration doc for `0045`.
 - `advisory-locks.md` — that `8_300_000_001` now also serializes override writes, and **why** it is the
   same lock rather than a new one (§4.4).
 
@@ -765,20 +771,20 @@ failure mode is invisible without it.
 
 ---
 
-## 10. Migration `0044`
+## 10. Migration `0045`
 
 Small, and it is worth naming what makes it small: the tables already exist (§0).
 
 | Migration | Contents | Down |
 |---|---|---|
-| `0044` | Whatever M3-P6-OD-2 requires — expected to be **nothing structural**. **M3-P6-OD-1 no longer contributes:** its ruling (§3.3) selects among lanes already in the in-memory register, so it persists nothing and adds no column | mirror |
+| `0045` | Whatever M3-P6-OD-2 requires — expected to be **nothing structural**. **M3-P6-OD-1 no longer contributes:** its ruling (§3.3) selects among lanes already in the in-memory register, so it persists nothing and adds no column | mirror |
 
 **Phase 6 may need no migration at all**, and after the OD-1 ruling that is now the *likely* outcome
 rather than merely the honest expectation: it is a code-and-boundary phase over Phase 1's schema, and
 the one open decision that could plausibly have demanded persisted state has been ruled in a direction
-that does not. If it needs none, `0044` is **not written** — an empty migration to fill a number is
-chain noise, and the next phase simply takes `0044`. Numbers are not reserved by being mentioned in a
-plan. **Phase 7 should therefore plan on `0044` being available.**
+that does not. If it needs none, `0045` is **not written** — an empty migration to fill a number is
+chain noise, and the next phase simply takes `0045`. Numbers are not reserved by being mentioned in a
+plan. **Phase 7 should therefore plan on `0045` being available.**
 
 ---
 

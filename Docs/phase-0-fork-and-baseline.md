@@ -500,8 +500,9 @@ document could have stated. Both corrected rows are marked inline above:
    consequence is the one this manifest exists to deliver: **a module 2 `smtp.js` bug no longer
    applies to module 3 unchanged.** Note the direction, because it is not symmetric — module 3 is
    strictly *more* fail-closed on the credential path.
-2. **A migration-resident function body is not covered by a file-based row.** Phase 7's `0044`
-   does a `CREATE OR REPLACE` on `fn_job_events_on_state_change` (M3-P7-OD-6). A function's live
+2. **A migration-resident function body is not covered by a file-based row.** Phase 7's `0045`
+   (renumbered from `0044` by M3-P5-OD-7's cascade) does a `CREATE OR REPLACE` on
+   `fn_job_events_on_state_change` (M3-P7-OD-6). A function's live
    definition is the **last** `CREATE OR REPLACE` in the chain — `sender_0022`, not the `sender_0008`
    that created it — so `git diff` on `sender_0008` returns empty and still tells you nothing about
    whether the function diverged. For SQL-resident logic the manifest row must name the **defining**

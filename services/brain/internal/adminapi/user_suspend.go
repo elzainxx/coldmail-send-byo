@@ -20,6 +20,17 @@ type suspendReq struct {
 	Reason *string `json:"reason"` // optional operator note (internal; never echoed in an error)
 }
 
+// reinstateCampaignsSQL is §7's self-referential reinstate UPDATE, verbatim — named so T14
+// (user_suspend_race_test.go) can drive the EXACT production statement from a second connection to
+// force a genuine interleave, rather than a duplicated copy that could silently drift from this one.
+const reinstateCampaignsSQL = `
+UPDATE byosmtp.campaigns
+   SET expires_at = expires_at + (NOW() - clock_paused_at),
+       paused_total_sec = paused_total_sec + EXTRACT(EPOCH FROM (NOW() - clock_paused_at))::bigint,
+       clock_paused_at = NULL,
+       updated_at = NOW()
+ WHERE user_id = $1 AND clock_paused_at IS NOT NULL`
+
 // handleUserSuspend: POST /v1/admin/users/{id}/suspend. Idempotent-refusing (already-suspended is
 // a 422, not a silent no-op — mirrors the account-lifecycle transitions' own precondition
 // discipline, §7's own "manual quarantine" precedent). §7: pauses the user's live campaigns'
@@ -160,14 +171,10 @@ func (s *Server) handleUserUnsuspend(w http.ResponseWriter, r *http.Request) {
 	// guard (see the doc comment above and §13's review finding). A campaign the user reinstated
 	// TWICE concurrently: the loser's WHERE no longer matches (clock_paused_at is already NULL
 	// from the winner's commit) → 0 rows affected → no error, no double-credit — T14's own
-	// assertion.
-	if _, err := tx.Exec(ctx,
-		`UPDATE byosmtp.campaigns
-		    SET expires_at = expires_at + (NOW() - clock_paused_at),
-		        paused_total_sec = paused_total_sec + EXTRACT(EPOCH FROM (NOW() - clock_paused_at))::bigint,
-		        clock_paused_at = NULL,
-		        updated_at = NOW()
-		  WHERE user_id = $1 AND clock_paused_at IS NOT NULL`, userID); err != nil {
+	// assertion. Extracted to a named const (reinstateCampaignsSQL) so T14
+	// (user_suspend_race_test.go) can drive the IDENTICAL production statement directly from a
+	// second connection to force the exact interleave, rather than duplicating it.
+	if _, err := tx.Exec(ctx, reinstateCampaignsSQL, userID); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "clock_reinstate_error: "+err.Error()))
 		return
 	}

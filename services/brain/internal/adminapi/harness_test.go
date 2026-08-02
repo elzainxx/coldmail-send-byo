@@ -36,14 +36,19 @@ const testKeyID = "cred-dek-test"
 // bearer key, the harness-held AES key (same the server encrypts with) + its id, an admin
 // connection for direct DB truth, and the clone DSN.
 type testEnv struct {
-	baseURL  string
-	adminKey string
-	key      []byte // 32-byte AES-256 key held by the harness AND the server (dev single-key)
-	admin    *pgx.Conn
-	pool     *pgxpool.Pool
-	logBuf   *syncBuffer
-	cloneDSN string
+	baseURL      string
+	adminKey     string
+	key          []byte // 32-byte AES-256 key held by the harness AND the server (dev single-key)
+	admin        *pgx.Conn
+	pool         *pgxpool.Pool
+	logBuf       *syncBuffer
+	cloneDSN     string
+	moduleDSNraw string // for tests that need their OWN pgxpool.Pool (genuine multi-connection concurrency)
 }
+
+// moduleDSN returns the env's byosmtp_module DSN so a test can open additional, independent
+// connections — genuine concurrency, never simulated on one shared pool (CLAUDE.md Rule 3).
+func (e *testEnv) moduleDSN() string { return e.moduleDSNraw }
 
 // newTestEnv clones the template, builds a real Server (pool as byosmtp_module, Encrypt-only
 // Encryptor with a fresh key), and starts an httptest server. Registers all cleanup.
@@ -105,13 +110,14 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 	t.Cleanup(ts.Close)
 
 	return &testEnv{
-		baseURL:  ts.URL,
-		adminKey: adminKey,
-		key:      key,
-		admin:    admin,
-		pool:     pool,
-		logBuf:   logBuf,
-		cloneDSN: cloneDSN,
+		baseURL:      ts.URL,
+		adminKey:     adminKey,
+		key:          key,
+		admin:        admin,
+		pool:         pool,
+		logBuf:       logBuf,
+		cloneDSN:     cloneDSN,
+		moduleDSNraw: moduleDSN,
 	}
 }
 

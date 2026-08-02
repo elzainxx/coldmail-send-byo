@@ -290,3 +290,25 @@ Phase 5 `0042`–`0043`; Phase 6 `0044` **only if needed**; Phase 7 `0044`. Ever
 "Migration numbers:" header was updated in the same change as each finding, per this file's own
 standing convention — this addendum records the chain's CURRENT state without rewriting the historical
 table above, which remains an accurate record of what was true on 2026-07-31.
+
+---
+
+## Addendum, 2026-08-02 — a FOURTH cascade, during Phase 5's own build
+
+The chain stated at the close of the previous addendum (P5 `0042`–`0043`, P6 `0044` only if needed, P7
+`0044`) is **superseded** by a fourth build-time finding, the same precedent class as the three above —
+found while implementing, ruled the same day (**M3-P5-OD-7**), the whole later chain shifted +1 while
+the numbers downstream were still planning text rather than files on disk:
+
+- **M3-P5-OD-7** (2026-08-02): Phase 5's C2 (per-user suspend) needed a third migration widening
+  `account_events_action_check` with `'suspend'`/`'unsuspend'`, unanticipated when Phase 5 was planned
+  at two migrations (the same class of gap as `0034`/`0041`'s own CHECK widens, and the fourth instance
+  of this exact cascade shape after M3-P3-OD-18, M3-P3-OD-19, and M3-P4-OD-16). Phase 5 took `0044`
+  (already written and applied as `db/migrations/byosmtp_0044_account_events_suspend_action.{up,down}.sql`
+  — not renumbered, since it is already on disk); everything from Phase 6 onward shifted +1.
+
+**The chain as of this addendum:** Phase 1 `0025`–`0034`; Phase 3 `0035`–`0038`; Phase 4 `0039`–`0041`;
+Phase 5 `0042`–`0044`; Phase 6 `0045` **only if needed**; Phase 7 `0045`. Every phase doc's own
+"Migration numbers:" header was updated in the same change as this finding, per this file's own
+standing convention — this addendum records the chain's CURRENT state without rewriting either
+historical table above, both of which remain accurate records of what was true when each was written.

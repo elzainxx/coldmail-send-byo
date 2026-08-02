@@ -146,6 +146,82 @@ func TestShadowMode_OffDisablesDecisionEntirely(t *testing.T) {
 	}
 }
 
+// TestShadowMode_T9_FailureRateTriggerNamedCorrectly — Module 3 Phase 5 §8.2/T9: shadow mode names
+// the SAME trigger vocabulary a real quarantine would use, for the failure_rate trigger
+// specifically (the auth_failure case is already covered above; this proves shadow mode
+// genuinely evaluates ALL three §1.4 branches, not just the one branch the inherited test
+// happened to exercise before this phase added the other two).
+func TestShadowMode_T9_FailureRateTriggerNamedCorrectly(t *testing.T) {
+	e := newDispatchEnv(t, "shadowrate")
+	ctx := context.Background()
+	e.setConfigInt(t, "quarantine_min_sample", 4)
+	e.setConfigInt(t, "quarantine_failure_rate_pct", 50)
+	e.setConfigInt(t, "quarantine_consecutive_threshold", 1000) // keep the streak trigger out of the way
+	e.setConfigStr(t, "autoquarantine_mode", "shadow")
+	userID := e.seedUser(t, "shadowrate@example.com")
+	acct := e.seedAccountForUser(t, userID, "sec")
+
+	// Alternate success/failure to cross quarantine_min_sample at exactly 50% — the rate trigger's
+	// own condition, deliberately avoiding a consecutive streak (mirrors T1's own driving pattern).
+	for i := 0; i < 8; i++ {
+		job := e.seedQueuedJobFor(t, userID, "shadowrate@example.com")
+		e.dispatchToSending(t, job)
+		if i%2 == 0 {
+			e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeAccepted, ProviderMessageID: "shadowrate-" + job})
+		} else {
+			e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeError, SMTPResponse: "451 4.3.0 temporary local error"})
+		}
+		e.px.freeAllBoxes()
+	}
+
+	_, quarantined, _ := e.accountFlagsNow(t, acct)
+	if quarantined {
+		t.Fatal("account WAS quarantined under autoquarantine_mode=shadow — shadow must decide without acting")
+	}
+	var reason string
+	if err := e.admin.QueryRow(ctx,
+		`SELECT reason FROM byosmtp.account_events
+		  WHERE account_id=$1 AND actor='system' AND reason LIKE 'shadow_would_quarantine:%'
+		  ORDER BY created_at DESC LIMIT 1`, acct).Scan(&reason); err != nil {
+		t.Fatalf("read shadow event: %v", err)
+	}
+	if !containsAll(reason, "trigger=failure_rate") {
+		t.Fatalf("shadow event reason=%q, want trigger=failure_rate (§8.2's own vocabulary, this trigger specifically)", reason)
+	}
+}
+
+// TestShadowMode_T9c_UnrecognizedModeFallsBackToShadowNeverEnforce — the inherited defensive
+// branch, re-asserted because Phase 5 changed the function it lives in (quarantineDecision's
+// signature grew from a bool to a §1.4 reason). A bad config value must NEVER silently gain the
+// ability to act.
+func TestShadowMode_T9c_UnrecognizedModeFallsBackToShadowNeverEnforce(t *testing.T) {
+	e := newDispatchEnv(t, "shadowbadmode")
+	ctx := context.Background()
+	acct := e.seedAccount(t, "sec-badmode")
+	job := e.seedQueuedJob(t, "badmode@example.com")
+	// A value outside the enum's three recognized strings — bypasses the admin write-path
+	// validator entirely (a raw SQL write, simulating a value that reached the table by some other
+	// path than a validated PUT, e.g. a direct write or a pre-validation-era row).
+	e.setConfigStr(t, "autoquarantine_mode", "not_a_real_mode")
+
+	e.dispatchToSending(t, job)
+	e.oh.Handle(e.px.boxID, boxproto.Report{JobID: job, Outcome: boxproto.OutcomeError,
+		SMTPResponse: "535 5.7.8 Authentication credentials invalid"})
+
+	_, quarantined, _ := e.accountFlagsNow(t, acct)
+	if quarantined {
+		t.Fatal("account WAS quarantined under an UNRECOGNIZED autoquarantine_mode value — a bad value must degrade to shadow, never gain the ability to act")
+	}
+	var n int
+	if err := e.admin.QueryRow(ctx,
+		`SELECT count(*) FROM byosmtp.account_events WHERE account_id=$1 AND reason LIKE 'shadow_would_quarantine:%'`, acct).Scan(&n); err != nil {
+		t.Fatalf("count shadow events: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("shadow observation rows=%d under an unrecognized mode, want exactly 1 (the mode still decides-without-acting, per the shadow default)", n)
+	}
+}
+
 // TestKillSwitch_AutopauseDisablesOnlyAutopause (O3) — autopause_enabled=false means a throttle
 // outcome does NOT pause the account, while auto-quarantine (a DIFFERENT condition, unaffected by
 // this switch) still fires normally — proving the kill-switch is scoped to its own subsystem.
