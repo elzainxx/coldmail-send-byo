@@ -769,6 +769,40 @@ produced real corrections to this document (§3.2's grow direction, §3.5's inve
 premise. What remains is that **a spec review is not a test run** — T7 is still owed, and §3.2's
 failure mode is invisible without it.
 
+### 9.2 The post-implementation review — the same question, against the landed code
+
+**Run 2026-08-02**, after C1+C2's implementation and all T1-T11 landed (not the spec — §9.1 reviewed
+the spec; this reviews `loop.go`/`pacing.go` as actually written). One scoped agent, adversarial,
+against the single question the brief's own trigger names: *can a concurrent override change still
+produce an inconsistent effective value mid-dispatch, despite the resolve-once-per-tick fix?*
+
+**Verdict: CLOSED.** No gap found. Independently spot-checked in tree afterward (not merely accepted
+on the agent's say-so, per CLAUDE.md Rule 11) against its three most load-bearing claims:
+
+- **Exactly two `userconfig.Resolve` call sites exist** in `services/brain` (`loop.go:124`,
+  `platformapi/store.go:201` — a different unit of work, campaign creation, never touching the
+  pacer). `grep -rn "userconfig\.Resolve\("` confirms. `TryDispatch` (the legacy Phase-3 single-shot
+  primitive, exercised only by its own tests, not wired into production) never calls `Resolve` and
+  never touches `d.pace` — confirmed by `grep "pace\." dispatch.go` returning nothing.
+- **`Tick()` calls are strictly serialized**, not merely mutex-guarded: `Runner.Run` (`runner.go:52-67`)
+  is a single-goroutine `for { select { ...; r.tick(ctx) } }` loop, so there is no cross-goroutine race
+  on `d.pace` independent of the pacer's own internal lock.
+- **`routing_strategy` is a genuine, ruled exception, not a gap.** `selectAccountForJob`
+  (`eligibility.go:234-260`) calls `userRoutingStrategy` fresh **per job**, inside the claimed-batch
+  loop — so two jobs in the same tick's batch for a self-service (non-admin) strategy change CAN see
+  different strategies. This is M3-P6-OD-3's own ruling (§5.2: folding the read into `Resolve` was
+  explicitly rejected, "one function reading both tables is one refactor from one function writing
+  both") — a documented asymmetry that never touches concurrency/pacing/eligibility, not a defect the
+  resolve-once-per-tick fix was ever meant to close.
+- **T7/T7-control/T8/T8-control force real contention**, not timing luck: `recordingPusher.onPush`
+  fires synchronously inside `PushJob`, exactly between Phase B's `Admit` and Phase D's `Stamp` — no
+  sleeps, satisfying Rule 10.
+
+Merge recommendation from the review: **APPROVE**. Exit criterion 9's dispatch-hot-path trigger is now
+fully discharged — the spec-level review (§9.1) and this implementation-level review (§9.2) are the
+two, and neither substitutes for the other, per the same "review vs. test" distinction §9.1 already
+drew.
+
 ---
 
 ## 10. Migration `0045`
@@ -822,7 +856,11 @@ The build plan's four, verbatim, plus what this document adds:
 9. **The §9-check-4 agent review has run** and its findings are discharged or registered — **done
    2026-07-30, §9.1.** Three questions, three answers, two corrections folded into this document
    (§3.2's grow direction, §3.5's state inventory). This criterion covers the *review*; the behaviour
-   it examined is still owed a test (T7), and the two are not interchangeable.
+   it examined is still owed a test (T7), and the two are not interchangeable. **Post-implementation
+   half done 2026-08-02, §9.2:** the brief's own trigger ("does override resolution land in the
+   dispatch hot path? then review whether a concurrent change can produce an inconsistent value")
+   re-run against the landed `loop.go`/`pacing.go`, not the spec. Verdict CLOSED, spot-checked in
+   tree, no gap.
 10. **M3-P6-OD-1's ruling is implemented and tested** — ✅ ruled 2026-07-30 (§3.3), **landed
     2026-08-02**: `normalize` drops the most-ready lanes and keeps the ones still owing cooldown,
     selected by value rather than slice position (`pacing.go`). All three required: the code matches
