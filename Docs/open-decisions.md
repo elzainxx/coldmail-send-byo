@@ -594,6 +594,30 @@ pool CTE to a user-scoped account-existence check exactly as `queryWaitingForCap
 and the real account-set rewrite (plus `TestCampaignReport_WaitingForCapacityDistinctFromFailed`'s
 update) lands at G3 alongside the rest of the `accounts_exhausted` work.
 
+**G3 landed 2026-08-02, not at G3's own close — found still-stubbed by Phase 6's mechanical
+landing check.** G3 closed (`67ae8c3`) without executing this ruling's own "G3 rewrites for real"
+half: `health_store.go`'s `queryWaitingForCapacity`/`queryPoolHeadroom` and
+`campaign_report.go`'s `campaignTotals` were still running the G2-era stub/no-op when this was
+found — a genuine, not merely cosmetic, gap (`CLAUDE.md`'s own status header claimed G3 was
+closed while the code contradicted it). Landed:
+- `health_store.go`: `queryWaitingForCapacity` now uses the real §4.1 predicate
+  (`eligibleAccountFilterTerms`, shared with the new per-user headroom query) instead of "has any
+  account row." `queryPoolHeadroom` is replaced (not revived) by `queryUserHeadroom` — a per-USER
+  breakdown (`{user_id, eligible_accounts, headroom}`), since there are no pools to report on
+  anymore; the wire field renames `pools[]` → `users[]` in the same commit (a pre-announced shape
+  change, per `api-contract.md`'s own G2-stub row: "a G3 account-set-aware replacement is
+  expected, at which point this row will change again").
+- `campaign_report.go`: `campaignTotals`'s `waiting_for_capacity` now uses the identical real
+  predicate via its own package-isolated copy, `campaignEligibleAccountsSubquery`.
+- New anti-vacuity tests on both surfaces, each proving the real rewrite catches what the stub
+  structurally could not: a user whose ONLY account is quarantined (a real account ROW exists, but
+  zero eligible accounts) — `TestHealth_WaitingForCapacityIsRealEligibilityNotJustAnyAccount` and
+  `TestCampaignReport_WaitingForCapacityIsRealEligibility`. The pre-existing
+  `TestHealth_ReportsTrueStateUnderKnownMix` and `TestCampaignReport_WaitingForCapacityDistinctFromFailed`
+  tests were updated (not merely re-passed) to assert the new `users[]` shape and real values.
+- `api-contract.md`, `operator-runbook.md` updated in the same change. Green on real infra, full
+  `adminapi`+`platformapi` package suites, no regressions.
+
 ---
 
 ## M3-P2-OD-13 — RULED 2026-08-01: the docs-dependents sweep names four MORE docs Phase 1 §2.1 missed

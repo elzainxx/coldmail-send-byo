@@ -32,7 +32,7 @@ type healthSnapshot struct {
 
 	Accounts accountCounts
 
-	Pools []poolHeadroom
+	Users []userHeadroom
 
 	ErrorsLastWindow map[string]int
 
@@ -64,9 +64,11 @@ type accountCounts struct {
 	AtDailyLimit int
 }
 
-type poolHeadroom struct {
-	PoolID           string
-	Kind             string
+// userHeadroom is the G3 REAL REWRITE (M3-P2-OD-12) of the pre-G2 per-pool poolHeadroom shape,
+// now per-user — see queryUserHeadroom's own comment for why the account set an operator cares
+// about is now a user's accounts, not a pool's.
+type userHeadroom struct {
+	UserID           string
 	EligibleAccounts int
 	Headroom         string // "ok" | "exhausted"
 }
@@ -130,11 +132,11 @@ func buildHealthSnapshot(ctx context.Context, db *pgxpool.Pool, windowSec int, d
 	}
 	snap.Accounts = a
 
-	pools, err := queryPoolHeadroom(ctx, db)
+	users, err := queryUserHeadroom(ctx, db)
 	if err != nil {
 		return snap, err
 	}
-	snap.Pools = pools
+	snap.Users = users
 
 	errs, err := queryErrorsInWindow(ctx, db, windowSec)
 	if err != nil {
@@ -208,22 +210,66 @@ func queryQueueCounts(ctx context.Context, db *pgxpool.Pool) (queueCounts, error
 	return q, nil
 }
 
-// queryWaitingForCapacity counts QUEUED jobs whose owning user has NO account at all.
-//
-// G2 STUB (M3-P2-OD-12): the pre-G2 version resolved each user's visible POOLS (dedicated owned +
-// shared) and checked eligibility across them. byosmtp.pools is dropped by this phase's own
-// migrations, so that query cannot survive unmodified — this is a structurally-correct interim
-// ("does this user have any account at all"), not yet the full eligible-account-set semantics.
-// The real accounts_exhausted rewrite (M3-P2-OD-3) lands at G3, alongside userRoutingStrategy's
-// real user_settings read — mirroring dispatch/exhaustion.go's own userHasAnyAccount stub-then-
-// rewrite split at G1/G3.
+// eligibleAccountFilterTerms is the real §4.1 eligibility predicate's TERMS ONLY (no correlation,
+// no SELECT wrapper) — internal/dispatch/eligibility.go's accountBaseEligibilityFilter plus
+// userHasEligibleQueryTmpl's daily-reset/throttle cycle logic (which accounts are still cooling
+// down vs. eligible again today), reproduced exactly rather than approximated as "has any account
+// row." Every reference to `a.` is the byosmtp.accounts row under test; the three placeholders
+// bind to whichever positional params the ENCLOSING query assigns them to (documented at each call
+// site below) — kept term-only, not a full subquery, so both an EXISTS-correlated caller
+// (queryWaitingForCapacity) and a GROUP-BY caller (queryUserHeadroom) can embed it without
+// disagreeing on shape. adminapi does not import internal/dispatch (structural package isolation,
+// OD-7's precedent), so this is duplicated here as SQL — cross-reference this comment if
+// eligibility.go's predicate ever gains a term, since this copy does not follow automatically.
+func eligibleAccountFilterTerms(tzParam, throttleParam, hourParam string) string {
+	return `a.quarantined = FALSE
+      AND a.disabled = FALSE
+      AND a.deleted_at IS NULL
+      AND a.credential_verification_state = 'verified'
+      AND (a.from_verification_state = 'aligned'
+           OR (a.from_verification_state = 'unaligned_warned'
+               AND a.from_warning_acknowledged_at IS NOT NULL
+               AND a.from_warning_acknowledged_for = a.from_verdict_fingerprint))
+      AND (
+            (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * ` + hourParam + `) AT TIME ZONE ` + tzParam + `)::date
+                AND (a.paused = FALSE
+                     OR a.pause_reason = 'daily_limit'
+                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * ` + throttleParam + `)))
+            OR
+            (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * ` + hourParam + `) AT TIME ZONE ` + tzParam + `)::date
+                AND (a.paused = FALSE
+                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * ` + throttleParam + `))
+                AND a.daily_sent_count < a.daily_limit)
+          )`
+}
+
+// queryWaitingForCapacity counts QUEUED jobs whose owning user currently has ZERO eligible
+// accounts — the real §4.1 eligibility predicate (eligibleAccountFilterTerms), not merely "has any
+// account row." G3 REAL REWRITE (M3-P2-OD-12).
 func queryWaitingForCapacity(ctx context.Context, db *pgxpool.Pool) (int, error) {
-	const q = `
+	tz, err := readConfigString(ctx, db, "daily_reset_timezone")
+	if err != nil {
+		return 0, err
+	}
+	throttleSec, err := readConfigInt(ctx, db, "throttle_pause_seconds")
+	if err != nil {
+		return 0, err
+	}
+	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
+	if err != nil {
+		return 0, err
+	}
+	q := `
 SELECT COUNT(*) FROM byosmtp.jobs j
  WHERE j.state = 'queued'
-   AND NOT EXISTS (SELECT 1 FROM byosmtp.accounts a WHERE a.user_id = j.user_id)`
+   AND NOT EXISTS (
+       SELECT 1 FROM byosmtp.accounts a
+       WHERE a.user_id = j.user_id AND ` + eligibleAccountFilterTerms("$1", "$2", "$3") + `
+   )`
 	var n int
-	if err := db.QueryRow(ctx, q).Scan(&n); err != nil {
+	if err := db.QueryRow(ctx, q, tz, throttleSec, hour).Scan(&n); err != nil {
 		return 0, err
 	}
 	return n, nil
@@ -345,13 +391,57 @@ func queryAccountCounts(ctx context.Context, db *pgxpool.Pool) (accountCounts, e
 	return a, err
 }
 
-// queryPoolHeadroom is a G2 STUB (M3-P2-OD-12): always an empty array. Its subject, byosmtp.pools,
-// is dropped by this phase's own migrations — the per-pool headroom concept has no replacement at
-// G2 (unlike queryWaitingForCapacity, which gets a structurally-correct interim). §3.2's "an empty
-// array, never a null field" contract is preserved so healthResponse.Pools stays well-shaped.
-// The account-set-aware replacement is G3 scope.
-func queryPoolHeadroom(ctx context.Context, db *pgxpool.Pool) ([]poolHeadroom, error) {
-	return []poolHeadroom{}, nil
+// queryUserHeadroom is the G3 REAL REWRITE (M3-P2-OD-12) of the pre-G2 per-POOL headroom query,
+// now per-USER: with byosmtp.pools dropped, the account set an operator cares about IS a user's
+// own accounts, so this reports, per user with at least one QUEUED job right now (bounding the
+// array to operator-relevant rows rather than every user who ever existed), how many of their
+// accounts are currently eligible and a clean ok/exhausted label. Uses the SAME
+// eligibleAccountFilterTerms queryWaitingForCapacity uses, applied per-user as a COUNT instead of
+// an EXISTS, so "eligible_accounts" here and "waiting_for_capacity" can never disagree about what
+// "eligible" means — the identical guarantee the pre-G2 pool version made for pools. §3.2's "an
+// empty array, never a null field" contract is preserved.
+func queryUserHeadroom(ctx context.Context, db *pgxpool.Pool) ([]userHeadroom, error) {
+	tz, err := readConfigString(ctx, db, "daily_reset_timezone")
+	if err != nil {
+		return nil, err
+	}
+	throttleSec, err := readConfigInt(ctx, db, "throttle_pause_seconds")
+	if err != nil {
+		return nil, err
+	}
+	hour, err := readConfigInt(ctx, db, "daily_reset_hour")
+	if err != nil {
+		return nil, err
+	}
+	q := `
+SELECT qu.user_id::text,
+       COUNT(a.id) FILTER (WHERE ` + eligibleAccountFilterTerms("$1", "$2", "$3") + `) AS eligible
+FROM (SELECT DISTINCT user_id FROM byosmtp.jobs WHERE state = 'queued') qu
+LEFT JOIN byosmtp.accounts a ON a.user_id = qu.user_id
+GROUP BY qu.user_id
+ORDER BY qu.user_id`
+	rows, err := db.Query(ctx, q, tz, throttleSec, hour)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []userHeadroom{}
+	for rows.Next() {
+		var uh userHeadroom
+		if err := rows.Scan(&uh.UserID, &uh.EligibleAccounts); err != nil {
+			return nil, err
+		}
+		if uh.EligibleAccounts > 0 {
+			uh.Headroom = "ok"
+		} else {
+			uh.Headroom = "exhausted"
+		}
+		out = append(out, uh)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // queryErrorsInWindow is COUNT job_events GROUP BY error_class within the trailing window (§3.2

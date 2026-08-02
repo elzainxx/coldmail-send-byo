@@ -230,11 +230,11 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
 | `dispatch.send_rate_per_min` | float | derived from the two above |
 | `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `byosmtp.jobs` — one field per `job_state` |
-| `queue.waiting_for_capacity` | int | **G2 interim (M3-P2-OD-12):** queued jobs whose owning user has NO account at all. The full eligible-account-set semantics land at G3. **Not an error state** |
+| `queue.waiting_for_capacity` | int | **G3 real rewrite (M3-P2-OD-12):** queued jobs whose owning user has ZERO currently-ELIGIBLE accounts — the real predicate (quarantined/disabled/deleted/credential-unverified/from-misaligned accounts excluded; the daily-reset/throttle cycle logic applied), not merely "has any account row." **Not an error state** |
 | `boxes.{active,stale,disabled}` | int | counts by `box_status` |
 | `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
 | `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
-| `pools[]` | array | **G2 stub (M3-P2-OD-12): always empty.** Pre-G2 shape was `{pool_id, kind, eligible_accounts, headroom}`; the byosmtp.pools table this fed on is dropped by G2's own migrations. A G3 account-set-aware replacement is expected, at which point this row will change again |
+| `users[]` | array | **G3 real rewrite (M3-P2-OD-12), REPLACES the pre-G2 `pools[]` field (pre-announced at G2: "a G3 account-set-aware replacement is expected, at which point this row will change again").** `{user_id, eligible_accounts, headroom}` — one row per user with at least one QUEUED job right now, `eligible_accounts` counting the same real predicate `queue.waiting_for_capacity` uses, `headroom` = `"ok"` \| `"exhausted"`. There are no pools in module 3; the account set an operator cares about is a user's own accounts |
 | `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys. Counts **error transitions only** — see the note below |
 | `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
 | `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |

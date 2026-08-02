@@ -46,7 +46,7 @@ type healthResponse struct {
 		AtDailyLimit int `json:"at_daily_limit"`
 	} `json:"accounts"`
 
-	Pools []poolHeadroomJSON `json:"pools"`
+	Users []userHeadroomJSON `json:"users"`
 
 	ErrorsLastWindow map[string]int `json:"errors_last_window"`
 
@@ -59,9 +59,14 @@ type healthResponse struct {
 	ActiveConditions []activeConditionJSON `json:"active_conditions"`
 }
 
-type poolHeadroomJSON struct {
-	PoolID           string `json:"pool_id"`
-	Kind             string `json:"kind"`
+// userHeadroomJSON is the G3 REAL REWRITE (M3-P2-OD-12) of the pre-G2 per-pool wire shape,
+// now per-user — see health_store.go's queryUserHeadroom for the rationale. Wire-contract note:
+// this is a documented, pre-announced shape change (api-contract.md's own G2-stub row already
+// said "a G3 account-set-aware replacement is expected, at which point this row will change
+// again"), not an undisclosed break — the field is also renamed pools->users in the same commit
+// so a client cannot mistake the new per-user rows for the old per-pool ones.
+type userHeadroomJSON struct {
+	UserID           string `json:"user_id"`
 	EligibleAccounts int    `json:"eligible_accounts"`
 	Headroom         string `json:"headroom"`
 }
@@ -157,10 +162,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Accounts.Disabled = snap.Accounts.Disabled
 	resp.Accounts.AtDailyLimit = snap.Accounts.AtDailyLimit
 
-	resp.Pools = make([]poolHeadroomJSON, 0, len(snap.Pools))
-	for _, p := range snap.Pools {
-		resp.Pools = append(resp.Pools, poolHeadroomJSON{
-			PoolID: p.PoolID, Kind: p.Kind, EligibleAccounts: p.EligibleAccounts, Headroom: p.Headroom,
+	resp.Users = make([]userHeadroomJSON, 0, len(snap.Users))
+	for _, u := range snap.Users {
+		resp.Users = append(resp.Users, userHeadroomJSON{
+			UserID: u.UserID, EligibleAccounts: u.EligibleAccounts, Headroom: u.Headroom,
 		})
 	}
 

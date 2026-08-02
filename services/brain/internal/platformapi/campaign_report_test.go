@@ -32,6 +32,31 @@ func (e *testEnv) seedEligibleAccount(t *testing.T, userID string) string {
 	return id
 }
 
+// seedIneligibleAccount inserts a real, quarantined account owned by userID — a genuine account
+// ROW exists, but it is not eligible. Used by TestCampaignReport_WaitingForCapacityIsRealEligibility
+// to distinguish "no account at all" (seedEligibleAccount's absence) from "has an account, but it
+// cannot send" — the G2-era stub ("does this user have any account row") could not tell these
+// apart; the G3 rewrite (M3-P2-OD-12) must.
+func (e *testEnv) seedIneligibleAccount(t *testing.T, userID string) string {
+	t.Helper()
+	var id string
+	if err := e.admin.QueryRow(bgctx(),
+		`INSERT INTO byosmtp.accounts
+		   (user_id, smtp_host, smtp_port, smtp_username,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address, from_name,
+		    quarantined, quarantine_reason,
+		    credential_verification_state, credential_verified_at,
+		    from_verification_state, from_checked_at)
+		 VALUES ($1,'smtp-sink',587,'u@ourdomain.com',
+		         '\x00','test-key','\x00','u@ourdomain.com','Tester',
+		         TRUE, 'manual',
+		         'verified',NOW(),'aligned',NOW())
+		 RETURNING id`, userID).Scan(&id); err != nil {
+		t.Fatalf("seed ineligible account: %v", err)
+	}
+	return id
+}
+
 // campaignJobRow inserts one byosmtp.jobs row directly under campaignID/userID, bypassing
 // createJob (this test needs full control of the mix of states, including terminal ones
 // handleRun/handleReport never produce on their own). The genesis job_events row (sender_0008's
@@ -184,6 +209,31 @@ func TestCampaignReport_WaitingForCapacityDistinctFromFailed(t *testing.T) {
 	}
 	if p, ok := totalsWithAccount["pending"].(float64); !ok || p != 1 {
 		t.Errorf("with-account campaign pending=%v, want 1: %s", totalsWithAccount["pending"], respWithAccount.raw)
+	}
+}
+
+// TestCampaignReport_WaitingForCapacityIsRealEligibility (M3-P2-OD-12's G3 rewrite, anti-vacuity)
+// — a user whose ONLY account is quarantined has a real account ROW, but zero eligible accounts.
+// The G2-era stub ("does this user have any account at all") would have wrongly reported
+// waiting_for_capacity=0 for this campaign (the account row exists, so the stub's own EXISTS test
+// would have passed) — the real rewrite must report waiting_for_capacity=1. Distinguishes this
+// case from TestCampaignReport_WaitingForCapacityDistinctFromFailed's "no account at all" case,
+// which alone cannot tell "has an account" apart from "has an ELIGIBLE account."
+func TestCampaignReport_WaitingForCapacityIsRealEligibility(t *testing.T) {
+	e := newTestEnv(t, "campwaitingreal")
+	userIneligible := e.seedUser(t, "waitingreal-ineligible@example.com")
+	campaignIneligible := e.newCampaignID(t)
+
+	e.seedIneligibleAccount(t, userIneligible)
+	e.campaignJobRow(t, campaignIneligible, userIneligible, "queued")
+
+	resp := e.do(t, "GET", "/v1/report?campaign_id="+campaignIneligible+"&user_id="+userIneligible, nil).requireStatus(t, 200)
+	totals := resp.body["totals"].(map[string]any)
+	if w, ok := totals["waiting_for_capacity"].(float64); !ok || w != 1 {
+		t.Fatalf("waiting_for_capacity=%v, want 1 (the only account is quarantined, not eligible) — a stub reading 'has any account row' would report 0 here: %s", totals["waiting_for_capacity"], resp.raw)
+	}
+	if p, ok := totals["pending"].(float64); !ok || p != 0 {
+		t.Fatalf("pending=%v, want 0 (the queued job is waiting, not plain-pending): %s", totals["pending"], resp.raw)
 	}
 }
 

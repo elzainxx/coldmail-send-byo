@@ -464,15 +464,17 @@ how you calibrate `quarantine_threshold` *before* handing the decision real auth
 
 ## No eligible account / waiting for capacity
 
-### `waiting_for_capacity` is not an error — and right now it is a simplified signal
+### `waiting_for_capacity` is not an error — and it is the real eligibility check
 
-`queue.waiting_for_capacity` counts queued jobs whose owning user currently has **no account at
-all**. That is a deliberately narrow, interim check: it does **not** distinguish quarantined,
-disabled, paused, or at-daily-limit accounts from a genuinely empty account set. A user with five
-quarantined accounts and zero healthy ones will **not** show up in this counter, even though every
-one of their jobs is stuck. The richer per-account-set eligibility signal is future work — for that
-finer breakdown today, use [Step 5](#step-5--does-the-user-have-an-eligible-account)'s per-account
-query against the specific `user_id` you are chasing.
+`queue.waiting_for_capacity` counts queued jobs whose owning user currently has **zero eligible
+accounts** — the real predicate: quarantined, disabled, soft-deleted, credential-unverified, and
+from-misaligned accounts are all structurally excluded, and the daily-reset/throttle cycle logic
+(which accounts are still cooling down vs. eligible again today) is applied exactly as the
+dispatcher's own per-tick check applies it. A user with five quarantined accounts and zero healthy
+ones DOES show up here, correctly — this is not the narrow "any account row" check it once was.
+
+`users[]` (alongside `queue.waiting_for_capacity`) names exactly which users: any row with
+`headroom: "exhausted"` is a user whose queued jobs are counted in that number.
 
 Whatever the counter shows, treat it as a *capacity* signal, not a fault:
 
@@ -493,7 +495,7 @@ So a setup gap (no account yet) costs you delay, not data.
 ### What to check
 
 ```bash
-ahealth | jq '{waiting: .queue.waiting_for_capacity}'
+ahealth | jq '{waiting: .queue.waiting_for_capacity, exhausted: [.users[] | select(.headroom=="exhausted")]}'
 ```
 
 To see the account set a given user is actually working with — there is no chain to resolve
@@ -773,14 +775,16 @@ job, locks nothing, and mutates nothing — so it is safe to poll. Field-by-fiel
                 "bounced": 11, "waiting_for_capacity": 0 },
   "boxes":    { "active": 6, "stale": 0, "disabled": 0, "oldest_active_heartbeat_age_sec": 12 },
   "accounts": { "healthy": 18, "paused": 4, "quarantined": 0, "disabled": 0, "at_daily_limit": 4 },
-  "pools":    [],
+  "users":    [],
   "active_conditions": []
 }
 ```
 
-`pools` is present in the response shape but is always an empty array right now — it is a stub for
-future per-account-set headroom reporting that has not been built yet. Do not read anything into it
-either way; it carries no signal today.
+`users` lists, per user with at least one QUEUED job right now, how many of their accounts are
+currently eligible and a clean `"ok"`/`"exhausted"` label — an empty array here (as in the healthy
+example above) means nobody currently has a queued job at all, not that the field is unimplemented.
+Read a non-empty array as a worklist: any row with `headroom: "exhausted"` names exactly which
+user's queued jobs are the ones counted in `queue.waiting_for_capacity` above.
 
 The signature of a healthy system: `dispatch_paused` false, `sends_last_window` moving, `queued`
 *draining* rather than merely non-zero, `assigned`+`sending` small and churning, `waiting_for_capacity`
@@ -797,7 +801,7 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 | `queue.assigned` + `sending` | Small, always changing | Persistently high and static → jobs in flight that nobody is reporting. Check boxes and the reclaim loop. |
 | `queue.failed` | Small and stable | Rising → look at `errors_last_window` and per-job `last_error_class`. |
 | `queue.bounced` | Proportional to list quality | Rising sharply → list quality. Never an account-health signal (bounces never penalize accounts). |
-| `queue.waiting_for_capacity` | 0 | > 0 → capacity, **not** a fault. [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity). Remember this is currently the narrow "zero accounts for this user" check, not the full eligibility picture — a 0 here does not rule out a quarantined/paused/at-limit account set. |
+| `queue.waiting_for_capacity` | 0 | > 0 → capacity, **not** a fault. [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity). This is the REAL eligibility check (quarantined/disabled/deleted/credential-unverified/from-misaligned accounts excluded, daily-reset/throttle cycle applied) — check `users[]` for exactly which user's account set is exhausted. |
 | `boxes.active` | Your expected box count | Below it → degraded capacity. **0 → full outage.** |
 | `boxes.stale` | 0 | > 0 → [A box died](#a-box-died). |
 | `boxes.oldest_active_heartbeat_age_sec` | Well under `heartbeat_interval_sec × heartbeat_missed_threshold` | Creeping toward that product → a box is nearly stale but has not crossed yet. An **early warning**, and the most useful field here. |
@@ -805,7 +809,7 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 | `accounts.paused` / `at_daily_limit` | Some, cyclically | These **overlap deliberately** — a daily-limit pause counts in both, so the buckets do not sum to your account total. Do not read them as disjoint. Both self-clear. |
 | `accounts.quarantined` | 0 | > 0 → the standing count of accounts needing manual attention. Unlike the alert condition, this does **not** age out. |
 | `accounts.disabled` | Whatever you set | Unexpectedly non-zero → someone disabled an account; check `account_events`. |
-| `pools[]` | always `[]` | Always empty right now — a stub for future per-account-set headroom reporting. Not yet meaningful either way; do not use it to diagnose anything. |
+| `users[]` | empty, or all `headroom: "ok"` | Any row with `headroom: "exhausted"` → that user's account set is genuinely exhausted right now; cross-reference `accounts.{quarantined,paused,disabled,at_daily_limit}` to see why. |
 | `errors_last_window` | Small, spread across classes | Any class spiking. The six classes always appear, `0` included, so the shape is stable — a class at 0 is genuine, not missing data. Counts **failures, not rows**: one failing send contributes exactly 1 even if it is retried and later succeeds, so this is a usable incident size. |
 | `shadow.autoquarantine_mode` | `shadow` before go-live, `enforce` after you have calibrated | `off` means auto-quarantine is fully disabled — deliberate, but know that it is. |
 | `shadow.would_quarantine_count` / `recent[]` | Low | High in `shadow` mode → what `enforce` *would* be doing. This is your calibration data for `quarantine_threshold`. |

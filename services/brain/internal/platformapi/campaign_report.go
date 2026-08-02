@@ -109,13 +109,40 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 
 // campaignTotals computes §2.2's totals object in ONE query, tenant-scoped.
 //
-// G2 STUB (M3-P2-OD-12, extending the health-endpoint ruling to platformapi): waiting_for_capacity
-// pre-G2 resolved the user's visible POOLS (dedicated owned + shared) and checked eligibility
-// across them. byosmtp.pools is dropped by this phase's own migrations, so that query cannot
-// survive unmodified — this is a structurally-correct interim ("does this user have any account at
-// all"), matching internal/adminapi/health_store.go's queryWaitingForCapacity stub exactly (same
-// reasoning, same phase split: G2 stub, G3 real accounts_exhausted rewrite per M3-P2-OD-3).
+// G3 REAL REWRITE (M3-P2-OD-12): waiting_for_capacity uses the SAME account-eligibility predicate
+// internal/dispatch/eligibility.go's accountBaseEligibilityFilter + userHasEligibleQueryTmpl
+// define for the real dispatch decision — quarantined/disabled/deleted/credential-unverified/
+// from-misaligned accounts are structurally excluded, and the daily-reset/throttle cycle logic
+// (which accounts are "still cooling down" vs. "eligible again today") is reproduced exactly, not
+// approximated as "has any account row." platformapi does not import internal/dispatch (package
+// isolation, OD-7's precedent), so this is its own minimal copy — cross-reference this comment if
+// eligibility.go's predicate ever gains a term, since this copy does not follow automatically.
+// Byte-identical in substance to internal/adminapi/health_store.go's own copy of the same
+// predicate (that surface's own package-isolation copy, for the identical reason) — the two
+// admin/platform surfaces must never disagree about what "eligible" means.
 func (s *Server) campaignTotals(ctx context.Context, campaignID, userID string) (campaignTotals, error) {
+	tz, ok, err := s.readConfigString(ctx, "daily_reset_timezone")
+	if err != nil {
+		return campaignTotals{}, err
+	}
+	if !ok {
+		tz = "UTC"
+	}
+	throttleSec, ok, err := s.readConfigInt(ctx, "throttle_pause_seconds")
+	if err != nil {
+		return campaignTotals{}, err
+	}
+	if !ok {
+		throttleSec = 900
+	}
+	hour, ok, err := s.readConfigInt(ctx, "daily_reset_hour")
+	if err != nil {
+		return campaignTotals{}, err
+	}
+	if !ok {
+		hour = 0
+	}
+
 	const q = `
 WITH scoped AS (
     SELECT j.id, j.state, j.user_id
@@ -130,13 +157,13 @@ SELECT
     COUNT(*) FILTER (WHERE state IN ('assigned', 'sending')) AS in_flight,
     COUNT(*) FILTER (WHERE state = 'queued') AS pending_total,
     COUNT(*) FILTER (WHERE state = 'queued' AND NOT EXISTS (
-        SELECT 1 FROM byosmtp.accounts a WHERE a.user_id = $2::uuid
+        ` + campaignEligibleAccountsSubquery + `
     )) AS waiting_for_capacity
 FROM scoped`
 
 	var totals campaignTotals
 	var pendingTotal int
-	if err := s.db.QueryRow(ctx, q, campaignID, userID).Scan(
+	if err := s.db.QueryRow(ctx, q, campaignID, userID, tz, throttleSec, hour).Scan(
 		&totals.Total, &totals.Sent, &totals.Bounced, &totals.Failed, &totals.InFlight,
 		&pendingTotal, &totals.WaitingForCapacity); err != nil {
 		return campaignTotals{}, err
@@ -145,6 +172,41 @@ FROM scoped`
 	totals.Pending = pendingTotal - totals.WaitingForCapacity
 	return totals, nil
 }
+
+// campaignEligibleAccountsSubquery is the real §4.1 eligibility predicate (Phase 4's
+// accountBaseEligibilityFilter, consolidated M3-P4-OD-3, plus the daily-reset/throttle cycle logic
+// from userHasEligibleQueryTmpl), scoped to the enclosing query's user_id ($2) and referencing the
+// OUTER query's own parameters: $2=user_id, $3=daily_reset_timezone, $4=throttle_pause_seconds,
+// $5=daily_reset_hour (binds in the same order internal/dispatch/eligibility.go's
+// userHasEligibleQueryTmpl uses — tz, then hour, is $1/$4 there; here it is $3/$5, since $1/$2 are
+// already taken by campaign_id/user_id). Nested as a standalone EXISTS (no CTE to join against,
+// unlike the pre-G2 pool version's user_pools CTE) since accounts are looked up directly by
+// user_id now — there is no intermediate pool row to resolve first.
+const campaignEligibleAccountsSubquery = `
+    SELECT 1
+    FROM byosmtp.accounts a
+    WHERE a.user_id = $2::uuid
+      AND a.quarantined = FALSE
+      AND a.disabled = FALSE
+      AND a.deleted_at IS NULL
+      AND a.credential_verification_state = 'verified'
+      AND (a.from_verification_state = 'aligned'
+           OR (a.from_verification_state = 'unaligned_warned'
+               AND a.from_warning_acknowledged_at IS NOT NULL
+               AND a.from_warning_acknowledged_for = a.from_verdict_fingerprint))
+      AND (
+            (a.daily_reset_day < ((NOW() - INTERVAL '1 hour' * $5) AT TIME ZONE $3)::date
+                AND (a.paused = FALSE
+                     OR a.pause_reason = 'daily_limit'
+                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4)))
+            OR
+            (a.daily_reset_day = ((NOW() - INTERVAL '1 hour' * $5) AT TIME ZONE $3)::date
+                AND (a.paused = FALSE
+                     OR (a.pause_reason = 'throttle' AND a.throttle_paused_at IS NOT NULL
+                         AND NOW() >= a.throttle_paused_at + INTERVAL '1 second' * $4))
+                AND a.daily_sent_count < a.daily_limit)
+          )`
 
 // campaignItems returns one page of per-job detail (§2.2 "items"), cursor-paginated on
 // (created_at, id) — the same keyset pattern the admin surface uses (§5.1 pagination

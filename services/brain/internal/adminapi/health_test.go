@@ -6,10 +6,11 @@ package adminapi
 // GET /v1/admin/health count matches a DIRECT DB COUNT — not merely "the endpoint returns 200" —
 // and dispatch_paused mirrors the live dispatch_enabled config value.
 //
-// The pools[] headroom assertions this file carried through Phase 10 died at G2 (M3-P2-OD-12):
-// queryPoolHeadroom is stubbed to always return an empty array once byosmtp.pools is dropped, and
-// the real account-set-aware headroom replacement is G3 scope, alongside userRoutingStrategy's
-// real user_settings read.
+// The pools[] headroom assertions this file carried through Phase 10 died at G2 (M3-P2-OD-12) and
+// were REPLACED, not merely revived, at G3: byosmtp.pools is gone, so the account set an operator
+// cares about is now a user's own accounts — users[] reports, per user with a queued job right
+// now, how many of their accounts are currently eligible (health_store.go's queryUserHeadroom,
+// the SAME eligibleAccountFilterTerms queryWaitingForCapacity uses).
 
 import (
 	"context"
@@ -285,14 +286,33 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 		t.Fatalf("accounts.at_daily_limit=%d, want %d", got, wantAtLimit)
 	}
 
-	// pools[] is a G2 stub (M3-P2-OD-12): always an empty array once byosmtp.pools is dropped. The
-	// real account-set-aware headroom replacement is G3 scope.
-	pools, ok := resp.body["pools"].([]any)
+	// users[] (G3 real rewrite, M3-P2-OD-12): sysUserHealth owns the 2 queued jobs above AND one
+	// eligible account (the "healthy" one seeded at line 200 — the others are each disqualified by
+	// exactly one blocking flag) — so the array must have EXACTLY one row, for sysUserHealth, with
+	// eligible_accounts=1 and headroom="ok" (there IS headroom, so waiting_for_capacity below must
+	// be 0 despite 2 jobs being queued).
+	users, ok := resp.body["users"].([]any)
 	if !ok {
-		t.Fatalf("response missing pools array: %s", resp.raw)
+		t.Fatalf("response missing users array: %s", resp.raw)
 	}
-	if len(pools) != 0 {
-		t.Fatalf("pools array = %+v, want empty (G2 stub)", pools)
+	if len(users) != 1 {
+		t.Fatalf("users array = %+v, want exactly 1 row (one distinct user with a queued job)", users)
+	}
+	userRow, ok := users[0].(map[string]any)
+	if !ok {
+		t.Fatalf("users[0] is not an object: %+v", users[0])
+	}
+	if got := userRow["user_id"]; got != sysUserHealth {
+		t.Fatalf("users[0].user_id=%v, want %s", got, sysUserHealth)
+	}
+	if got := intField(t, userRow, "eligible_accounts"); got != 1 {
+		t.Fatalf("users[0].eligible_accounts=%d, want 1 (only the seeded healthy account qualifies)", got)
+	}
+	if got := userRow["headroom"]; got != "ok" {
+		t.Fatalf("users[0].headroom=%v, want \"ok\"", got)
+	}
+	if got := intField(t, queue, "waiting_for_capacity"); got != 0 {
+		t.Fatalf("queue.waiting_for_capacity=%d, want 0 — sysUserHealth has real headroom (1 eligible account), so queued jobs are pending, not waiting", got)
 	}
 
 	// dispatch_paused mirrors dispatch_enabled=false.
@@ -314,6 +334,129 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 	}
 	if paused, _ := dispatch2["dispatch_paused"].(bool); paused {
 		t.Fatalf("dispatch.dispatch_paused=true with dispatch_enabled=true, want false: %+v", dispatch2)
+	}
+}
+
+// seedHealthAccountFor mirrors seedHealthAccount exactly, parametrized by userID instead of the
+// fixed sysUserHealth — needed for TestHealth_WaitingForCapacityIsRealEligibilityNotJustAnyAccount,
+// which requires TWO distinct users in one response.
+func (e *testEnv) seedHealthAccountFor(t *testing.T, userID string, paused, quarantined, disabled bool, dailySent, dailyLimit int) string {
+	t.Helper()
+	var id string
+	if err := e.admin.QueryRow(bgCtx(),
+		`INSERT INTO byosmtp.accounts
+		   (user_id, smtp_host, smtp_port, smtp_username,
+		    credential_ciphertext, credential_key_id, credential_nonce, from_address,
+		    paused, pause_reason, quarantined, quarantine_reason, disabled, daily_sent_count, daily_limit, daily_reset_day,
+		    credential_verification_state, credential_verified_at,
+		    from_verification_state, from_checked_at)
+		 VALUES ($1,'smtp-sink',587,$2,'\x00','k','\x00','u@ourdomain.com',
+		         $3, (CASE WHEN $3 THEN 'manual' ELSE NULL END)::byosmtp.pause_reason,
+		         $4, (CASE WHEN $4 THEN 'manual' ELSE NULL END)::byosmtp.quarantine_reason,
+		         $5, $6, $7, CURRENT_DATE, 'verified', NOW(), 'aligned', NOW())
+		 RETURNING id`,
+		userID, "u-"+randHex(6)+"@ourdomain.com", paused, quarantined, disabled, dailySent, dailyLimit).Scan(&id); err != nil {
+		t.Fatalf("seed account for %s: %v", userID, err)
+	}
+	return id
+}
+
+// seedHealthJobFor mirrors seedHealthJob's queued-only path, parametrized by userID.
+func (e *testEnv) seedHealthJobFor(t *testing.T, userID string) string {
+	t.Helper()
+	ctx := bgCtx()
+	var jobItemID string
+	if err := e.admin.QueryRow(ctx,
+		`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
+		 VALUES ($1,$1,'h@example.com','Subj','<p>b</p>','reply@ourdomain.com','pending') RETURNING id`,
+		userID).Scan(&jobItemID); err != nil {
+		t.Fatalf("seed job_item for %s: %v", userID, err)
+	}
+	tx, err := e.admin.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('byosmtp.actor','system',true)"); err != nil {
+		t.Fatalf("set actor: %v", err)
+	}
+	var jobID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		 VALUES ($1,$2,$2,'h@example.com','Subj','<p>b</p>','reply@ourdomain.com','queued',NOW()) RETURNING id`,
+		jobItemID, userID).Scan(&jobID); err != nil {
+		t.Fatalf("seed job for %s: %v", userID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit job: %v", err)
+	}
+	return jobID
+}
+
+// TestHealth_WaitingForCapacityIsRealEligibilityNotJustAnyAccount (M3-P2-OD-12's G3 rewrite,
+// anti-vacuity) — a user whose ONLY account is quarantined has a real account row, but ZERO
+// eligible accounts. The G2-era stub ("does this user have any account at all") would have
+// wrongly reported this user as NOT waiting_for_capacity and omitted them from users[] entirely
+// (their one account row exists, so the stub's own EXISTS test would have passed). The real
+// rewrite must report the opposite: waiting_for_capacity counts their queued job, and users[]
+// carries their row with eligible_accounts=0, headroom="exhausted". A second, healthy user with a
+// real eligible account is the paired control — proving the SAME single query genuinely
+// distinguishes the two cases within one response.
+func TestHealth_WaitingForCapacityIsRealEligibilityNotJustAnyAccount(t *testing.T) {
+	e := newTestEnv(t, "healthexhaust")
+
+	userExhausted := e.seedUser(t, "healthexhaust-a@example.com")
+	e.seedHealthAccountFor(t, userExhausted, false, true, false, 0, 100) // quarantined — has a row, but not eligible
+	e.seedHealthJobFor(t, userExhausted)
+
+	userHealthy := e.seedUser(t, "healthexhaust-b@example.com")
+	e.seedHealthAccountFor(t, userHealthy, false, false, false, 0, 100) // healthy — genuinely eligible
+	e.seedHealthJobFor(t, userHealthy)
+
+	resp := e.do(t, "GET", "/v1/admin/health", nil).requireStatus(t, 200)
+
+	queue, ok := resp.body["queue"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing queue object: %s", resp.raw)
+	}
+	// Both users' jobs are queued (2 total); only the exhausted user's job is waiting_for_capacity.
+	if got := intField(t, queue, "waiting_for_capacity"); got != 1 {
+		t.Fatalf("queue.waiting_for_capacity=%d, want 1 (only userExhausted has zero eligible accounts) — a stub reading 'any account row' would report 0 here", got)
+	}
+
+	users, ok := resp.body["users"].([]any)
+	if !ok {
+		t.Fatalf("response missing users array: %s", resp.raw)
+	}
+	byUser := map[string]map[string]any{}
+	for _, u := range users {
+		row, ok := u.(map[string]any)
+		if !ok {
+			t.Fatalf("users[] row is not an object: %+v", u)
+		}
+		uid, _ := row["user_id"].(string)
+		byUser[uid] = row
+	}
+	exhaustedRow, ok := byUser[userExhausted]
+	if !ok {
+		t.Fatalf("users[] missing a row for userExhausted (%s): %+v", userExhausted, users)
+	}
+	if got := intField(t, exhaustedRow, "eligible_accounts"); got != 0 {
+		t.Fatalf("userExhausted eligible_accounts=%d, want 0 (their one account is quarantined) — a stub reading 'any account row' would report 1 here", got)
+	}
+	if got := exhaustedRow["headroom"]; got != "exhausted" {
+		t.Fatalf("userExhausted headroom=%v, want \"exhausted\"", got)
+	}
+
+	healthyRow, ok := byUser[userHealthy]
+	if !ok {
+		t.Fatalf("users[] missing a row for userHealthy (%s): %+v", userHealthy, users)
+	}
+	if got := intField(t, healthyRow, "eligible_accounts"); got != 1 {
+		t.Fatalf("userHealthy eligible_accounts=%d, want 1", got)
+	}
+	if got := healthyRow["headroom"]; got != "ok" {
+		t.Fatalf("userHealthy headroom=%v, want \"ok\"", got)
 	}
 }
 
