@@ -141,6 +141,39 @@ hr; echo "SUITE 3: box<->Brain mTLS register/heartbeat (probed IN-NETWORK, from 
 # Probe from INSIDE the box container: real mTLS on the compose network, using the box's
 # own mounted client cert. (Host->localhost is intercepted by host antivirus TLS-inspection,
 # so an in-network probe is the correct, real test — see Docs/history/open-decisions.md OD-19.)
+#
+# On a genuinely clean slate (fresh volume, no byosmtp.boxes row yet), the box container is
+# GUARANTEED DEAD by the time this suite runs, making every probe below fail with an empty exec
+# result — this is a real, deterministic defect this harness run found, not a flake. Root cause:
+# the box process's OWN job-stream registration (stream.js's #handle, on register_ack{accepted:
+# false}) calls stop() IMMEDIATELY on the very first rejection — the 30-attempt/~30s retry budget
+# in index.js's connectOnce only bounds NETWORK failures (ECONNREFUSED etc.), never an auth
+# rejection, because stop() sets `stopped=true` and connectOnce's loop checks that flag before
+# each attempt. So on a fresh volume the box registers on the mTLS stream within ~1s of starting,
+# is rejected (no byosmtp.boxes row exists yet), calls process.exit(1), and — with no restart
+# policy on the `box` service — stays exited. A `sleep`-then-probe fix would still race the SAME
+# ~1s rejection-to-exit window; the correct fix is to prevent the rejection, exactly like
+# phase3_send.sh (SUITE 9) already does for its own suite: seed byosmtp.boxes FIRST so the box's
+# very first attempt succeeds and it stays up, heartbeating, for the rest of this suite.
+PSQL3() { $DC exec -T postgres psql -U postgres -d platform -tAqc "$1" 2>/dev/null | tr -d '\r'; }
+BOX_UUID3="$(grep -E '^DEV_BOX_UUID=' .env | cut -d= -f2-)"
+BOX_UUID3="${BOX_UUID3:-11111111-1111-1111-1111-111111111111}"
+BOX_HASH3="$(grep -E '^DEV_BOX_TOKEN_HASH=' .env | cut -d= -f2- | sed 's/\$\$/$/g')"
+PSQL3 "INSERT INTO public.users (id,email,is_active) VALUES ('00000000-0000-0000-0000-000000000000','sys@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
+PSQL3 "INSERT INTO byosmtp.boxes (id,user_id,token_hash,status) VALUES ('${BOX_UUID3}','00000000-0000-0000-0000-000000000000','${BOX_HASH3}','active') ON CONFLICT (id) DO UPDATE SET token_hash=EXCLUDED.token_hash, status='active'" >/dev/null
+# --no-deps: see phase3_send.sh's identical line for why this flag is load-bearing (compose
+# would otherwise evaluate box's `depends_on: postgres` and, if the running postgres differs at
+# all from the merged spec, RECREATE it — under compose.test.yml postgres is a tmpfs, so that
+# recreate would wipe the DB out from under the live Brain mid-run).
+$DC up -d --no-deps box >/dev/null 2>&1 || true
+# Wait until the box is genuinely alive (its own container-exec, not a stale cached PID) before
+# probing — bounded, and asserted on a REAL command executing inside the container right now.
+box_alive=0
+for _ in $(seq 1 15); do
+  if $DC exec -T box sh -c 'true' >/dev/null 2>&1; then box_alive=1; break; fi
+  sleep 1
+done
+[[ "$box_alive" == "1" ]] || echo "  (warning: box container did not come up within 15s; SUITE 3 probes below will likely fail)"
 BOXTOK="$(grep -E '^DEV_BOX_TOKEN=' .env | cut -d= -f2-)"
 reg_code() { # $1=token
   $DC exec -T box sh -c "curl -s -o /dev/null -w '%{http_code}' --cert /secrets/mtls/box.crt --key /secrets/mtls/box.key --cacert /secrets/mtls/ca.crt -X POST https://brain:8443/v1/box/register -H 'content-type: application/json' -d '{\"box_id\":\"dev-box-1\",\"token\":\"$1\"}'"
