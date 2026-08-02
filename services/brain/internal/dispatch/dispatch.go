@@ -573,6 +573,19 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// nullableTruncate is truncate's NULL-on-empty counterpart for jobs.last_smtp_response (Phase 7
+// §1.4): an empty provider response should read as SQL NULL, not an empty string, matching the
+// column's own nullability (no response text at all — e.g. a connect_refused/timeout failure that
+// never reached the provider — is a genuinely different fact from "the provider replied with
+// nothing," and NULL is the honest way to say so).
+func nullableTruncate(s string, n int) *string {
+	if s == "" {
+		return nil
+	}
+	t := truncate(s, n)
+	return &t
+}
+
 // parseUUID parses a canonical UUID string into its raw 16 bytes (for the AAD). It accepts the
 // hyphenated form only.
 func parseUUID(s string, out *[16]byte) error {

@@ -121,7 +121,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045"}
+		"0042", "0043", "0044", "0045", "0046"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -173,9 +173,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	// consumer branch removed by this same phase's account_effect.go change): 67 - 1 + 10 = 76.
 	// PLUS Phase 6's ONE (0045: test_button_rate_limit_per_user_per_day, M3-P3-OD-6's aggregate
 	// test-button companion, landed by Phase 6's phase-start mechanical landing check rather than
-	// by Phase 6's own new work) = 77.
-	if n := configKeyCount(t, admin); n != 77 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 77 (76 pre-Phase-6 + 1 Phase 6 seed, M3-P3-OD-6)", n)
+	// by Phase 6's own new work) = 77. PLUS Phase 7's TEN (0046: notification_digest_window_sec,
+	// notification_dedup_window_sec, notification_immediate_severities, notifications_enabled,
+	// notification_tick_interval_sec, destination_throttle_window_sec,
+	// destination_throttle_user_threshold, quote_capacity_projection_enabled,
+	// quote_long_duration_warn_sec, score_alert_threshold — the last REPLACING quarantine_threshold
+	// under a new name per M3-P5-OD-1's split, already counted as a deletion at 0042 above, so this
+	// is a net +10 not +9) = 87.
+	if n := configKeyCount(t, admin); n != 87 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 87 (77 pre-Phase-7 + 10 Phase 7 seeds, §8)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -407,6 +413,47 @@ func TestRunnerLifecycle(t *testing.T) {
 	if v, d := configValueAndDefault(t, admin, "test_button_rate_limit_per_user_per_day"); v != `{"v": 20}` || d != `{"v": 20}` {
 		t.Fatalf("after Up: test_button_rate_limit_per_user_per_day value=%s default_value=%s, want both {\"v\": 20} (0045 seeded the wrong shape)", v, d)
 	}
+	// 0046 (Phase 7 §1.4/§8): jobs.last_smtp_response — the slug-free column §1.4's downstream
+	// no-derivation invariant needs.
+	if !columnExists(t, admin, "jobs", "last_smtp_response") {
+		t.Fatal("after Up: byosmtp.jobs.last_smtp_response missing (0046 not applied)")
+	}
+	// 0046 (Phase 7 §7/M3-P7-OD-6): job_events.destination_domain, denormalized so the throttle
+	// aggregation does not depend on send_logs' retention.
+	if !columnExists(t, admin, "job_events", "destination_domain") {
+		t.Fatal("after Up: byosmtp.job_events.destination_domain missing (0046 not applied)")
+	}
+	if !indexExists(t, admin, "job_events_destination_domain_throttle_idx") {
+		t.Fatal("after Up: job_events_destination_domain_throttle_idx missing (0046 not applied)")
+	}
+	// Behavioral, not just structural: a real state-change transition must populate
+	// destination_domain from the job's recipient_email — proving the replaced trigger function
+	// actually writes the column, not merely that the column exists.
+	if got := insertJobAndTransition(t, admin, "carol@destcheck.example"); got != "destcheck.example" {
+		t.Fatalf("after Up: job_events.destination_domain=%q on a state change for carol@destcheck.example, want \"destcheck.example\" (0046's trigger replacement not populating the column)", got)
+	}
+	// Anti-vacuity companion to Rule 9's own note: 0022's error-context gating fix must SURVIVE
+	// 0046's replacement — a state change that leaves state UNCHANGED still fires no event
+	// (early-return), and this genesis-vs-transition distinction is exactly what 0022 fixed. Not
+	// re-asserted in full here (0022's own test covers it); this migration only replaces the
+	// function body to add one more column, so the guard is that the early-return line is still
+	// literally present in 0046's own SQL, checked at the file level by 0046's own header comment
+	// citing 0022 as the base body — a source-level contract this test cannot verify at the SQL
+	// level without duplicating 0022's entire test. Left as documented, not re-proven.
+	for _, key := range []string{
+		"notification_digest_window_sec", "notification_dedup_window_sec",
+		"notification_immediate_severities", "notifications_enabled",
+		"notification_tick_interval_sec", "destination_throttle_window_sec",
+		"destination_throttle_user_threshold", "quote_capacity_projection_enabled",
+		"quote_long_duration_warn_sec", "score_alert_threshold",
+	} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: byosmtp.config missing %q (0046 not applied)", key)
+		}
+	}
+	if v, d := configValueAndDefault(t, admin, "score_alert_threshold"); v != `{"v": 30}` || d != `{"v": 30}` {
+		t.Fatalf("after Up: score_alert_threshold value=%s default_value=%s, want both {\"v\": 30} (0046 seeded the wrong shape, or M3-P5-OD-1's inherited default was not carried)", v, d)
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -470,6 +517,28 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 		if v == "0045" && configKeyExists(t, admin, "test_button_rate_limit_per_user_per_day") {
 			t.Fatal("after Down 0045: byosmtp.config still has test_button_rate_limit_per_user_per_day (down did not delete it)")
+		}
+		if v == "0046" {
+			if columnExists(t, admin, "jobs", "last_smtp_response") {
+				t.Fatal("after Down 0046: byosmtp.jobs.last_smtp_response still present (down did not drop it)")
+			}
+			if columnExists(t, admin, "job_events", "destination_domain") {
+				t.Fatal("after Down 0046: byosmtp.job_events.destination_domain still present (down did not drop it)")
+			}
+			if indexExists(t, admin, "job_events_destination_domain_throttle_idx") {
+				t.Fatal("after Down 0046: job_events_destination_domain_throttle_idx still present (down did not drop it)")
+			}
+			for _, key := range []string{
+				"notification_digest_window_sec", "notification_dedup_window_sec",
+				"notification_immediate_severities", "notifications_enabled",
+				"notification_tick_interval_sec", "destination_throttle_window_sec",
+				"destination_throttle_user_threshold", "quote_capacity_projection_enabled",
+				"quote_long_duration_warn_sec", "score_alert_threshold",
+			} {
+				if configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0046: byosmtp.config still has %q (down did not delete it)", key)
+				}
+			}
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: byosmtp.job_events_account_id_created_at_idx still present (down did not drop it)")
@@ -640,6 +709,63 @@ func configKeyCount(t *testing.T, c *pgx.Conn) int {
 		t.Fatalf("config count: %v", err)
 	}
 	return n
+}
+
+// insertJobAndTransition seeds a real public.users/job_items/byosmtp.jobs row for recipient
+// (behind the required FKs), transitions the job queued->assigned via a real actor-GUC'd UPDATE
+// (the same real path fn_job_events_on_state_change fires on), and returns the destination_domain
+// column 0046's replacement trigger stamped into the resulting job_events row — behavioral proof
+// the replacement function actually WRITES the column, not merely that it exists.
+func insertJobAndTransition(t *testing.T, c *pgx.Conn, recipient string) string {
+	t.Helper()
+	ctx := context.Background()
+	userID := "aaaaaaaa-0046-0046-0046-aaaaaaaaaaaa"
+	itemID := "bbbbbbbb-0046-0046-0046-bbbbbbbbbbbb"
+	if _, err := c.Exec(ctx,
+		`INSERT INTO public.users (id, email, is_active) VALUES ($1, 'j0046@example.com', true) ON CONFLICT (id) DO NOTHING`, userID); err != nil {
+		t.Fatalf("insertJobAndTransition: seed user: %v", err)
+	}
+	if _, err := c.Exec(ctx,
+		`INSERT INTO public.job_items (id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
+		 VALUES ($1, $2, $2, $3, 's', 'b', 'r@x.com', 'pending') ON CONFLICT (id) DO NOTHING`,
+		itemID, userID, recipient); err != nil {
+		t.Fatalf("insertJobAndTransition: seed job_item: %v", err)
+	}
+	var jobID string
+	if err := c.QueryRow(ctx,
+		`INSERT INTO byosmtp.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		 VALUES ($1, $2, $2, $3, 's', 'b', 'r@x.com', 'queued', NOW()) RETURNING id`,
+		itemID, userID, recipient).Scan(&jobID); err != nil {
+		t.Fatalf("insertJobAndTransition: seed job: %v", err)
+	}
+	// set_config(..., true) scopes the GUC to the CURRENT TRANSACTION — a bare connection Exec is
+	// its own implicit transaction, so the setting would be gone before the next statement even
+	// ran. Both statements must share one real transaction (mirrors this file's other set_config
+	// call sites, all of which use tx.Exec for exactly this reason).
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("insertJobAndTransition: begin: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck — no-op after a successful Commit below
+	if _, err := tx.Exec(ctx, `SELECT set_config('byosmtp.actor', 'dispatcher', true)`); err != nil {
+		t.Fatalf("insertJobAndTransition: set actor: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE byosmtp.jobs SET state = 'assigned', lease_expires_at = NOW() + INTERVAL '5 minutes' WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("insertJobAndTransition: transition job: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("insertJobAndTransition: commit: %v", err)
+	}
+	var domain *string
+	if err := c.QueryRow(ctx,
+		`SELECT destination_domain FROM byosmtp.job_events WHERE job_id = $1 AND to_state = 'assigned'`, jobID).Scan(&domain); err != nil {
+		t.Fatalf("insertJobAndTransition: read destination_domain: %v", err)
+	}
+	if domain == nil {
+		return ""
+	}
+	return *domain
 }
 
 // columnExists reports whether byosmtp.<table> has a column of the given name.

@@ -277,6 +277,11 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 // does NOT set last_failure_at, does NOT touch consecutive_failures, and does NOT recompute the
 // score (the LOCKED "bounce never penalizes" carve-out, §3.3 — asserted byte-for-byte by T4).
 // Also writes a send_logs row for the attempt.
+//
+// last_smtp_response (Phase 7 §1.4) carries rep.SMTPResponse ALONE — the box already scrubbed it
+// at origination (§1.2/§1.3) — with NO internal slug prepended, unlike last_error_message, which
+// stays internal-only and keeps its own shape for operator diagnosis. This is the slug-free
+// column the user-facing surface (§1.5 P1/P2) reads instead.
 func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep boxproto.Report, cfg Config) error {
 	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
@@ -286,10 +291,11 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 			       lease_expires_at=NULL,
 			       last_error_class='bounce_permanent',
 			       last_error_message=$2,
+			       last_smtp_response=$4,
 			       updated_at=NOW()
 			 WHERE id=$1 AND state='sending'
 			   AND ($3 = 0 OR attempt_token = 0 OR attempt_token = $3)`,
-			rep.JobID, truncate(rep.SMTPResponse, 2000), rep.AttemptToken)
+			rep.JobID, truncate(rep.SMTPResponse, 2000), rep.AttemptToken, nullableTruncate(rep.SMTPResponse, 2000))
 		if err != nil {
 			return err
 		}
@@ -357,18 +363,25 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		// jobs_attempt_count_check (attempt_count <= max_attempts) can never abort — no 23514 ever,
 		// for any job lifetime. next_attempt_at uses the post-increment attempt as the backoff index.
 		nextSecs := h.backoffSecondsForClass(class, saturatingAttempt(ctx, tx, rep.JobID), cfg)
+		// last_smtp_response (Phase 7 §1.4) carries rep.SMTPResponse ALONE, never `detail`'s
+		// ErrorReason-prefixed concatenation — the internal slug stays in last_error_message only.
+		// This is the fix for the exact gap §1.4 names: a user-facing surface reading
+		// last_error_message on the FIRST failure of a campaign would serialize an internal reason
+		// slug to a client, a two-vocabulary violation arriving through reusing the column that
+		// "looks right" rather than through carelessness.
 		tag, err := tx.Exec(ctx,
 			`UPDATE byosmtp.jobs
 			   SET state='queued',
 			       lease_expires_at=NULL,
 			       last_error_class=$3,
 			       last_error_message=$2,
+			       last_smtp_response=$6,
 			       attempt_count = LEAST(attempt_count + 1, max_attempts),
 			       next_attempt_at = NOW() + make_interval(secs => $4),
 			       updated_at=NOW()
 			 WHERE id=$1 AND state='sending'
 			   AND ($5 = 0 OR attempt_token = 0 OR attempt_token = $5)`,
-			rep.JobID, truncate(detail, 2000), class, nextSecs, rep.AttemptToken)
+			rep.JobID, truncate(detail, 2000), class, nextSecs, rep.AttemptToken, nullableTruncate(rep.SMTPResponse, 2000))
 		if err != nil {
 			return err
 		}
