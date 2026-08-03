@@ -115,6 +115,17 @@ curl -fsS "$PLATFORM/v1/report?user_id=$USER_ID&job_id=$JOB_ID" \
 present. Note that `provider_message_id` and `completed_at` are **omitted entirely** until set — check
 for key presence, not for `null`.
 
+> **Two id shapes are both correct here, and which one you get tells you something about your
+> provider.** A provider token (`ABC123def`, `1a2b3c4-20260803…`) means the provider's `250` line
+> carried a per-message id and the box parsed it. A `<uuid@your-domain>` means it did not, and the
+> Brain's own deterministic `Message-ID` was recorded instead (P3-3's ruled fallback). Neither is a
+> failure — but the second one means **you cannot use this field to correlate against your provider's
+> own logs** for this send, which is worth knowing before you rely on it operationally. If you see the
+> `<uuid@…>` form, grep the Brain log for `does not mint a unique id per message`: that `level=warn`
+> distinguishes "nothing was parseable" from "the provider reused an id another job already owns"
+> (defect #140). Either way the provider's raw `250` text is preserved verbatim in
+> `send_logs.smtp_response`, which is where to look for the provider's own reference.
+
 **Then check the actual inbox.** This is the step the whole procedure exists for, and no field in any
 API can substitute for it:
 

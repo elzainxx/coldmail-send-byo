@@ -8,6 +8,7 @@ import (
 
 	"github.com/byosmtp-module/brain/internal/boxproto"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -84,7 +85,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	cfg, err := LoadConfig(ctx, h.db)
 	if err != nil {
 		h.noteHealth(err)
-		log.Printf("outcome: cannot load config for job %s report: %v — NOT acked; the box retains and will replay", rep.JobID, err)
+		log.Printf("outcome: cannot load config for job %s report: %v — NOT acked; the box retains and will replay level=error", rep.JobID, err)
 		return false
 	}
 
@@ -97,7 +98,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 		// the job stays EXACTLY as stored (sending), the Brain marks nothing, and the outcome survives
 		// on the box until a post-commit ack (§2.3). Report it to the shared gate so the loops pause too.
 		h.noteHealth(err)
-		log.Printf("outcome: cannot read job %s: %v — NOT acked; the box retains and will replay (§2.3, nothing invented)", rep.JobID, err)
+		log.Printf("outcome: cannot read job %s: %v — NOT acked; the box retains and will replay (§2.3, nothing invented) level=error", rep.JobID, err)
 		return false
 	}
 	h.noteHealth(nil) // the DB answered: strongest possible liveness proof, ends any halt promptly
@@ -131,7 +132,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// attempt whose outcome the Brain will record — and refusing to ack would make B1 replay a
 	// permanently-inapplicable outcome until its TTL for no benefit.
 	if assignedBox != nil && boxID != "" && *assignedBox != boxID {
-		log.Printf("outcome: report for job %s from box %s does NOT match the current in-flight box %s — stale replay from a superseded attempt; dropped without applying (never attribute an outcome to an attempt that did not produce it)", rep.JobID, boxID, *assignedBox)
+		log.Printf("outcome: report for job %s from box %s does NOT match the current in-flight box %s — stale replay from a superseded attempt; dropped without applying (never attribute an outcome to an attempt that did not produce it) level=warn", rep.JobID, boxID, *assignedBox)
 		return true
 	}
 
@@ -172,7 +173,7 @@ func (h *OutcomeHandler) Handle(boxID string, rep boxproto.Report) (resolved boo
 	// check exists so the rejection is LOGGED and so nothing (not even a send_logs row) is attempted for
 	// an outcome we already know is stale.
 	if rep.AttemptToken != 0 && curToken != 0 && rep.AttemptToken != curToken {
-		log.Printf("outcome: report for job %s from box %s carries attempt token %d but the current in-flight attempt is %d — stale replay from a superseded attempt; dropped without applying (no state change, no account scoring)",
+		log.Printf("outcome: report for job %s from box %s carries attempt token %d but the current in-flight attempt is %d — stale replay from a superseded attempt; dropped without applying (no state change, no account scoring) level=warn",
 			rep.JobID, boxID, rep.AttemptToken, curToken)
 		return true
 	}
@@ -227,11 +228,90 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 		// Defensive: never mark sent without an idempotency key (§4.3 anomaly). Treat as a
 		// classified failure — accepted_without_id classifies as 'unknown' (§1.1 row 8), a
 		// conservative requeue with NO account penalty, which is exactly right for this anomaly.
-		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly)", rep.JobID)
+		log.Printf("outcome: job %s accepted with empty provider_message_id — requeued as unknown (§4.3 anomaly) level=warn", rep.JobID)
 		anomaly := boxproto.Report{JobID: rep.JobID, AttemptToken: rep.AttemptToken, Outcome: boxproto.OutcomeError, ErrorReason: boxproto.ReasonAcceptedWithoutID, SMTPResponse: rep.SMTPResponse}
 		return h.applyClassifiedFailure(ctx, boxID, anomaly, classifyReport(anomaly), cfg)
 	}
-	err := h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
+	err := h.applyAcceptedWithID(ctx, boxID, rep, cfg, rep.ProviderMessageID)
+
+	// CROSS-JOB PROVIDER-ID COLLISION (2026-08-03, defect #140). jobs.provider_message_id is UNIQUE
+	// (byosmtp_0007), and the id it stores is whatever the PROVIDER echoed — extracted by the box's
+	// parseProviderID from the 250 line. That id is only unique if the provider makes it unique. Three
+	// loose patterns feed it ("queued as X", "2.0.0 OK <ts> X", "id=X"), so a provider (or a relay/sink
+	// in front of one) whose 250 line carries a CONSTANT token in one of those positions hands the same
+	// id back for every message, and the SECOND job to report it hits a 23505.
+	//
+	// Left unhandled, a 23505 here is the worst available outcome: it is not errNoop, so `persisted`
+	// returns false, so the box RETAINS and REPLAYS the outcome — deterministically forever, since the
+	// collision is not transient — while the job row is untouched and still 'sending'. Its lease
+	// (job_max_processing_time_sec, 120s) expires long before the box's buffer TTL
+	// (box_outcome_buffer_ttl_sec, 900s), so reclaim requeues it and it is SENT AGAIN. A real 250
+	// becomes a real duplicate delivery, which is precisely what this column exists to prevent.
+	//
+	// The fix is not new policy — it is P3-3's own ruled fallback ("capture the provider id; fall back
+	// to the Brain Message-ID") applied one layer later. The box falls back when it cannot PARSE an id;
+	// the Brain falls back when the parsed id turns out not to be UNIQUE. The Brain-generated
+	// Message-ID is deterministic from job_id (§8.1 / P8-5), so it is unique per job by construction
+	// and is already the value `writeSendLog` records in send_logs.headers. Nothing is invented (Rule
+	// 5): the 250 happened, and the provider's raw text — including its own id — is preserved verbatim
+	// in send_logs.smtp_response, so no information is lost by not using it as the key.
+	//
+	// Narrow on purpose: only a 23505 naming THIS constraint retries, and only once. Any other error,
+	// or a second collision (structurally impossible — the fallback is seeded by this job's own id),
+	// returns the original error and keeps the retain-and-replay behavior.
+	if isProviderMessageIDCollision(err) {
+		fallbackID, ferr := h.brainMessageIDFor(ctx, rep.JobID)
+		if ferr != nil {
+			log.Printf("outcome: job %s hit a provider_message_id collision on %q and the Brain Message-ID fallback could not be derived: %v — NOT acked level=error", rep.JobID, rep.ProviderMessageID, ferr)
+			return err
+		}
+		if fallbackID != rep.ProviderMessageID {
+			log.Printf("outcome: job %s was accepted with provider_message_id %q, which another job already owns (the provider does not mint a unique id per message) — recording the Brain-generated Message-ID %s as the idempotency key instead (P3-3 fallback); the provider's raw response is preserved verbatim in send_logs level=warn",
+				rep.JobID, rep.ProviderMessageID, fallbackID)
+			err = h.applyAcceptedWithID(ctx, boxID, rep, cfg, fallbackID)
+		}
+	}
+	if err != nil && !errors.Is(err, errNoop) {
+		log.Printf("outcome: apply accepted for job %s failed: %v level=error", rep.JobID, err)
+	}
+	return err
+}
+
+// isProviderMessageIDCollision reports whether err is a UNIQUE violation on
+// jobs.provider_message_id specifically — i.e. ANOTHER job already owns the id this report carried.
+// Scoped to the one constraint by name so an unrelated 23505 on this path can never trigger the
+// fallback retry above. The constraint name is Postgres's own for the inline `TEXT UNIQUE` in
+// byosmtp_0007; it is asserted from the live catalog by
+// TestProviderMessageID_140PremisesStillHold, so a rename cannot silently disable this branch.
+func isProviderMessageIDCollision(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == "jobs_provider_message_id_key"
+}
+
+// brainMessageIDFor derives this job's Brain-generated Message-ID (§8.1) — the same value the box
+// was handed and the same one writeSendLog records in send_logs.headers. Read from the job's
+// assigned account so the sending-domain matches; a missing account yields sendingDomain's
+// "localhost" default, which still leaves the id unique (the job id is the unique part).
+func (h *OutcomeHandler) brainMessageIDFor(ctx context.Context, jobID string) (string, error) {
+	var fromAddr string
+	if err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(a.from_address, '')
+		   FROM byosmtp.jobs j
+		   LEFT JOIN byosmtp.accounts a ON a.id = j.assigned_account_id
+		  WHERE j.id = $1`, jobID).Scan(&fromAddr); err != nil {
+		return "", err
+	}
+	return messageIDFor(jobID, fromAddr), nil
+}
+
+// applyAcceptedWithID is applyAccepted's transaction, parameterised by the id to store so the
+// collision fallback above can re-run it with a different key. providerID is never empty (the
+// caller's §4.3 guard) and is never rewritten silently — a substitution is always logged.
+func (h *OutcomeHandler) applyAcceptedWithID(ctx context.Context, boxID string, rep boxproto.Report, cfg Config, providerID string) error {
+	return h.inActorTx(ctx, "box", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`UPDATE byosmtp.jobs
 			   SET state='sent',
@@ -241,7 +321,7 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 			       updated_at=NOW()
 			 WHERE id=$1 AND state='sending' AND provider_message_id IS NULL
 			   AND ($3 = 0 OR attempt_token = 0 OR attempt_token = $3)`,
-			rep.JobID, rep.ProviderMessageID, rep.AttemptToken)
+			rep.JobID, providerID, rep.AttemptToken)
 		if err != nil {
 			return err
 		}
@@ -266,10 +346,6 @@ func (h *OutcomeHandler) applyAccepted(ctx context.Context, boxID string, rep bo
 		}
 		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
-	if err != nil && !errors.Is(err, errNoop) {
-		log.Printf("outcome: apply accepted for job %s failed: %v", rep.JobID, err)
-	}
-	return err
 }
 
 // applyBounced: sending → bounced (terminal, §2.1). Sets completed_at, clears the lease,
@@ -305,7 +381,7 @@ func (h *OutcomeHandler) applyBounced(ctx context.Context, boxID string, rep box
 		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
-		log.Printf("outcome: apply bounced for job %s failed: %v", rep.JobID, err)
+		log.Printf("outcome: apply bounced for job %s failed: %v level=error", rep.JobID, err)
 	}
 	return err
 }
@@ -400,7 +476,7 @@ func (h *OutcomeHandler) applyClassifiedFailure(ctx context.Context, boxID strin
 		return h.writeSendLog(ctx, tx, rep.JobID, rep.SMTPResponse, cfg)
 	})
 	if err != nil && !errors.Is(err, errNoop) {
-		log.Printf("outcome: apply %s for job %s failed: %v", class, rep.JobID, err)
+		log.Printf("outcome: apply %s for job %s failed: %v level=error", class, rep.JobID, err)
 	}
 	return err
 }

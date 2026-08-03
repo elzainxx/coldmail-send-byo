@@ -249,6 +249,21 @@ surface to a platform token would be a free map of it.
 > only `{job_id, request_id, accepted}` — never an internal reason. The Brain NEVER acks an outcome
 > it did not persist (Rule 5).
 >
+> **The id in `provider_message_id` is the PROVIDER's, so the Brain cannot assume it is unique — fixed
+> 2026-08-03 (defect #140).** The box extracts it from the `250` line (three patterns: `queued as X`,
+> `2.0.0 OK <ts> X`, `id=X`) and falls back to the Brain-generated `Message-ID` when nothing parses
+> (P3-3). A provider whose `250` carries a constant token in one of those positions therefore returns
+> the SAME id for every message, and the second job to report it hits the UNIQUE constraint. The
+> constraint is NOT relaxed; the Brain extends P3-3's own fallback to the collision case and records
+> the Brain-generated `Message-ID` (deterministic from `job_id`, §8.1 — unique by construction) as
+> that job's key, logging a `level=warn` and keeping the provider's raw response verbatim in
+> `send_logs.smtp_response`. **Client-visible consequence:** `report`'s `provider_message_id` is a
+> `<uuid@sending-domain>` rather than a provider token for such a job. Both forms were always possible
+> on this field (the parse-failure fallback produces the same shape), so this is not a shape change —
+> a client must never parse or pattern-match this value, only echo it. Left unhandled the failure was
+> not cosmetic: the outcome was unackable, the box replayed it past the job's lease, and reclaim
+> re-sent a message the provider had already accepted.
+>
 > **M3-Phase 8 Chunk 1 (P7-OD-6) — per-attempt identity (additive wire field `attempt_token`).** Both
 > `push_job` and `report` carry an additive integer `attempt_token`. The Brain mints it inside the
 > guarded `assigned → sending` transition (`byosmtp.jobs.attempt_token`, migration `sender_0020`:

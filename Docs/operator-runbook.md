@@ -545,6 +545,19 @@ happening on its own:
   unacked outcomes in an in-memory buffer, reconnects, and replays them. The Brain persists each
   one idempotently and only *then* acks, so a replay is never a double-send. `provider_message_id`
   carries a UNIQUE constraint, which is the structural backstop.
+- **A provider that reuses one message id for every send does not wedge anything** (fixed 2026-08-03,
+  defect #140). The id stored in `provider_message_id` is whatever the provider echoed on its `250`
+  line, and the UNIQUE constraint only helps if the provider actually mints a distinct one per
+  message. When a second job reports an id another job already owns, the Brain records the
+  **Brain-generated `Message-ID`** as that job's idempotency key instead (it is deterministic from
+  `job_id`, so it is unique by construction) and logs a `level=warn` line naming the job and the
+  duplicated id. The provider's raw `250` text — including its own id — is still preserved verbatim in
+  `send_logs.smtp_response`, so nothing is lost for diagnosis. **What to do if you see that warning
+  repeatedly:** nothing is broken, but your provider's `250` line is not carrying a per-message id, so
+  `provider_message_id` is no longer a handle you can correlate against provider-side logs for those
+  jobs. Before the fix this case was worse than a cosmetic one: the outcome could not be acked, the
+  box replayed it until the job's lease expired, and reclaim re-sent a message the provider had
+  already accepted.
 - **Brain restart, not box restart.** If the *Brain* restarted, its startup rescan extends the leases
   of orphaned in-flight jobs by `startup_reconnect_window_sec` so reconnecting boxes have a bounded
   window to replay before the reclaim loop touches anything.

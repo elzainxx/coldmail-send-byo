@@ -148,6 +148,14 @@ Stated here because each one is a property of the architecture, not a bug:
   accepted residual. `provider_message_id UNIQUE` plus the pre-persist idempotency check bound it to
   at most one extra *delivery* — never a second billed job, never a corrupted state. Phase 6 §2.6 is
   the sole authoritative definition; it is referenced, never redefined.
+- **`provider_message_id` is provider-supplied, so its uniqueness is not a provider guarantee** (defect
+  #140, 2026-08-03). The value comes from the box parsing the provider's own `250` line; a provider
+  whose `250` carries a constant token in one of those positions hands back the same id for every
+  message. The column stays UNIQUE — the Brain resolves the clash instead of weakening the
+  constraint: the losing job records the Brain-generated `Message-ID` (deterministic from `job_id`,
+  therefore unique by construction) as its key, logs a `level=warn`, and keeps the provider's raw text
+  in `send_logs`. This is `internal/dispatch/outcome.go`'s `applyAccepted`, and it is P3-3's ruled
+  "fall back to the Brain `Message-ID`" applied one layer later than the box's parse-failure fallback.
 - **No bounce or complaint ingestion, and no open/click tracking.** A provider `250` is recorded as
   `sent` and nothing downstream is observed. Synchronous SMTP-time bounces *are* classified; what is
   absent is everything a provider says after accepting the message. `describe` reports this honestly
