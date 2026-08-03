@@ -1,10 +1,17 @@
 # Real-provider smoke test
 
-> **STATUS: WRITTEN, NOT RUN.** Deliberately. Every test in this repo up to now sends into
+> **STATUS: NEVER RUN AGAINST A REAL PROVIDER.** Deliberately. Every test in this repo sends into
 > [Mailpit](http://localhost:8025), a local sink — nothing has ever left a machine. This procedure is
 > the system's first contact with a real SMTP provider and a real inbox, and it touches **real
-> sending reputation**. Running it is **step one of the pilot**, not part of the build. Do not run it
-> to "check the docs are right."
+> sending reputation**. Running it is **step one of the pilot**, not part of the build.
+>
+> **REHEARSED against the local sink on 2026-08-03** — Mailpit standing in for the provider, so that
+> every command, filter, and stated expectation was checked against a running stack rather than
+> reasoned about. That rehearsal found four wrong expectations in this document (Step 1's "nothing has
+> authenticated yet," Step 2's eligibility claim, and two ways to misread Step 6) and one real product
+> defect (#141). All are fixed or flagged inline below. **What a sink cannot rehearse** is the half this
+> procedure exists for: inbox-vs-spam placement, SPF/DKIM/DMARC as a real receiver evaluates them, and
+> how a real provider's `250`/`4xx`/`5xx` text classifies. Those still await first contact.
 
 The reason for the care: a bad first impression with a provider is not a test failure you re-run. An
 account that authenticates wrong repeatedly, sends to an address that hard-bounces, or trips a
@@ -83,8 +90,32 @@ Verify **only** that the response reports `has_credential: true`. That is by des
 ever read back — the admin surface encrypts on write and holds no Decrypt capability, so there is no
 route that will show you the secret again ([`security-posture.md`](./security-posture.md)).
 
-**Expected:** `201`, `has_credential: true`. Nothing has authenticated to the provider yet — a
-credential is only exercised at send time, so a wrong password looks fine at this step.
+**Expected:** `201`, `has_credential: true`.
+
+> **This step DOES authenticate to the provider — verify-on-add is mandatory** (connect + STARTTLS +
+> AUTH, then disconnect; no test send). An earlier version of this line claimed "nothing has
+> authenticated yet ... a wrong password looks fine at this step." That was wrong, and wrong in the
+> direction this procedure cares about: your first AUTH against the provider happens *here*, at
+> create, not at first send. Two consequences worth having straight before you paste a credential:
+>
+> - **A wrong password is caught immediately**, which is good — but it costs one failed AUTH at the
+>   provider, so do not "try a few" credentials through this route. Get it right once.
+> - **The create returns `201` either way.** A failed verification does NOT roll back the row (the
+>   credential is already encrypted and stored) and does NOT fail the request. On the **Domain A**
+>   surface the response carries a `verification` block telling you which happened; the **operator
+>   admin** surface's account object does **not** project `credential_verification_state` at all, so
+>   a `201` there is silent about it. Confirm with `GET /v1/admin/health` (Step 2) rather than reading
+>   the create response.
+>
+> **If the From-address does not align with the sending host**, the create is refused `422` with
+> `{"field": "acknowledge_alignment_warning", "issue": "required"}` — the From gate asking you to
+> confirm you meant it. Re-send with `"acknowledge_alignment_warning": true`. For a real provider on
+> a domain with correct SPF/DKIM this normally does not fire; it is listed because a first smoke test
+> is exactly when a domain's DNS is least likely to be finished. **On the operator admin surface,
+> defect #141: that flag is accepted and then dropped** — it suppresses the `422` but never records
+> the acknowledgment, leaving an account that reads healthy-ish and can never route. Until it is
+> fixed, create through Domain A, or apply the acknowledgment with a PATCH that genuinely *changes*
+> `from_address` (see #141 for why an unchanged one silently no-ops).
 
 ### Step 2 — Confirm eligibility before queueing anything
 
@@ -95,6 +126,16 @@ ahealth | jq '{accounts, boxes}'
 **Expected:** the account counted as eligible (`accounts.healthy` includes it), at least one box
 connected, `dispatch_paused: false`. If any of that is wrong, stop and use the runbook — do not queue
 a job hoping it resolves.
+
+> **`accounts.healthy` is the real gate, and Step 1's `201` does not imply it.** Healthy requires,
+> among the obvious flags, BOTH `credential_verification_state = 'verified'` (so Step 1's verify-on-add
+> must have actually succeeded) AND a From-alignment verdict that is either `aligned` or an
+> `unaligned_warned` carrying a *current* acknowledgment. Miss either and the count is `0` while the
+> account looks fine in `GET /v1/admin/accounts/{id}` — the two most likely causes of a `0` here are a
+> credential the provider rejected and an unacknowledged alignment warning, in that order. This is the
+> same predicate the dispatcher itself uses, so `healthy: 0` means "will never route," not "not yet."
+> Diagnose it now; a job queued against it sits in `waiting_for_capacity` and looks like a capacity
+> problem instead of a configuration one.
 
 ### Step 3 — ONE message, to yourself
 
@@ -181,6 +222,41 @@ ahealth | jq '{rate: .dispatch, errors: .errors_last_window, accounts}'
 **Expected:** every job terminal as `sent`, `errors_last_window` empty or benign, no unexpected pause
 or quarantine, observed rate consistent with the configured pacing (not faster). A rate *higher* than
 pacing should allow means something is misconfigured — investigate before scaling.
+
+> **Two ways to misread this output, both found by rehearsing this step.**
+>
+> **1. `dispatch.send_rate_per_min` is not the instantaneous rate** and cannot be compared against
+> pacing. It is `sends_last_window ÷ health_metrics_window_sec`, and that window defaults to **one
+> hour** — so a burst of 14 sends in 15 seconds reports `0.23`. To actually check pacing, measure the
+> gaps:
+>
+> ```sql
+> SELECT completed_at - lag(completed_at) OVER (ORDER BY completed_at) AS gap
+>   FROM byosmtp.jobs WHERE state = 'sent' ORDER BY completed_at;
+> ```
+>
+> **And expect gaps far shorter than `send_delay_min_sec`** — that is correct, not a defect. The delay
+> is **per lane**, not global: with `concurrency_per_user_default = 3` and a 3–7s delay, three lanes
+> fire independently, so throughput is ≈ lanes ÷ mean-delay (~1.7s mean gap for 3 lanes at 5s) and
+> individual gaps of a few hundred milliseconds are normal when two lanes come ready together. Compare
+> against **lanes ÷ mean delay**, not against `send_delay_min_sec`, or you will "investigate" correct
+> behavior. Only a rate above *that* is a real signal.
+>
+> **2. A benign requeue shows up as `errors_last_window.unknown`.** Every dispatch-side requeue
+> (`no_box_available`, `no_eligible_account`, `push_failed`) writes `last_error_class = 'unknown'` with
+> the real reason in `last_error_message` — the error *taxonomy* classifies SMTP outcomes, and these are
+> not SMTP outcomes. So one transient `unknown` on a job that then reached `sent` is backpressure
+> working, not the "state transition you cannot explain" that §4 tells you to halt for. Check before
+> reaching for the stop button:
+>
+> ```sql
+> SELECT to_state, error_class, error_message FROM byosmtp.job_events
+>  WHERE error_class IS NOT NULL ORDER BY created_at DESC LIMIT 10;
+> ```
+>
+> An `unknown` whose message is one of those three reasons, on a job that is now `sent`, is benign. An
+> `unknown` on a job that did **not** reach a terminal state, or one you cannot trace to a requeue
+> reason, still means stop.
 
 ---
 
