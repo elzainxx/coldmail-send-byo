@@ -51,6 +51,7 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 - **Host antivirus intercepts host→localhost TLS.** Known environment quirk, not a defect. Probe mTLS **in-network** (container to container). If a check fails from the Windows host, re-run it from inside a container before believing it.
 - **`dev.sh reset` means reset.** Clean-slate stages need a genuinely fresh volume — a stale one silently skips migrations. It also does **not** rebuild images: after changing Go or Node source, `dev.sh build` first, or you test the old binary and read the result as a real RED.
 - **Git Bash rewrites container-absolute paths in `docker run` arguments.** Any step that copies a `docker run … -v "$PWD/db:/db:ro"` line out of `install-and-deploy.md` (Stage 2 does — Step 5's migration runner) gets the container-side `/db` expanded to `C:/Program Files/Git/db`, and the runner dies with `read migrations dir "C:/Program Files/Git/db/migrations": no such file or directory`. That is MSYS path conversion, not a defect and not a docs bug — the install doc targets Ubuntu. Prefix the command with `MSYS_NO_PATHCONV=1`. The same applies to `-e PREFLIGHT_SQL=/db/…` and to any `docker exec … psql -c` whose SQL contains a leading-slash literal.
+- **`dev.sh` and a bare `docker compose` describe DIFFERENT containers.** `scripts/dev.sh` hardcodes `-f docker-compose.yml -f tests/harness/compose.test.yml`, and that override puts Postgres's data directory on **tmpfs** and adds `fsync=off`. A bare `docker compose …` uses the base file only, where Postgres is volume-backed. So a snapshot/restart/outage instruction copied between the two is not the same experiment — the tmpfs stack loses the entire database on any container stop. Stage 9.10 carries the precondition this matters most for. Check with `docker inspect byosmtp-module-postgres-1 --format '{{.HostConfig.Tmpfs}}'` (`{{range .Mounts}}` does not list tmpfs mounts) and `--format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'` to see which files were actually merged.
 - **Watch for a stale test template.** A migration not applied to the local test template makes test results meaningless. This bit during Phase 6. If results look strange, reset before debugging.
 - **Timing tests need a quiet machine.** Don't run pacing tests while a build is churning.
 - **One host, one log stream.** Tail the Brain and both boxes together during failure injection — you'll watch a heartbeat miss, the reclaim, and the re-dispatch scroll past in one place.
@@ -212,6 +213,23 @@ Module 3 is multi-tenant, so this is a real test now.
 9. **Restart the Brain** mid-campaign
    - **Pass:** orphans recover, nothing lost or duplicated
 10. **`docker stop` Postgres** for a few minutes, then start it
+    - **⚠ PRECONDITION — on the default stack this step DESTROYS the database instead of simulating an outage.** `scripts/dev.sh` always merges `tests/harness/compose.test.yml`, which puts Postgres's data directory on **tmpfs** (RAM). A `docker stop` frees that tmpfs, so `docker start` brings up an **empty** Postgres and the Brain reports `relation "byosmtp.jobs" does not exist` — a false RED that looks like a catastrophic recovery bug. Confirmed live, 2026-08-03. Bring up a **durable-volume stack** for this step only. Write `/tmp/compose.durable.yml`:
+      ```yaml
+      services:
+        postgres:
+          command: !reset null      # drop the harness's fsync=off — a durability drill needs real fsync
+          tmpfs: !reset []          # `!reset` is required; a plain override MERGES with the base list
+          volumes:
+            - ./deploy/pg-init:/docker-entrypoint-initdb.d:ro
+            - pgdata-durable:/var/lib/postgresql/data
+      volumes:
+        pgdata-durable:
+      ```
+      then run the stack **without `dev.sh`**, third file last:
+      ```
+      docker compose -f docker-compose.yml -f tests/harness/compose.test.yml -f /tmp/compose.durable.yml up -d
+      ```
+      Verify before you trust the result — `docker inspect byosmtp-module-postgres-1 --format '{{.HostConfig.Tmpfs}}'` must print `map[]`, not `map[/var/lib/postgresql/data:]`. Note `--format '{{range .Mounts}}'` does **not** list tmpfs mounts at all, so it cannot be used for this check. Then seed accounts and a campaign on this stack (it starts empty) before injecting the outage.
     - **Pass:** the Brain halts cleanly, **invents nothing** — no job marked sent or failed during the outage — and resumes with no double-processing. *The single most important assertion in this guide.*
 11. **Quarantine every account** mid-campaign
     - **Pass:** jobs **wait**, not fail; re-enable one and the same jobs complete
@@ -259,7 +277,9 @@ Module 3 is multi-tenant, so this is a real test now.
 4. **`SIGTERM` the Brain** mid-campaign → drains, leaves work recoverable, next boot recovers it
 5. **Start a second Brain** → exits cleanly, no double-dispatch
 6. **Roll the latest migration down and back up** → reversible, no data loss
+   - **⚠ PRECONDITION.** The runner is forward-only by default and **refuses** a `down` outright: `down is forbidden unless BYOSMTP_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. That is the intended production posture (`install-and-deploy.md` Part 5), not a defect. Pass `-e BYOSMTP_MIGRATE_ALLOW_DOWN=true` for this drill, and one version at a time. In Git Bash also prefix `MSYS_NO_PATHCONV=1` (Part 2's path-rewriting gotcha applies to `-v "$PWD/db:/db:ro"` and `MIGRATIONS_DIR=/db/migrations`).
 7. **Delete an account**, then confirm it is never selected for a send while its record persists; after the retention window, confirm the secret is genuinely gone
+   - **⚠ PRECONDITION — two traps, both of which make this step appear to fail when the system is correct.** First: `purge_after` is **stamped at DELETE time** from the live `account_retention_window_sec` (`platformapi/account_delete.go`), deliberately — a later config change never retroactively moves an existing account's purge date. So **lower the retention window BEFORE the delete**, not after; lowering it afterwards leaves the already-stamped `purge_after` untouched and you will wait out the original window. Second: the purge sweeper re-reads `account_purge_sweep_interval_ms` only when it schedules the *next* sleep (`dispatch/purge.go`'s `PurgeRunner.Run`), so a live `PUT` does **not** shorten a sleep already in progress — either wait out the old interval once or restart the Brain to pick it up immediately. Both are config-not-code working as designed (Rule 1); neither is a purge bug.
 
 ---
 
