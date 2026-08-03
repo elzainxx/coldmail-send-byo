@@ -1,8 +1,38 @@
-# API contract (living mirror of Phase 9 §5)
+# API contract (living mirror of the served surface)
 
-Authoritative source: **Phase 9 §5** + `history/phase-9-contract-and-doc-completions.md`.
-This file mirrors the served surface and is verified by the CI `contract_drift` gate
-against the Brain's registered routes.
+Authoritative source: the phase specs under `history/` cited per section below (primarily
+`history/phase-9-contract-and-doc-completions.md` for the routes inherited from module 2, plus
+module 3's own `history/phase-3-user-owned-accounts.md`, `history/phase-4-from-gate.md`,
+`history/phase-6-per-user-config-and-routing.md`, `history/phase-7-visibility-notifications-contract.md`).
+This file mirrors the served surface and is verified by the CI `contract_drift` gate against the
+Brain's registered routes.
+
+**Organised by AUTH DOMAIN → resource path (M3-P8-OD-2, ruled 2026-08-01).** Module 2 has no
+separate interface-inventory document — `api-contract.md` fuses the inventory and the contract, and
+module 2's own version groups by the phase that built each route. Module 3 keeps every format
+convention from that document (§ headers, the error-envelope example, the master status/error
+table, route tables, request/response sub-sections, the terminal boundary section) but re-axes the
+TOP-LEVEL grouping to **auth domain, then resource path** — phase-grouping aligns headings that
+share a name across modules and nothing else (module 2's "Phase 3" is the minimal send path;
+module 3's is user-owned accounts), which defeats the all-modules comparison this inventory exists
+to feed. Every route table below carries its own **Phase** column so the provenance is not lost,
+just no longer the organising axis — provenance itself lives in `history/`. Two phase numberings
+appear side by side and are NOT the same sequence: a bare **"Phase N"** is module 2's own numbering
+(inherited, e.g. Phase 2/3/9/9.5 below); an **"M3-Phase N"** is module 3's own phase count, starting
+fresh at its own Phase 0 (`history/phase-0-fork-and-baseline.md`) — module 2's Phase 3 (the minimal
+send path) and module 3's own M3-Phase 3 (user-owned accounts) are unrelated phases that happen to
+share a number, which is exactly why the grouping axis moved off phase entirely.
+
+**THREE audiences, not two.** Module 2's interface has exactly two: the platform (Domain A) and the
+operator (Domain B). Module 3 has a third — `/v1/byosmtp/*`, the user-facing self-serve surface —
+and it has **no module 2 counterpart at all**. A two-column comparison against module 2 would read
+this whole surface as a divergence; it is the extension mechanism (OD-7's package isolation, the
+namespaced `/v1/byosmtp/*` prefix) working exactly as designed, not a gap. State this once, here,
+so the later all-modules diff does not re-derive it: **Domain A** (platform service token,
+service-to-service) and **Domain B** (operator `platform_admin` key) are the two module 2 also has;
+**Domain A, user-facing** (`/v1/byosmtp/*`, same platform service token as Domain A but scoped to
+one tenant's own resources via an explicit `user_id`) is module 3's own addition, the actual
+product surface.
 
 ## Auth domains (never share a credential)
 
@@ -13,21 +43,26 @@ against the Brain's registered routes.
   by the platform's own service-identity mechanism (out of band to this module). It is **not
   exposed to end users or the public internet** — a control-plane channel between the platform and
   the module, distinct from the operator admin key (CLAUDE.md Rule 6). *(Built in Phase 3 — the
-  minimal send path; see the Phase 3 routes below. The surface only mounts when
+  minimal send path; see the Domain A routes below. The surface only mounts when
   `PLATFORM_TOKEN_HASHES` is configured, fail-closed.)*
+- **Domain A, user-facing** (`/v1/byosmtp/*`) — module 3's own extension, no module 2 counterpart.
+  Same platform service token as Domain A above (the platform still brokers the call), but every
+  route requires an explicit `user_id` scoping it to one tenant's own resources — a user acts on
+  their own accounts/settings/usage, never another tenant's. *(Built starting M3-Phase 3 — user-owned
+  accounts; see the Domain A, user-facing routes below.)*
 - **Domain B** — operator (`/v1/admin/*`, incl. `GET /v1/admin/health`): the operator
   `platform_admin` bearer key (Phase 2 §4), env-configured, stored hashed, constant-time compared.
-  *(Built in Phase 2 — accounts/config + lifecycle; see the Phase 2 routes below. The pool admin
+  *(Built in Phase 2 — accounts/config + lifecycle; see the Domain B routes below. The pool admin
   routes originally built here were removed by module 3's G1/G2. The Phase 0
   health stub (`/healthz`,`/readyz`) remains unauthenticated.)*
-- **Separation invariant (already true, now stated per B7):** the two domains never share a
-  credential and never cross-serve — a platform service token cannot reach `/v1/admin/*` and an
-  operator key cannot drive `quote`/`run`/`report`/`describe`. Both use the identical
-  two-vocabulary error envelope; a missing/invalid credential on either → `401 unauthenticated`.
+- **Separation invariant (already true, now stated per B7):** no two of these three ever share a
+  credential and none cross-serve — a platform service token cannot reach `/v1/admin/*` and an
+  operator key cannot drive `quote`/`run`/`report`/`describe` or `/v1/byosmtp/*`. All three use the
+  identical two-vocabulary error envelope; a missing/invalid credential on any → `401 unauthenticated`.
 
-## The error envelope + the full `error.code` enum (both domains)
+## The error envelope + the full `error.code` enum (all three domains)
 
-Every non-2xx response, on EITHER domain, is exactly this shape — never SQL/SQLSTATE, an internal
+Every non-2xx response, on ANY domain, is exactly this shape — never SQL/SQLSTATE, an internal
 reason, a credential, ciphertext, a key id, a stack trace, or an internal hostname:
 
 ```json
@@ -68,7 +103,7 @@ The full, additive-only `error.code` enum:
 |---|---|---|
 | 400 | `validation_failed` | Body/query failed field validation (see `details[]`). |
 | 400 | `config_ordering_violation` | A config `PUT` would break one of the two ordering invariants (`Docs/config-reference.md`) — enforced at the `PUT` boundary itself (rejected before the value lands) AND independently re-checked at config-LOAD as a defense-in-depth backstop (`Docs/history/open-decisions.md` P9-OD-2, RULED-AND-CLOSED). |
-| 401 | `unauthenticated` | Missing/invalid API key/token, either domain. |
+| 401 | `unauthenticated` | Missing/invalid API key/token, any domain. |
 | 403 | `forbidden` | Reserved for future scoped roles; unused in V1's single-scope model. |
 | 404 | `not_found` | Resource id / config key does not exist, OR belongs to another tenant (no existence disclosure — never `403`). |
 | 409 | `conflict` | State/RI conflict (duplicate account for a user; limit-below-counter; system user unprovisioned; duplicate active campaign for a user). |
@@ -76,224 +111,7 @@ The full, additive-only `error.code` enum:
 | 429 | `rate_limited` | Admin rate limit — off by default in V1. |
 | 500 | `internal_error` | Unexpected. Generic message only; reason in logs. |
 
-## Phase 0 served routes (SKELETON only)
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | `/healthz` | none (Phase 0 stub) | liveness |
-| GET | `/readyz` | none (Phase 0 stub) | readiness: DB reachable AND singleton lock held (true state) |
-
-Box-link channel (mTLS, client cert required; token is the authorization authority):
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | `/v1/box/register` | mTLS client cert + registration token | box registers (id + one-time token) |
-| POST | `/v1/box/heartbeat` | mTLS client cert + prior registration | box heartbeat |
-
-> Two-vocabulary rule: error envelopes carry only `{code}` (Phase 0) — no internal reason,
-> SQL, credential, or hostname. Additive-only: these routes never rename; later phases add.
-
-## Phase 2 served routes — operator admin API (Domain B)
-
-All under `/v1/admin/*`; every route requires the operator `platform_admin` bearer key
-(`Authorization: Bearer <key>`, hashed + constant-time compared). Missing/invalid key →
-`401 unauthenticated`. The surface only mounts when `ADMIN_API_KEY_HASHES` is configured
-(fail-closed). Error envelopes carry ONLY `{code, message, details[], request_id}` — never an
-internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal hostname (§1.2 of
-`history/phase-2-account-management.md`). Additive-only: these routes never rename; later phases add.
-
-**Accounts** (`byosmtp.accounts`; `smtp_secret` is write-only — reads expose only `has_credential`):
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/admin/accounts` | create an account (encrypt-on-write credential intake) |
-| GET | `/v1/admin/accounts` | list (cursor paginated; filters `paused`/`quarantined`/`disabled`/`user_id`) |
-| GET | `/v1/admin/accounts/{id}` | read one |
-| PATCH | `/v1/admin/accounts/{id}` | update (omit `smtp_secret` = unchanged, structural) |
-| DELETE | `/v1/admin/accounts/{id}` | hard delete → `204`. The audit row survives: `byosmtp.job_events` and `byosmtp.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`sender_0024`, ADR-0012). Deleting a **box** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `sender_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
-| GET | `/v1/admin/accounts/{id}/events` | read the account audit trail (cursor paginated) |
-
-### `POST /v1/admin/accounts` request body
-
-The admin surface decodes **strictly** (`DisallowUnknownFields`) — an unrecognised or misspelled
-field name is a hard `400 validation_failed`, not a silently ignored key. So the field set matters:
-
-| Field | Required | Type | Notes |
-|---|---|---|---|
-| `user_id` | **yes** | uuid | Must name an existing `public.users` row |
-| `smtp_host` | **yes** | string | |
-| `smtp_username` | **yes** | string | |
-| `smtp_secret` | **yes** | string | **Write-only.** Encrypted on write; never returned by any read. Reads expose `has_credential` only |
-| `from_address` | **yes** | string | |
-| `smtp_port` | no | int | Defaults per the module's port handling (587/25 STARTTLS, 465 implicit TLS) |
-| `from_name` | no | string | |
-| `daily_limit` | no | int | Defaults to `daily_limit_default`; capped by the `DailyLimitCeiling` bound |
-
-`PATCH /v1/admin/accounts/{id}` takes the same fields, all optional — and **omitting `smtp_secret`
-leaves the stored credential unchanged**, which is structural rather than a convenience: there is no
-way to read a credential back, so a partial update cannot round-trip one.
-
-**Account lifecycle transitions** (manual, audited — one `account_events` row each; `actor='admin'`):
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/admin/accounts/{id}/quarantine` | `quarantined = true` |
-| POST | `/v1/admin/accounts/{id}/unquarantine` | `quarantined = false` |
-| POST | `/v1/admin/accounts/{id}/disable` | `disabled = true` |
-| POST | `/v1/admin/accounts/{id}/enable` | `disabled = false` |
-| POST | `/v1/admin/accounts/{id}/pause` | `paused = true, pause_reason = 'manual'` |
-| POST | `/v1/admin/accounts/{id}/unpause` | clears only a `pause_reason='manual'` pause |
-
-**Module 3 Phase 5 §6/§7 — per-user suspend** (genuinely new operator surface; module 2 had no
-per-user concept at all). One mechanism, two triggers (`suspend_reason` = `'operator'` |
-`'subscription_lapsed'` — this route only ever writes `'operator'`), audited in
-`account_events` with `account_id = NULL` and `user_id` = the subject (M3-P1-OD-10):
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/admin/users/{id}/suspend` | Halts dispatch losslessly for this user (jobs stay `queued`, nothing fails, the same rows resume on reinstate) and PAUSES the expiry clock of every one of the user's live campaigns (`clock_paused_at = NOW()`). `422 unprocessable` if already suspended |
-| POST | `/v1/admin/users/{id}/unsuspend` | Reinstates: pushes each paused campaign's `expires_at` FORWARD by exactly the suspended interval, accumulates `paused_total_sec`, clears `clock_paused_at`. `422 unprocessable` if not suspended |
-
-Both refuse cleanly (no audit row) on their own precondition, matching the account-lifecycle
-transitions' discipline above. `POST /v1/run` (Domain A) refuses outright for a suspended user
-(`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not
-losslessness, it is a growing debt against the queue cap.
-
-A refused transition is `422 unprocessable` with **no** `account_events` row written (the
-precondition is checked before the write). The refusal is diagnosable without a log dive: the
-`message` is a curated sentence specific to the precondition that failed, and `details[]` carries
-one entry naming the blocking flag (`quarantined`/`disabled`/`paused`, or `pause_reason` when the
-pause exists but is not `manual`) with `issue: "conflict"`. The seven refusals are mutually
-distinct — asserted behaviorally, not by convention. Flag names are already public in the account
-read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
-the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
-
-**Module 3 Phase 6 — per-user config overrides** (`byosmtp.user_config_overrides`; admin-only, §4 of
-`Docs/phase-6-per-user-config-and-routing.md`):
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/v1/admin/users/{id}/config` | Read the user's current overrides — every field `null` if never overridden (not an error; absence is the common case). |
-| PUT | `/v1/admin/users/{id}/config` | Set one or more of the six overridable dials (`send_delay_min_sec`, `send_delay_max_sec`, `concurrency_per_user`, `max_campaign_size`, `max_queued_jobs`, `campaign_expiry_sec`). Absent fields are left untouched — a partial `PUT` does not clear the others. `400 validation_failed` if no field is present, or a field's value is out of its structural domain. `400 config_ordering_violation` if the resulting RESOLVED pair (this write ∪ current row ∪ current globals) would invert `send_delay_min_sec > send_delay_max_sec` — validated under the SAME advisory lock the global config `PUT` uses, so a concurrent global-lower and override-raise cannot both commit an inverted pair. |
-| DELETE | `/v1/admin/users/{id}/config/{dial}` | Clear ONE override column back to NULL (inherit the global). `404 not_found` for an unrecognized `{dial}` name. |
-
-The write path is store-layer gated: every write requires an admin actor identity, and a caller
-cannot satisfy that requirement by supplying the target user's own id (no self-service override).
-There is no break-glass variant for this surface — an admin override write is already the
-privileged path.
-
-**Module 3 Phase 6 — the user-owned routing strategy** (`byosmtp.user_settings`; user-writable,
-Domain A, §5.3 of `Docs/phase-6-per-user-config-and-routing.md`):
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/v1/byosmtp/settings?user_id=<uuid>` | Read the caller's OWN `routing_strategy` (`random`/`round_robin`/`one_by_one`). Row absent → the table's own default (`round_robin`). |
-| PUT | `/v1/byosmtp/settings?user_id=<uuid>` | Set the caller's own `routing_strategy`. The tenant selector is the query parameter, taken from the session — never the request body, so a body-supplied `user_id` cannot redirect the write to another tenant. Accepts ONLY `routing_strategy`, validated against the enum; `400 validation_failed` for a missing/unrecognized value. This route CANNOT name an admin-owned dial (`send_delay_*`, `concurrency_per_user`, the resource caps) — not by a check, but structurally: `user_settings` and `user_config_overrides` are two different tables, and this handler decodes no field that could reach the other one. |
-| GET | `/v1/byosmtp/usage?user_id=<uuid>&from=<YYYY-MM-DD>&to=<YYYY-MM-DD>` | **Phase 7 §6** — per-user, per-UTC-day usage metrics for platform capacity planning under the flat-subscription model. `from`/`to` are inclusive UTC dates, both optional (default: the last 30 UTC days ending today — a bounded default so an unscoped request cannot force a full-history aggregation). Returns `{user_id, from, to, accounts_configured, accounts_eligible, days: [{date, messages_attempted, messages_sent, messages_bounced, messages_failed, campaigns_run, peak_concurrency_used, distinct_destination_domains}]}`. `accounts_configured`/`accounts_eligible` are a SNAPSHOT at reporting time (distinguishes "has N accounts" from "has N accounts that work"); the `days[]` metrics are DERIVED from `jobs`/`job_events` on every request — no counter table, no increment-on-send path, so a fixed aggregation bug can be re-run against history. Read-only, no text fields, no per-account rows — outside the leak surface by construction (`user_output_scrub` covers it). |
-
-**`GET /v1/describe`'s `extension_routes[]`** (Phase 7 §5.1) — everything above except the core
-four (`quote`/`run`/`report`/`describe` are implicit, uniform across modules) is ALSO declared in
-`describe`'s response, generated from the SAME registry `internal/platformapi/server.go`'s route
-mounting reads (`describe_routes.go`) — a route cannot be served without a `describe` declaration.
-Each entry carries `{id, method, path, auth:"platform_service_token", scope:"user", description,
-request_schema_ref?, response_schema_ref?}`; `schemas` holds the shapes those refs point into.
-Operator (`/v1/admin/*`) routes are NEVER declared here — `describe` is served on Domain A, and
-enumerating the admin surface to a platform token would be a free map of it.
-
-**Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
-
-The `PUT` request body is `{"value": <v>}` — the bare JSON value at `value`, **not** the stored
-`{"v": …}` envelope, which is an internal storage detail the API unwraps on read and re-wraps on
-write. `<v>` is typed per the key's `value_type` (`integer` → a JSON number, `boolean` → `true`/
-`false`, `string`/`enum` → a JSON string, `json` → an object). A value of the wrong type is
-`400 validation_failed`; the key's `value_type` and legal range are in
-[`config-reference.md`](./config-reference.md), which is the only place values are documented:
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/v1/admin/config` | read all keys |
-| GET | `/v1/admin/config/{key}` | read one (unknown → 404) |
-| PUT | `/v1/admin/config/{key}` | update one (`value_type` + semantic validation). **Config-ordering invariants (`Docs/history/open-decisions.md` P9-OD-2, RULED-AND-CLOSED):** for the four keys with a documented ordering counterpart (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`, `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`), this `PUT` validates the RESULTING pair against the counterpart's LIVE current value BEFORE writing — a write that would invert either invariant is rejected with `400 config_ordering_violation`, naming the conflicting counterpart key, its current value, and the required relation; the bad value never lands. Read-check-write happens in ONE transaction under an advisory lock that serializes all config writes, so two *concurrent* PUTs to the two halves of one pair cannot both pass (one succeeds, one is rejected) — see `Docs/config-reference.md`. The config-LOAD path independently re-checks the same invariant on every tick as a defense-in-depth backstop. Widening BOTH keys of a pair upward requires ordering the two `PUT`s (raise the boundary key first). |
-
-## Phase 9.5 served routes — observability (Domain B)
-
-Same operator admin auth as the routes above (`Authorization: Bearer <admin key>`).
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/v1/admin/health` | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
-
-### `GET /v1/admin/health` response fields
-
-The authoritative field list (`internal/adminapi/health_handler.go`'s `healthResponse`). Every
-top-level block is always present; `errors_last_window` always carries all six `error_class` keys
-even when a class did not fire, so a poller can index it by name unconditionally.
-`oldest_active_heartbeat_age_sec` is the one omittable field (absent when no box is active).
-For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-runbook.md).
-
-| Field | Type | Notes |
-|---|---|---|
-| `generated_at` | string (RFC 3339 UTC) | when the snapshot was computed |
-| `window_sec` | int | the rolling window all `*_last_window` fields cover (`health_metrics_window_sec`) |
-| `dispatch.dispatch_paused` | bool | live `dispatch_enabled` inverted |
-| `dispatch.ticks_per_min` | float | observed dispatch cadence |
-| `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
-| `dispatch.send_rate_per_min` | float | derived from the two above |
-| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `byosmtp.jobs` — one field per `job_state` |
-| `queue.waiting_for_capacity` | int | **G3 real rewrite (M3-P2-OD-12):** queued jobs whose owning user has ZERO currently-ELIGIBLE accounts — the real predicate (quarantined/disabled/deleted/credential-unverified/from-misaligned accounts excluded; the daily-reset/throttle cycle logic applied), not merely "has any account row." **Not an error state** |
-| `boxes.{active,stale,disabled}` | int | counts by `box_status` |
-| `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
-| `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
-| `users[]` | array | **G3 real rewrite (M3-P2-OD-12), REPLACES the pre-G2 `pools[]` field (pre-announced at G2: "a G3 account-set-aware replacement is expected, at which point this row will change again").** `{user_id, eligible_accounts, headroom}` — one row per user with at least one QUEUED job right now, `eligible_accounts` counting the same real predicate `queue.waiting_for_capacity` uses, `headroom` = `"ok"` \| `"exhausted"`. There are no pools in module 3; the account set an operator cares about is a user's own accounts |
-| `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys. Counts **error transitions only** — see the note below |
-| `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
-| `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
-| `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
-| `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all four V1 conditions (adds `destination_throttles`, Phase 7 §7.1) |
-| `destination_throttles[]` | array | **Phase 7 §7** — `{destination_domain, window_sec, throttle_events, distinct_users_affected, distinct_accounts_affected, first_seen_at, last_seen_at}`, one row per destination domain with at least one `error_class='throttle'` event inside `destination_throttle_window_sec`. Sourced from `job_events.destination_domain` — **never `send_logs`** (M3-P7-OD-6: the aggregation must not depend on debug retention, since this diagnostic is the safeguard chosen INSTEAD of a per-destination cap). `distinct_users_affected` is the diagnostic field: one user throttled is that user's problem; several on the SAME domain means our box IPs are rate-limited. No response text of any kind — this feeds the untrusted alert webhook (Rule 5), and the entry surfaces in `active_conditions[]` (condition `destination_throttles`) only once `distinct_users_affected >= destination_throttle_user_threshold` |
-
-**`errors_last_window` counts one failure once.** It counts `byosmtp.job_events` rows in the window
-that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis
-transition back to `queued`). Forward progress (`queued→assigned`, `assigned→sending`) and success
-(`sending→sent`) are never counted, so the number is a count of *failures*, not of rows that happen to
-carry a class. Read it as incident size: one failing send contributes exactly 1, no matter how many
-times that job is later retried and eventually succeeds.
-
-> Until `sender_0022` this was not true. `sender_0008`'s triggers copied the job row's **sticky**
-> `last_error_class` onto every event, so a single requeue tagged four rows — the requeue plus the
-> `queued→assigned`, `assigned→sending`, and `sending→sent` that followed — and this field reported
-> `{"unknown": 4}` for one failure. `sender_0022` gates the trigger; `queryErrorsInWindow` also filters
-> on the transition shape, so the count is correct even over rows an older trigger already wrote
-> (`job_events` is append-only and was deliberately not rewritten). Note the two-sided consequence: a
-> database still carrying pre-`sender_0022` rows returns the correct count from this endpoint, but a
-> **hand-written** `COUNT(*) WHERE error_class IS NOT NULL` against `job_events` will still over-count
-> on those old rows. Filter on the transition shape in ad-hoc queries too. Pinned by
-> `TestHealth_ErrorsLastWindowCountsOnlyErrorTransitions` and
-> `TestJobEvents_ErrorContextOnlyOnErrorTransitions`.
-
-### Alert webhook payload (outbound, `alert_webhook_url`)
-
-Not a served route — an outbound POST across a trust boundary, listed here because it is a contract
-a receiver depends on. Fires on the **rising edge** of a condition, deduped by
-`(condition, subject.id)` until it clears; there is no all-clear POST. Shape:
-`internal/adminapi/health_alerts.go`'s `webhookPayload`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `condition` | string | `account_quarantined` \| `box_death`. `pool_exhausted` was removed at G2 (M3-P2-OD-12); its Phase-7-owned replacement is `no_eligible_accounts` (M3-P1-OD-9) |
-| `severity` | string | `critical` |
-| `subject` | object | `{type, id}` — the id of the account / box the condition is about |
-| `detail` | object | condition-specific counts and ids only |
-| `fired_at` | string (RFC 3339 UTC) | rising-edge timestamp |
-| `module` | string | constant module identifier, so a shared receiver can route |
-
-Deliberately absent, per CLAUDE.md Rule 5 (the webhook is untrusted outbound egress): no message
-content, no recipient address, no credential, no internal reason string, no SQL/SQLSTATE, no
-internal hostname. A receiver gets condition codes, subject ids, and timestamps — nothing else.
-Transport bounds (a 5-second client timeout, 3 attempts, then dropped) are code constants, not
-config keys: see `config-reference.md`'s hardcoded-bounds note.
-
-## Phase 3 served routes — platform-facing API (Domain A)
+## Domain A — platform (service-to-service)
 
 The end-user surface for the minimal send path. Every route requires the platform service token
 (`Authorization: Bearer <token>`, hashed + constant-time; distinct from the operator key).
@@ -317,11 +135,11 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 > `user_id` → clean `400 validation_failed`. This is module-level defense-in-depth: even a
 > platform-side bug that passes the wrong `user_id` cannot cross tenant boundaries here.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/quote` | **Phase 7 §4 (M3-P7-OD-11): a FEASIBILITY check, not a cost lookup** — module 3 prices as a flat monthly subscription (`module-3-build-plan.md` §1: no per-send charge, no per-recipient price), so `quote` answers *"can this run, how many recipients, within which cap, and roughly how long at current capacity?"* rather than computing a bill. Body now requires `user_id` (M3-P7-OD-5 — every field below is per-user; additive to the request) alongside `recipient_count`. Response: `feasible` (bool — **`false` means the request CANNOT be accepted as submitted**; a campaign merely exceeding today's daily capacity is `true` with a long projection, never `false` — conflating "slow" with "cannot run" is the one thing this endpoint must never do), `reasons[]` (empty when feasible; one entry per binding constraint — `exceeds_queue_cap` carrying `limit`/`requested`/`cap_name`, `no_eligible_accounts`, `all_accounts_unverified`, `from_gate_blocked`, `dispatch_disabled`), `capacity` (`eligible_accounts`, `daily_capacity_remaining`, `effective_concurrency`, and — **REQUIRED and non-null on every `feasible:true` response, never omitted** — `estimated_duration_sec` + `estimate_basis:"current_eligible_capacity"`, both entirely omitted together only when `quote_capacity_projection_enabled=false`), `caps` (the user's resolved `queue_depth_cap`/`daily_send_cap`/`account_count_cap`, override→global per Phase 6 §1), and `warnings[]` (empty by default; an explicit `long_duration` object — `code`, `estimated_duration_sec`, `threshold_sec` — appears when the projection crosses `quote_long_duration_warn_sec`, never a bare number the caller must independently judge). The legacy `cost`/`currency`/`unit_price_credits`/`tier` fields are **retained** (Rule 5 — never removed) but are now **inert**: `unit_price_credits` is seeded `0` (`byosmtp_0048`), so `cost` is always `0` at the default — the fields exist purely for contract compatibility with the additive shape module 2 established, not meaningful pricing. Pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count, not a rejection |
-| POST | `/v1/run` | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `byosmtp.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy. **Module 3 Phase 5 §5.2/§6.4, same advisory-locked transaction:** a SUSPENDED user's enqueue is refused outright (`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not losslessness. Exceeding `max_campaign_size` (this campaign's own job count) → `409 conflict` (`max_campaign_size_reached`); exceeding `max_queued_jobs` (the user's TOTAL live queue across all campaigns) → `409 conflict` (`max_queued_jobs_reached`) — both resolved per-user override→global (`byosmtp.user_config_overrides`, admin-writable). On the FIRST job of a campaign, `/v1/run` also upserts a `byosmtp.campaigns` row, resolving and FREEZING `campaign_expiry_sec` into `expires_at` (a later config/override change never retroactively moves an already-started campaign's expiry) |
-| GET | `/v1/report` | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **Phase 7 (§1.1, M3-P7-OD-1) widens this shape with three more OMITTED-until-set fields: `smtp_response` (the box's own scrubbed provider text — never the internal reason, never a credential), `error_class` (the locked `byosmtp.error_class` enum's text value), `failed_at` (an alias of `completed_at`, present only when the state is a genuine terminal `failed`/`bounced`).** All three are present whenever the job has a recorded failure detail (including a job currently `queued`/`assigned`/`sending` after a failed attempt that requeued — the sticky "why did the last attempt fail" fact), and are ALL OMITTED once the job reaches `sent` — the underlying columns are sticky-by-design and would otherwise show a stale failure reason on a job that ultimately succeeded. NEVER reads `last_error_message` (the internal-slug-carrying column) — enforced by the `user_output_scrub` CI gate, not merely by convention. **Phase 7 (§2) also adds `account_id`/`account_username` — the per-account attribution delta**: which of the user's OWN accounts sent (or is assigned to send) this job, read from `jobs.assigned_account_id` via a `LEFT JOIN byosmtp.accounts`. Both are OMITTED (key absent, not `null`) until the job is dispatched — a `queued` job never assigned, or one requeued and cleared, has neither key, matching this shape's existing omit-the-key convention. `account_username` is the human-readable `smtp_username` — the actual product feature (a uuid alone answers nothing for a user). The accounts join is NEVER what enforces tenancy (`jobs.user_id = $user_id` alone does); a cross-tenant probe gets the same `404 not_found` as ever, with no account field leaked. **Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or its user having zero accounts — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire eligible account set is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`accounts_exhausted`, which accounts, why — renamed from `pool_exhausted` at G3, M3-P2-OD-3) is NEVER surfaced — two-vocabulary rule. **Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true account exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| POST | `/v1/quote` | Phase 3; M3-Phase 7 | **M3-Phase 7 §4 (M3-P7-OD-11): a FEASIBILITY check, not a cost lookup** — module 3 prices as a flat monthly subscription (`module-3-build-plan.md` §1: no per-send charge, no per-recipient price), so `quote` answers *"can this run, how many recipients, within which cap, and roughly how long at current capacity?"* rather than computing a bill. Body now requires `user_id` (M3-P7-OD-5 — every field below is per-user; additive to the request) alongside `recipient_count`. Response: `feasible` (bool — **`false` means the request CANNOT be accepted as submitted**; a campaign merely exceeding today's daily capacity is `true` with a long projection, never `false` — conflating "slow" with "cannot run" is the one thing this endpoint must never do), `reasons[]` (empty when feasible; one entry per binding constraint — `exceeds_queue_cap` carrying `limit`/`requested`/`cap_name`, `no_eligible_accounts`, `all_accounts_unverified`, `from_gate_blocked`, `dispatch_disabled`), `capacity` (`eligible_accounts`, `daily_capacity_remaining`, `effective_concurrency`, and — **REQUIRED and non-null on every `feasible:true` response, never omitted** — `estimated_duration_sec` + `estimate_basis:"current_eligible_capacity"`, both entirely omitted together only when `quote_capacity_projection_enabled=false`), `caps` (the user's resolved `queue_depth_cap`/`daily_send_cap`/`account_count_cap`, override→global per M3-Phase 6 §1), and `warnings[]` (empty by default; an explicit `long_duration` object — `code`, `estimated_duration_sec`, `threshold_sec` — appears when the projection crosses `quote_long_duration_warn_sec`, never a bare number the caller must independently judge). The legacy `cost`/`currency`/`unit_price_credits`/`tier` fields are **retained** (Rule 5 — never removed) but are now **inert**: `unit_price_credits` is seeded `0` (`byosmtp_0048`), so `cost` is always `0` at the default — the fields exist purely for contract compatibility with the additive shape module 2 established, not meaningful pricing. Pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count, not a rejection |
+| POST | `/v1/run` | Phase 3; M3-Phase 4/5 | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `byosmtp.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (M3-Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy. **Module 3 M3-Phase 5 §5.2/§6.4, same advisory-locked transaction:** a SUSPENDED user's enqueue is refused outright (`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not losslessness. Exceeding `max_campaign_size` (this campaign's own job count) → `409 conflict` (`max_campaign_size_reached`); exceeding `max_queued_jobs` (the user's TOTAL live queue across all campaigns) → `409 conflict` (`max_queued_jobs_reached`) — both resolved per-user override→global (`byosmtp.user_config_overrides`, admin-writable). On the FIRST job of a campaign, `/v1/run` also upserts a `byosmtp.campaigns` row, resolving and FREEZING `campaign_expiry_sec` into `expires_at` (a later config/override change never retroactively moves an already-started campaign's expiry) |
+| GET | `/v1/report` | Phase 3; M3-Phase 5/6/7 | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **M3-Phase 7 (§1.1, M3-P7-OD-1) widens this shape with three more OMITTED-until-set fields: `smtp_response` (the box's own scrubbed provider text — never the internal reason, never a credential), `error_class` (the locked `byosmtp.error_class` enum's text value), `failed_at` (an alias of `completed_at`, present only when the state is a genuine terminal `failed`/`bounced`).** All three are present whenever the job has a recorded failure detail (including a job currently `queued`/`assigned`/`sending` after a failed attempt that requeued — the sticky "why did the last attempt fail" fact), and are ALL OMITTED once the job reaches `sent` — the underlying columns are sticky-by-design and would otherwise show a stale failure reason on a job that ultimately succeeded. NEVER reads `last_error_message` (the internal-slug-carrying column) — enforced by the `user_output_scrub` CI gate, not merely by convention. **M3-Phase 7 (§2) also adds `account_id`/`account_username` — the per-account attribution delta**: which of the user's OWN accounts sent (or is assigned to send) this job, read from `jobs.assigned_account_id` via a `LEFT JOIN byosmtp.accounts`. Both are OMITTED (key absent, not `null`) until the job is dispatched — a `queued` job never assigned, or one requeued and cleared, has neither key, matching this shape's existing omit-the-key convention. `account_username` is the human-readable `smtp_username` — the actual product feature (a uuid alone answers nothing for a user). The accounts join is NEVER what enforces tenancy (`jobs.user_id = $user_id` alone does); a cross-tenant probe gets the same `404 not_found` as ever, with no account field leaked. **M3-Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or its user having zero accounts — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire eligible account set is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`accounts_exhausted`, which accounts, why — renamed from `pool_exhausted` at G3, M3-P2-OD-3) is NEVER surfaced — two-vocabulary rule. **M3-Phase 6 (§2):** a job RECLAIMED from a dead/hung box (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`box heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true account exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
 derived ENTIRELY from `byosmtp.jobs` state counts + existing per-job fields — no new state, no
@@ -342,7 +160,7 @@ schema change:
     "waiting_for_capacity": 0         // queued but zero eligible account right now
   },
 
-  // Phase 7 (§2.1): the per-account attribution aggregate — "3 of my 5 accounts are failing,"
+  // M3-Phase 7 (§2.1): the per-account attribution aggregate — "3 of my 5 accounts are failing,"
   // answered as one GROUP BY rather than left to every client to re-implement differently. One
   // entry PER ACCOUNT THAT HAS BEEN ASSIGNED AT LEAST ONE JOB of this campaign — an
   // unassigned/never-dispatched job contributes to no bucket here (it is already counted in
@@ -359,11 +177,11 @@ schema change:
         "provider_message_id": "…", "completed_at": "…", "attempt_count": 1,
         "account_id": "…", "account_username": "marketing-1",
         "smtp_response": null, "error_class": null, "failed_at": null }
-      // Phase 7 (§1.1): smtp_response/error_class/failed_at are explicit NULL when unset — this
+      // M3-Phase 7 (§1.1): smtp_response/error_class/failed_at are explicit NULL when unset — this
       // per-item shape, unlike the single-job report above, was already explicit-null (not
-      // omit-the-key) for provider_message_id/completed_at before Phase 7, per M3-P7-OD-4's
+      // omit-the-key) for provider_message_id/completed_at before M3-Phase 7, per M3-P7-OD-4's
       // logged null-handling inconsistency; the three new fields follow the SAME convention this
-      // struct already used, not the single-job report's convention. Phase 7 (§2.2): account_id/
+      // struct already used, not the single-job report's convention. M3-Phase 7 (§2.2): account_id/
       // account_username follow the SAME explicit-null convention here — null (never omitted) on
       // an unassigned job, via a LEFT JOIN (never INNER — an unassigned job must still appear in
       // results[], or its count would silently disagree with totals.total).
@@ -393,21 +211,35 @@ cross-tenant existence signal either way (OD-25's principle, extended). Implemen
 UI integrating against both modes must check for `null` here but for key-absence there.
 
 **Pagination request parameters** (`items`, cursor-paginated on `(created_at, id)`, same keyset
-pattern as the admin list endpoints, §5.1): `?campaign_id=<uuid>&user_id=<uuid>&cursor=<opaque,
+pattern as the admin list endpoints): `?campaign_id=<uuid>&user_id=<uuid>&cursor=<opaque,
 from a previous response's next_cursor>&page_size=<int>`. `page_size` defaults to **100** and
 clamps to a max of **200**; a missing, zero, negative, or non-numeric `page_size` silently falls
 back to the default (never a `400`). `cursor` is opaque (base64) — pass back exactly what
 `next_cursor` returned; a malformed `cursor` returns `400 validation_failed`. `next_cursor:null`
 means the last page.
-| GET | `/v1/describe` | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) + **`extension_routes[]`/`schemas`** (Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) |
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) |
+
+**`GET /v1/describe`'s `extension_routes[]`** (M3-Phase 7 §5.1) — every Domain A user-facing route
+below except the core four (`quote`/`run`/`report`/`describe` are implicit, uniform across
+modules) is ALSO declared in `describe`'s response, generated from the SAME registry
+`internal/platformapi/server.go`'s route mounting reads (`describe_routes.go`) — a route cannot be
+served without a `describe` declaration. Each entry carries `{id, method, path,
+auth:"platform_service_token", scope:"user", description, request_schema_ref?,
+response_schema_ref?}`; `schemas` holds the shapes those refs point into. Operator (`/v1/admin/*`)
+routes are NEVER declared here — `describe` is served on Domain A, and enumerating the admin
+surface to a platform token would be a free map of it.
 
 > The box↔Brain send channel is a THIRD, internal machine-to-machine channel (mTLS, box-initiated
 > persistent stream on the boxlink stream port) carrying
 > `register`/`register_ack`/`heartbeat`/`push_job`/`report`/`report_ack`. It is not a platform-facing
 > HTTP route and is not part of this contract surface; its security properties are covered by the
-> Phase 3 spec (§2/§3) and the behavioral suite.
+> Phase 3 spec (§2/§3) and the behavioral suite. See "What is NOT part of the public REST contract"
+> below and the Box-link channel section for the two routes that ARE served HTTP and ARE gated.
 >
-> **Phase 7 (§1.3, P7-4) — the outcome persist-ack contract (additive frame `report_ack`).** The
+> **M3-Phase 7 (§1.3, P7-4) — the outcome persist-ack contract (additive frame `report_ack`).** The
 > Brain sends `report_ack {job_id, request_id, accepted}` back to the box ONLY AFTER the reported
 > outcome is durably committed to the DB (or determined a clean idempotent no-op the Brain already
 > owns). Until it receives that ack, the box RETAINS the outcome and replays it on (re)connection,
@@ -417,7 +249,7 @@ means the last page.
 > only `{job_id, request_id, accepted}` — never an internal reason. The Brain NEVER acks an outcome
 > it did not persist (Rule 5).
 >
-> **Phase 8 Chunk 1 (P7-OD-6) — per-attempt identity (additive wire field `attempt_token`).** Both
+> **M3-Phase 8 Chunk 1 (P7-OD-6) — per-attempt identity (additive wire field `attempt_token`).** Both
 > `push_job` and `report` carry an additive integer `attempt_token`. The Brain mints it inside the
 > guarded `assigned → sending` transition (`byosmtp.jobs.attempt_token`, migration `sender_0020`:
 > monotonic, NON-saturating, one increment per dispatched attempt) and the box echoes it back
@@ -425,14 +257,14 @@ means the last page.
 > is a PROVABLE mismatch with the job's current attempt (both values non-zero and different): the report
 > is acked (so the box stops replaying a permanently-inapplicable outcome) but applies NOTHING — no
 > state change, no `send_logs` row, no `job_events` row, no account scoring. This closes the case the
-> Phase 7 box-attribution guard could not decide: a stale buffered outcome from attempt 1 replayed
+> M3-Phase 7 box-attribution guard could not decide: a stale buffered outcome from attempt 1 replayed
 > after the job was reclaimed and re-dispatched to the SAME box. An absent or zero token on either
 > side is treated as UNKNOWN, never a mismatch, so a box or job row that predates the field degrades
-> to exactly Phase 7 behavior rather than having legitimate outcomes discarded. Two-vocabulary is
+> to exactly M3-Phase 7 behavior rather than having legitimate outcomes discarded. Two-vocabulary is
 > unchanged: the token is an internal machine-to-machine identifier on the box channel and is never
 > surfaced on any client boundary (`/v1/report` still returns only clean external state).
 >
-> **Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
+> **M3-Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
 > gains one optional field, `variation`: the Brain's RESOLVED content-variation toggle snapshot
 > (plain booleans/strings/arrays — no `byosmtp.config` shape, no logic) for the box's MIME-assembly
 > pipeline to apply. It is per-job-fresh (the Brain builds it fresh for every `push_job`, never
@@ -465,32 +297,34 @@ means the last page.
 > the existing keys' already-established delivery mechanism, and leave the two duplicate parameters
 > unconsumed rather than introduce a second, competing source of truth for the same box behavior.
 
-## Module 3 Phase 3 served routes — user-owned accounts (Domain A, `/v1/byosmtp/accounts...`)
+## Domain A, user-facing (`/v1/byosmtp/*`) — module 3's own extension, no module 2 counterpart
 
 The namespaced extension path (M3-P3-OD-1: prefix token `byosmtp`, matching the schema name),
-declared by `describe`. Same auth domain, envelope, and tenant-scoping pattern as the routes
-above — the platform passes tenant identity explicitly; the module enforces it (§1.1 of
-`Docs/phase-3-user-owned-accounts.md`). A cross-tenant id returns the SAME `404 not_found` as a
+declared by `describe`. Same auth domain, envelope, and tenant-scoping pattern as the platform
+routes above — the platform passes tenant identity explicitly; the module enforces it (§1.1 of
+`Docs/history/phase-3-user-owned-accounts.md`). A cross-tenant id returns the SAME `404 not_found` as a
 nonexistent one — no existence disclosure, matching the `/v1/report` pattern above.
 
 The operator admin surface (`/v1/admin/accounts...`, Domain B) is **NOT removed** — both surfaces
 remain, on two auth domains, over the same table (module 2 §4.5's separation, re-affirmed here).
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/v1/byosmtp/accounts` | create an account for the caller's tenant — body `{user_id, smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}`. `user_id` is the tenant selector; there is no move/re-tenancy path (an account never changes owner). Duplicate `(user_id, smtp_host, smtp_username)` → clean `409 conflict` (`duplicate_account_for_user`) from an app-level pre-check, with the unique index as the race backstop — never a raw `23505`. Exceeding `account_count_cap_per_user` (non-deleted accounts, global-only dial) → `409 conflict` (`account_cap_reached`). **Verify-on-add is MANDATORY** (connect + STARTTLS + AUTH only, no test send): the create always returns `201` with the account object regardless of the verification outcome — a failed verification does NOT roll back the row (the credential is already encrypted and stored; the user can fix it with one PATCH). The `verification` block: `{state: "unverified"\|"verified"\|"failed", verified_at?, verify_at?, code?, smtp_response?}` — `code`/`smtp_response` present only on `"failed"`. `smtp_response` is a deliberate widening of the response envelope for this surface only (M3-P3-OD-3) — the scrubbed provider text, never the internal reason. |
-| GET | `/v1/byosmtp/accounts` | list the caller's OWN accounts — `?user_id=<uuid>` is MANDATORY and SERVER-ENFORCED (never an optional filter, unlike the admin list). Cursor-paginated on `(created_at, id)`, same keyset shape as the admin list |
-| GET | `/v1/byosmtp/accounts/{id}` | read one account, scoped to `?user_id=<uuid>`. Never includes the secret/ciphertext/nonce/key id — `has_credential` is the only credential-related field |
-| PATCH | `/v1/byosmtp/accounts/{id}` | update, scoped to `?user_id=<uuid>`. Omit = unchanged (structural for `smtp_secret`: the credential columns are absent from the SET list entirely when the field is omitted). `user_id` is NOT a patchable field — it does not exist in the request schema, so an attempt to send it is rejected by the strict decoder before any handler logic runs |
-| GET | `/v1/byosmtp/accounts/{id}/events` | the account's own audit trail, scoped to `user_id` (not `account_id` alone — a purged account's events row has `account_id` nulled, so scoping by `user_id` keeps it reachable and keeps a cross-tenant probe against a foreign account id from returning anything) |
-| POST | `/v1/byosmtp/accounts/{id}/disable`, `/v1/byosmtp/accounts/{id}/enable`, `/v1/byosmtp/accounts/{id}/pause`, `/v1/byosmtp/accounts/{id}/unpause` | re-scoped lifecycle transitions (module 2's engine, unchanged logic). `unpause` refuses to clear a non-`manual` pause (`pause_reason` is not `'manual'`) — the one piece of user-safety logic that makes exposing it to users safe at all. `quarantine` is **NOT exposed here** — it stays operator-only (`manual` quarantine, via `/v1/admin/accounts/{id}/quarantine`) |
-| POST | `/v1/byosmtp/accounts/{id}/unquarantine` | **Module 3 Phase 5 §2**: self-serve un-quarantine, rate-limited (`unquarantine_max_per_day` per ACCOUNT per day; beyond it, refused `422 unprocessable` `unquarantine_rate_limited` and the quarantine sticks until operator action) unless a **test-verified bypass** applies (§2.4: a `credential_verification_state='verified'` result whose `credential_verified_at` postdates `quarantined_at` AND is within `unquarantine_evidence_ttl_sec` — pass the account's test button first, then this route). Refused `422 unprocessable` `not_in_state:quarantined` if the account is not currently quarantined. A refusal writes NO audit row; a success writes one `account_events` row (`action='unquarantine'`, `actor='user'`) recording which reason was cleared and whether the bypass was used. No request body fields. Returns `200` with the account object |
-| POST | `/v1/byosmtp/accounts/{id}/test` | connect + STARTTLS + AUTH only (the SAME `push_verify` path as create's verify-on-add — not a copy) **AND, since Phase 4 §2.5, re-runs the From-alignment check** against the account's CURRENT `from_address`/`smtp_host`/`smtp_username` (no request field changes them — the button re-checks what is already stored, it never changes it). Body accepts one optional field: `{"acknowledge_alignment_warning": true}`. **Available WHILE quarantined** (§3.4: the predicate is `user_id` + not-deleted only, deliberately not gated on quarantined/disabled/paused, since a user cannot produce the un-quarantine evidence if the evidence-producing endpoint is itself gated on not being quarantined). Rate-limited PER ACCOUNT (`account_test_rate_limit_per_day`) — refused with `429 rate_limited` beyond it, counting every attempt (success or failure alike, M3-P3-OD-15). **The From-gate re-check is NOT subject to this rate limit** (§2.4's own precedent — DNS lookups carry no box-IP-reputation risk). Returns `200` with `{"verification": {"state", "smtp_response"?, "code"?}, "from_alignment": {"state", "dmarc_policy"?, "checked_at"?, "message"?, ...}}` — a FAILED credential test OR a WARN/BLOCK From verdict is still a successful API call (the caller asked "what's the current state" and got a real answer). **M3-P4-OD-17: a fresh unacknowledged WARN verdict is ALWAYS persisted** (never refuses the call, unlike create/PATCH — the test button has no other fields to refuse, and refusing would silently no-op on the request whose entire purpose is reporting the current state); the account simply stays non-routable until a later Test/PATCH supplies the acknowledgment. **M3-P4-OD-18: an unavailable/erroring credential check never hides an already-computed `from_alignment` result** — `verification.state` becomes `"unavailable"` rather than the whole request failing. An indeterminate From-gate check (DNS ignorance) leaves the stored verdict untouched and reports `from_alignment.state: "indeterminate"` instead of a stale or fabricated result |
-| POST | `/v1/byosmtp/accounts/{id}/test-send` | a REAL send (full `push_job`, MAIL FROM/RCPT TO/DATA) to the account's OWN `from_address` only (M3-P3-OD-5: an arbitrary recipient would make this a one-message open relay). FORCES the clicked account specifically (M3-P3-OD-16) — never the cross-account selection a campaign send uses; an ineligible clicked account fails outright (`409 conflict`, `account_not_eligible_for_test_send`) rather than silently substituting a different one. `409 conflict` (`no_box_available`) if no box is connected. Writes a real `job`/`job_events` row (Rule 5: an unreported real send is as dishonest as a fabricated one) and consumes a `daily_sent_count` unit. Returns `202` with `{job_id, state:"sending"}` — poll `/v1/report?job_id=...` for the outcome, exactly like any other async send |
-| POST | `/v1/byosmtp/accounts/bulk` | create N accounts in one request — body `{user_id, accounts: [{smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}, ...]}`. Verification is **PACED, not parallel** (§4.1, M3-P3-OD-7: strictly serial across the whole batch — `bulk_add_verify_interval_ms` between rows — never per-`smtp_host` in V1): "20 simultaneous auth attempts to one provider looks like credential stuffing." A batch over `bulk_add_max_rows` (M3-P3-OD-8/19) is rejected WHOLE with `422 unprocessable` (`batch_too_large`) BEFORE any row is processed — never partially processed then cut off. Otherwise returns `200` with `{request_id, results: [{row, status: "created"\|"rejected", account_id?, verification?, code?, smtp_response?, details?}, ...]}` — `row` is the 1-based input index. **No transaction spans the batch**: an earlier row's rejection (validation, duplicate, cap) never rolls back a later row's create, and the account cap (§5) is evaluated per row as the batch proceeds, so a batch that crosses the cap mid-way adds rows up to it and rejects the rest with `account_cap_reached`. A row that is created but fails verification is `status: "created"`, `verification: "failed"` — §2.5's same two-orthogonal-facts rule the single-create route uses |
-| DELETE | `/v1/byosmtp/accounts/{id}` | **soft delete** — scoped to `?user_id=<uuid>`, returns `204`. Stamps `deleted_at`/`deleted_by`/`purge_after` (the last computed from the live `account_retention_window_sec`, AT DELETE TIME — a later config change never retroactively moves an existing account's purge date); the row is RETAINED through the window, never removed immediately. Idempotent: a second delete on an already-deleted (or nonexistent) id returns the SAME `404 not_found` a genuinely nonexistent id would — no disclosure of which case it was. A deleted account is IMMEDIATELY unusable through every other verb on this surface (same `404`) and is excluded from dispatch selection (§6.2's consolidated eligibility predicate). The operator's `DELETE /v1/admin/accounts/{id}` remains a **hard** delete on a separate surface (§1.2's two-verbs-two-surfaces split) |
+### Accounts
 
-**Verify-on-add's external code vocabulary** (§2.3 of `Docs/phase-3-user-owned-accounts.md`,
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| POST | `/v1/byosmtp/accounts` | M3-Phase 3 | create an account for the caller's tenant — body `{user_id, smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}`. `user_id` is the tenant selector; there is no move/re-tenancy path (an account never changes owner). Duplicate `(user_id, smtp_host, smtp_username)` → clean `409 conflict` (`duplicate_account_for_user`) from an app-level pre-check, with the unique index as the race backstop — never a raw `23505`. Exceeding `account_count_cap_per_user` (non-deleted accounts, global-only dial) → `409 conflict` (`account_cap_reached`). **Verify-on-add is MANDATORY** (connect + STARTTLS + AUTH only, no test send): the create always returns `201` with the account object regardless of the verification outcome — a failed verification does NOT roll back the row (the credential is already encrypted and stored; the user can fix it with one PATCH). The `verification` block: `{state: "unverified"\|"verified"\|"failed", verified_at?, verify_at?, code?, smtp_response?}` — `code`/`smtp_response` present only on `"failed"`. `smtp_response` is a deliberate widening of the response envelope for this surface only (M3-P3-OD-3) — the scrubbed provider text, never the internal reason. |
+| GET | `/v1/byosmtp/accounts` | M3-Phase 3 | list the caller's OWN accounts — `?user_id=<uuid>` is MANDATORY and SERVER-ENFORCED (never an optional filter, unlike the admin list). Cursor-paginated on `(created_at, id)`, same keyset shape as the admin list |
+| GET | `/v1/byosmtp/accounts/{id}` | M3-Phase 3 | read one account, scoped to `?user_id=<uuid>`. Never includes the secret/ciphertext/nonce/key id — `has_credential` is the only credential-related field |
+| PATCH | `/v1/byosmtp/accounts/{id}` | M3-Phase 3 | update, scoped to `?user_id=<uuid>`. Omit = unchanged (structural for `smtp_secret`: the credential columns are absent from the SET list entirely when the field is omitted). `user_id` is NOT a patchable field — it does not exist in the request schema, so an attempt to send it is rejected by the strict decoder before any handler logic runs |
+| GET | `/v1/byosmtp/accounts/{id}/events` | M3-Phase 3 | the account's own audit trail, scoped to `user_id` (not `account_id` alone — a purged account's events row has `account_id` nulled, so scoping by `user_id` keeps it reachable and keeps a cross-tenant probe against a foreign account id from returning anything) |
+| POST | `/v1/byosmtp/accounts/{id}/disable`, `/v1/byosmtp/accounts/{id}/enable`, `/v1/byosmtp/accounts/{id}/pause`, `/v1/byosmtp/accounts/{id}/unpause` | M3-Phase 3 | re-scoped lifecycle transitions (module 2's engine, unchanged logic). `unpause` refuses to clear a non-`manual` pause (`pause_reason` is not `'manual'`) — the one piece of user-safety logic that makes exposing it to users safe at all. `quarantine` is **NOT exposed here** — it stays operator-only (`manual` quarantine, via `/v1/admin/accounts/{id}/quarantine`) |
+| POST | `/v1/byosmtp/accounts/{id}/unquarantine` | M3-Phase 5 | **§2**: self-serve un-quarantine, rate-limited (`unquarantine_max_per_day` per ACCOUNT per day; beyond it, refused `422 unprocessable` `unquarantine_rate_limited` and the quarantine sticks until operator action) unless a **test-verified bypass** applies (§2.4: a `credential_verification_state='verified'` result whose `credential_verified_at` postdates `quarantined_at` AND is within `unquarantine_evidence_ttl_sec` — pass the account's test button first, then this route). Refused `422 unprocessable` `not_in_state:quarantined` if the account is not currently quarantined. A refusal writes NO audit row; a success writes one `account_events` row (`action='unquarantine'`, `actor='user'`) recording which reason was cleared and whether the bypass was used. No request body fields. Returns `200` with the account object |
+| POST | `/v1/byosmtp/accounts/{id}/test` | M3-Phase 3/4 | connect + STARTTLS + AUTH only (the SAME `push_verify` path as create's verify-on-add — not a copy) **AND, since M3-Phase 4 §2.5, re-runs the From-alignment check** against the account's CURRENT `from_address`/`smtp_host`/`smtp_username` (no request field changes them — the button re-checks what is already stored, it never changes it). Body accepts one optional field: `{"acknowledge_alignment_warning": true}`. **Available WHILE quarantined** (§3.4: the predicate is `user_id` + not-deleted only, deliberately not gated on quarantined/disabled/paused, since a user cannot produce the un-quarantine evidence if the evidence-producing endpoint is itself gated on not being quarantined). Rate-limited PER ACCOUNT (`account_test_rate_limit_per_day`) — refused with `429 rate_limited` beyond it, counting every attempt (success or failure alike, M3-P3-OD-15). **The From-gate re-check is NOT subject to this rate limit** (§2.4's own precedent — DNS lookups carry no box-IP-reputation risk). Returns `200` with `{"verification": {"state", "smtp_response"?, "code"?}, "from_alignment": {"state", "dmarc_policy"?, "checked_at"?, "message"?, ...}}` — a FAILED credential test OR a WARN/BLOCK From verdict is still a successful API call (the caller asked "what's the current state" and got a real answer). **M3-P4-OD-17: a fresh unacknowledged WARN verdict is ALWAYS persisted** (never refuses the call, unlike create/PATCH — the test button has no other fields to refuse, and refusing would silently no-op on the request whose entire purpose is reporting the current state); the account simply stays non-routable until a later Test/PATCH supplies the acknowledgment. **M3-P4-OD-18: an unavailable/erroring credential check never hides an already-computed `from_alignment` result** — `verification.state` becomes `"unavailable"` rather than the whole request failing. An indeterminate From-gate check (DNS ignorance) leaves the stored verdict untouched and reports `from_alignment.state: "indeterminate"` instead of a stale or fabricated result |
+| POST | `/v1/byosmtp/accounts/{id}/test-send` | M3-Phase 3 | a REAL send (full `push_job`, MAIL FROM/RCPT TO/DATA) to the account's OWN `from_address` only (M3-P3-OD-5: an arbitrary recipient would make this a one-message open relay). FORCES the clicked account specifically (M3-P3-OD-16) — never the cross-account selection a campaign send uses; an ineligible clicked account fails outright (`409 conflict`, `account_not_eligible_for_test_send`) rather than silently substituting a different one. `409 conflict` (`no_box_available`) if no box is connected. Writes a real `job`/`job_events` row (Rule 5: an unreported real send is as dishonest as a fabricated one) and consumes a `daily_sent_count` unit. Returns `202` with `{job_id, state:"sending"}` — poll `/v1/report?job_id=...` for the outcome, exactly like any other async send |
+| POST | `/v1/byosmtp/accounts/bulk` | M3-Phase 3 | create N accounts in one request — body `{user_id, accounts: [{smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}, ...]}`. Verification is **PACED, not parallel** (§4.1, M3-P3-OD-7: strictly serial across the whole batch — `bulk_add_verify_interval_ms` between rows — never per-`smtp_host` in V1): "20 simultaneous auth attempts to one provider looks like credential stuffing." A batch over `bulk_add_max_rows` (M3-P3-OD-8/19) is rejected WHOLE with `422 unprocessable` (`batch_too_large`) BEFORE any row is processed — never partially processed then cut off. Otherwise returns `200` with `{request_id, results: [{row, status: "created"\|"rejected", account_id?, verification?, code?, smtp_response?, details?}, ...]}` — `row` is the 1-based input index. **No transaction spans the batch**: an earlier row's rejection (validation, duplicate, cap) never rolls back a later row's create, and the account cap (§5) is evaluated per row as the batch proceeds, so a batch that crosses the cap mid-way adds rows up to it and rejects the rest with `account_cap_reached`. A row that is created but fails verification is `status: "created"`, `verification: "failed"` — §2.5's same two-orthogonal-facts rule the single-create route uses |
+| DELETE | `/v1/byosmtp/accounts/{id}` | M3-Phase 3 | **soft delete** — scoped to `?user_id=<uuid>`, returns `204`. Stamps `deleted_at`/`deleted_by`/`purge_after` (the last computed from the live `account_retention_window_sec`, AT DELETE TIME — a later config change never retroactively moves an existing account's purge date); the row is RETAINED through the window, never removed immediately. Idempotent: a second delete on an already-deleted (or nonexistent) id returns the SAME `404 not_found` a genuinely nonexistent id would — no disclosure of which case it was. A deleted account is IMMEDIATELY unusable through every other verb on this surface (same `404`) and is excluded from dispatch selection (§6.2's consolidated eligibility predicate). The operator's `DELETE /v1/admin/accounts/{id}` remains a **hard** delete on a separate surface (§1.2's two-verbs-two-surfaces split) |
+
+**Verify-on-add's external code vocabulary** (§2.3 of `Docs/history/phase-3-user-owned-accounts.md`,
 `verification.code` on a `"failed"` state) — additive-only forever (Rule 5), and deliberately
 DISTINCT from the internal `error_class` enum (`classifyReport`'s six values are too coarse for a
 user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both classify
@@ -506,12 +340,13 @@ user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both c
 | `verify_protocol_error` | The server did not speak SMTP as expected |
 | `verify_connection_lost` | The connection dropped mid-handshake |
 
-## Module 3 Phase 4 additions — the From-gate (§2/§4.6/§5/§8 of `Docs/phase-4-from-gate.md`)
+### From-gate additions to the accounts surface (§2/§4.6/§5/§8 of `Docs/history/phase-4-from-gate.md`)
 
-Every writer of `from_address` on BOTH surfaces (Domain A `/v1/byosmtp/accounts...` create/PATCH/
-bulk-add rows; Domain B `/v1/admin/accounts` create/PATCH) now passes through the store-layer
-alignment gate (§2.8/M3-P4-OD-9) before the write lands. The account object (both surfaces) gains
-a `from_alignment` object:
+Every writer of `from_address` on BOTH account surfaces (Domain A, user-facing
+`/v1/byosmtp/accounts...` create/PATCH/bulk-add rows; Domain B `/v1/admin/accounts` create/PATCH)
+now passes through the store-layer alignment gate (§2.8/M3-P4-OD-9) before the write lands — this
+is why the gate is documented here rather than split across both surfaces' route tables. The
+account object (both surfaces) gains a `from_alignment` object:
 
 ```
 "from_alignment": {
@@ -555,21 +390,257 @@ surface. The override is scoped to writes that actually touch `from_address`: se
 a PATCH that changes only `from_name` (or any other field) is a no-op with respect to the gate —
 it does not downgrade a healthy `aligned` row.
 
+The override writes `from_checked_at = NULL` alongside the state, because `byosmtp_0026`'s
+`accounts_from_checked_pairing_check` binds the two columns as a pair (`'unverified'` requires a
+NULL timestamp). This is not cosmetic: writing the state alone was rejected by that CHECK on any
+account whose From address had ever been checked, which made the break-glass override
+**unusable on precisely the accounts that need it** — an account requiring an override has, by
+definition, already been checked. Fixed 2026-08-03 (found by walking Stage 5.10 of the local test
+guide; regression + negative control in `adminapi/from_gate_test.go`). The prior verdict's other
+columns (`from_dmarc_policy`, `from_spf_aligned`, `from_dmarc_aligned`, `from_check_detail`) are
+still left untouched, and the `from_gate_overridden` audit event carries the diagnostic history.
+
 **New external code:** `from_alignment_warning_unacknowledged` (`422`, `details: [{field:
 "acknowledge_alignment_warning", issue: "required"}]`) — the unacknowledged-warn refusal, both
 surfaces. `from_dns_unavailable` (`503` on PATCH; never surfaced as a create failure, see above).
-Neither is a new `error_class` value — both are this phase's own vocabulary, matching Phase 3's
+Neither is a new `error_class` value — both are this phase's own vocabulary, matching M3-Phase 3's
 verify-on-add precedent of not overloading the coarser internal enum.
+
+### Settings and usage
+
+**The user-owned routing strategy** (`byosmtp.user_settings`; user-writable, §5.3 of
+`Docs/history/phase-6-per-user-config-and-routing.md`) and **per-user usage metrics**
+(M3-Phase 7 §6) — both Domain A, user-facing, same tenant-scoping pattern as the accounts surface
+above:
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/byosmtp/settings?user_id=<uuid>` | M3-Phase 6 | Read the caller's OWN `routing_strategy` (`random`/`round_robin`/`one_by_one`). Row absent → the table's own default (`round_robin`). |
+| PUT | `/v1/byosmtp/settings?user_id=<uuid>` | M3-Phase 6 | Set the caller's own `routing_strategy`. The tenant selector is the query parameter, taken from the session — never the request body, so a body-supplied `user_id` cannot redirect the write to another tenant. Accepts ONLY `routing_strategy`, validated against the enum; `400 validation_failed` for a missing/unrecognized value. This route CANNOT name an admin-owned dial (`send_delay_*`, `concurrency_per_user`, the resource caps) — not by a check, but structurally: `user_settings` and `user_config_overrides` are two different tables, and this handler decodes no field that could reach the other one. |
+| GET | `/v1/byosmtp/usage?user_id=<uuid>&from=<YYYY-MM-DD>&to=<YYYY-MM-DD>` | M3-Phase 7 | **§6** — per-user, per-UTC-day usage metrics for platform capacity planning under the flat-subscription model. `from`/`to` are inclusive UTC dates, both optional (default: the last 30 UTC days ending today — a bounded default so an unscoped request cannot force a full-history aggregation). Returns `{user_id, from, to, accounts_configured, accounts_eligible, days: [{date, messages_attempted, messages_sent, messages_bounced, messages_failed, campaigns_run, peak_concurrency_used, distinct_destination_domains}]}`. `accounts_configured`/`accounts_eligible` are a SNAPSHOT at reporting time (distinguishes "has N accounts" from "has N accounts that work"); the `days[]` metrics are DERIVED from `jobs`/`job_events` on every request — no counter table, no increment-on-send path, so a fixed aggregation bug can be re-run against history. Read-only, no text fields, no per-account rows — outside the leak surface by construction (`user_output_scrub` covers it). |
+
+## Domain B — operator (`/v1/admin/*`)
+
+All under `/v1/admin/*`; every route requires the operator `platform_admin` bearer key
+(`Authorization: Bearer <key>`, hashed + constant-time compared). Missing/invalid key →
+`401 unauthenticated`. The surface only mounts when `ADMIN_API_KEY_HASHES` is configured
+(fail-closed). Error envelopes carry ONLY `{code, message, details[], request_id}` — never an
+internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal hostname (§1.2 of
+`history/phase-2-account-management.md`). Additive-only: these routes never rename; later phases add.
+
+### Accounts
+
+**Accounts** (`byosmtp.accounts`; `smtp_secret` is write-only — reads expose only `has_credential`):
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| POST | `/v1/admin/accounts` | Phase 2 | create an account (encrypt-on-write credential intake) |
+| GET | `/v1/admin/accounts` | Phase 2 | list (cursor paginated; filters `paused`/`quarantined`/`disabled`/`user_id`) |
+| GET | `/v1/admin/accounts/{id}` | Phase 2 | read one |
+| PATCH | `/v1/admin/accounts/{id}` | Phase 2 | update (omit `smtp_secret` = unchanged, structural) |
+| DELETE | `/v1/admin/accounts/{id}` | Phase 2 | hard delete → `204`. The audit row survives: `byosmtp.job_events` and `byosmtp.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`sender_0024`, ADR-0012). Deleting a **box** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `sender_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
+| GET | `/v1/admin/accounts/{id}/events` | Phase 2 | read the account audit trail (cursor paginated) |
+
+### `POST /v1/admin/accounts` request body
+
+The admin surface decodes **strictly** (`DisallowUnknownFields`) — an unrecognised or misspelled
+field name is a hard `400 validation_failed`, not a silently ignored key. So the field set matters:
+
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `user_id` | **yes** | uuid | Must name an existing `public.users` row |
+| `smtp_host` | **yes** | string | |
+| `smtp_username` | **yes** | string | |
+| `smtp_secret` | **yes** | string | **Write-only.** Encrypted on write; never returned by any read. Reads expose `has_credential` only |
+| `from_address` | **yes** | string | |
+| `smtp_port` | no | int | Defaults per the module's port handling (587/25 STARTTLS, 465 implicit TLS) |
+| `from_name` | no | string | |
+| `daily_limit` | no | int | Defaults to `daily_limit_default`; capped by the `DailyLimitCeiling` bound |
+
+`PATCH /v1/admin/accounts/{id}` takes the same fields, all optional — and **omitting `smtp_secret`
+leaves the stored credential unchanged**, which is structural rather than a convenience: there is no
+way to read a credential back, so a partial update cannot round-trip one.
+
+**Account lifecycle transitions** (manual, audited — one `account_events` row each; `actor='admin'`):
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| POST | `/v1/admin/accounts/{id}/quarantine` | Phase 2 | `quarantined = true` |
+| POST | `/v1/admin/accounts/{id}/unquarantine` | Phase 2 | `quarantined = false` |
+| POST | `/v1/admin/accounts/{id}/disable` | Phase 2 | `disabled = true` |
+| POST | `/v1/admin/accounts/{id}/enable` | Phase 2 | `disabled = false` |
+| POST | `/v1/admin/accounts/{id}/pause` | Phase 2 | `paused = true, pause_reason = 'manual'` |
+| POST | `/v1/admin/accounts/{id}/unpause` | Phase 2 | clears only a `pause_reason='manual'` pause |
+
+**Module 3 M3-Phase 5 §6/§7 — per-user suspend** (genuinely new operator surface; module 2 had no
+per-user concept at all). One mechanism, two triggers (`suspend_reason` = `'operator'` |
+`'subscription_lapsed'` — this route only ever writes `'operator'`), audited in
+`account_events` with `account_id = NULL` and `user_id` = the subject (M3-P1-OD-10):
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| POST | `/v1/admin/users/{id}/suspend` | M3-Phase 5 | Halts dispatch losslessly for this user (jobs stay `queued`, nothing fails, the same rows resume on reinstate) and PAUSES the expiry clock of every one of the user's live campaigns (`clock_paused_at = NOW()`). `422 unprocessable` if already suspended |
+| POST | `/v1/admin/users/{id}/unsuspend` | M3-Phase 5 | Reinstates: pushes each paused campaign's `expires_at` FORWARD by exactly the suspended interval, accumulates `paused_total_sec`, clears `clock_paused_at`. `422 unprocessable` if not suspended |
+
+Both refuse cleanly (no audit row) on their own precondition, matching the account-lifecycle
+transitions' discipline above. `POST /v1/run` (Domain A) refuses outright for a suspended user
+(`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not
+losslessness, it is a growing debt against the queue cap.
+
+A refused transition is `422 unprocessable` with **no** `account_events` row written (the
+precondition is checked before the write). The refusal is diagnosable without a log dive: the
+`message` is a curated sentence specific to the precondition that failed, and `details[]` carries
+one entry naming the blocking flag (`quarantined`/`disabled`/`paused`, or `pause_reason` when the
+pause exists but is not `manual`) with `issue: "conflict"`. The seven refusals are mutually
+distinct — asserted behaviorally, not by convention. Flag names are already public in the account
+read model's `status` object, so this discloses nothing new and the two-vocabulary rule still holds:
+the internal reason (`already_in_state:*`, `not_in_state:*`, `not_manual_pause`) stays log-only.
+
+**Module 3 M3-Phase 6 — per-user config overrides** (`byosmtp.user_config_overrides`; admin-only, §4 of
+`Docs/history/phase-6-per-user-config-and-routing.md`):
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/admin/users/{id}/config` | M3-Phase 6 | Read the user's current overrides — every field `null` if never overridden (not an error; absence is the common case). |
+| PUT | `/v1/admin/users/{id}/config` | M3-Phase 6 | Set one or more of the six overridable dials (`send_delay_min_sec`, `send_delay_max_sec`, `concurrency_per_user`, `max_campaign_size`, `max_queued_jobs`, `campaign_expiry_sec`). Absent fields are left untouched — a partial `PUT` does not clear the others. `400 validation_failed` if no field is present, or a field's value is out of its structural domain. `400 config_ordering_violation` if the resulting RESOLVED pair (this write ∪ current row ∪ current globals) would invert `send_delay_min_sec > send_delay_max_sec` — validated under the SAME advisory lock the global config `PUT` uses, so a concurrent global-lower and override-raise cannot both commit an inverted pair. |
+| DELETE | `/v1/admin/users/{id}/config/{dial}` | M3-Phase 6 | Clear ONE override column back to NULL (inherit the global). `404 not_found` for an unrecognized `{dial}` name. |
+
+The write path is store-layer gated: every write requires an admin actor identity, and a caller
+cannot satisfy that requirement by supplying the target user's own id (no self-service override).
+There is no break-glass variant for this surface — an admin override write is already the
+privileged path.
+
+### Config
+
+**Config** (`byosmtp.config`; JSONB `{"v": …}` unwrapped/rewrapped; only `value` writable).
+
+The `PUT` request body is `{"value": <v>}` — the bare JSON value at `value`, **not** the stored
+`{"v": …}` envelope, which is an internal storage detail the API unwraps on read and re-wraps on
+write. `<v>` is typed per the key's `value_type` (`integer` → a JSON number, `boolean` → `true`/
+`false`, `string`/`enum` → a JSON string, `json` → an object). A value of the wrong type is
+`400 validation_failed`; the key's `value_type` and legal range are in
+[`config-reference.md`](./config-reference.md), which is the only place values are documented:
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/admin/config` | Phase 2 | read all keys |
+| GET | `/v1/admin/config/{key}` | Phase 2 | read one (unknown → 404) |
+| PUT | `/v1/admin/config/{key}` | Phase 2 | update one (`value_type` + semantic validation). **Config-ordering invariants (`Docs/history/open-decisions.md` P9-OD-2, RULED-AND-CLOSED):** for the four keys with a documented ordering counterpart (`smtp_operation_timeout_sec`/`job_max_processing_time_sec`, `box_outcome_buffer_ttl_sec`/`startup_reconnect_window_sec`), this `PUT` validates the RESULTING pair against the counterpart's LIVE current value BEFORE writing — a write that would invert either invariant is rejected with `400 config_ordering_violation`, naming the conflicting counterpart key, its current value, and the required relation; the bad value never lands. Read-check-write happens in ONE transaction under an advisory lock that serializes all config writes, so two *concurrent* PUTs to the two halves of one pair cannot both pass (one succeeds, one is rejected) — see `Docs/config-reference.md`. The config-LOAD path independently re-checks the same invariant on every tick as a defense-in-depth backstop. Widening BOTH keys of a pair upward requires ordering the two `PUT`s (raise the boundary key first). |
+
+### Observability
+
+Same operator admin auth as the routes above (`Authorization: Bearer <admin key>`).
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/admin/health` | Phase 9.5 | read-only operability snapshot (§3 B3): dispatch cadence/pause state, queue counts by state, box liveness, per-account-status summary, error-class counts over a rolling window, the auto-quarantine shadow-mode summary, and active alert conditions (§4 B4) — all derived from existing tables, no new persisted state |
+
+### `GET /v1/admin/health` response fields
+
+The authoritative field list (`internal/adminapi/health_handler.go`'s `healthResponse`). Every
+top-level block is always present; `errors_last_window` always carries all six `error_class` keys
+even when a class did not fire, so a poller can index it by name unconditionally.
+`oldest_active_heartbeat_age_sec` is the one omittable field (absent when no box is active).
+For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-runbook.md).
+
+| Field | Type | Notes |
+|---|---|---|
+| `generated_at` | string (RFC 3339 UTC) | when the snapshot was computed |
+| `window_sec` | int | the rolling window all `*_last_window` fields cover (`health_metrics_window_sec`) |
+| `dispatch.dispatch_paused` | bool | live `dispatch_enabled` inverted |
+| `dispatch.ticks_per_min` | float | observed dispatch cadence |
+| `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
+| `dispatch.send_rate_per_min` | float | derived from the two above |
+| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `byosmtp.jobs` — one field per `job_state` |
+| `queue.waiting_for_capacity` | int | **G3 real rewrite (M3-P2-OD-12):** queued jobs whose owning user has ZERO currently-ELIGIBLE accounts — the real predicate (quarantined/disabled/deleted/credential-unverified/from-misaligned accounts excluded; the daily-reset/throttle cycle logic applied), not merely "has any account row." **Not an error state** |
+| `boxes.{active,stale,disabled}` | int | counts by `box_status` |
+| `boxes.oldest_active_heartbeat_age_sec` | int, **omitted** when no active box | staleness of the least-recently-heard-from active box |
+| `accounts.{healthy,paused,quarantined,disabled,at_daily_limit}` | int | per-status summary; `at_daily_limit` is derived, not a status |
+| `users[]` | array | **G3 real rewrite (M3-P2-OD-12), REPLACES the pre-G2 `pools[]` field (pre-announced at G2: "a G3 account-set-aware replacement is expected, at which point this row will change again").** `{user_id, eligible_accounts, headroom}` — one row per user with at least one QUEUED job right now, `eligible_accounts` counting the same real predicate `queue.waiting_for_capacity` uses, `headroom` = `"ok"` \| `"exhausted"`. There are no pools in module 3; the account set an operator cares about is a user's own accounts |
+| `errors_last_window` | object | `{bounce_permanent, transport_4xx, auth_failure, throttle, timeout, unknown}` → int. Always all six keys. Counts **error transitions only** — see the note below |
+| `shadow.autoquarantine_mode` | string | `off` \| `shadow` \| `enforce` |
+| `shadow.would_quarantine_count` | int | shadow-mode decisions inside the window |
+| `shadow.recent[]` | array | `{account_id, score, threshold, at}` |
+| `active_conditions[]` | array | `{condition, severity, detail{}, since}` — empty array, never null. `severity` is `critical` for all four V1 conditions (adds `destination_throttles`, M3-Phase 7 §7.1) |
+| `destination_throttles[]` | array | **M3-Phase 7 §7** — `{destination_domain, window_sec, throttle_events, distinct_users_affected, distinct_accounts_affected, first_seen_at, last_seen_at}`, one row per destination domain with at least one `error_class='throttle'` event inside `destination_throttle_window_sec`. Sourced from `job_events.destination_domain` — **never `send_logs`** (M3-P7-OD-6: the aggregation must not depend on debug retention, since this diagnostic is the safeguard chosen INSTEAD of a per-destination cap). `distinct_users_affected` is the diagnostic field: one user throttled is that user's problem; several on the SAME domain means our box IPs are rate-limited. No response text of any kind — this feeds the untrusted alert webhook (Rule 5), and the entry surfaces in `active_conditions[]` (condition `destination_throttles`) only once `distinct_users_affected >= destination_throttle_user_threshold` |
+
+**`errors_last_window` counts one failure once.** It counts `byosmtp.job_events` rows in the window
+that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis
+transition back to `queued`). Forward progress (`queued→assigned`, `assigned→sending`) and success
+(`sending→sent`) are never counted, so the number is a count of *failures*, not of rows that happen to
+carry a class. Read it as incident size: one failing send contributes exactly 1, no matter how many
+times that job is later retried and eventually succeeds.
+
+> Until `sender_0022` this was not true. `sender_0008`'s triggers copied the job row's **sticky**
+> `last_error_class` onto every event, so a single requeue tagged four rows — the requeue plus the
+> `queued→assigned`, `assigned→sending`, and `sending→sent` that followed — and this field reported
+> `{"unknown": 4}` for one failure. `sender_0022` gates the trigger; `queryErrorsInWindow` also filters
+> on the transition shape, so the count is correct even over rows an older trigger already wrote
+> (`job_events` is append-only and was deliberately not rewritten). Note the two-sided consequence: a
+> database still carrying pre-`sender_0022` rows returns the correct count from this endpoint, but a
+> **hand-written** `COUNT(*) WHERE error_class IS NOT NULL` against `job_events` will still over-count
+> on those old rows. Filter on the transition shape in ad-hoc queries too. Pinned by
+> `TestHealth_ErrorsLastWindowCountsOnlyErrorTransitions` and
+> `TestJobEvents_ErrorContextOnlyOnErrorTransitions`.
+
+### Alert webhook payload (outbound, `alert_webhook_url`)
+
+Not a served route — an outbound POST across a trust boundary, listed here because it is a contract
+a receiver depends on. Fires on the **rising edge** of a condition, deduped by
+`(condition, subject.id)` until it clears; there is no all-clear POST. Shape:
+`internal/adminapi/health_alerts.go`'s `webhookPayload`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `condition` | string | `account_quarantined` \| `box_death`. `pool_exhausted` was removed at G2 (M3-P2-OD-12); its Phase-7-owned replacement is `no_eligible_accounts` (M3-P1-OD-9) |
+| `severity` | string | `critical` |
+| `subject` | object | `{type, id}` — the id of the account / box the condition is about |
+| `detail` | object | condition-specific counts and ids only |
+| `fired_at` | string (RFC 3339 UTC) | rising-edge timestamp |
+| `module` | string | constant module identifier, so a shared receiver can route |
+
+Deliberately absent, per CLAUDE.md Rule 5 (the webhook is untrusted outbound egress): no message
+content, no recipient address, no credential, no internal reason string, no SQL/SQLSTATE, no
+internal hostname. A receiver gets condition codes, subject ids, and timestamps — nothing else.
+Transport bounds (a 5-second client timeout, 3 attempts, then dropped) are code constants, not
+config keys: see `config-reference.md`'s hardcoded-bounds note.
+
+## Box-link channel — neither Domain A nor Domain B
+
+mTLS client cert required; the registration token, not the cert, is the authorization authority
+(CLAUDE.md Rule 6). These ARE served HTTP routes, gated by `contract_drift`, but they belong to
+neither the platform nor the operator audience — a box is not a tenant and not an operator.
+
+| Method | Path | Auth | Phase | Purpose |
+|---|---|---|---|---|
+| POST | `/v1/box/register` | mTLS client cert + registration token | Phase 0 | box registers (id + one-time token) |
+| POST | `/v1/box/heartbeat` | mTLS client cert + prior registration | Phase 0 | box heartbeat |
+
+> Two-vocabulary rule: error envelopes carry only `{code}` (Phase 0) — no internal reason,
+> SQL, credential, or hostname. Additive-only: these routes never rename; later phases add.
+
+Also unauthenticated, Phase 0 skeleton, and belonging to none of the three audiences:
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/healthz` | Phase 0 | liveness |
+| GET | `/readyz` | Phase 0 | readiness: DB reachable AND singleton lock held (true state) |
 
 ## What is NOT part of the public REST contract
 
-The box↔Brain protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/`report`/
-`report_ack`, including the additive `variation`/`attempt_token`/`smtp.operation_timeout_sec`
-fields documented above) is internal machine-to-machine wire format. It is **not** part of either
-public surface (Domain A or Domain B) and evolves independently of the additive-only REST
-versioning rule — a wire field can be added the moment the Brain and box images that use it are
-both deployed, with no coordination against `quote`/`run`/`report`/`describe` or `/v1/admin/*`.
-None of `quote`/`run`/`report`/`describe`/`/v1/admin/*` ever return a box-protocol field verbatim.
+The box↔Brain SEND-STREAM protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/
+`report`/`report_ack`, including the additive `variation`/`attempt_token`/
+`smtp.operation_timeout_sec` fields documented above) is internal machine-to-machine wire format —
+distinct from the Box-link channel's two HTTP routes above, which ARE part of this contract. The
+send-stream protocol is **not** part of either public surface (Domain A or Domain B) and evolves
+independently of the additive-only REST versioning rule — a wire field can be added the moment the
+Brain and box images that use it are both deployed, with no coordination against
+`quote`/`run`/`report`/`describe` or `/v1/admin/*`. None of
+`quote`/`run`/`report`/`describe`/`/v1/admin/*`/`/v1/byosmtp/*` ever return a box-protocol field
+verbatim. Also not part of this contract: Phase 5's internal autonomous-subsystem behaviour
+(auto-quarantine, auto-pause) — these are server-side decisions surfaced only through the health
+endpoint's `shadow`/`active_conditions` fields and the account object's own status flags, never a
+route in their own right.
 
 ## S9 — `send_logs` at-rest governance (Phase 9 contract completion, documentation only)
 
@@ -577,7 +648,7 @@ None of `quote`/`run`/`report`/`describe`/`/v1/admin/*` ever return a box-protoc
 (default 7d, `debug_log_retention_days`) — **accepted for V1**, with rationale: it is the user's
 own campaign material (the body/recipient list they themselves supplied), not a secret the module
 holds on their behalf (unlike an SMTP credential, which is the module's custody and stays
-encrypted). It is retention-bounded (TTL-swept, Phase 7 §3) and reachable only via
+encrypted). It is retention-bounded (TTL-swept, M3-Phase 7 §3) and reachable only via
 **access-controlled direct DB** — **no operator or platform API returns `send_logs` content**;
 this document's every endpoint above confirms that (no route selects from `send_logs`). At-rest
 encryption of `send_logs.body`/`recipient` is a named **post-V1 hardening item**, not built now.

@@ -10,6 +10,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -195,6 +196,130 @@ func TestFromGate_T8c_OverrideWithFlagWritesUnverifiedAndAudits(t *testing.T) {
 	}
 	if reason == "" {
 		t.Fatal("from_gate_overridden audit event has an empty reason")
+	}
+}
+
+// fromCheckedAtIsNull reports whether the pairing CHECK's 'unverified' arm is satisfied — the
+// column the override must reset alongside from_verification_state.
+func (e *testEnv) fromCheckedAtIsNull(t *testing.T, acctID string) bool {
+	t.Helper()
+	var isNull bool
+	if err := e.admin.QueryRow(context.Background(),
+		`SELECT from_checked_at IS NULL FROM byosmtp.accounts WHERE id=$1`, acctID).Scan(&isNull); err != nil {
+		t.Fatalf("read from_checked_at: %v", err)
+	}
+	return isNull
+}
+
+// THE REGRESSION TEST FOR THE INVERTED BREAK-GLASS OVERRIDE.
+//
+// Every test above drives the override on POST (a brand-new row, where from_checked_at is already
+// NULL and byosmtp_0026's accounts_from_checked_pairing_check therefore holds by accident). This
+// test drives it on the case that actually matters: PATCH of an ALREADY-CHECKED account.
+//
+// Before the fix, overrideFromGateColumnSets() wrote from_verification_state='unverified' and left
+// from_checked_at at its non-NULL value, violating the pairing CHECK — so this PATCH came back 422
+// check_violation and the override was IMPOSSIBLE on precisely the accounts that need it (an
+// account needing a break-glass override has, by definition, already been checked).
+//
+// WHY THIS TEST CANNOT PASS VACUOUSLY (Rule 10): the first assertion below proves the precondition
+// the whole test depends on — that the account really was checked (from_checked_at NOT NULL) before
+// the PATCH. Without it, a row that happened to be unchecked would make the PATCH trivially legal
+// and the test would be indistinguishable from the pre-fix behavior. The paired
+// TestFromGate_T8c_OverrideOnCheckedAccount_PairingIsLoadBearing below is the negative control: it
+// proves the CHECK genuinely rejects the un-paired write, so the fix is what makes this pass rather
+// than the constraint being toothless.
+func TestFromGate_T8c_OverrideAppliesToAlreadyCheckedAccount(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fgoverridechecked")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgoverridechecked@example.com")
+
+	// Create through the REAL gate (no override) so a genuine verdict lands and from_checked_at is
+	// stamped — this is the ordinary state of any account an operator would later need to override.
+	create := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
+		"user_id": userID, "smtp_host": "alias-selfhosted.test", "smtp_username": "user@alias-selfhosted.test",
+		"smtp_secret": "s3cr3t", "from_address": "user@alias-selfhosted.test",
+	}).requireStatus(t, 201)
+	acctID := create.str("id")
+
+	if state := e.fromAlignmentState(t, acctID); state != "aligned" {
+		t.Fatalf("PRECONDITION FAILED: want a genuinely gated 'aligned' row to override, got state=%q", state)
+	}
+	if e.fromCheckedAtIsNull(t, acctID) {
+		t.Fatal("PRECONDITION FAILED: from_checked_at is NULL after a real gate run — this test would be vacuous (the pairing CHECK would hold with or without the fix)")
+	}
+
+	// The break-glass PATCH. Pre-fix this returned 422 (check_violation on
+	// accounts_from_checked_pairing_check); post-fix it must land.
+	patch := e.do(t, "PATCH", "/v1/admin/accounts/"+acctID, map[string]any{
+		"from_address":       "user@misaligned-none.test",
+		"override_from_gate": true, "override_reason": "provider verified out of band; gate cannot see this zone",
+	})
+	if patch.status != 200 {
+		t.Fatalf("break-glass override PATCH on an already-checked account: got status %d, want 200 — the override is unusable on exactly the accounts that need it: %s", patch.status, patch.raw)
+	}
+
+	// The write landed AND both paired columns moved together.
+	if state := e.fromAlignmentState(t, acctID); state != "unverified" {
+		t.Fatalf("after override PATCH: state=%q, want unverified (the override buys STORE, not SEND)", state)
+	}
+	if !e.fromCheckedAtIsNull(t, acctID) {
+		t.Fatal("after override PATCH: from_checked_at is still set — the pairing CHECK's 'unverified' arm requires NULL, so this row is only legal by luck")
+	}
+	get := e.do(t, "GET", "/v1/admin/accounts/"+acctID, nil).requireStatus(t, 200)
+	if got := get.str("from_address"); got != "user@misaligned-none.test" {
+		t.Fatalf("after override PATCH: from_address=%q, want the NEW address stored", got)
+	}
+
+	// The audit trail is what preserves the diagnostic history the old from_checked_at was meant to
+	// carry, so assert it on the PATCH path too (the POST path is covered above).
+	var reason string
+	if err := e.admin.QueryRow(context.Background(),
+		`SELECT reason FROM byosmtp.account_events WHERE account_id=$1 AND action='from_gate_overridden'`, acctID).
+		Scan(&reason); err != nil {
+		t.Fatalf("expected a from_gate_overridden audit event on the PATCH path, got none: %v", err)
+	}
+	if reason == "" {
+		t.Fatal("from_gate_overridden audit event has an empty reason")
+	}
+}
+
+// NEGATIVE CONTROL for the test above (Rule 10): prove the pairing CHECK is genuinely load-bearing
+// rather than a constraint that would accept anything. Writing 'unverified' while LEAVING
+// from_checked_at set — i.e. exactly what overrideFromGateColumnSets() did before the fix — must be
+// REJECTED by Postgres. If this write succeeded, the test above would pass with or without the fix
+// and would be proving nothing.
+func TestFromGate_T8c_OverrideOnCheckedAccount_PairingIsLoadBearing(t *testing.T) {
+	skipIfDNSTestServerUnreachable(t)
+	e := newTestEnv(t, "fgoverridepairing")
+	e.enableRealFromGate(t)
+	userID := e.seedUser(t, "fgoverridepairing@example.com")
+
+	create := e.do(t, "POST", "/v1/admin/accounts", map[string]any{
+		"user_id": userID, "smtp_host": "alias-selfhosted.test", "smtp_username": "user@alias-selfhosted.test",
+		"smtp_secret": "s3cr3t", "from_address": "user@alias-selfhosted.test",
+	}).requireStatus(t, 201)
+	acctID := create.str("id")
+	if e.fromCheckedAtIsNull(t, acctID) {
+		t.Fatal("PRECONDITION FAILED: from_checked_at is NULL, so the un-paired write below would be legal and this control would prove nothing")
+	}
+
+	// The pre-fix column set, issued directly against the real database.
+	_, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.accounts SET from_verification_state='unverified' WHERE id=$1`, acctID)
+	if err == nil {
+		t.Fatal("NEGATIVE CONTROL FAILED: setting from_verification_state='unverified' while from_checked_at is still set was ACCEPTED — accounts_from_checked_pairing_check is not enforcing, so the positive test above is vacuous")
+	}
+	if !strings.Contains(err.Error(), "accounts_from_checked_pairing_check") {
+		t.Fatalf("NEGATIVE CONTROL: rejected, but not by the pairing CHECK — got %v", err)
+	}
+
+	// And the paired write — the fix's column set — is accepted, proving the rejection above is
+	// specifically about the pairing and not about the state value being unwritable in general.
+	if _, err := e.admin.Exec(context.Background(),
+		`UPDATE byosmtp.accounts SET from_verification_state='unverified', from_checked_at=NULL WHERE id=$1`, acctID); err != nil {
+		t.Fatalf("the PAIRED write (state + from_checked_at=NULL together) was rejected: %v", err)
 	}
 }
 

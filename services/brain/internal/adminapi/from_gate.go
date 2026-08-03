@@ -115,15 +115,35 @@ func fromGateWriteAcknowledgment(ctx context.Context, db pgxDB, accountID string
 const acknowledgeAlignmentWarningField = "acknowledge_alignment_warning"
 
 // overrideFromGateColumnSets builds the from_*-column fragment for M3-P4-OD-9's break-glass
-// override: writes ONLY from_verification_state = 'unverified' (never 'aligned', never
+// override: writes from_verification_state = 'unverified' (never 'aligned', never
 // 'unaligned_warned', even for an address that would genuinely pass — "the override buys the
-// operator the ability to STORE the address, not the ability to SEND from it") — every other
-// From-gate column (from_dmarc_policy, from_spf_aligned, from_dmarc_aligned, from_check_detail,
-// from_checked_at) is left UNTOUCHED, because no check actually ran; a stale prior verdict's
-// timestamp remains, which is itself diagnostic (it dates the LAST time a real check happened).
+// operator the ability to STORE the address, not the ability to SEND from it") AND resets
+// from_checked_at to NULL, because byosmtp_0026's accounts_from_checked_pairing_check makes those
+// two columns a PAIR:
+//
+//	CHECK ((from_verification_state =  'unverified' AND from_checked_at IS     NULL)
+//	    OR (from_verification_state <> 'unverified' AND from_checked_at IS NOT NULL))
+//
+// from_checked_at was ORIGINALLY left untouched here on the reasoning that a stale timestamp is
+// diagnostic (it dates the LAST real check). That reasoning is unsatisfiable: on any account whose
+// From address has EVER been checked, from_checked_at is non-NULL, so writing 'unverified' alone
+// violates the pairing CHECK and Postgres rejects the whole statement. The break-glass override was
+// therefore impossible on exactly the accounts that need it — every account requiring an override
+// has, by definition, already been checked. Found by walking Stage 5.10 of the local test guide
+// (2026-08-03); the only prior test drove POST on a brand-new row, where from_checked_at is already
+// NULL and the pairing holds by accident.
+//
+// The diagnostic history is NOT lost: writeFromGateOverrideEvent records a dedicated
+// 'from_gate_overridden' account_events row (address, operator reason, timestamp), and the prior
+// verdict's from_dmarc_policy / from_spf_aligned / from_dmarc_aligned / from_check_detail columns
+// are still left UNTOUCHED — only the one column the CHECK binds to the state is reset.
 func overrideFromGateColumnSets() []fromGateColumnSet {
 	return []fromGateColumnSet{
 		{"from_verification_state", "unverified"},
+		// nil (not nowLiteral) → an explicit NULL bind, satisfying the pairing CHECK's
+		// 'unverified' arm. On the INSERT path this is a no-op restatement of the column
+		// default; on the UPDATE path it is the fix.
+		{"from_checked_at", nil},
 	}
 }
 
