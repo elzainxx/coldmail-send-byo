@@ -28,7 +28,9 @@ platform table shapes) that this guide assumes are settled.
 | **A private network between them** | Essential. See Part 4 — the box↔Brain channel must not traverse the public internet, and no box port is ever publicly reachable. |
 | **PostgreSQL 16+** | Managed (Supabase, RDS, etc.) or self-hosted. The module owns the `byosmtp` schema; the platform owns `public`. |
 | **A 32-byte master encryption key** | Wraps SMTP credentials. In production this should be a real KMS key. See Part 3 and the key-backup section of [`disaster-recovery.md`](./disaster-recovery.md) **before you create it** — losing this key is unrecoverable. |
-| **SMTP account credentials** | At least one working account (host, port, username, password). |
+| **Outbound DNS from the Brain host** | The Phase 4 From-alignment gate resolves TXT/MX records for a user's `from_address` domain directly from the Brain (`internal/fromgate`) as part of every account create/update. An egress policy that permits only known SMTP/DB destinations and blocks general DNS will silently break account creation — this is new versus module 2, which never resolved third-party DNS. |
+| **Outbound SMTP from box hosts to ARBITRARY destinations on 587/465/25** | Unlike module 2's fixed operator-chosen provider set, module 3's users each name their own SMTP server. A box-host egress allow-list scoped to a fixed list of providers will silently fail every user whose provider isn't on it — and the failure surfaces as that user's send failing, not as an operator-visible error. Plan box egress as "any host, those ports" from the start. |
+| **At least one test SMTP mailbox you control** | Not for operator provisioning — the operator provisions no accounts (see Step 9) — but you need one to walk the user journey in Step 10 and confirm a real send end to end. |
 | **`public.users` and `public.job_items`** | Platform-owned tables the module reads. They must exist before migrating; the preflight fails loudly if they do not. |
 
 ### Software on each host
@@ -244,7 +246,7 @@ database reachable over the public internet needs neither.
 > Either way: `status` is read-only, so run it first, always.
 
 What that does: runs the preflight (platform tables exist?), applies every pending
-`sender_NNNN_*.up.sql` in order, records each in `byosmtp.schema_migrations`, creates the
+`byosmtp_NNNN_*.up.sql` in order, records each in `byosmtp.schema_migrations`, creates the
 non-login `byosmtp_owner` (schema owner, so `FORCE ROW LEVEL SECURITY` actually enforces) and the
 login-only `byosmtp_module` app role, and seeds every config key with its documented default
 (the authoritative key set is [`config-reference.md`](./config-reference.md) — the one file the
@@ -365,7 +367,7 @@ psql "$MIGRATE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "
 
 Two columns the tool's output does not mention and you cannot omit:
 
-- **`user_id` is `NOT NULL` with an FK to `public.users(id)`** (`sender_0006`). It must be a real
+- **`user_id` is `NOT NULL` with an FK to `public.users(id)`** (`byosmtp_0006`). It must be a real
   platform user id or the `INSERT` fails on the FK. Use the platform user that owns this box's
   sending — for a single-tenant install, the same user id you use elsewhere.
 - **`status` must be `'active'`.** A box row with `status='disabled'` is refused at registration
@@ -413,91 +415,130 @@ supervisor to restart rather than hammering a Brain that is not ready. A box tha
 first-time setup usually means the Brain was not up yet, or the `byosmtp.boxes` row was not seeded.
 See the runbook.
 
-### Step 9 — Create an account for a known user
+### Step 9 — The operator provisions no accounts. Confirm the empty state, not an account.
 
-Nothing sends until the tenant has at least one eligible account. Accounts are owned directly by a
-`user_id` — it must be a real `public.users` row; the admin surface validates this with an existence
-check and returns a clean `422`/`400` if not. For a single-tenant install this is likely the reserved
-system user or whichever tenant owns this install. Request/response shapes are in
-[`api-contract.md`](./api-contract.md).
+**Pools were removed at Phase 1/2 of this module's build** (`Docs/history/phase-2-strip-shared-pool.md`)
+— there is no `byosmtp.pools` table, no `default_shared_pool_id` config key, and no operator step that
+creates a pool or assigns an account to one. The operator **provisions no accounts at all**: users
+bring their own SMTP accounts through the self-serve platform-facing route,
+`POST /v1/byosmtp/accounts` (Domain A, platform service token — see
+[`api-contract.md`](./api-contract.md)). There is a parallel operator-only
+`POST /v1/admin/accounts` (Domain B) for support/break-glass use, but it is not part of first-time
+setup and this guide does not use it here.
 
-**Two secrets get typed in this step — keep them out of your shell history and out of `ps`.** Both
-the admin key and the mailbox password below would otherwise land in `~/.bash_history`, and an inline
-`curl -d '{"smtp_secret":…}'` is visible in the process list to every local user for the duration of
-the request. The pattern used here: `read -rs` instead of an assignment, `--data @file` instead of an
-inline body, and a `shred` at the end. (This is the same discipline as `provision-box`'s `--pass-env`,
-which exists so a password never becomes a command-line argument.)
+So the correct state to confirm right now is the **empty** one:
 
 ```bash
 ADMIN=http://localhost:8080
 read -rs -p 'ADMIN_API_KEY: ' KEY; echo    # not an assignment: keeps it out of history
 
-# An SMTP account for a known user (the credential is encrypted on arrival; the Brain never
-# returns it). The admin surface decodes STRICTLY — a misspelled field name is a 400, not an
+curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY" \
+  | jq '{dispatch, boxes, accounts}'
+
+unset KEY   # when you are done checking health for this session
+```
+
+Expect `dispatch_paused:false`, at least one connected box (Step 8), and `accounts` showing **zero**
+accounts anywhere in the system. **That is a correct steady state, not a misconfiguration** — a fresh
+install with zero users and zero accounts is waiting for a user to add their own account, not broken.
+The runbook's flagship
+[Everything is queued and nothing is sending](./operator-runbook.md#everything-is-queued-and-nothing-is-sending)
+tree exists for exactly this shape, and its own most common cause is a tenant with zero accounts —
+not lost, not failed, just correctly idle until one exists.
+
+### Step 10 — Verify a real send end to end, as a user
+
+Nothing sends until some tenant has at least one eligible account, and in this module that account is
+created by walking the same flow a real user would: create a test user (if one doesn't already exist),
+add an account **as that user** through the self-serve route, then send through the platform's own
+`quote` → `run` → `report` cycle. This is deliberately a **user** journey end to end, not an
+operator-owned account plugged into an operator-run campaign — module 3 has no operator-owned accounts
+to fall back on.
+
+**Two secrets get typed in this step — keep them out of your shell history and out of `ps`.** Both the
+platform service token and the mailbox password below would otherwise land in `~/.bash_history`, and an
+inline `curl -d '{"smtp_secret":…}'` is visible in the process list to every local user for the
+duration of the request. The pattern used here: `read -rs` instead of an assignment, `--data @file`
+instead of an inline body, and a `shred` at the end. (This is the same discipline as
+`provision-box`'s `--pass-env`, which exists so a password never becomes a command-line argument.)
+
+```bash
+ADMIN=http://localhost:8080
+read -rs -p 'PLATFORM_TOKEN: ' PLAT; echo    # not an assignment: keeps it out of history
+
+OWNER=<a real public.users uuid for your test user>   # create one on the platform side first if
+                                                        # none exists — this module never writes
+                                                        # public.users, it only reads it
+
+# Add an account AS THAT USER via the self-serve route (the credential is encrypted on arrival;
+# the Brain never returns it). The decoder is STRICT — a misspelled field name is a 400, not an
 # ignored key. Full field table incl. the optional ones: api-contract.md.
 # Written to a file first so the password never appears in `ps` or in shell history.
 umask 077
-cat > /tmp/acct.json <<'JSON'
+cat > /tmp/acct.json <<JSON
 {
-  "user_id":       "<the owning tenant's public.users uuid>",
+  "user_id":       "$OWNER",
   "smtp_host":     "smtp.example.com",
   "smtp_port":     587,
   "smtp_username": "<mailbox username>",
   "smtp_secret":   "<mailbox password>",
   "from_address":  "you@example.com",
-  "from_name":     "Your Name"
+  "from_name":     "Your Name",
+  "acknowledge_alignment_warning": true
 }
 JSON
 $EDITOR /tmp/acct.json    # fill in the real values
-curl -fsS -X POST $ADMIN/v1/admin/accounts -H "Authorization: Bearer $KEY" \
+curl -fsS -X POST $ADMIN/v1/byosmtp/accounts -H "Authorization: Bearer $PLAT" \
   -H 'Content-Type: application/json' --data @/tmp/acct.json
 shred -u /tmp/acct.json
-
-unset KEY   # when you are done with this shell session
 ```
+
+> **`acknowledge_alignment_warning` is in that body for a reason, and omitting it is the most likely
+> way this step fails on a first install.** `from_gate_mode` defaults to `enforce`, and the
+> From-alignment gate runs on every create. When it cannot tie your `smtp_host` to a known mail
+> provider — which is the case for a self-hosted server, and for the local sink — the verdict is
+> `unaligned_warned`, and an unacknowledged warn REFUSES THE WHOLE CREATE with
+> `422 from_alignment_warning_unacknowledged`, `details: [{field:
+> "acknowledge_alignment_warning", issue: "required"}]`. No row is written (§2, `api-contract.md`):
+> `from_address` is `NOT NULL`, so there is nothing to fall back to. That is deliberate — §5.3.1's
+> "a checkbox the user must tick, not a dismissible toast" — but the `422` names a field this
+> snippet did not previously contain, which reads like a wrong field name and is not one.
+> **Read the response's `from_alignment.message` before acknowledging**; if it says your domain's
+> SPF does not cover this server, acknowledging stores an address your mail will be rejected from.
+> A create against a *recognized* provider whose SPF/DMARC do line up returns `aligned` and needs no
+> acknowledgment, so this field is not always required — it is required exactly when the gate warns.
+> Found by walking this doc verbatim on a clean slate (2026-08-03): with `smtp-sink` and
+> `you@example.com` it was the only hard stop in Step 10.
 
 **Keep `smtp_host` a public hostname.** A private-range or link-local address (`10.*`, `192.168.*`,
 `172.16–31.*`, `127.*`, `169.254.*`, `localhost`) is accepted by the API, but the box **skips
 certificate verification** for those — a test affordance for the local sink — so the credential would
-cross an unverified TLS connection. See [`security-posture.md`](./security-posture.md) §3.13.
+cross an unverified TLS connection. See [`security-posture.md`](./security-posture.md#certificate-verification-is-skipped-for-private-ip-smtp-hosts--and-users-can-reach-that-path-themselves).
 
 > **On the local dev stack, the account above points at the bundled sink: `"smtp_host": "smtp-sink"`,
 > `"smtp_port": 1025`** (Mailpit, reachable from the box over the compose network; its web UI is
 > <http://localhost:8025>). `smtp_username`/`smtp_secret` can be anything — Mailpit accepts any
 > credential, but only over STARTTLS, so the box's STARTTLS-before-AUTH path is genuinely exercised.
-> This is stated here because it is the one value in Step 9 a local reader cannot derive from this
+> This is stated here because it is the one value in this step a local reader cannot derive from this
 > doc: every other field has a self-explanatory placeholder, but `smtp.example.com` does not resolve
 > and there is no hint of what to use instead. Found by walking this doc verbatim on a clean slate
 > (2026-07-29) — it was the first hard stop. The public-hostname warning above still applies in
 > production; `smtp-sink` is exactly the "test affordance" it refers to.
 
-A tenant (`user_id`) with zero accounts stays cleanly `queued` forever — not lost, not failed, but
-nothing sends. This is the single most common "why is nothing happening" cause; see the runbook's
-flagship [Everything is queued and nothing is sending](./operator-runbook.md#everything-is-queued-and-nothing-is-sending) tree.
-
-### Step 10 — Verify a real send end to end
-
-```bash
-curl -fsS $ADMIN/v1/admin/health -H "Authorization: Bearer $KEY" \
-  | jq '{dispatch, boxes, accounts}'
-```
-
-Expect: at least one account present and eligible, `dispatch_paused:false`, and at least one
-connected box. What each field means and what warrants action is in the runbook.
-
-Then run one real campaign through `quote` → `run` → `report` (Domain A, **platform service token**,
-not the admin key) with a single recipient you control, and confirm the job reaches `sent`. The three
-bodies, because this is where a first-time reader stops (full field tables:
+The create call above **is** the account-creation step; there is no separate operator action after
+it. Now run one real campaign through `quote` → `run` → `report` (Domain A, the SAME platform service
+token, not an admin key) with a single recipient you control, and confirm the job reaches `sent`. The
+three bodies, because this is where a first-time reader stops (full field tables:
 [`api-contract.md`](./api-contract.md)):
 
 ```bash
-PLAT=<platform service token>          # Domain A. NOT the admin key from Step 9.
-OWNER=<the owning tenant's uuid>       # a public.users row.  NOT `UID=` — see below.
 ITEM=<a public.job_items uuid owned by $OWNER>
 
-# quote — recipient_count ONLY. It is pure, side-effect-free, and takes no tenant:
+# quote — recipient_count plus the tenant selector user_id (Phase 7, M3-P7-OD-5).
+# It is pure and side-effect-free, but every field in the response is per-user, so
+# it now requires user_id:
 curl -fsS -X POST $ADMIN/v1/quote -H "Authorization: Bearer $PLAT" \
-  -H 'Content-Type: application/json' -d '{"recipient_count":1}'
+  -H 'Content-Type: application/json' -d "{\"recipient_count\":1,\"user_id\":\"$OWNER\"}"
 
 # run — job_item_id is SINGULAR, and there is no campaign_id field (that lives on the job_items row):
 curl -fsS -X POST $ADMIN/v1/run -H "Authorization: Bearer $PLAT" \
@@ -514,10 +555,10 @@ one.
 
 > **The three shapes above are each a mistake made while walking this doc verbatim** on a clean slate
 > (2026-07-29), when this step said only "run one real campaign through `quote` → `run` → `report`"
-> with no bodies and — unlike Step 9 — no link to the contract. `quote` rejected `user_id` as an
-> **unknown field** (the admin surface and the platform surface both decode strictly), `run` was
-> guessed as `{campaign_id, job_item_ids[]}`, and `report` was tried as a path segment. All three are
-> `400`/`404` with correct, spec-compliant envelopes — the product was right; the doc was silent.
+> with no bodies and no link to the contract. `quote` rejected `user_id` as an **unknown field** (the
+> admin surface and the platform surface both decode strictly), `run` was guessed as
+> `{campaign_id, job_item_ids[]}`, and `report` was tried as a path segment. All three are `400`/`404`
+> with correct, spec-compliant envelopes — the product was right; the doc was silent.
 
 > **`UID=` is a readonly variable in bash** — `UID=<uuid>` fails with `bash: UID: readonly variable`
 > and the assignment silently does not happen, so `run` then posts an empty `user_id`. This snippet
@@ -525,8 +566,19 @@ one.
 > (`zsh` allows the assignment, which is why this can survive a review: it depends on the reader's
 > shell.)
 
-**On the local dev stack, the three values above come from `scripts/dev.sh reset`, not from a secret
-store.** It mints both credentials into `.env` and seeds the platform side:
+**On the local dev stack, the values above come from `scripts/dev.sh`, not from a secret store.**
+Two subcommands, and the order matters: **`scripts/dev.sh certs` mints the secrets and writes
+`.env`** (mTLS material, the dev KMS key, both box tokens, the operator admin key, and the platform
+service token); **`scripts/dev.sh reset` then brings the stack up** and seeds the platform side.
+`reset` does not write `.env` — on a fresh clone that has none, every compose command aborts during
+interpolation with `required variable DEV_BOX_TOKEN is missing a value: set DEV_BOX_TOKEN in .env
+(provision-box)` and `reset` exits 1 without starting anything. That is a clean, self-describing
+failure, not a silent one, but `certs` is the step that fixes it and this paragraph named the wrong
+subcommand until 2026-08-03, when a clean-slate walk of Stage 2 of
+[`module-3-local-test-guide.md`](./module-3-local-test-guide.md) hit it on the first command. Note
+`certs` is idempotent about the CA (it prints `already exists` and skips regeneration unless you
+pass `--force`) but **always re-mints the tokens and rewrites `.env`** — so any box already running
+against the old `.env` is refused on its next register.
 
 ```bash
 PLAT=$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2)   # NOT ADMIN_API_KEY= — different domain
