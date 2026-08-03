@@ -204,10 +204,22 @@ func (s *Server) doTransition(w http.ResponseWriter, r *http.Request, spec trans
 
 	// Exactly one audit row: from = pre-state, to = post-state.
 	fromSnap := snapshotOf(from)
-	toSnap := snapshotOf(spec.apply(from))
+	to := spec.apply(from)
+	toSnap := snapshotOf(to)
 	if err := writeAuditEvent(ctx, tx, id, userID, spec.action, &fromSnap, &toSnap, req.Reason, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))
 		return
+	}
+	// Any transition that takes quarantined TRUE→FALSE resolves the condition, so the notification's
+	// LIVE row is cleared in this SAME transaction (see clearAccountQuarantineNotification). Keyed on
+	// the FLAG TRANSITION, not on spec.action == "unquarantine": a future transitionSpec whose apply()
+	// clears quarantined gets this for free instead of silently reintroducing the stale-row bug. Today
+	// only specUnquarantine satisfies it, which the paired behavioral test asserts.
+	if from.Quarantined && !to.Quarantined {
+		if err := clearAccountQuarantineNotification(ctx, tx, userID, id); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "notification_clear_error: "+err.Error()))
+			return
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))

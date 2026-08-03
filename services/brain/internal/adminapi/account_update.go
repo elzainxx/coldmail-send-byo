@@ -302,6 +302,15 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			} else {
 				auditReason = &clearNote
 			}
+			// The auto-clear resolved the condition just as surely as an explicit un-quarantine, so
+			// the notification's LIVE row is cleared in this SAME transaction — gated on the re-read
+			// above, so a PATCH that did NOT clear anything never touches a notifications row. Mirror
+			// of platformapi's own call at the same guard (§9.2 requires this at BOTH credential
+			// writers). See clearAccountQuarantineNotification for what breaks without it.
+			if err := clearAccountQuarantineNotification(ctx, tx, newUserID, id); err != nil {
+				s.fail(w, r, newErr(codeInternalError, "notification_clear_error: "+err.Error()))
+				return
+			}
 		}
 	}
 	if err := writeAuditEvent(ctx, tx, id, newUserID, auditAction, fromSnap, toSnap, auditReason, requestIDFrom(r.Context())); err != nil {

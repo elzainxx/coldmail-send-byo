@@ -120,6 +120,12 @@ func (s *Server) runUnquarantine(ctx context.Context, accountID, userID string) 
 	if err := writeAuditEvent(ctx, tx, accountID, userID, "unquarantine", fromSnap, toSnap, &reason, requestIDFrom(ctx)); err != nil {
 		return false, newErr(codeInternalError, "audit_write_error: "+err.Error())
 	}
+	// The quarantine genuinely resolved, so the notification's LIVE row must be cleared in this SAME
+	// transaction — otherwise the next quarantine of this account collides with the stale row and is
+	// suppressed for up to notification_dedup_window_sec (24h default). See the helper's own comment.
+	if err := clearAccountQuarantineNotification(ctx, tx, userID, accountID); err != nil {
+		return false, newErr(codeInternalError, "notification_clear_error: "+err.Error())
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, newErr(codeInternalError, "tx_commit_error: "+err.Error())
 	}

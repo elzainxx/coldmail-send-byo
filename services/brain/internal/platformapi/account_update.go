@@ -283,6 +283,15 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			} else {
 				auditReason = &clearNote
 			}
+			// The auto-clear resolved the condition just as surely as an explicit un-quarantine, so
+			// the notification's LIVE row is cleared in this SAME transaction — gated on the re-read
+			// above, so a PATCH that did NOT clear anything (not quarantined, or quarantined for a
+			// non-auth_failure reason) never touches a notifications row. See
+			// clearAccountQuarantineNotification for what breaks without this.
+			if err := clearAccountQuarantineNotification(ctx, tx, userID, id); err != nil {
+				s.fail(w, r, newErr(codeInternalError, "notification_clear_error: "+err.Error()))
+				return
+			}
 		}
 	}
 	if err := writeAuditEvent(ctx, tx, id, userID, auditAction, fromSnap, toSnap, auditReason, requestIDFrom(r.Context())); err != nil {

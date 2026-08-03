@@ -85,9 +85,25 @@ func EnqueueNotification(ctx context.Context, tx pgx.Tx, userID, condition, subj
 }
 
 // ClearNotification marks a condition's LIVE row cleared (§3.3: "a cleared row does not block a
-// fresh rising edge"). Called when the caller observes the underlying condition has resolved (e.g.
-// self-serve un-quarantine, or the admin un-quarantine route). A no-op (0 rows) if there is no live
-// row for this dedup_key — clearing an already-clear or never-fired condition is not an error.
+// fresh rising edge"). A no-op (0 rows) if there is no live row for this dedup_key — clearing an
+// already-clear or never-fired condition is not an error.
+//
+// WHO ACTUALLY CALLS THIS, and why it is not this function (2026-08-03, defect #134). Every
+// condition-RESOLVED path lives on an API surface, not in dispatch: this package raises quarantines
+// and never lifts one, so it has no caller of its own and this copy is exercised only by
+// notify_test.go. The four production resolution paths are platformapi's self-serve un-quarantine and
+// credential-PATCH auto-clear, and adminapi's operator un-quarantine and credential-PATCH auto-clear
+// — and M3-P8-OD-7 forbids either package importing internal/dispatch, so they CANNOT call this.
+// Each owns a per-package duplicate (`clearAccountQuarantineNotification` in its own audit.go),
+// which is the sanctioned idiom for that boundary. This comment previously read "Called when the
+// caller observes the condition has resolved (e.g. self-serve un-quarantine, or the admin
+// un-quarantine route)" — describing callers that had never been written and, across the OD-7
+// boundary, never could be. That is what let the missing wiring look intentional for a whole phase:
+// the notification stayed live after a resolve, so the NEXT quarantine of the same account folded
+// into the stale row via notifications_live_dedup_idx and was suppressed for up to
+// notification_dedup_window_sec (86400s default) — a genuinely new event, silently withheld for a day.
+// If a future dispatch-side path ever does resolve a condition, call this; keep the three copies'
+// dedup_key construction identical (each side asserts the coupling in its own test).
 func ClearNotification(ctx context.Context, tx pgx.Tx, userID, dedupKey string) error {
 	_, err := tx.Exec(ctx,
 		`UPDATE byosmtp.notifications SET cleared_at = NOW()
@@ -169,7 +185,7 @@ func deliverImmediate(ctx context.Context, db *pgxpool.Pool, cfg Config) (int, e
 			`UPDATE byosmtp.notifications SET state = 'delivered', notified_at = NOW()
 			  WHERE id = $1 AND state = 'pending'`, id)
 		if err != nil {
-			log.Printf("notify: immediate delivery of %s failed: %v", id, err)
+			log.Printf("notify: immediate delivery of %s failed: %v level=error", id, err)
 			continue // one row's failure must not abort the rest of this tick's batch
 		}
 		delivered += int(tag.RowsAffected())
@@ -200,7 +216,7 @@ func deliverDigests(ctx context.Context, db *pgxpool.Pool, cfg Config) (int, err
 	for _, userID := range dueUsers {
 		n, err := deliverOneUserDigest(ctx, db, cfg, userID)
 		if err != nil {
-			log.Printf("notify: digest delivery for user %s failed: %v", userID, err)
+			log.Printf("notify: digest delivery for user %s failed: %v level=error", userID, err)
 			continue // one user's failure must not abort the rest of this tick's batch
 		}
 		delivered += n
@@ -328,7 +344,7 @@ func (r *NotificationRunner) tick(ctx context.Context) (interval time.Duration) 
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("notify: delivery PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("notify: delivery PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	if ok, wait := r.d.health.Ready(ctx); !ok {
@@ -343,7 +359,7 @@ func (r *NotificationRunner) tick(ctx context.Context) (interval time.Duration) 
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("notify: config load error: %v", err)
+		log.Printf("notify: config load error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)
@@ -352,7 +368,7 @@ func (r *NotificationRunner) tick(ctx context.Context) (interval time.Duration) 
 	}
 	delivered, err := deliverNotifications(ctx, r.d.db, cfg)
 	if err != nil {
-		log.Printf("notify: delivery error: %v", err)
+		log.Printf("notify: delivery error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	if delivered > 0 {

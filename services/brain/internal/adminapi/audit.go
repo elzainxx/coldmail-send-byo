@@ -81,3 +81,27 @@ func writeAuditEvent(ctx context.Context, tx pgx.Tx, accountID, userID, action s
 		accountID, userID, action, fromJSON, toJSON, reason, requestID)
 	return err
 }
+
+// clearAccountQuarantineNotification mirrors dispatch.ClearNotification's body exactly (OD-7:
+// duplicated, not imported — adminapi does not import internal/dispatch, per server.go's own
+// package-isolation note, the same precedent flagsSnapshot/writeAuditEvent/pgxDB already follow).
+// Call it in the SAME transaction as any write that clears accounts.quarantined, with the dedup_key
+// dispatch's own EnqueueNotification writes (`"account_quarantined:" + accountID`).
+//
+// WHY THIS MUST BE CALLED, AND WHAT BREAKS WITHOUT IT: byosmtp.notifications dedups on the partial
+// unique index (user_id, dedup_key) WHERE cleared_at IS NULL. If a quarantine notification's row is
+// never cleared when the quarantine genuinely resolves, the next quarantine of the same account
+// COLLIDES with that stale live row and EnqueueNotification's ON CONFLICT branch only re-opens it
+// once notified_at has aged past notification_dedup_window_sec (default 24h) — so a genuinely NEW
+// quarantine episode is silently suppressed for up to a day. Un-quarantining is the falling edge;
+// without a clear here, the system cannot tell a repeat condition from a new one.
+//
+// Idempotent by construction: 0 rows when there is no live row (a never-quarantined or
+// already-cleared account), so calling it on every clear path is safe.
+func clearAccountQuarantineNotification(ctx context.Context, tx pgx.Tx, userID, accountID string) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE byosmtp.notifications SET cleared_at = NOW()
+		  WHERE user_id = $1 AND dedup_key = $2 AND cleared_at IS NULL`,
+		userID, "account_quarantined:"+accountID)
+	return err
+}
