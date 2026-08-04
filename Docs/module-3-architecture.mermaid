@@ -6,16 +6,16 @@ flowchart TB
         P["Campaigns · CSV · templates<br/>Monthly subscription<br/>Enables / disables the module per user"]
     end
 
-    subgraph brain["Brain &mdash; Go control plane"]
+    subgraph control["Control &mdash; Go control plane"]
         API["API layer<br/>quote · run · report · describe<br/><b>+ account CRUD extension</b>"]
         GATE["<b>From gate</b><br/>SPF / DMARC check<br/>at setup only"]
         DISP["Dispatcher<br/>claim · route · pace<br/><i>flat per-user account list</i>"]
         OUT["Outcome handler<br/>classify · score · quarantine"]
     end
 
-    subgraph boxes["Sender boxes &mdash; Node, N containers"]
-        B1["Box 1"]
-        B2["Box N"]
+    subgraph workers["Sender workers &mdash; Node, N containers"]
+        B1["Worker 1"]
+        B2["Worker N"]
     end
 
     DB[("Shared Supabase<br/><i>sender schema</i>")]
@@ -38,11 +38,11 @@ flowchart TB
     B2 ==>|"authenticated SMTP"| EXT2
 
     classDef userNode fill:#e8f0fe,stroke:#4285f4,stroke-width:2px
-    classDef brainNode fill:#f3e8fd,stroke:#9334e6,stroke-width:2px
-    classDef boxNode fill:#fde8e8,stroke:#d93025,stroke-width:2px
+    classDef controlNode fill:#f3e8fd,stroke:#9334e6,stroke-width:2px
+    classDef workerNode fill:#fde8e8,stroke:#d93025,stroke-width:2px
     classDef extNode fill:#f1f3f4,stroke:#5f6368,stroke-width:1px
 
     class UA,UB userNode
-    class API,GATE,DISP,OUT brainNode
-    class B1,B2 boxNode
+    class API,GATE,DISP,OUT controlNode
+    class B1,B2 workerNode
     class EXT1,EXT2,DB,P extNode

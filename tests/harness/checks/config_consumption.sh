@@ -20,7 +20,7 @@ FUTUREWORK="Docs/future-work.md"
 fail=0
 
 # --- RESERVED-marker expiry (M3-P2-OD-8, ruled 2026-07-31; §1.2.1) -----------------------------
-# A RESERVED marker is a time-boxed escape hatch, not a permanent exemption: "the key goes
+# A RESERVED marker is a time-workered escape hatch, not a permanent exemption: "the key goes
 # RESERVED at G1 and must be gone at G2" is the shape, generalized to any gate/phase. Ledger
 # syntax is `key|RESERVED|<expiry-gate-or-phase>` (a required third field). This gate fails if the
 # CURRENT gate/phase (Docs/current-phase.txt) is AT OR PAST the named expiry and the marker still
@@ -28,7 +28,7 @@ fail=0
 # defect class re-entering through the door built to close it (retry_count_4xx and
 # variation_zero_width_rate_pct were both found RESERVED "by accident," with no expiry, by two
 # separate Phase 9.5 review sweeps — the evidence this is a live risk, not a hypothetical). Both of
-# those keys were DROPPED at byosmtp_0049 when this check fired for real at the Phase 8 bump
+# those keys were DROPPED at send_byo_0049 when this check fired for real at the Phase 8 bump
 # (M3-P8-OD-8) — the mechanism working end to end, from marker to disposition.
 #
 # The third field also accepts a future-work item id (`FW-M3-N`) instead of a gate/phase label

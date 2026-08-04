@@ -1,4 +1,4 @@
-Copyright (c) 2026 The BYOSMTP module owner. All rights reserved.
+Copyright (c) 2026 The SEND_BYO module owner. All rights reserved.
 
 PROPRIETARY AND CONFIDENTIAL.
 
@@ -23,7 +23,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Scope — this license covers the OWNER'S OWN code only
 ----------------------------------------------------------------------------
 This proprietary license applies to the project's own code and documentation:
-`services/brain/`, `services/box/`, `tools/`, `db/migrations/`, `deploy/`,
+`services/control/`, `services/worker/`, `tools/`, `db/migrations/`, `deploy/`,
 `scripts/`, `tests/`, and `Docs/`.
 
 This repository is a fork of the sibling "sender" module (module 2), forked at

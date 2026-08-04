@@ -13,7 +13,7 @@ Ruled by Phase 4 (M3-P4-OD-1): the From-gate copy says **"we couldn't verify thi
 never **"this will fail."** The reason is a protocol fact, not a tone preference — DMARC passes on
 SPF-aligned **OR** DKIM-aligned (RFC 7489 §4.2), so DNS inspection can never prove a failure, only fail
 to find evidence of one leg. Generalised, this is the same rule CLAUDE.md Rule 5 already states for
-outcomes ("never invent an outcome the box did not report"):
+outcomes ("never invent an outcome the worker did not report"):
 
 > **Every user-facing string is audited against the evidence the module actually holds at the moment it
 > renders.** A string that asserts more than the evidence supports is a defect, whatever its tone.
@@ -22,7 +22,7 @@ outcomes ("never invent an outcome the box did not report"):
 
 ### 2.1 Surface 1 — the From gate
 
-Source: `services/brain/internal/fromgate/copy.go` (`RenderCopy` and its branches), plus the
+Source: `services/control/internal/fromgate/copy.go` (`RenderCopy` and its branches), plus the
 indeterminate-outcome refusal strings in `platformapi/account_update.go` and
 `platformapi/account_bulk_add.go` — two distinct strings, one per file. Every branch is exercised by
 `fromgate/copy_test.go`'s banned-phrase test ("will fail" / "will be rejected" are asserted absent, and
@@ -46,7 +46,7 @@ never that it ran and found an absence.
 
 ### 2.2 Surface 2 — SMTP error framing
 
-Source: `services/brain/internal/dispatch/verify.go`'s `externalCodeFor` (the verify-path frame) and
+Source: `services/control/internal/dispatch/verify.go`'s `externalCodeFor` (the verify-path frame) and
 `platformapi`'s report/quote/test handlers, which pass `smtp_response`/`error_class` through **verbatim**
 (`provider_text.go`, `handlers.go`, `campaign_report.go`) with no added prose. The provider's raw text is
 never itself audited here — Rule 5's framing is "the provider writes this copy, not us"; only the frame
@@ -54,13 +54,13 @@ this codebase adds is in scope.
 
 | String (id in ledger) | Evidence claimed | Verdict |
 |---|---|---|
-| `smtp_frame.verify_connect_failed` | box's `ReasonConnectRefused` | PASS |
-| `smtp_frame.verify_timeout` | box's `ReasonTimeout` | PASS |
-| `smtp_frame.verify_tls_unavailable` | box's `ReasonStartTLSUnavail`; box structurally aborts before AUTH (Rule 6) | PASS — "before sending your password" is a structural fact, not an inference |
-| `smtp_frame.verify_tls_failed` | box's `starttls_failed` | PASS — "often a certificate problem" is hedged (often, not always) |
-| `smtp_frame.verify_auth_failed` | box's `ReasonAuthFailed` | **PASS, borderline** — "The username or password was rejected" states what happened (AUTH failed) without naming a specific cause; it does not claim "your password is wrong" the way the brief's canonical bad example does, and does not rule out app-password/blocked-sign-in/IMAP-disabled causes by omission the way an explicit diagnosis would. No behavior change needed. |
-| `smtp_frame.verify_protocol_error` | box's `ehlo_failed` | PASS |
-| `smtp_frame.verify_connection_lost` | box's "connection_closed"/"write_failed", or used as the catch-all default for an unrecognized reason slug | PASS — the catch-all asserts only "connection lost," never a fabricated specific cause for an unmapped slug |
+| `smtp_frame.verify_connect_failed` | worker's `ReasonConnectRefused` | PASS |
+| `smtp_frame.verify_timeout` | worker's `ReasonTimeout` | PASS |
+| `smtp_frame.verify_tls_unavailable` | worker's `ReasonStartTLSUnavail`; worker structurally aborts before AUTH (Rule 6) | PASS — "before sending your password" is a structural fact, not an inference |
+| `smtp_frame.verify_tls_failed` | worker's `starttls_failed` | PASS — "often a certificate problem" is hedged (often, not always) |
+| `smtp_frame.verify_auth_failed` | worker's `ReasonAuthFailed` | **PASS, borderline** — "The username or password was rejected" states what happened (AUTH failed) without naming a specific cause; it does not claim "your password is wrong" the way the brief's canonical bad example does, and does not rule out app-password/blocked-sign-in/IMAP-disabled causes by omission the way an explicit diagnosis would. No behavior change needed. |
+| `smtp_frame.verify_protocol_error` | worker's `ehlo_failed` | PASS |
+| `smtp_frame.verify_connection_lost` | worker's "connection_closed"/"write_failed", or used as the catch-all default for an unrecognized reason slug | PASS — the catch-all asserts only "connection lost," never a fabricated specific cause for an unmapped slug |
 | `report.smtp_response_passthrough` | `jobs.last_smtp_response`, verbatim | PASS — no frame text added at all |
 | `report.error_class_passthrough` | `jobs.last_error_class`, the enum's own text | PASS — structural classification, not prose |
 | `account_test.verification_unavailable` | verifier absent or a plumbing error | PASS — states inability to check |
@@ -72,7 +72,7 @@ field name, nothing more.
 
 ### 2.3 Surface 3 — notification templates
 
-Source: `services/brain/internal/dispatch/account_effect.go` (`EnqueueNotification` call for
+Source: `services/control/internal/dispatch/account_effect.go` (`EnqueueNotification` call for
 `account_quarantined`) and `campaign_expiry.go` (the `campaign_expired` INSERT). **Correction to the
 brief's own example set:** grepping the tree for `campaign_behind_projection` and
 `all_accounts_unverified` as notification conditions returns no hits as notifications —
@@ -80,11 +80,11 @@ brief's own example set:** grepping the tree for `campaign_behind_projection` an
 (`platformapi/quote_feasibility.go`), an unrelated surface, and `campaign_behind_projection` does not
 exist anywhere in the codebase. Per this task's own instruction to audit what actually exists rather than
 invent copy, the two conditions below are the complete wired set, confirmed by `grep -rn
-"EnqueueNotification\|INSERT INTO byosmtp.notifications" services/brain --include=*.go` (excluding tests).
+"EnqueueNotification\|INSERT INTO send_byo.notifications" services/control --include=*.go` (excluding tests).
 
 **A further structural finding, not a copy defect:** neither condition renders English prose today. Both
 write only structured fields (`condition`, `severity`, `subject_id`, and a `reason`/`campaign_id` value)
-to `byosmtp.notifications`; no route in `platformapi` or `adminapi` renders that table into copy, and
+to `send_byo.notifications`; no route in `platformapi` or `adminapi` renders that table into copy, and
 `dispatch/notify.go`'s delivery loop only advances `state` (`pending`→`delivered`/`suppressed`) — it
 sends nothing out-of-band. There is therefore no rendered *sentence* to audit yet on this surface; the
 table below audits the structured **claim** each payload's `reason` value carries, since that is what a

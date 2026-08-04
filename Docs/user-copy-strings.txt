@@ -14,7 +14,7 @@
 # the string's wording, the underlying evidence. A string whose evidence column would have to say
 # "nothing" is the defect this ledger exists to surface.
 
-# --- Surface 1: the From gate (services/brain/internal/fromgate/copy.go) ---
+# --- Surface 1: the From gate (services/control/internal/fromgate/copy.go) ---
 fromgate.allow_empty|fromgate|SPF-token match or self-hosted bare-a/mx match confirmed; no copy rendered at all (aligned needs no acknowledgment)
 fromgate.indeterminate|fromgate|DNS lookup did not answer inside the budget (from_dns_unavailable) — explicitly NOT evidence about the domain's DNS, only that the check could not run
 fromgate.block_full|fromgate|p=reject AND no SPF record AND no DKIM found at any probeable selector (from_alignment_blocked) — the one row the decision table classifies BLOCK
@@ -25,25 +25,25 @@ fromgate.warn_ordinary|fromgate|DMARC policy is p=none or absent AND SPF record 
 fromgate.account_update_indeterminate_refusal|fromgate|from_gate returned OutcomeIndeterminate for a from_address-changing PATCH (DNS lookup did not answer) — refusal states nothing changed, not that the address is bad
 fromgate.account_bulk_add_indeterminate_refusal|fromgate|from_gate returned OutcomeIndeterminate for a bulk-add row's From address (DNS lookup did not answer) — refusal directs to press Test on the account to retry, not a claim about the new address
 
-# --- Surface 2: SMTP error surfacing (services/brain/internal/dispatch/verify.go, platformapi report/quote/test paths) ---
-# NOTE: the box's scrubbed provider text (smtp_response) itself is NOT a string in this codebase's
+# --- Surface 2: SMTP error surfacing (services/control/internal/dispatch/verify.go, platformapi report/quote/test paths) ---
+# NOTE: the worker's scrubbed provider text (smtp_response) itself is NOT a string in this codebase's
 # copy contract — it is verbatim third-party text passed through unmodified (Rule 5's "the provider
 # writes this copy, not us"). The rows below are the FRAME text this codebase adds around it.
-smtp_frame.verify_connect_failed|smtp_error_frame|box's ReasonConnectRefused — a real connection-refused result observed on this attempt
-smtp_frame.verify_timeout|smtp_error_frame|box's ReasonTimeout — the server did not answer inside the operation timeout on this attempt
-smtp_frame.verify_tls_unavailable|smtp_error_frame|box's ReasonStartTLSUnavail — STARTTLS was structurally absent from the EHLO response on this attempt; box aborted before AUTH by construction (Rule 6), so "before sending your password" is a fact about box behavior, not an inference
-smtp_frame.verify_tls_failed|smtp_error_frame|box's "starttls_failed" — a real TLS negotiation failure observed; "often a certificate problem" is hedged (often, not always) and matches the class's known common cause
-smtp_frame.verify_auth_failed|smtp_error_frame|box's ReasonAuthFailed (AUTH rejected by the server) — the observed fact is that the server rejected AUTH; the frame attributes this to username-or-password without naming which, but does not attribute a DIFFERENT cause (app-password/blocked-sign-in/IMAP-disabled) the same 5xx can also mean
-smtp_frame.verify_protocol_error|smtp_error_frame|box's "ehlo_failed" — the server's EHLO reply did not parse as expected SMTP
-smtp_frame.verify_connection_lost|smtp_error_frame|box's "connection_closed"/"write_failed" or an unrecognized reason slug — the connection dropped mid-handshake; used as the catch-all default too, so an unrecognized slug is asserted only as "connection lost," never invented as a more specific cause
-report.smtp_response_passthrough|smtp_error_frame|jobs.last_smtp_response, the box's own scrubbed provider text for the job's most recent real attempt — surfaced verbatim, no interpretive frame added (report handler adds only the field name, not prose)
-report.error_class_passthrough|smtp_error_frame|jobs.last_error_class, the locked byosmtp.error_class enum's own text value for the job's most recent real attempt — a structural classification, not prose
+smtp_frame.verify_connect_failed|smtp_error_frame|worker's ReasonConnectRefused — a real connection-refused result observed on this attempt
+smtp_frame.verify_timeout|smtp_error_frame|worker's ReasonTimeout — the server did not answer inside the operation timeout on this attempt
+smtp_frame.verify_tls_unavailable|smtp_error_frame|worker's ReasonStartTLSUnavail — STARTTLS was structurally absent from the EHLO response on this attempt; worker aborted before AUTH by construction (Rule 6), so "before sending your password" is a fact about worker behavior, not an inference
+smtp_frame.verify_tls_failed|smtp_error_frame|worker's "starttls_failed" — a real TLS negotiation failure observed; "often a certificate problem" is hedged (often, not always) and matches the class's known common cause
+smtp_frame.verify_auth_failed|smtp_error_frame|worker's ReasonAuthFailed (AUTH rejected by the server) — the observed fact is that the server rejected AUTH; the frame attributes this to username-or-password without naming which, but does not attribute a DIFFERENT cause (app-password/blocked-sign-in/IMAP-disabled) the same 5xx can also mean
+smtp_frame.verify_protocol_error|smtp_error_frame|worker's "ehlo_failed" — the server's EHLO reply did not parse as expected SMTP
+smtp_frame.verify_connection_lost|smtp_error_frame|worker's "connection_closed"/"write_failed" or an unrecognized reason slug — the connection dropped mid-handshake; used as the catch-all default too, so an unrecognized slug is asserted only as "connection lost," never invented as a more specific cause
+report.smtp_response_passthrough|smtp_error_frame|jobs.last_smtp_response, the worker's own scrubbed provider text for the job's most recent real attempt — surfaced verbatim, no interpretive frame added (report handler adds only the field name, not prose)
+report.error_class_passthrough|smtp_error_frame|jobs.last_error_class, the locked send_byo.error_class enum's own text value for the job's most recent real attempt — a structural classification, not prose
 account_test.verification_unavailable|smtp_error_frame|s.verifier is nil (no verifier configured) or Verify returned a plumbing error — asserts only that the check could not run, not a credential outcome
 
-# --- Surface 3: notification templates (services/brain/internal/dispatch/notify.go, account_effect.go, campaign_expiry.go) ---
+# --- Surface 3: notification templates (services/control/internal/dispatch/notify.go, account_effect.go, campaign_expiry.go) ---
 # NOTE: as of this audit, NEITHER wired condition renders English prose — both write only
 # structured payload fields (condition, severity, subject_id, and a reason/campaign_id value) to
-# byosmtp.notifications, and no route in platformapi or adminapi reads/renders that table's payload
+# send_byo.notifications, and no route in platformapi or adminapi reads/renders that table's payload
 # into user-facing text. There is therefore no rendered STRING to audit on this surface yet; the two
 # rows below audit the STRUCTURED CLAIM each payload's reason/condition value carries, since that
 # value is what a future render would have to stay honest to.

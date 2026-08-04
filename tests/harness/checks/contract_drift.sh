@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# contract_drift — BLOCKING CI gate. Asserts the Brain SERVES exactly the routes documented
+# contract_drift — BLOCKING CI gate. Asserts the Control SERVES exactly the routes documented
 # in Docs/api-contract.md, and no undocumented ones, for the Phase-0 surface. Additive-only:
-# a documented route the Brain doesn't answer, or a served route that's undocumented, fails.
+# a documented route the Control doesn't answer, or a served route that's undocumented, fails.
 #
-# Health routes are probed on the host; the mTLS boxlink routes are probed IN-NETWORK from
-# the box container (host->localhost is intercepted by host AV TLS-inspection; OD-19).
+# Health routes are probed on the host; the mTLS workerlink routes are probed IN-NETWORK from
+# the worker container (host->localhost is intercepted by host AV TLS-inspection; OD-19).
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 DC="${COMPOSE_INVOCATION:-docker compose -f docker-compose.yml -f tests/harness/compose.test.yml}"
@@ -19,13 +19,13 @@ if ! curl -fsS "http://localhost:${HOST_PORT_BRAIN_HEALTH}/healthz" >/dev/null 2
 code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_BRAIN_HEALTH}/readyz" 2>/dev/null || echo 000)"
 [[ "$code" == "200" || "$code" == "503" ]] || { echo "contract_drift FAIL: GET /readyz not served (got $code)"; fail=1; }
 
-# boxlink mTLS routes (probed in-network). Expect 200 (register w/ token) then 200 (heartbeat).
-BOXTOK="$(grep -E '^DEV_BOX_TOKEN=' .env 2>/dev/null | cut -d= -f2- || true)"
-probe() { $DC exec -T box sh -c "curl -s -o /dev/null -w '%{http_code}' --cert /secrets/mtls/box.crt --key /secrets/mtls/box.key --cacert /secrets/mtls/ca.crt -X POST https://brain:8443$1 -H 'content-type: application/json' -d '$2'" 2>/dev/null || echo 000; }
-rc="$(probe /v1/box/register "{\"box_id\":\"dev-box-1\",\"token\":\"$BOXTOK\"}")"
-[[ "$rc" == "200" ]] || { echo "contract_drift FAIL: POST /v1/box/register not served as documented (got $rc)"; fail=1; }
-rc="$(probe /v1/box/heartbeat '{"box_id":"dev-box-1"}')"
-[[ "$rc" == "200" ]] || { echo "contract_drift FAIL: POST /v1/box/heartbeat not served as documented (got $rc)"; fail=1; }
+# workerlink mTLS routes (probed in-network). Expect 200 (register w/ token) then 200 (heartbeat).
+WORKERTOK="$(grep -E '^DEV_WORKER_TOKEN=' .env 2>/dev/null | cut -d= -f2- || true)"
+probe() { $DC exec -T worker sh -c "curl -s -o /dev/null -w '%{http_code}' --cert /secrets/mtls/worker.crt --key /secrets/mtls/worker.key --cacert /secrets/mtls/ca.crt -X POST https://control:8443$1 -H 'content-type: application/json' -d '$2'" 2>/dev/null || echo 000; }
+rc="$(probe /v1/worker/register "{\"box_id\":\"dev-worker-1\",\"token\":\"$WORKERTOK\"}")"
+[[ "$rc" == "200" ]] || { echo "contract_drift FAIL: POST /v1/worker/register not served as documented (got $rc)"; fail=1; }
+rc="$(probe /v1/worker/heartbeat '{"box_id":"dev-worker-1"}')"
+[[ "$rc" == "200" ]] || { echo "contract_drift FAIL: POST /v1/worker/heartbeat not served as documented (got $rc)"; fail=1; }
 
 # --- Phase 2 operator admin routes (Domain B) ---
 # These are behind the operator-key gate. Probed WITHOUT a key: a real, mounted route answers
@@ -85,21 +85,21 @@ if [[ "$pf_probe" == "401" ]]; then
   # same class of gap as module 2's own off-by-one (§9.4, not back-ported).
   declare -A PLATFORM_ROUTES=(
     ["POST /v1/quote"]=1 ["POST /v1/run"]=1 ["GET /v1/report"]=1 ["GET /v1/describe"]=1
-    ["GET /v1/byosmtp/accounts"]=1 ["POST /v1/byosmtp/accounts"]=1
-    ["GET /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
-    ["PATCH /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
-    ["GET /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/events"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/disable"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/enable"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/pause"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/unpause"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/unquarantine"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/test"]=1
-    ["POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/test-send"]=1
-    ["POST /v1/byosmtp/accounts/bulk"]=1
-    ["DELETE /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000"]=1
-    ["GET /v1/byosmtp/settings"]=1 ["PUT /v1/byosmtp/settings"]=1
-    ["GET /v1/byosmtp/usage"]=1
+    ["GET /v1/send-byo/accounts"]=1 ["POST /v1/send-byo/accounts"]=1
+    ["GET /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["PATCH /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/events"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/disable"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/enable"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/pause"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/unpause"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/unquarantine"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/test"]=1
+    ["POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/test-send"]=1
+    ["POST /v1/send-byo/accounts/bulk"]=1
+    ["DELETE /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
+    ["GET /v1/send-byo/settings"]=1 ["PUT /v1/send-byo/settings"]=1
+    ["GET /v1/send-byo/usage"]=1
   )
   for spec in "${!PLATFORM_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -108,7 +108,7 @@ if [[ "$pf_probe" == "401" ]]; then
   done
   # quarantine/unquarantine are DROPPED from the user surface (§1.2) — this route must NOT exist
   # here at all, so an unauthenticated probe 404s (no handler), never 401 (gated-but-present).
-  und_pf="$(pf POST /v1/byosmtp/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
+  und_pf="$(pf POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
   [[ "$und_pf" == "404" ]] || { echo "contract_drift FAIL: .../quarantine on the platform surface returned $und_pf, want 404 — this route must not exist on Domain A"; fail=1; }
   echo "contract_drift: Phase 3+Phase6+Phase7 platform surface mounted — 20 routes gated (401), quarantine correctly absent (404)."
 else
@@ -120,19 +120,19 @@ und="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_BRAI
 [[ "$und" == "404" ]] || { echo "contract_drift FAIL: undocumented path did not 404 (got $und) — surface wider than the contract"; fail=1; }
 
 # --- The contract doc actually lists these routes (doc <-> served lockstep) ---
-for r in "/healthz" "/readyz" "/v1/box/register" "/v1/box/heartbeat" \
+for r in "/healthz" "/readyz" "/v1/worker/register" "/v1/worker/heartbeat" \
          "/v1/admin/accounts" "/v1/admin/config" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
          "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
          "/v1/admin/users/{id}/suspend" "/v1/admin/users/{id}/unsuspend" \
          "/v1/admin/users/{id}/config" \
          "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
-         "/v1/byosmtp/accounts" "/v1/byosmtp/accounts/{id}" \
-         "/v1/byosmtp/accounts/{id}/events" "/v1/byosmtp/accounts/{id}/disable" \
-         "/v1/byosmtp/accounts/{id}/pause" "/v1/byosmtp/accounts/{id}/unpause" \
-         "/v1/byosmtp/accounts/{id}/unquarantine" \
-         "/v1/byosmtp/accounts/{id}/test" "/v1/byosmtp/accounts/{id}/test-send" \
-         "/v1/byosmtp/accounts/bulk" "/v1/byosmtp/settings" "/v1/byosmtp/usage"; do
+         "/v1/send-byo/accounts" "/v1/send-byo/accounts/{id}" \
+         "/v1/send-byo/accounts/{id}/events" "/v1/send-byo/accounts/{id}/disable" \
+         "/v1/send-byo/accounts/{id}/pause" "/v1/send-byo/accounts/{id}/unpause" \
+         "/v1/send-byo/accounts/{id}/unquarantine" \
+         "/v1/send-byo/accounts/{id}/test" "/v1/send-byo/accounts/{id}/test-send" \
+         "/v1/send-byo/accounts/bulk" "/v1/send-byo/settings" "/v1/send-byo/usage"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 

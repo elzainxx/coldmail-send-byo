@@ -1,5 +1,5 @@
 # config-consumers.txt — the Config Consumption Sweep's permanent ledger (Phase 9.5 CLOSEOUT,
-# 2026-07-27). One line per seeded byosmtp.config key (must match config-manifest.txt exactly, in
+# 2026-07-27). One line per seeded send_byo.config key (must match config-manifest.txt exactly, in
 # any order): a real dial cannot pass config_drift alone — it must ALSO have a genuine consumer
 # cited here, or be explicitly marked RESERVED (never both silent AND passing).
 #
@@ -22,7 +22,7 @@
 # that motivated the field, retry_count_4xx and variation_zero_width_rate_pct, were both found
 # RESERVED with no expiry by accident during a Phase 9.5 review sweep — exactly the failure mode it
 # exists to close. Both have since been DISCHARGED: the field fired for real at Phase 8's
-# current-phase.txt bump and both keys were DROPPED at byosmtp_0049 (M3-P8-OD-8, ruled 2026-08-04),
+# current-phase.txt bump and both keys were DROPPED at send_byo_0049 (M3-P8-OD-8, ruled 2026-08-04),
 # so the mechanism is now proven end to end, from accidental marker to actual disposition.
 #
 # The third field may instead name a future-work item id (FW-M3-N). Phase 8 is the last phase, so a

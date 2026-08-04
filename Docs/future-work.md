@@ -3,7 +3,7 @@
 **Inherited from module 2 at the fork (`module3-fork-point`,
 `21b65e65eba8f2cc16a84408bac6e018511ec46b`), verbatim below through §8.** This is module 2's own
 register, carried across by the clone per `Docs/history/phase-0-fork-and-baseline.md` §1.2 — its entries
-describe module 2's build, not module 3's, and are left as-written (identifiers renamed to `byosmtp`
+describe module 2's build, not module 3's, and are left as-written (identifiers renamed to `send_byo`
 by Gate B; no content rewritten). **§9 is module 3's own entry**, appended here rather than kept in a
 second file, because two deferred-work registers is exactly the staleness CLAUDE.md Rule 4 exists to
 prevent — module 3's own planning doc said as much before the fork happened and is honored here.
@@ -19,8 +19,8 @@ name the file and line.
 
 §4a is worth reading first if you are picking up security work: those nine items came from checking
 `security-posture.md`'s claims line-by-line against the code, and each one has a **residual risk that
-is live today** and now stated at the linked section. Two of them (the box's unzeroed shutdown path,
-and revocation not disconnecting an already-connected box) change what an operator should do during an
+is live today** and now stated at the linked section. Two of them (the worker's unzeroed shutdown path,
+and revocation not disconnecting an already-connected worker) change what an operator should do during an
 incident, which is why they are also written into the runbook and DR procedures rather than left here.
 
 A note on how to read this: the *reason* column matters more than the item. Several of these were
@@ -42,7 +42,7 @@ accidental redesign. Anything here that resolves an ambiguity needs an Open Deci
 Until the first item exists, **provider-side monitoring is the only deliverability feedback that
 exists.** [`operator-runbook.md`](./operator-runbook.md) says so in its deliverability section, and
 [`smoke-test-real-provider.md`](./smoke-test-real-provider.md) is built around the consequence: your
-eyes on a real inbox are the only signal.
+eyes on a real inworker are the only signal.
 
 ---
 
@@ -50,9 +50,9 @@ eyes on a real inbox are the only signal.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Multi-shared-pool campaign binding** | Binding a campaign to a *specific* shared pool rather than to the one `default_shared_pool_id` names. | V1 has exactly **one effective shared pool**. The data model already supports many (`byosmtp.pools` with `kind`), and the routing code resolves a pool per campaign — what is missing is the binding surface that lets a campaign choose. Additive when built: a new column plus a routing branch, no migration to existing behavior. |
+| **Multi-shared-pool campaign binding** | Binding a campaign to a *specific* shared pool rather than to the one `default_shared_pool_id` names. | V1 has exactly **one effective shared pool**. The data model already supports many (`send_byo.pools` with `kind`), and the routing code resolves a pool per campaign — what is missing is the binding surface that lets a campaign choose. Additive when built: a new column plus a routing branch, no migration to existing behavior. |
 | **Dedicated → dedicated fallback** | Letting a dedicated pool fall back to *another dedicated* pool instead of only to the shared pool. | The fallback ladder in V1 is dedicated → shared. Dedicated-to-dedicated needs a policy answer nobody has given: whose accounts may carry whose mail, and what the billing consequence is. That is a product/pricing decision, which is why it is not a code task. |
-| **Brain horizontal scaling** | More than one active dispatching Brain. | **Locked out on purpose, not deferred lightly.** The singleton (a session-level Postgres advisory lock) is a CLAUDE.md Rule 7 invariant: "Never add a second dispatch path or distributed dispatch." Exceeding one Brain's throughput is a redesign requiring an ADR and a ruling, not a scaling knob. See [`capacity-planning.md`](./capacity-planning.md) — at realistic V1 volumes account daily limits bind long before the Brain does. |
+| **Control horizontal scaling** | More than one active dispatching Control. | **Locked out on purpose, not deferred lightly.** The singleton (a session-level Postgres advisory lock) is a CLAUDE.md Rule 7 invariant: "Never add a second dispatch path or distributed dispatch." Exceeding one Control's throughput is a redesign requiring an ADR and a ruling, not a scaling knob. See [`capacity-planning.md`](./capacity-planning.md) — at realistic V1 volumes account daily limits bind long before the Control does. |
 | **Sequences / multi-step campaigns** | Drip sequences, follow-ups conditioned on a previous send. | A campaign-orchestration feature that belongs above this module. This module sends what it is handed; sequencing decides *what* to hand it. |
 | **Per-pool variation scope** | Scoping content-variation toggles per pool (or per account) rather than globally. | Phase 8's variation dials are process-global config keys. Per-pool scope means a resolution order (pool overrides global overrides default) and a place to store it — a design decision, deliberately not invented mid-phase. |
 
@@ -62,9 +62,9 @@ eyes on a real inbox are the only signal.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **`/v1/admin/boxes` CRUD** | Registering, listing, and decommissioning boxes over the admin API. | There is **no box route on the admin surface at all** today (verified: the served route set is accounts, pools, config, health). A box is provisioned by seeding a `byosmtp.boxes` row with a bcrypt token hash — `tools/provision-box` mints the pair — and decommissioned by clearing `token_hash`, which refuses it on next connect regardless of a still-valid cert. That works and is documented in [`install-and-deploy.md`](./install-and-deploy.md), but it is a DB operation where every other operator task is an API call. Note the security shape any implementation must preserve: the API may only ever return the token **once, at mint time** (the hash is what is stored), exactly like `smtp_secret`'s write-only posture. |
-| **Server-side bulk credential re-encryption** | Rotating the master key without re-entering every SMTP password by hand. | This is *why* master-key rotation is manual re-entry today, and it is a consequence of a load-bearing security property rather than an oversight: `adminapi` holds an **Encrypt-only** primitive with no `Decrypt` method, and the sole `Decrypt` capability is wired only into the send path (CLAUDE.md Rule 6). A bulk re-encrypt needs a Brain-side path that can decrypt-under-old and encrypt-under-new — i.e. a **second** decrypt call site, in the admin surface. That is exactly what Rule 6 forbids adding casually, so building it requires a ruling on where such a path may live and how it is audited. Procedure as it stands: [`disaster-recovery.md`](./disaster-recovery.md) §3. |
-| **Multi-key credential keyring** | A Brain that resolves more than one `credential_key_id` at a time. | A Brain resolves exactly one label. That constraint is what forces master-key rotation to be freeze-first-then-cut-over (there is no window where rows under two labels are both sendable). A keyring would allow a rolling rotation with no send freeze, and would pair naturally with the item above. |
+| **`/v1/admin/workers` CRUD** | Registering, listing, and decommissioning workers over the admin API. | There is **no worker route on the admin surface at all** today (verified: the served route set is accounts, pools, config, health). A worker is provisioned by seeding a `send_byo.boxes` row with a bcrypt token hash — `tools/provision-worker` mints the pair — and decommissioned by clearing `token_hash`, which refuses it on next connect regardless of a still-valid cert. That works and is documented in [`install-and-deploy.md`](./install-and-deploy.md), but it is a DB operation where every other operator task is an API call. Note the security shape any implementation must preserve: the API may only ever return the token **once, at mint time** (the hash is what is stored), exactly like `smtp_secret`'s write-only posture. |
+| **Server-side bulk credential re-encryption** | Rotating the master key without re-entering every SMTP password by hand. | This is *why* master-key rotation is manual re-entry today, and it is a consequence of a load-bearing security property rather than an oversight: `adminapi` holds an **Encrypt-only** primitive with no `Decrypt` method, and the sole `Decrypt` capability is wired only into the send path (CLAUDE.md Rule 6). A bulk re-encrypt needs a Control-side path that can decrypt-under-old and encrypt-under-new — i.e. a **second** decrypt call site, in the admin surface. That is exactly what Rule 6 forbids adding casually, so building it requires a ruling on where such a path may live and how it is audited. Procedure as it stands: [`disaster-recovery.md`](./disaster-recovery.md) §3. |
+| **Multi-key credential keyring** | A Control that resolves more than one `credential_key_id` at a time. | A Control resolves exactly one label. That constraint is what forces master-key rotation to be freeze-first-then-cut-over (there is no window where rows under two labels are both sendable). A keyring would allow a rolling rotation with no send freeze, and would pair naturally with the item above. |
 | **Admin RBAC / multiple operator roles** | Distinct operator identities with distinct permissions, plus an audit trail keyed to a human. | V1 has **one omnipotent operator key** (Domain B). Any holder can do anything on the admin surface, and `account_events` records the request id, not *who*. Fine for a small trusted team; a real limitation stated in [`security-posture.md`](./security-posture.md) §3.6. |
 | **Rate limiting / lockout on the API surfaces** | Throttling or locking out repeated failed auth attempts. | The external code `rate_limited` (429) exists in the vocabulary but nothing emits it — reserved deliberately so adding it later is additive. Both surfaces are meant to sit on a private network behind a proxy; the proxy is the intended enforcement point today. [`security-posture.md`](./security-posture.md) §3.7. |
 | **A metrics endpoint** | Prometheus exposition or an equivalent time series. | `GET /v1/admin/health` is a JSON snapshot, not a series. Several fields are already windowed and graph cleanly if you poll and store them — [`monitoring.md`](./monitoring.md) §5 says how, and why this was left out. |
@@ -77,8 +77,8 @@ eyes on a real inbox are the only signal.
 | Item | What it is | Why deferred |
 |---|---|---|
 | **`send_logs` at-rest encryption** | Encrypting the rendered body, subject, headers, and recipient address that `send_logs` stores in plaintext. | The **single privacy control** on that table today is retention: content is dropped after `debug_log_retention_days`. Everything else about the table is hardened (write-once via a reject trigger plus `REVOKE UPDATE`; `DELETE` retained only for the sweep) — the content is simply not encrypted. Stated plainly in [`security-posture.md`](./security-posture.md) §3.2, and it is the reason retention is a **privacy** dial and not only a storage one. Encrypting it needs a key-management answer for a *second* class of data, and a decision about whether debugging can survive it. |
-| **Per-tenant data isolation beyond RLS** | Anything stronger than `FORCE ROW LEVEL SECURITY` on `byosmtp.accounts`. | RLS with a non-login, non-superuser schema owner is the V1 boundary and it genuinely enforces. Stronger isolation (separate schemas or databases per tenant) is a deployment-topology decision. |
-| **A one-call tenant-erasure path** | Making `DELETE FROM public.users` (or an admin endpoint) erase a tenant's byosmtp-module footprint in one operation. | Erasure works today but is a **three-step sequence in this order: accounts → pools → user**. A one-statement user delete is refused by `pools_user_fk`, which declares no referential action — verified by query on real Postgres against a tenant with job history, not assumed. Each step now succeeds (the account step was wedged until `sender_0024`; see ADR-0012). Making the user delete cascade `byosmtp.pools` is a **tenant data-lifecycle ruling**, not a bug fix: it decides whether deleting a platform user may silently destroy byosmtp-module configuration and audit history. Note the audit asymmetry it would inherit — deleting an **account or box** keeps the `job_events` rows with the FK nulled (`SET NULL` + `sender_0024`'s carve-out), whereas deleting the **user** removes them outright (`job_events_user_fk` is `ON DELETE CASCADE`). Both are intended, but a one-call path must document which one the caller gets. |
+| **Per-tenant data isolation beyond RLS** | Anything stronger than `FORCE ROW LEVEL SECURITY` on `send_byo.accounts`. | RLS with a non-login, non-superuser schema owner is the V1 boundary and it genuinely enforces. Stronger isolation (separate schemas or databases per tenant) is a deployment-topology decision. |
+| **A one-call tenant-erasure path** | Making `DELETE FROM public.users` (or an admin endpoint) erase a tenant's coldmail-send-byo footprint in one operation. | Erasure works today but is a **three-step sequence in this order: accounts → pools → user**. A one-statement user delete is refused by `pools_user_fk`, which declares no referential action — verified by query on real Postgres against a tenant with job history, not assumed. Each step now succeeds (the account step was wedged until `send_byo_0024`; see ADR-0012). Making the user delete cascade `send_byo.pools` is a **tenant data-lifecycle ruling**, not a bug fix: it decides whether deleting a platform user may silently destroy coldmail-send-byo configuration and audit history. Note the audit asymmetry it would inherit — deleting an **account or worker** keeps the `job_events` rows with the FK nulled (`SET NULL` + `send_byo_0024`'s carve-out), whereas deleting the **user** removes them outright (`job_events_user_fk` is `ON DELETE CASCADE`). Both are intended, but a one-call path must document which one the caller gets. |
 
 ---
 
@@ -91,15 +91,15 @@ is registered here.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Zero the box's in-flight credential on shutdown and on an uncaught exception** | The box's SIGTERM/SIGINT handler stops the stream and exits without zeroing the credential the current send holds, and no `uncaughtException`/`unhandledRejection` handler is registered at all. The three send-path exits (accept, SMTP error, thrown exception) *are* covered by a `finally` and are tested. | A memory image captured at that instant — core dump, container checkpoint, `/proc/<pid>/mem` — may hold one in-flight plaintext. The fix is small (give `stop()` a reference to the live credential; add the two process handlers) but it changes the shutdown path of the service that holds credentials, and it needs its own behavioral test per Rule 3. Consequence documented at [`security-posture.md`](./security-posture.md) §3.12, which is what stops an operator believing `systemctl stop` is a scrub. |
-| **Revoke-on-live-stream: terminate or periodically re-authorize a connected box** | The token/status check runs **only** in the register handshake. Job pushes are served from an in-memory box map with no re-read of `byosmtp.boxes`, and the heartbeat path returns a `stale` box to `active` without re-checking the token. | So clearing `token_hash` refuses the next connect but does not disconnect a box that is already streaming — an attacker who keeps the (outbound, box-initiated) stream open keeps receiving one plaintext credential per job. Closing it means either a re-authorization read on the push path (a DB read per push, on the hottest path in the system) or a Brain-side stream-kill triggered by a config/DB signal — both real design decisions, not polish. The interim answer is procedural and now documented: isolate the host **first**, revoke second ([`disaster-recovery.md`](./disaster-recovery.md) §4a, [`security-posture.md`](./security-posture.md) §3.1). |
+| **Zero the worker's in-flight credential on shutdown and on an uncaught exception** | The worker's SIGTERM/SIGINT handler stops the stream and exits without zeroing the credential the current send holds, and no `uncaughtException`/`unhandledRejection` handler is registered at all. The three send-path exits (accept, SMTP error, thrown exception) *are* covered by a `finally` and are tested. | A memory image captured at that instant — core dump, container checkpoint, `/proc/<pid>/mem` — may hold one in-flight plaintext. The fix is small (give `stop()` a reference to the live credential; add the two process handlers) but it changes the shutdown path of the service that holds credentials, and it needs its own behavioral test per Rule 3. Consequence documented at [`security-posture.md`](./security-posture.md) §3.12, which is what stops an operator believing `systemctl stop` is a scrub. |
+| **Revoke-on-live-stream: terminate or periodically re-authorize a connected worker** | The token/status check runs **only** in the register handshake. Job pushes are served from an in-memory worker map with no re-read of `send_byo.boxes`, and the heartbeat path returns a `stale` worker to `active` without re-checking the token. | So clearing `token_hash` refuses the next connect but does not disconnect a worker that is already streaming — an attacker who keeps the (outbound, worker-initiated) stream open keeps receiving one plaintext credential per job. Closing it means either a re-authorization read on the push path (a DB read per push, on the hottest path in the system) or a Control-side stream-kill triggered by a config/DB signal — both real design decisions, not polish. The interim answer is procedural and now documented: isolate the host **first**, revoke second ([`disaster-recovery.md`](./disaster-recovery.md) §4a, [`security-posture.md`](./security-posture.md) §3.1). |
 | **Field-level before/after diffs in `account_events`** | An `updated` audit row today carries identical before/after flag snapshots (`paused`, `pause_reason`, `quarantined`, `disabled`) and no list of what actually changed. | A `PATCH` that rewrote `smtp_host` is therefore indistinguishable in the audit trail from a no-op one, which is what makes the item below undetectable after the fact. `account_events` is append-only with enumerated grants, so widening what it stores is an additive schema change plus a write-path change — doable, but behavior. [`security-posture.md`](./security-posture.md) §3.6. |
 | **Close the `smtp_host` credential-redirect path** | Require `smtp_secret` re-entry when `smtp_host` changes, and/or an allowlist of permitted SMTP hosts. | A Domain B key holder can repoint an existing account at a host they control **without** re-entering the secret, and the next dispatch delivers the decrypted credential to that host. No DB access, no key access, no Domain A token needed. The Encrypt-only admin surface bounds the API *response*, not this. Either fix changes the semantics of a documented `PATCH` (omit-means-unchanged is deliberate), so it is a contract decision. [`security-posture.md`](./security-posture.md) §3.11. |
-| **Reject private-range `smtp_host` at write time, or gate the self-signed affordance behind an explicit dev flag** | The box disables TLS certificate verification for loopback/RFC-1918/link-local SMTP hosts — a test affordance so the harness can reach the local sink — while the Brain-side validator accepts any bare IP literal. | The two together mean a real account can be pointed at a private address and will AUTH over an unverified connection. Neither half is wrong on its own; the gap is that nothing enforces the boundary the box-side comment assumes. Fixing it either rejects a currently-valid value (contract change) or adds a new dev-only flag (config surface). Interim: a deploy-time check in [`security-posture.md`](./security-posture.md) §5, and the residual risk at §3.13. |
-| **Restrict the alert webhook's destination** | Reject loopback, RFC-1918, and link-local (`169.254.0.0/16`, i.e. cloud metadata) destinations for `alert_webhook_url`, or take an allowlist. | Validation today is a scheme-prefix check only, so the Brain will POST from inside the trust boundary to any reachable address — a blind SSRF available to a Domain B holder. Bounded (only an already-privileged principal can set it; the response is never returned or logged) but real. A blocklist has to be a config decision rather than a hardcoded constant, per Rule 1. [`security-posture.md`](./security-posture.md) §3.14. |
-| **An append-only `config_events` audit table** | A durable, tamper-resistant row per config write, with the key, the before value, the after value, and the request id. | Config writes are recorded **only** as a Brain process-log line today — no DB row, no before/after. So "when was `debug_log_retention_days` widened?" (§3.2 makes that a privacy question) is answerable only from shipped logs, for as long as their retention holds. New table + new write path on every `PUT /v1/admin/config`. [`security-posture.md`](./security-posture.md) §3.6. |
-| **Per-send attestation** | Something that lets the Brain distinguish a truthful box report from a fabricated one. | The outcome guards check the reporting box against `assigned_box_id` and the `attempt_token` against the current attempt, which stops replay across attempts and boxes — but a compromised box can still report any outcome for the job it legitimately holds: `accepted` for mail never sent, or fabricated `auth_failure`s that quarantine healthy accounts. §3.9's absent delivery feedback means neither is detectable here. This is a protocol-level design problem (what could a box sign that the Brain cannot already forge on its behalf?), not an implementation gap. [`security-posture.md`](./security-posture.md) §3.15. |
-| **A credential-leak scan that runs against a production log stream** | An operator-runnable check that a real deployment's shipped logs contain no credential. | The blocking `no_secret_leak` CI gate reads `.env` and compares the **dev box token and its hash** against *dev compose* logs; the SMTP-credential canary scan lives in the send-path harness and needs the whole dev stack. Against a production deployment the gate either aborts on the missing `.env` or prints `OK` having compared nothing — a vacuous green, which is worse than no check. Interim: §5's deploy-time list now tells the operator to write the grep themselves and says plainly that the shipped script does not cover them. |
+| **Reject private-range `smtp_host` at write time, or gate the self-signed affordance behind an explicit dev flag** | The worker disables TLS certificate verification for loopback/RFC-1918/link-local SMTP hosts — a test affordance so the harness can reach the local sink — while the Control-side validator accepts any bare IP literal. | The two together mean a real account can be pointed at a private address and will AUTH over an unverified connection. Neither half is wrong on its own; the gap is that nothing enforces the boundary the worker-side comment assumes. Fixing it either rejects a currently-valid value (contract change) or adds a new dev-only flag (config surface). Interim: a deploy-time check in [`security-posture.md`](./security-posture.md) §5, and the residual risk at §3.13. |
+| **Restrict the alert webhook's destination** | Reject loopback, RFC-1918, and link-local (`169.254.0.0/16`, i.e. cloud metadata) destinations for `alert_webhook_url`, or take an allowlist. | Validation today is a scheme-prefix check only, so the Control will POST from inside the trust boundary to any reachable address — a blind SSRF available to a Domain B holder. Bounded (only an already-privileged principal can set it; the response is never returned or logged) but real. A blocklist has to be a config decision rather than a hardcoded constant, per Rule 1. [`security-posture.md`](./security-posture.md) §3.14. |
+| **An append-only `config_events` audit table** | A durable, tamper-resistant row per config write, with the key, the before value, the after value, and the request id. | Config writes are recorded **only** as a Control process-log line today — no DB row, no before/after. So "when was `debug_log_retention_days` widened?" (§3.2 makes that a privacy question) is answerable only from shipped logs, for as long as their retention holds. New table + new write path on every `PUT /v1/admin/config`. [`security-posture.md`](./security-posture.md) §3.6. |
+| **Per-send attestation** | Something that lets the Control distinguish a truthful worker report from a fabricated one. | The outcome guards check the reporting worker against `assigned_box_id` and the `attempt_token` against the current attempt, which stops replay across attempts and workers — but a compromised worker can still report any outcome for the job it legitimately holds: `accepted` for mail never sent, or fabricated `auth_failure`s that quarantine healthy accounts. §3.9's absent delivery feedback means neither is detectable here. This is a protocol-level design problem (what could a worker sign that the Control cannot already forge on its behalf?), not an implementation gap. [`security-posture.md`](./security-posture.md) §3.15. |
+| **A credential-leak scan that runs against a production log stream** | An operator-runnable check that a real deployment's shipped logs contain no credential. | The blocking `no_secret_leak` CI gate reads `.env` and compares the **dev worker token and its hash** against *dev compose* logs; the SMTP-credential canary scan lives in the send-path harness and needs the whole dev stack. Against a production deployment the gate either aborts on the missing `.env` or prints `OK` having compared nothing — a vacuous green, which is worse than no check. Interim: §5's deploy-time list now tells the operator to write the grep themselves and says plainly that the shipped script does not cover them. |
 
 ---
 
@@ -107,15 +107,15 @@ is registered here.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Go toolchain upgrade to clear two module vulns** | `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop in `golang.org/x/text`, fixed in v0.39.0). **Both are real and both have live call paths** — this is not a toolchain-only stdlib advisory. | **The highest-priority item on this page.** The remediation was attempted during Phase 10 and **proven to break the build**, so it was reverted rather than half-applied: both bumps rewrite `go 1.23` → `go 1.25.0` in `services/brain/go.mod`, which breaks the pinned `golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual failing `docker build`). Clearing them therefore means upgrading the builder image and re-verifying the full harness on the new toolchain — build infrastructure, not polish, and not something to slip into a docs phase. Do this before a pilot carries real data. |
-| **A dependency/vulnerability scan in CI** | `govulncheck` (and an equivalent for the box) as a blocking or reporting gate. | Scanning was done by hand in Phase 10. The five existing CI gates all catch *drift between code and docs*; a vuln gate is a different kind of check whose failure mode is "a new advisory published upstream breaks your build with no code change," which needs a policy decision (blocking vs reporting) before it is added. Note the box needs no scanner: it ships `dependencies: {}` — `npm audit` has nothing to audit, which is the no-DB/no-KMS boundary showing up as an absence. |
+| **Go toolchain upgrade to clear two module vulns** | `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop in `golang.org/x/text`, fixed in v0.39.0). **Both are real and both have live call paths** — this is not a toolchain-only stdlib advisory. | **The highest-priority item on this page.** The remediation was attempted during Phase 10 and **proven to break the build**, so it was reverted rather than half-applied: both bumps rewrite `go 1.23` → `go 1.25.0` in `services/control/go.mod`, which breaks the pinned `golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual failing `docker build`). Clearing them therefore means upgrading the builder image and re-verifying the full harness on the new toolchain — build infrastructure, not polish, and not something to slip into a docs phase. Do this before a pilot carries real data. |
+| **A dependency/vulnerability scan in CI** | `govulncheck` (and an equivalent for the worker) as a blocking or reporting gate. | Scanning was done by hand in Phase 10. The five existing CI gates all catch *drift between code and docs*; a vuln gate is a different kind of check whose failure mode is "a new advisory published upstream breaks your build with no code change," which needs a policy decision (blocking vs reporting) before it is added. Note the worker needs no scanner: it ships `dependencies: {}` — `npm audit` has nothing to audit, which is the no-DB/no-KMS boundary showing up as an absence. |
 
 ---
 
 ## 6. Known defects, flagged not fixed
 
 Found during Phase 10's verification passes, plus one gap found later while walking
-[`byosmtp-module-local-test-guide.md`](./byosmtp-module-local-test-guide.md). Each is real and
+[`coldmail-send-byo-local-test-guide.md`](./coldmail-send-byo-local-test-guide.md). Each is real and
 reproduced; each fix is a **behavior change**, which is why none was made in a phase whose contract is
 that behavior does not change. Listed most-likely-to-be-hit first.
 
@@ -134,8 +134,8 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 > hand-ticked.
 >
 > **Scope correction (2026-07-29, Stage 10 steps 3–4).** The gap is narrower than "no live failure
-> injection." Pointing an account's `smtp_port` at a dead port makes the box report `connect_refused`
-> → class `timeout` — a real box-reported penalizing failure that exercises the score model,
+> injection." Pointing an account's `smtp_port` at a dead port makes the worker report `connect_refused`
+> → class `timeout` — a real worker-reported penalizing failure that exercises the score model,
 > `consecutive_failures`, the backoff ladder, and the whole auto-quarantine shadow/enforce ladder on
 > the live stack, with no hand-written rows. Stage 10 steps 3–4 are closed that way. What a dead port
 > cannot do is select a *class*: it is always `timeout`. So the missing capability is specifically
@@ -144,10 +144,10 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 
 | Defect | Evidence | Why not fixed here |
 |---|---|---|
-| **`POST /v1/run` returns HTTP 500 when `public.job_items.campaign_id` is NULL.** External code `internal_error`, internal reason `read_job_item_failed`. | `services/brain/internal/platformapi/store.go:69` scans a **nullable** platform column into a non-nullable Go `string`. Reproduced live: inserted a `job_items` row with `campaign_id = NULL`, called `/v1/run`, got `500`. | A new operator's very first `/v1/run` can hit this, so it is worth fixing early — but the fix changes a response code (most likely to `validation_failed`/`400`, since a job item with no campaign is a caller-side problem, not a server fault). Choosing *which* code is a contract decision on an additive-only surface. |
-| **A box exits permanently if `dev.sh up` runs ahead of `dev.sh seed`.** | The box needs its `byosmtp.boxes` row to register; `restart: "no"` in compose means a rejected box stays dead. **Reproduced during Phase 10's own gate run** — the box was found `exited 1` with `register rejected: unauthenticated`, and the fix was a manual `docker compose up -d --no-deps box` after seeding. | Affects local dev only (a real install seeds the row before starting a box, per the install guide). The fix is a compose/ordering change — behavior. |
-| **A register rejection short-circuits the documented ~30-attempt retry budget.** | `services/box/src/stream.js` calls `this.stop()` on `accepted:false`, which sets `stopped = true`, so `connectOnce` returns immediately at the top of its next iteration. **Measured:** exit after attempt 1, ~1s, not ~30 attempts over ~30s. | The budget is real but covers **dial/TLS failures only**; a rejection is treated as terminal on purpose (an unauthorized box hammering the Brain is worse than a box that exits for its supervisor to restart). What is wrong is the *documentation* of the budget's scope, plus the interaction with the item above. Changing the retry behavior is behavior; the doc side is being corrected. |
-| **Three inert variables in `.env.example`: `BYOSMTP_ALERT_WEBHOOK_URL`, `PLATFORM_SERVICE_TOKEN`, `PLATFORM_ADMIN_KEY_HASH`.** | No code reads any of the three. The webhook destination comes only from the `alert_webhook_url` config row; the live auth variables are `PLATFORM_TOKEN_HASHES` and `ADMIN_API_KEY_HASHES`, both comma-separated **bcrypt** lists — not a plaintext token, not a SHA-256. | Setting the env var and expecting alerts is a silent no-op — a config-not-code violation in an *example file*, not in the running system. Setting any of them expecting an effect is a silent no-op, and for the two auth ones the surface fails **closed** — a Domain A call returns `401` with no hint that the variable you set is not the one being read. Removing the lines is trivial but touches the example every install copies; all three are now labelled inert in `.env.example` itself, and noted in [`monitoring.md`](./monitoring.md) §3 and [`install-and-deploy.md`](./install-and-deploy.md) Step 6, so nobody is misled meanwhile. |
+| **`POST /v1/run` returns HTTP 500 when `public.job_items.campaign_id` is NULL.** External code `internal_error`, internal reason `read_job_item_failed`. | `services/control/internal/platformapi/store.go:69` scans a **nullable** platform column into a non-nullable Go `string`. Reproduced live: inserted a `job_items` row with `campaign_id = NULL`, called `/v1/run`, got `500`. | A new operator's very first `/v1/run` can hit this, so it is worth fixing early — but the fix changes a response code (most likely to `validation_failed`/`400`, since a job item with no campaign is a caller-side problem, not a server fault). Choosing *which* code is a contract decision on an additive-only surface. |
+| **A worker exits permanently if `dev.sh up` runs ahead of `dev.sh seed`.** | The worker needs its `send_byo.boxes` row to register; `restart: "no"` in compose means a rejected worker stays dead. **Reproduced during Phase 10's own gate run** — the worker was found `exited 1` with `register rejected: unauthenticated`, and the fix was a manual `docker compose up -d --no-deps worker` after seeding. | Affects local dev only (a real install seeds the row before starting a worker, per the install guide). The fix is a compose/ordering change — behavior. |
+| **A register rejection short-circuits the documented ~30-attempt retry budget.** | `services/worker/src/stream.js` calls `this.stop()` on `accepted:false`, which sets `stopped = true`, so `connectOnce` returns immediately at the top of its next iteration. **Measured:** exit after attempt 1, ~1s, not ~30 attempts over ~30s. | The budget is real but covers **dial/TLS failures only**; a rejection is treated as terminal on purpose (an unauthorized worker hammering the Control is worse than a worker that exits for its supervisor to restart). What is wrong is the *documentation* of the budget's scope, plus the interaction with the item above. Changing the retry behavior is behavior; the doc side is being corrected. |
+| **Three inert variables in `.env.example`: `SEND_BYO_ALERT_WEBHOOK_URL`, `PLATFORM_SERVICE_TOKEN`, `PLATFORM_ADMIN_KEY_HASH`.** | No code reads any of the three. The webhook destination comes only from the `alert_webhook_url` config row; the live auth variables are `PLATFORM_TOKEN_HASHES` and `ADMIN_API_KEY_HASHES`, both comma-separated **bcrypt** lists — not a plaintext token, not a SHA-256. | Setting the env var and expecting alerts is a silent no-op — a config-not-code violation in an *example file*, not in the running system. Setting any of them expecting an effect is a silent no-op, and for the two auth ones the surface fails **closed** — a Domain A call returns `401` with no hint that the variable you set is not the one being read. Removing the lines is trivial but touches the example every install copies; all three are now labelled inert in `.env.example` itself, and noted in [`monitoring.md`](./monitoring.md) §3 and [`install-and-deploy.md`](./install-and-deploy.md) Step 6, so nobody is misled meanwhile. |
 
 ---
 
@@ -227,7 +227,7 @@ survives, and the acknowledgment path stays for every address that has not been 
 ### FW-M3-2 — Disposition of four inherited §2 pool-capability entries, retired/re-scoped by the G2 drop
 
 **Registered:** 2026-07-31, per `Docs/history/phase-1-schema-delta.md` §2.1's own disposition table, applied
-at G2 (the phase that actually drops `byosmtp.pools`). Module 2's §2 table above is **not edited** —
+at G2 (the phase that actually drops `send_byo.pools`). Module 2's §2 table above is **not edited** —
 it describes module 2's own build and stays as-written, per this document's own top-of-file policy.
 This entry is the module-3-side record of what happened to four of its rows once pools left module
 3's tree.
@@ -236,7 +236,7 @@ This entry is the module-3-side record of what happened to four of its rows once
 |---|---|
 | **Multi-shared-pool campaign binding** (`:53`) | **Retired.** Its entire premise — "V1 has exactly one effective shared pool… what is missing is the binding surface" — dies with pools. Nothing to build; there is no pool to bind a campaign to. |
 | **Dedicated → dedicated fallback** (`:54`) | **Retired.** No fallback ladder exists to extend — `dispatch/pool.go`'s dedicated→shared chain-walk (the whole concept) was deleted at G1. |
-| **Per-pool variation scope** (`:57`) | **Re-scoped to per-user variation scope.** `byosmtp.user_settings` (Phase 1 §4.1, landing at G3) now gives per-user scoping a place to live — a resolution order (user overrides global overrides default) is the open design question this item always named, unchanged by the re-scope. |
+| **Per-pool variation scope** (`:57`) | **Re-scoped to per-user variation scope.** `send_byo.user_settings` (Phase 1 §4.1, landing at G3) now gives per-user scoping a place to live — a resolution order (user overrides global overrides default) is the open design question this item always named, unchanged by the re-scope. |
 | **A one-call tenant-erasure path** (`:73` in §2's own numbering — actually the ADR-0012 audit-asymmetry entry, not literally under §2, but disposed of by the same drop) | **NOT resolved as a side effect**, contrary to what dropping `pools` alone would have done. **M3-P1-OD-12 ruled the guard restored deliberately**: `0027` (this phase's own migration) changes `accounts_user_fk` from the inherited `CASCADE` to `RESTRICT`, so `DELETE FROM public.users` while any account remains is still refused — by design, not by an accidentally-load-bearing pool FK. The three-step accounts→pools→user erasure sequence does not collapse to one step. The audit-asymmetry warning (deleting an **account** keeps `job_events` rows FK-nulled; deleting the **user** would remove them outright, `job_events_user_fk` being `CASCADE`) stays live precisely because the RESTRICT keeps that path refused. |
 
 ### FW-M3-3 — `pacer.slots` and `dispatch.rrCursor` are unbounded per-user in-memory maps
@@ -264,13 +264,13 @@ measured in KB per thousand users, not a correctness bug or an operational emerg
 
 **What eviction would need.** A user who is deleted (Phase 3's soft-delete + purge) or who simply
 stops being active is the natural eviction trigger — either a periodic sweep keyed off
-`byosmtp.accounts`/`public.users` liveness, or a bounded LRU on both maps sized to a config-not-code
+`send_byo.accounts`/`public.users` liveness, or a bounded LRU on both maps sized to a config-not-code
 dial. Either design needs its own decision about acceptable staleness (an evicted-then-returning
 user's cooldown/cursor state resets to empty, which is observably different from "never evicted" —
 whether that's acceptable is a product question, not an engineering one).
 
 **Trigger to revisit.** Sustained production tenant counts high enough that the two maps' aggregate
-memory becomes measurable against the Brain's own footprint, or a tenant-churn pattern (many
+memory becomes measurable against the Control's own footprint, or a tenant-churn pattern (many
 short-lived users) that makes the "slow" in "slow leak" no longer true.
 
 ### FW-M3-9 — Two RLS policy names still carry the `sender_` identity literal
@@ -279,24 +279,24 @@ short-lived users) that makes the "slow" in "slow leak" no longer true.
 
 **What it is.** Gate B's rename (`f7be832`) renamed the `sender` schema qualifier and ~1,105
 non-`Docs/` occurrences of the literal, but two RLS **policy names** were missed: `sender_module_full_access`
-(`db/migrations/byosmtp_0012_grants_and_rls.up.sql`, reinstated verbatim by
-`byosmtp_0028_drop_pools.down.sql`'s rollback path for `byosmtp.pools`) and
-`account_events_sender_module_rw` (`byosmtp_0014_create_account_events.up.sql`). Both are live policy
+(`db/migrations/send_byo_0012_grants_and_rls.up.sql`, reinstated verbatim by
+`send_byo_0028_drop_pools.down.sql`'s rollback path for `send_byo.pools`) and
+`account_events_sender_module_rw` (`send_byo_0014_create_account_events.up.sql`). Both are live policy
 identifiers in the current schema, not comments — `f7be832`'s own "do-not-rename list verified
 untouched, zero references to schema `sender`" claim is true for the schema qualifier and false for
 these two free-standing identifiers. (The stale header-comment prose citing `sender_NNNN` filenames
-and "sender schema" in `byosmtp_0000/0001/0006/0007/0012/0014`'s own file headers was comment-only
+and "sender schema" in `send_byo_0000/0001/0006/0007/0012/0014`'s own file headers was comment-only
 and was fixed directly, same landing check.)
 
 **Why it is not a Phase 8 fix.** Renaming a live policy name is a schema change, which needs its own
 additive migration (`DROP POLICY` + `CREATE POLICY` under the new name, both idempotent against
-`byosmtp_0028_drop_pools.down.sql`'s dev/CI-only reinstatement) — not a hand-edit of an already-applied
+`send_byo_0028_drop_pools.down.sql`'s dev/CI-only reinstatement) — not a hand-edit of an already-applied
 migration file. Phase 8 is docs/polish only (CLAUDE.md's Phase 8 spec, self-check review only); a
 schema-mutating migration is out of scope here.
 
-**What the fix would be.** A new migration renaming both policies to `byosmtp_module_full_access` /
-`account_events_byosmtp_module_rw`, additive-only (old policy dropped, new one created with identical
-`USING`/`WITH CHECK` clauses — a rename, not a behavior change). `byosmtp_0028_drop_pools.down.sql`'s
+**What the fix would be.** A new migration renaming both policies to `send_byo_app_full_access` /
+`account_events_send_byo_app_rw`, additive-only (old policy dropped, new one created with identical
+`USING`/`WITH CHECK` clauses — a rename, not a behavior change). `send_byo_0028_drop_pools.down.sql`'s
 reinstated policy would need the same new name for its dev/CI-only rollback path to stay consistent.
 
 **Trigger to revisit.** Any future grep-based drift/residual-literal gate keyed on the literal
@@ -308,17 +308,17 @@ to exclude these two names with a comment explaining why.
 **Registered:** 2026-08-03, by Phase 8 §1.3's finding — the sharpest operational gap this phase
 surfaced, stated in full at [`disaster-recovery.md`](./disaster-recovery.md) §3.
 
-**What it is.** A Brain-side path that can decrypt-under-the-old-key and encrypt-under-the-new-key in
-one operation, so a master-key rotation re-encrypts every `byosmtp.accounts` row without asking any
+**What it is.** A Control-side path that can decrypt-under-the-old-key and encrypt-under-the-new-key in
+one operation, so a master-key rotation re-encrypts every `send_byo.accounts` row without asking any
 user to do anything.
 
 **Why it matters more here than it did for module 2.** Module 2's equivalent entry (§3 above,
 inherited verbatim) frames this as convenience: an operator *could* rotate today by re-entering every
 plaintext password by hand, and the gap is only that it is manual. Module 3 has no such fallback.
-Verified against the tree: `services/brain/internal/adminapi/crypto.go` and
-`services/brain/internal/platformapi/crypto.go` each implement an Encrypt-only primitive with no
-Decrypt method; the only `Decrypt` in the Brain is `services/brain/internal/credential.Decryptor`,
-constructed once in `cmd/brain/main.go` and injected solely into `internal/dispatch` (`dispatch.go`,
+Verified against the tree: `services/control/internal/adminapi/crypto.go` and
+`services/control/internal/platformapi/crypto.go` each implement an Encrypt-only primitive with no
+Decrypt method; the only `Decrypt` in the Control is `services/control/internal/credential.Decryptor`,
+constructed once in `cmd/control/main.go` and injected solely into `internal/dispatch` (`dispatch.go`,
 `verify.go`) — never into either admin or platform API. The operator has **never held any user's
 plaintext SMTP password, at any point** (credentials arrive already-plaintext-in-transit over mTLS and
 are Encrypted immediately, per CLAUDE.md Rule 6). So master-key rotation in module 3 is not "manual but
@@ -341,11 +341,11 @@ re-add-campaign cost becomes concrete enough to weigh against building this.
 spec's own plan (`Docs/history/phase-8-polish-docs-close.md` §4.2).
 
 **What it is.** A `platform_admin` bearer key (Domain B) can drive any `/v1/admin/*` route, including
-reading and updating any user's account (`services/brain/internal/adminapi/account_read.go`,
+reading and updating any user's account (`services/control/internal/adminapi/account_read.go`,
 `account_update.go`). No admin route decrypts a credential in its response — `adminapi.Encryptor` has
 no Decrypt method — but the holder of that key has full control-plane authority over every account in
 the system, and there is no per-access notification to the affected user when an operator reads or
-touches their account. `byosmtp.account_events` records that an action happened, keyed by
+touches their account. `send_byo.account_events` records that an action happened, keyed by
 `request_id`; it does not tell the user.
 
 **Why it matters more here than it did for module 2.** Module 2's operator and its one tenant were the
@@ -356,7 +356,7 @@ footnote.
 
 **Why it is not built here.** An audit-notification path is a product decision — which actions
 notify, whether delivery is synchronous or batched, and whether it reuses or competes with the
-existing `byosmtp.notifications` delivery loop — not a Phase 8 polish task.
+existing `send_byo.notifications` delivery loop — not a Phase 8 polish task.
 
 **Trigger to revisit.** The first real operator-adversary incident, or a user/compliance request for
 per-access transparency into break-glass reads.
@@ -367,10 +367,10 @@ per-access transparency into break-glass reads.
 
 **What it is.** `GET /v1/admin/health` has no dedicated field reporting the notification delivery
 loop's own liveness — no "last successful delivery" timestamp, no pending-backlog age, nothing
-analogous to `boxes.oldest_active_heartbeat_age_sec` for boxes. Verified against the tree:
-`services/brain/internal/adminapi/health_handler.go`'s `healthResponse` and `health_store.go`'s
+analogous to `workers.oldest_active_heartbeat_age_sec` for workers. Verified against the tree:
+`services/control/internal/adminapi/health_handler.go`'s `healthResponse` and `health_store.go`'s
 `healthSnapshot` carry no notification-related field at all, and no admin route reads
-`byosmtp.notifications`.
+`send_byo.notifications`.
 
 **Why it matters.** The loop (`internal/dispatch/notify.go`'s `NotificationRunner`) is deliberately
 push-driven, not poll-driven (§3.2 of the Phase 7 spec, rejecting module 2's poll-only
@@ -384,7 +384,7 @@ being notified, silently, exactly the failure mode `monitoring.md` §5 now docum
 **Why it is not built here.** A first-class health field needs a design decision (which measure —
 oldest pending row's age? a persisted last-tick timestamp? — and against which of the two windows,
 `notification_digest_window_sec` or `notification_dedup_window_sec`) that Phase 8 (docs/polish) is not
-scoped to make. The interim workaround — querying `byosmtp.notifications` directly for a pending row
+scoped to make. The interim workaround — querying `send_byo.notifications` directly for a pending row
 older than its governing window, or watching the loop's own `notify: delivered N notification(s) this
 tick` log line go quiet — is documented in `monitoring.md` §5 as a stated gap, not a fix.
 
@@ -401,7 +401,7 @@ loop-specific workaround.
 retried *on the same account* before the job is routed elsewhere — distinct from the global backoff
 ladder, which decides *when* to retry but never *where*. Phase 5 §6.2 (ruling 4) specified this as a
 SOFT same-account retry hint, explicitly NOT a hard per-account ceiling, and seeded
-`retry_count_4xx` (`{"v":3}`) for it back in module 2's `sender_0010`.
+`retry_count_4xx` (`{"v":3}`) for it back in module 2's `send_byo_0010`.
 
 **Why it matters.** Without it, `backoffSecondsForClass` requeues transient classes purely off the
 exponential `retry_backoff_schedule` ladder with no memory of which account already failed this job.
@@ -418,7 +418,7 @@ wait-vs-fail ordering invariant in CLAUDE.md §0b). Phase 8 is docs/polish and i
 building a missing capability: "if polish reveals a missing capability, it goes to future-work.md —
 do not build it."
 
-**State of the dial.** `retry_count_4xx`'s config row is **DELETED** at `byosmtp_0049` (M3-P8-OD-8).
+**State of the dial.** `retry_count_4xx`'s config row is **DELETED** at `send_byo_0049` (M3-P8-OD-8).
 It was never read by module 3 at any point — not loaded into `dispatch.Config`, not validated on
 write — so it was dead inheritance from module 2, and its `RESERVED` marker's `Phase 8` expiry had
 come due. **The capability is still wanted; only the inert row is gone.** Whichever phase builds the
@@ -437,7 +437,7 @@ a job visibly ping-ponged on one failing account while healthy accounts sat idle
 the key in the same change.
 
 **What it is.** A notification event raised when an account's `account_status_score` falls below
-`score_alert_threshold` (`{"v":30}`, seeded `byosmtp_0046`) — an ALERT-only signal, never an
+`score_alert_threshold` (`{"v":30}`, seeded `send_byo_0046`) — an ALERT-only signal, never an
 independent quarantine trigger. Phase 7 §3.1 already specifies its shape, and §8 documents the dial.
 It is the surviving half of M3-P5-OD-1's split: the score stopped being a quarantine trigger and was
 supposed to become a *warning* instead.

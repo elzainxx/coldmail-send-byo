@@ -2,7 +2,7 @@
 
 > **STATUS: NEVER RUN AGAINST A REAL PROVIDER.** Deliberately. Every test in this repo sends into
 > [Mailpit](http://localhost:8025), a local sink — nothing has ever left a machine. This procedure is
-> the system's first contact with a real SMTP provider and a real inbox, and it touches **real
+> the system's first contact with a real SMTP provider and a real inworker, and it touches **real
 > sending reputation**. Running it is **step one of the pilot**, not part of the build.
 >
 > **REHEARSED against the local sink on 2026-08-03** — Mailpit standing in for the provider, so that
@@ -10,7 +10,7 @@
 > reasoned about. That rehearsal found four wrong expectations in this document (Step 1's "nothing has
 > authenticated yet," Step 2's eligibility claim, and two ways to misread Step 6) and one real product
 > defect (#141). All are fixed or flagged inline below. **What a sink cannot rehearse** is the half this
-> procedure exists for: inbox-vs-spam placement, SPF/DKIM/DMARC as a real receiver evaluates them, and
+> procedure exists for: inworker-vs-spam placement, SPF/DKIM/DMARC as a real receiver evaluates them, and
 > how a real provider's `250`/`4xx`/`5xx` text classifies. Those still await first contact.
 
 The reason for the care: a bad first impression with a provider is not a test failure you re-run. An
@@ -38,7 +38,7 @@ Do not start until all of these are true.
 - [ ] You have a **dedicated throwaway or low-stakes sending account** at the provider — not the
       company's primary mailbox.
 - [ ] You have **two recipient addresses you control**, at *different* providers (e.g. one Gmail, one
-      Outlook). Different providers is the point: it is how you learn whether you landed in inbox or
+      Outlook). Different providers is the point: it is how you learn whether you landed in inworker or
       spam.
 - [ ] You know the provider's real per-mailbox daily and per-hour limits, and the account's SPF/DKIM
       state for the sending domain.
@@ -59,7 +59,7 @@ Set these before the first send. They are the difference between a controlled te
 | `daily_limit` on the test account: **set it low** (e.g. 10) | A bug that loops cannot become a hundred messages. This is the single most valuable guard here. |
 | `dispatch_enabled` | Leave `true`, but know exactly how to set it `false`. That is your stop button; keep the command in the terminal ready to paste. |
 | `autoquarantine_mode` | Leave at its **shadow** default. You want to see what it *would* do without it acting on a first-contact anomaly. |
-| Pacing (`send_delay_min_sec`/`send_delay_max_sec`) | Do not zero them. The default delay is the reputation-friendly behavior; the load test zeroes them only because it is measuring the Brain. |
+| Pacing (`send_delay_min_sec`/`send_delay_max_sec`) | Do not zero them. The default delay is the reputation-friendly behavior; the load test zeroes them only because it is measuring the Control. |
 | `alert_webhook_url` + a health poll | Wire [`monitoring.md`](./monitoring.md) *first*. Alerts that only fire when the endpoint is polled are worth having during a first run. |
 | SMTP port | 587 (STARTTLS) or 465 (implicit TLS). AUTH never precedes TLS; on 587/25 the session **aborts before AUTH** if the server does not advertise STARTTLS, and the credential is never sent. |
 
@@ -72,7 +72,7 @@ ahealth() { curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY"; 
 
 # Two captures on purpose: a wide one to read now, and a narrow SORTED one to diff against in §5.
 # The diff baseline must use the SAME filter as the diff itself or it will never come back clean.
-ahealth | jq '{dispatch, accounts, boxes, errors_last_window}' | tee /tmp/smoke-before-full.json
+ahealth | jq '{dispatch, accounts, workers, errors_last_window}' | tee /tmp/smoke-before-full.json
 ahealth | jq -S '{accounts}' > /tmp/smoke-before.json
 ```
 
@@ -120,10 +120,10 @@ route that will show you the secret again ([`security-posture.md`](./security-po
 ### Step 2 — Confirm eligibility before queueing anything
 
 ```bash
-ahealth | jq '{accounts, boxes}'
+ahealth | jq '{accounts, workers}'
 ```
 
-**Expected:** the account counted as eligible (`accounts.healthy` includes it), at least one box
+**Expected:** the account counted as eligible (`accounts.healthy` includes it), at least one worker
 connected, `dispatch_paused: false`. If any of that is wrong, stop and use the runbook — do not queue
 a job hoping it resolves.
 
@@ -158,33 +158,33 @@ for key presence, not for `null`.
 
 > **Two id shapes are both correct here, and which one you get tells you something about your
 > provider.** A provider token (`ABC123def`, `1a2b3c4-20260803…`) means the provider's `250` line
-> carried a per-message id and the box parsed it. A `<uuid@your-domain>` means it did not, and the
-> Brain's own deterministic `Message-ID` was recorded instead (P3-3's ruled fallback). Neither is a
+> carried a per-message id and the worker parsed it. A `<uuid@your-domain>` means it did not, and the
+> Control's own deterministic `Message-ID` was recorded instead (P3-3's ruled fallback). Neither is a
 > failure — but the second one means **you cannot use this field to correlate against your provider's
 > own logs** for this send, which is worth knowing before you rely on it operationally. If you see the
-> `<uuid@…>` form, grep the Brain log for `does not mint a unique id per message`: that `level=warn`
+> `<uuid@…>` form, grep the Control log for `does not mint a unique id per message`: that `level=warn`
 > distinguishes "nothing was parseable" from "the provider reused an id another job already owns"
 > (defect #140). Either way the provider's raw `250` text is preserved verbatim in
 > `send_logs.smtp_response`, which is where to look for the provider's own reference.
 
-**Then check the actual inbox.** This is the step the whole procedure exists for, and no field in any
+**Then check the actual inworker.** This is the step the whole procedure exists for, and no field in any
 API can substitute for it:
 
 - Did it arrive at all?
-- **Inbox or spam?**
+- **Inworker or spam?**
 - Are SPF/DKIM/DMARC passing in the received headers?
 - Is the From/display name what you intended?
 
 A `sent` state means the provider returned `250` and nothing more. **V1 has no bounce, complaint,
 open, or click data** — if this message later bounces, is filtered, or is silently dropped, this
-system will never know. Your eyes on the inbox are the only feedback loop that exists.
+system will never know. Your eyes on the inworker are the only feedback loop that exists.
 
 ### Step 4 — The second provider
 
 Repeat step 3 with the address at the *other* provider. Different receivers apply very different
-filtering, and one inbox placement tells you much less than two.
+filtering, and one inworker placement tells you much less than two.
 
-**Expected:** delivered at both, ideally both to inbox. Inbox at one and spam at the other is normal
+**Expected:** delivered at both, ideally both to inworker. Inworker at one and spam at the other is normal
 for a new sending domain and is a *domain reputation* signal, not a defect in this module — the levers
 that exist are in the runbook's deliverability section.
 
@@ -203,9 +203,9 @@ will actually need at 3am.
    via `/v1/report` that it reads as clean pending `queued` — **never** `failed` — and that it resumes
    at the next daily reset. This is the single most misread state in the system; seeing it once here
    is worth the five minutes.
-3. **Box death.** Stop a box process mid-run. **Expected:** the job is reclaimed after
+3. **Worker death.** Stop a worker process mid-run. **Expected:** the job is reclaimed after
    `job_max_processing_time_sec`, `attempt_count` increments (saturating), the job returns to clean
-   `queued`, and it goes out on another box. Nothing is marked `sent` that the box did not confirm.
+   `queued`, and it goes out on another worker. Nothing is marked `sent` that the worker did not confirm.
 
 Do **not** test a bounce by sending to an invalid address. That is exactly the reputation damage this
 procedure is designed to avoid, and V1 would not record the bounce anyway.
@@ -232,7 +232,7 @@ pacing should allow means something is misconfigured — investigate before scal
 >
 > ```sql
 > SELECT completed_at - lag(completed_at) OVER (ORDER BY completed_at) AS gap
->   FROM byosmtp.jobs WHERE state = 'sent' ORDER BY completed_at;
+>   FROM send_byo.jobs WHERE state = 'sent' ORDER BY completed_at;
 > ```
 >
 > **And expect gaps far shorter than `send_delay_min_sec`** — that is correct, not a defect. The delay
@@ -243,14 +243,14 @@ pacing should allow means something is misconfigured — investigate before scal
 > behavior. Only a rate above *that* is a real signal.
 >
 > **2. A benign requeue shows up as `errors_last_window.unknown`.** Every dispatch-side requeue
-> (`no_box_available`, `no_eligible_account`, `push_failed`) writes `last_error_class = 'unknown'` with
+> (`no_worker_available`, `no_eligible_account`, `push_failed`) writes `last_error_class = 'unknown'` with
 > the real reason in `last_error_message` — the error *taxonomy* classifies SMTP outcomes, and these are
 > not SMTP outcomes. So one transient `unknown` on a job that then reached `sent` is backpressure
 > working, not the "state transition you cannot explain" that §4 tells you to halt for. Check before
 > reaching for the stop button:
 >
 > ```sql
-> SELECT to_state, error_class, error_message FROM byosmtp.job_events
+> SELECT to_state, error_class, error_message FROM send_byo.job_events
 >  WHERE error_class IS NOT NULL ORDER BY created_at DESC LIMIT 10;
 > ```
 >
@@ -287,9 +287,9 @@ Using it costs nothing.
 - [ ] Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
       `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts}')` (expect only the intended
       new account).
-- [ ] Review `byosmtp.account_events` for the account — every lifecycle change during the test is
+- [ ] Review `send_byo.account_events` for the account — every lifecycle change during the test is
       recorded there, and it is the honest log of what happened.
-- [ ] Record the result: date, provider, ports used, inbox-vs-spam per receiver, anything surprising.
+- [ ] Record the result: date, provider, ports used, inworker-vs-spam per receiver, anything surprising.
       Append it here or alongside [`load-test-results.md`](./load-test-results.md); a first-contact
       result that nobody wrote down has to be re-earned.
 - [ ] Work through [`go-live-checklist.md`](./go-live-checklist.md) before widening beyond addresses

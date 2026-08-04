@@ -34,7 +34,7 @@ docker compose up -d coredns dns-blackhole
 
 - From the **host** (e.g. a `go test` run outside Docker): point `from_dns_resolver` at
   `localhost:${HOST_PORT_COREDNS_UDP:-9053}` (default port 9053, both UDP and TCP).
-- From **inside the compose network** (the Brain, once later chunks wire the real gate to it):
+- From **inside the compose network** (the Control, once later chunks wire the real gate to it):
   `coredns:53`.
 
 ## Zone-to-fixture mapping

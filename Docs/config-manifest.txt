@@ -1,8 +1,8 @@
-# Phase-aware expected byosmtp.config key manifest (OD-6).
+# Phase-aware expected send_byo.config key manifest (OD-6).
 # One key name per line. The CI config_drift gate asserts:
-#   live byosmtp.config key set  ==  this manifest  ==  the config-reference.md table.
-# Each config-seeding migration (Phase 1's sender_0010 onward) appends its keys here in the
-# SAME change, so the gate grows monotonically: 53 keys after sender_0021/G2 (amended from 50 —
+#   live send_byo.config key set  ==  this manifest  ==  the config-reference.md table.
+# Each config-seeding migration (Phase 1's send_byo_0010 onward) appends its keys here in the
+# SAME change, so the gate grows monotonically: 53 keys after send_byo_0021/G2 (amended from 50 —
 # P8-OD-1, Phase 8 grew from 14 to 17 keys post-Chunk-5), then 59 after Module 3 Phase 3's 0036
 # (+6 account-surface dials), then 60 after Phase 3's 0038 (+1, bulk_add_max_rows, M3-P3-OD-19),
 # then 67 after Phase 4's 0039 (+7, the From-gate DNS evaluator's dials), then 76 after Module 3
@@ -20,10 +20,10 @@
 # not offset by a same-migration re-seed, so the "grows monotonically" claim above holds for keys
 # added, not for the total.)
 #
-# Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1). quarantine_threshold DELETED at
-# Module 3 Phase 5's byosmtp_0042 (M3-P5-OD-1: its consumer branch was removed by this same
+# Phase 1 — send_byo_0010 (14 keys, the foundation; Phase 9 §4.1). quarantine_threshold DELETED at
+# Module 3 Phase 5's send_byo_0042 (M3-P5-OD-1: its consumer branch was removed by this same
 # phase — the score never independently quarantines, §4). retry_count_4xx DELETED at Phase 8's
-# byosmtp_0049 (M3-P8-OD-8: inherited from module 2 and never read by module 3 at any point — not
+# send_byo_0049 (M3-P8-OD-8: inherited from module 2 and never read by module 3 at any point — not
 # loaded, not validated; its avoid-set consumer was deferred by Phase 5 §6.2 and is now FW-M3-11).
 daily_limit_default
 daily_reset_timezone
@@ -37,17 +37,17 @@ heartbeat_missed_threshold
 job_max_processing_time_sec
 debug_log_retention_days
 
-# Phase 5 — sender_0017 (+3 keys: scoring weights, backoff ladder, throttle window).
+# Phase 5 — send_byo_0017 (+3 keys: scoring weights, backoff ladder, throttle window).
 status_score_weights
 retry_backoff_schedule
 throttle_pause_seconds
 
-# Phase 6 — sender_0018 (+2 keys: reclaim-loop poll interval, box SMTP-operation timeout).
+# Phase 6 — send_byo_0018 (+2 keys: reclaim-loop poll interval, worker SMTP-operation timeout).
 reclaim_tick_interval_ms
 smtp_operation_timeout_sec
 
-# Phase 7 — sender_0019 (+6 keys: startup rescan window, shutdown drain, retention sweep/batch,
-# rollup granularity, box outcome-buffer TTL). Fully schema-neutral (no new table).
+# Phase 7 — send_byo_0019 (+6 keys: startup rescan window, shutdown drain, retention sweep/batch,
+# rollup granularity, worker outcome-buffer TTL). Fully schema-neutral (no new table).
 startup_reconnect_window_sec
 shutdown_drain_timeout_sec
 retention_sweep_interval_ms
@@ -55,9 +55,9 @@ retention_delete_batch_size
 rollup_granularity
 box_outcome_buffer_ttl_sec
 
-# Phase 8 — sender_0020 (+17 keys: content-variation toggles + their 5 toggle-parameters). Config
-# rows appended to the SAME sender_0020 version file that Chunk 1 created for byosmtp.jobs.attempt_token
-# (flagged migration-filename deviation from the locked spec's own sender_0020_content_variation_config
+# Phase 8 — send_byo_0020 (+17 keys: content-variation toggles + their 5 toggle-parameters). Config
+# rows appended to the SAME send_byo_0020 version file that Chunk 1 created for send_byo.jobs.attempt_token
+# (flagged migration-filename deviation from the locked spec's own send_byo_0020_content_variation_config
 # name — see Docs/open-decisions.md P8-OD-1 and the .up.sql's own comment). All 17 default off/neutral
 # so the whole set at default is byte-identical to Phase 3 (§4/T1). AMENDED 2026-07-26 from 14 to 17
 # (P8-OD-1, RULED): variation_css_magnitude_px / variation_zero_width_rate / variation_user_agent_rate
@@ -80,12 +80,12 @@ variation_user_agent_rate
 variation_precedence
 variation_thread_index
 
-# Phase 9.5 — sender_0021 (+11 keys: B1-B5 operability controls + S10/S11 config-not-code
+# Phase 9.5 — send_byo_0021 (+11 keys: B1-B5 operability controls + S10/S11 config-not-code
 # completeness dials). Fully schema-neutral (no DDL, no new table/column/enum/constraint/index).
-# variation_zero_width_rate_pct DELETED at Phase 8's byosmtp_0049 (M3-P8-OD-8: P9.5-OD-3's ruled
+# variation_zero_width_rate_pct DELETED at Phase 8's send_byo_0049 (M3-P8-OD-8: P9.5-OD-3's ruled
 # duplicate of variation_zero_width_rate, loaded but never stamped onto the push_job wire block, so
-# it never reached the box or changed a delivered byte — the fraction key remains the sole dial).
-# unit_price_credits stays listed in this block (its original seed site) even though byosmtp_0048
+# it never reached the worker or changed a delivered byte — the fraction key remains the sole dial).
+# unit_price_credits stays listed in this block (its original seed site) even though send_byo_0048
 # delete+re-seeded it (M3-P7-OD-11) — this manifest tracks the key SET, not each row's newest write
 # site, so a re-seed under the same name does not move its line.
 dispatch_enabled
@@ -100,7 +100,7 @@ variation_comment_intensity_rates
 variation_css_micro_params
 brain_singleton_reacquire_interval_sec
 
-# Module 3 Phase 3 — byosmtp_0036 (+6 keys: the user-owned account surface's dials — account cap,
+# Module 3 Phase 3 — send_byo_0036 (+6 keys: the user-owned account surface's dials — account cap,
 # test-button rate limit, retention window, bulk-add verification pacing, the purge loop's own
 # interval + batch size). Docs/history/phase-3-user-owned-accounts.md §7.
 account_test_rate_limit_per_day
@@ -110,11 +110,11 @@ bulk_add_verify_interval_ms
 account_purge_sweep_interval_ms
 account_purge_delete_batch_size
 
-# Module 3 Phase 3 — byosmtp_0038 (+1 key: the bulk-add row-count bound, M3-P3-OD-8/19).
+# Module 3 Phase 3 — send_byo_0038 (+1 key: the bulk-add row-count bound, M3-P3-OD-8/19).
 # Docs/history/phase-3-user-owned-accounts.md §4.2.
 bulk_add_max_rows
 
-# Module 3 Phase 4 — byosmtp_0039 (+7 keys: the From-gate DNS evaluator's dials — the kill switch,
+# Module 3 Phase 4 — send_byo_0039 (+7 keys: the From-gate DNS evaluator's dials — the kill switch,
 # the resolver override, the two DNS timeouts, the two cache TTLs, the SPF lookup-limit posture).
 # Docs/history/phase-4-from-gate.md §6.1.
 from_gate_mode
@@ -125,7 +125,7 @@ from_dns_cache_ttl_sec
 from_dns_negative_cache_ttl_sec
 from_spf_lookup_limit_posture
 
-# Module 3 Phase 5 — byosmtp_0042 (+10 keys: the dual quarantine triggers, self-serve
+# Module 3 Phase 5 — send_byo_0042 (+10 keys: the dual quarantine triggers, self-serve
 # un-quarantine, and resource-protection/campaign-expiry dials). quarantine_threshold is DELETED
 # in this same migration (moved to the top of this file's comment, M3-P5-OD-1).
 # Docs/history/phase-5-autonomous-behaviour-and-limits.md §10.1.
@@ -140,11 +140,11 @@ max_queued_jobs
 campaign_expiry_sec
 campaign_expiry_sweep_interval_ms
 
-# Module 3 Phase 6 — byosmtp_0045 (+1 key: the per-user aggregate test-button rate limit,
+# Module 3 Phase 6 — send_byo_0045 (+1 key: the per-user aggregate test-button rate limit,
 # M3-P3-OD-6, landed here rather than in Phase 3). Docs/history/phase-6-per-user-config-and-routing.md.
 test_button_rate_limit_per_user_per_day
 
-# Module 3 Phase 7 — byosmtp_0046 (+10 keys: notification delivery loop + dedup/digest windows,
+# Module 3 Phase 7 — send_byo_0046 (+10 keys: notification delivery loop + dedup/digest windows,
 # the operator health per-destination throttle aggregation, the quote capacity-projection dials,
 # and score_alert_threshold — REPLACING quarantine_threshold under a new name, M3-P5-OD-1's split).
 # Docs/history/phase-7-visibility-notifications-contract.md §8.

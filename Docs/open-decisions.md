@@ -4,7 +4,7 @@
 AWAITING RULING as of 2026-08-03 — [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
 (the ledger path collision) and [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
 (three expired `RESERVED` config keys) — were both **ruled 2026-08-04**, and both rulings are landed
-in the tree, not merely recorded: OD-8's disposition is migration `byosmtp_0049` plus the
+in the tree, not merely recorded: OD-8's disposition is migration `send_byo_0049` plus the
 manifest/reference/ledger/future-work updates and a replacement test; OD-7's is the absence of a move.
 The paragraph below (as of 2026-08-01) is left as-written for provenance; its "ALL 95 ITEMS ARE
 RULED" claim was accurate then, was superseded by M3-P8-OD-7 and -8 (both found during Phase 8), and
@@ -42,9 +42,9 @@ is a fourth build-time finding, raised at the start of Phase 3's kickoff while c
 landed: M3-P2-OD-3 ruled the `last_error_message` literal renames `pool_exhausted` →
 `accounts_exhausted` at G3, but G3's own closeout checklist never listed it as a criterion and it was
 never done — ruled and fixed the same day it was found. The 88th,
-[M3-P3-OD-14](#m3-p3-od-14--ruled-2026-08-01-no-connected-box-at-verify-time-is-a-verify-failure-not-a-blocked-create),
+[M3-P3-OD-14](#m3-p3-od-14--ruled-2026-08-01-no-connected-worker-at-verify-time-is-a-verify-failure-not-a-blocked-create),
 was raised while wiring C2 (verify-on-add): the spec never states what happens when account
-creation is requested but no box is currently connected to run the verification at all, distinct
+creation is requested but no worker is currently connected to run the verification at all, distinct
 from a real, reachable provider rejecting the credential. Ruled the same day: treat it as an
 ordinary verify failure (`verify_connection_lost`), not a blocked create. The 89th,
 [M3-P3-OD-15](#m3-p3-od-15--ruled-2026-08-01-the-test-button-rate-limit-counts-every-attempt-not-just-successes),
@@ -61,11 +61,11 @@ cross-account SELECTION, which does not target one specific account — "test TH
 through normal routing" can disagree about which account actually sends. Ruled the same day: force
 the clicked account, still enforcing its own eligibility. The 91st,
 [M3-P3-OD-17](#m3-p3-od-17--ruled-2026-08-01-test-send-needs-an-insert-grant-on-a-platform-owned-table-that-does-not-exist),
-found while implementing test-send: `byosmtp.jobs.job_item_id` is `NOT NULL` + `UNIQUE`,
-referencing `public.job_items` — a platform-owned table `byosmtp_module` holds SELECT-only on
-(verified live: `has_table_privilege('byosmtp_module','public.job_items','INSERT')` returns
+found while implementing test-send: `send_byo.jobs.job_item_id` is `NOT NULL` + `UNIQUE`,
+referencing `public.job_items` — a platform-owned table `send_byo_app` holds SELECT-only on
+(verified live: `has_table_privilege('send_byo_app','public.job_items','INSERT')` returns
 `false`). Test-send has no natural job_item and the spec never addresses this. Ruled the same day:
-grant `byosmtp_module` a narrow `INSERT`-only privilege on `public.job_items`, via a new migration
+grant `send_byo_app` a narrow `INSERT`-only privilege on `public.job_items`, via a new migration
 — test-send creates a genuine job_item row every time, the same shape a platform-initiated single
 send would produce. The 92nd,
 [M3-P3-OD-18](#m3-p3-od-18--ruled-2026-08-01-phase-3-takes-migration-0037-phase-4-renumbers-to-00380039),
@@ -108,7 +108,7 @@ already governs it (FAIL, not WAIT).
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
 > Chunk 3 sweep found a **migration-chain collision** between Phase 1's `0033` and Phase 7's `0041`
-> (both created `byosmtp.notifications` and `byosmtp.notification_severity`, incompatibly), so the
+> (both created `send_byo.notifications` and `send_byo.notification_severity`, incompatibly), so the
 > honest status at the end of Chunk 4 was **one open item, not zero** — and it was reported that way
 > rather than merged into a plausible-looking hybrid. It was then **ruled (b)** on the same day: Phase
 > 7's shape wins, `0033` is the single create site. The sequence is the point — the item was surfaced
@@ -196,7 +196,7 @@ context: Phase 7 §13's register row; the authoritative DDL is Phase 7 §8.
 > standing gate.
 
 **The defect, as found.** Phase 1 §4.6 (`0033`) and Phase 7 §8 (`0041`) each created
-`byosmtp.notification_severity` and `byosmtp.notifications`. Postgres rejects the duplicate outright, so
+`send_byo.notification_severity` and `send_byo.notifications`. Postgres rejects the duplicate outright, so
 **the migration chain did not apply** — `migration_lint` failed and so did the first clean-slate run.
 The two designs were also incompatible where they overlapped:
 
@@ -245,7 +245,7 @@ Ordered as they must be applied, because three of them are sequenced.
 | **M3-P4-OD-3** | 4 | Consolidate the eligibility predicate to one definition before adding a term, or add the term in five places with an agreement test? | **(a) CONSOLIDATE first.** The consolidation lands as its **own commit**, before either new term | Gate A/B discipline: a separate commit makes a failure attributable to the refactor or to the term, never ambiguously to both. Matches the recommendation |
 | **M3-P3-OD-4** | 3 | How is an account whose credential verification failed excluded from sending? | **(b) add `credential_verification_state` as a predicate term — AFTER the consolidation.** Overloading `disabled` is **rejected** | *"It makes operator intent and system state indistinguishable in the audit trail."* Note this is a **stronger** rejection than my framing: I called (a) "cheap and lies"; the ruling names the specific harm — the audit trail, not just the semantics |
 | **M3-P0-OD-2** | 0 | Which module 2 commit is the fork point? | **(a) HEAD `21b65e6`. Tag it in module 2** | As recommended — forking at the formal close would re-inherit four already-fixed defects, one HIGH |
-| **M3-P0-OD-3** | 0 | The module slug | **`byosmtp`** | As recommended. Now permanent: it fixes the schema, role, tracking table, container names, migration file prefix, and the `/v1/byosmtp/…` route prefix under Rule 5 |
+| **M3-P0-OD-3** | 0 | The module slug | **`send_byo`** | As recommended. Now permanent: it fixes the schema, role, tracking table, container names, migration file prefix, and the `/v1/send-byo/…` route prefix under Rule 5 |
 | **M3-P0-OD-11** | 0 | Licensing | **(a) adopt module 1's `LICENSE` + `NOTICE` convention at Gate B** | I offered no recommendation (not my call). Ruled: adopt |
 | **M3-P5-OD-1** | 5 | `quarantine_threshold` is left seeded with no consumer; the blocking `config_consumption` gate fails, and (a)/(b)/(c) each break something locked | **NONE of (a)/(b)/(c) — SPLIT IT.** **DROP** `quarantine_threshold`; **ADD** `score_alert_threshold` as a new key with a real consumer in **Phase 7's warnings** | Ruled **against** my recommendation, and the reasoning supersedes it: (1) *"repurposing leaves a lying name — an operator sets `quarantine_threshold` and gets an alert."* (2) The expired-exemption objection **does not apply**: the exemption *"turned on module 3 having no consumers, and this key never had a consumer in module 3 at any point; deleting it is removing dead inheritance, not breaking a live contract."* (3) An ADR extends the exemption **narrowly on exactly that basis**, stating explicitly that it **does not reopen generally**. **The drop landed in migration `0042`; the ADR did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Written as ADR-0016** (`Docs/history/decisions/0016-quarantine-threshold-drop-narrowly-extends-the-fork-exemption.md`) |
 | **M3-P7-OD-2** | 7 | Does module 3 speak AUTH PLAIN? | **(a) PLAIN IS IN SCOPE.** Extend the scrub to **all three byte alignments plus the full-blob form**, each with a **paired control** | *"Users bring their own servers, including custom ones; refusing PLAIN breaks real users for a security convenience."* The cost falls on the scrub, which is the right place for it |
@@ -256,7 +256,7 @@ Ordered as they must be applied, because three of them are sequenced.
 | ID | Phase | Question | **RULED 2026-07-31** | Reasoning recorded |
 |---|---|---|---|---|
 | **M3-P7-OD-6** | 7 | The throttle aggregation depends on the recipient domain living in TTL'd `send_logs` | **(a) DENORMALIZE the recipient domain** onto its own column | Ruled where I was split, and on grounds I had not weighted: *"Two config-ordering invariants already exist and both are recurring hazards; a column removes the dependency instead of adding a third guard."* And decisively — *"this diagnostic is the safeguard chosen INSTEAD of a per-destination cap, so it must not hinge on a debug-retention setting"* |
-| **M3-P7-OD-8** | 7 | The box-side scrub is correct only by unenforced statement ordering | **BOTH (a) and (b).** Assert the ordering dependency **and** make `scrubSecret` **throw** on a zeroed buffer | *"Fail-closed beats fail-silent on a credential path."* It **is** a module 2 behaviour change — **log it as a shared-code manifest divergence** (Phase 8 §7) |
+| **M3-P7-OD-8** | 7 | The worker-side scrub is correct only by unenforced statement ordering | **BOTH (a) and (b).** Assert the ordering dependency **and** make `scrubSecret` **throw** on a zeroed buffer | *"Fail-closed beats fail-silent on a credential path."* It **is** a module 2 behaviour change — **log it as a shared-code manifest divergence** (Phase 8 §7) |
 | **M3-P5-OD-2** | 5 | Classify a rate-limited quarantine as `self_recovering` or `terminal_blocked`? | **(a) `terminal_blocked`** | Ruled as recommended, with a sharper reason than mine: *"the un-quarantine rate limit exists to stop the spin loop, so classifying a rate-limited quarantine as `self_recovering` reintroduces precisely what the limit was built to prevent."* Record this one — it is the argument that stops a later phase "fixing" the classification |
 | **M3-P2-OD-4** | 2 | Does Test A survive, against the brief's "structurally impossible" premise? | **(a) confirmed. Test A survives re-keyed, Test B added** | The brief's premise holds only for the cross-campaign clause; lanes and ticks survive, so the daily-limit invariant is still live |
 
@@ -275,7 +275,7 @@ approval changed none of it.
 | M3-P0-OD-1 | "Green before a single line is changed" vs. a rename being a change | Two gates. Gate A isolates fork defects from rename defects. **§7's checkboxes backfilled 2026-08-02**: both gates were genuinely executed and green (evidence existed all along in `Docs/history/fork-point.md` + commit `f7be832`), but the checklist itself was never literally ticked — found by Phase 6's mechanical landing check. Full tick-off: `Docs/history/phase-0-fork-and-baseline.md` §7 |
 | M3-P0-OD-5 | Module 3's advisory-lock band | Reserve `8_000_000_000–8_999_999_999`; mirrored keys `8_100_000_001`/`8_200_000_001`/`8_300_000_001`. Confirm with the platform owner as a pre-live gate |
 | M3-P0-OD-6 | Host-port collision on `5432`/`8080`/`8443`/`8444`/`8025` | `.env`-driven host side, module 3 defaults offset `+1000`. Container-internal ports and service DNS unchanged |
-| M3-P0-OD-8 | Do `CODEOWNERS`' handles exist for module 3? | Carry the structure verbatim; confirm or rename handles at Gate B. If no teams exist, record that it is inert and why. **CONFIRMED INERT 2026-08-02**: `origin` is a personal GitHub User account (no Teams concept); `@byosmtp-arch` is not a real account, `@platform-db` collides with an unrelated GitHub Organization; branch protection (required for enforcement) is unavailable on this repo's plan/visibility. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-8 row |
+| M3-P0-OD-8 | Do `CODEOWNERS`' handles exist for module 3? | Carry the structure verbatim; confirm or rename handles at Gate B. If no teams exist, record that it is inert and why. **CONFIRMED INERT 2026-08-02**: `origin` is a personal GitHub User account (no Teams concept); `@send_byo-arch` is not a real account, `@platform-db` collides with an unrelated GitHub Organization; branch protection (required for enforcement) is unavailable on this repo's plan/visibility. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-8 row |
 | M3-P0-OD-9 | How much of module 2's `Docs/history/` comes across | ADRs + phase specs for inherited subsystems only, in a marked `Docs/history/module-2/` with a README. Not the 156 KB ledger or 183 KB build record. **LANDED 2026-08-02 in Phase 6** — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED (the directory held a byte-identical copy of module 2's ENTIRE `Docs/history/`, not this narrower admitted subset): the 12 phase specs, `phase1-drafts/`, and 13 ADRs moved to `Docs/history/module-2/` with the required README; module 2's `open-decisions.md`/`phase-build-record.md` stayed at the top level (cited by literal path from inherited code); `Docs/history/definition-of-done.md` (the path CLAUDE.md cites) is now module 3's own vocabulary-adapted DoD, with module 2's original preserved at `Docs/history/module-2/definition-of-done.md`. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-9 row |
 | M3-P0-OD-10 | Module 2's README says five blocking gates; CI runs six | Fix at Gate B as a one-line exception to "identity only". The shared-code manifest's **second** entry (M3-P2-OD-2 is first). **The README fix landed at Gate B; the manifest entry itself did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Added as entry 2 in `Docs/shared-code-manifest.md`** |
 
@@ -305,13 +305,13 @@ approval changed none of it.
 
 | ID | Question | **RULED-ACCEPTED** |
 |---|---|---|
-| M3-P3-OD-1 | The namespaced route prefix token | `byosmtp`, matching the schema name (follows M3-P0-OD-3) |
+| M3-P3-OD-1 | The namespaced route prefix token | `send_byo`, matching the schema name (follows M3-P0-OD-3) |
 | M3-P3-OD-2 | RLS as a role-only boundary with tenancy in predicates? | Predicates, matching `platformapi`. Recorded so a later phase does not "discover" RLS as free |
 | M3-P3-OD-5 | May `test-send` target an arbitrary recipient? | Own `from_address` only. Arbitrary makes it a one-message relay |
 | M3-P3-OD-7 | Bulk-add pacing per `smtp_host` or strictly serial? | Strictly serial for V1 — a superset of the guarantee |
 | M3-P3-OD-8 | A `bulk_add_max_rows` bound; does bulk-add go async? | Bound yes; async is a new resource and past this phase |
-| M3-P3-OD-9 | Advisory lock around the account-cap check-then-insert? | The lock — a cap you can beat by double-clicking is not a cap. **Merged in (M3-P3-OD-6):** yes to a per-user aggregate test-button limit, valued together with this cap and Phase 5's un-quarantine limit. **M3-P3-OD-6 landed 2026-08-02 in Phase 6** (`test_button_rate_limit_per_user_per_day`, `byosmtp_0045`) — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED. **The lock's own race test was ALSO missing — found 2026-08-02 by the same round of checks. Landed:** `account_cap_race_test.go`, two real-infra tests forcing genuine contention |
-| M3-P3-OD-10 | Purge as a fifth Brain loop or a sweep inside `RetentionTick`? | Fifth loop — a purge failure must not be masked by a healthy log sweep |
+| M3-P3-OD-9 | Advisory lock around the account-cap check-then-insert? | The lock — a cap you can beat by double-clicking is not a cap. **Merged in (M3-P3-OD-6):** yes to a per-user aggregate test-button limit, valued together with this cap and Phase 5's un-quarantine limit. **M3-P3-OD-6 landed 2026-08-02 in Phase 6** (`test_button_rate_limit_per_user_per_day`, `send_byo_0045`) — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED. **The lock's own race test was ALSO missing — found 2026-08-02 by the same round of checks. Landed:** `account_cap_race_test.go`, two real-infra tests forcing genuine contention |
+| M3-P3-OD-10 | Purge as a fifth Control loop or a sweep inside `RetentionTick`? | Fifth loop — a purge failure must not be masked by a healthy log sweep |
 | M3-P3-OD-11 | Extend `contract_drift.sh` to the platform-surface account routes? | Yes. A route no gate enumerates is a route whose auth nobody checks. Needs an ADR under Rule 8. **The gate extension landed; the ADR did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Written as ADR-0015** (`Docs/history/decisions/0015-contract-drift-gate-extends-to-the-platform-surface.md`) |
 | M3-P3-OD-12 | A new verify timeout key, or reuse `smtp_operation_timeout_sec`? | Reuse — a verify's operations are a strict prefix of a send's |
 | M3-P3-OD-13 | `verified` can mean "authenticated over an unverified TLS connection" | Disclose in the security posture this phase; do **not** fix here |
@@ -332,7 +332,7 @@ approval changed none of it.
 |---|---|---|
 | M3-P5-OD-3 | `doTransition`'s precondition reads unlocked, so two concurrent admin calls both write | Fix in Phase 5, own commit, own two-connection test: add `FOR UPDATE` to `readFlags`. Lock order unaffected (no job row written, so Rule 9 does not apply). **FIXED 2026-08-02**: `readFlags` (account_store.go) now takes `FOR UPDATE`; `TestDoTransition_T15_ConcurrentQuarantineCallsYieldExactlyOneSuccess` (account_lifecycle_race_test.go) proves it with a forced two-connection interleave. Found not-yet-implemented by the Phase 5 closeout's scoped concurrency review (agent review, task #103) despite this ledger reading RULED-ACCEPTED — fixed in the same pass, per Rule 11 |
 | M3-P5-OD-4 | Ten keys where the brief named eight | Adopt both extras (`unquarantine_evidence_ttl_sec`, `campaign_expiry_sweep_interval_ms`). Each has a live consumer at its seeding commit |
-| M3-P5-OD-5 | A fifth single-Brain housekeeping loop | Adopt, sharing the DB-outage gate and drain flag, with a test asserting it pauses under a simulated outage. Rule 7 forbids a second *dispatch* path; this is not one |
+| M3-P5-OD-5 | A fifth single-Control housekeeping loop | Adopt, sharing the DB-outage gate and drain flag, with a test asserting it pauses under a simulated outage. Rule 7 forbids a second *dispatch* path; this is not one |
 
 ### Phase 6 — per-user config and routing
 
@@ -373,18 +373,18 @@ phase, answered by a different phase's ruling.
 | ID | Closed by | The ruling that closed it |
 |---|---|---|
 | M3-P1-OD-1 | ruling 2026-07-29 | Merge Phase 1+2 with three internal gates, **code before schema**: G1 strip logic → G2 drop schema → G3 add tables. Not collapsible |
-| M3-P1-OD-2 | ruling 2026-07-29, amended | Keep the inherited chain, add from `0025`; re-prefix the 50 files to `byosmtp_NNNN` in a schema-free commit. **Confirmed closed 2026-07-31** against the register text directly — the ruling is recorded verbatim in `phase-1-schema-delta.md` §8, not by citation |
+| M3-P1-OD-2 | ruling 2026-07-29, amended | Keep the inherited chain, add from `0025`; re-prefix the 50 files to `send_byo_NNNN` in a schema-free commit. **Confirmed closed 2026-07-31** against the register text directly — the ruling is recorded verbatim in `phase-1-schema-delta.md` §8, not by citation |
 | M3-P1-OD-3 | ruling 2026-07-29 | *"Additive-only exists to protect consumers… The fork is the baseline reset."* Covers the five removals; **fork-time only, expires at Phase 1's close.** Narrowly extended once, for `quarantine_threshold` only — see M3-P5-OD-1 |
 | M3-P1-OD-12 | ruling 2026-07-29 | `accounts.user_id → public.users ON DELETE RESTRICT` — restore the accidental guard deliberately |
 | **M3-P0-OD-4** | **M3-P1-OD-2's ruling** | Phase 0 deferred the migration re-prefix; Phase 1 took it (§1.1b) and states it discharges this item |
 | **M3-P0-OD-7** | **M3-P1-OD-3's ruling** | The same question — does the additive-only clock reset at the fork — answered once for all five removals |
-| M3-P2-OD-1 | ruling 2026-07-30 | Option (a): carry `default_shared_pool_id` through G1 on the `RESERVED` marker; time-boxed by construction — RESERVED at G1, gone at G2 |
+| M3-P2-OD-1 | ruling 2026-07-30 | Option (a): carry `default_shared_pool_id` through G1 on the `RESERVED` marker; time-workered by construction — RESERVED at G1, gone at G2 |
 | M3-P2-OD-6 | ruling 2026-07-30 | The G2 slice is **hard-bounded**: *"the create path can supply `user_id` without referencing `pool_id`. If the slice grows past supplying a mandatory column, STOP."* **Register row corrected 2026-07-31** — the ruling **deletes `duplicateInPool` outright**; the row previously said rename to `duplicateForUser`, which §2.1.1 had already corrected in prose but not in the register |
 | **M3-P2-OD-7** | **M3-P2-OD-6's ruling** | Its own text: *"Falls away entirely if OD-6 is ruled as recommended."* It was |
 | M3-P2-OD-8 | ruling 2026-07-30, in substance | The `RESERVED`-expiry gate extension is ruled; what remains is an ADR appending the invariant — a build task. **The gate mechanism landed; the ADR did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Written as ADR-0014** (`Docs/history/decisions/0014-reserved-config-marker-requires-a-mechanical-expiry.md`) |
 | M3-P4-OD-1 | ruling 2026-07-29 | *"My locked rule was wrong. DMARC passing on SPF-aligned **or** DKIM-aligned means DNS can never prove failure."* Default → warn + explicit acknowledgment; BLOCK only for `p=reject` + no SPF record + no DKIM at any common selector; copy says *"we couldn't verify this will authenticate"*, never *"this will fail"* |
 | M3-P4-OD-9 | ruling 2026-07-29 | Gate at the **store layer for every writer, operator routes included**; break-glass is an explicit audited override with a required reason, never a silent reset |
-| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0040` (renumbered from `0038` by M3-P3-OD-18's cascade). **Number corrected 2026-08-02** — this row previously said `0039`; the columns actually landed in `byosmtp_0040_from_gate_predicate.up.sql` (`0039` holds only the config-key seeds). Found by the Phase 6 phase-start mechanical landing check (a status word is not evidence a fix exists — every other citation of this ruling in the tree, including the migration file's own header comment, already said `0040`; only this row was stale) |
+| M3-P4-OD-10 | ruling 2026-07-30 | The two acknowledgment columns land in Phase 4's own `0040` (renumbered from `0038` by M3-P3-OD-18's cascade). **Number corrected 2026-08-02** — this row previously said `0039`; the columns actually landed in `send_byo_0040_from_gate_predicate.up.sql` (`0039` holds only the config-key seeds). Found by the Phase 6 phase-start mechanical landing check (a status word is not evidence a fix exists — every other citation of this ruling in the tree, including the migration file's own header comment, already said `0040`; only this row was stale) |
 | M3-P6-OD-1 | ruling 2026-07-30 | Pacer shrink drops the **most-ready** lanes, keeps those still owing cooldown; selection by value, not slice position; the ADR states module 2's comment was aspirational, so this is a bug fix |
 | **M3-P3-OD-3** | **M3-P7-OD-1's ruling, 2026-07-31** | ⚠ **Provenance corrected — the earlier citation did not hold.** Verified directly on 2026-07-31: `phase-3-user-owned-accounts.md` §2.3 and §11 record *"allow, scrubbed, this surface only"* as a **recommendation**, with §2.3 saying explicitly *"widening it is not mine to decide silently."* There is **no dated ruling** in Phase 3. `phase-7-visibility-notifications-contract.md` §1.1 nonetheless asserted it was *"ruled"* and built on it — a recommendation promoted to a ruling by citation. **Corrected in Phase 7 §1.1.** The item is genuinely closed now because M3-P7-OD-1's ruling allows the widening on the **larger** send surface, which necessarily settles the verify surface; and it inherits the same sequencing — **after** M3-P7-OD-2's scrub |
 
@@ -442,11 +442,11 @@ Everything above this line was written and ruled before Phase 0 was executed. Th
 planning — flagged per Rule 2 rather than silently patched, because fixing it would be a behavior
 change to inherited code and Phase 0 changes identity only.
 
-**The finding.** `tests/harness/run.sh` invokes a host-built `tools/byosmtp-migrate/bin/byosmtp-migrate`
+**The finding.** `tests/harness/run.sh` invokes a host-built `tools/send-byo-migrate/bin/send-byo-migrate`
 binary three times to build migrated template databases gating 141 tests across
 `tests/harness`, `internal/adminapi`, `internal/dispatch`, and `internal/platformapi`
 (`TEST_TEMPLATE_DB`). **No script builds that binary** — not `scripts/dev.sh certs` (which *does*
-auto-build `provision-box` inline), not `scripts/dev.sh test`, not `.github/workflows/real-infra.yml`.
+auto-build `provision-worker` inline), not `scripts/dev.sh test`, not `.github/workflows/real-infra.yml`.
 On a fresh checkout with no binary present, all three `up-and-set-password` calls fail silently
 (`>/dev/null 2>&1 || true`), `TEST_TEMPLATE_DB=""`, and all 141 gated tests execute `t.Skip(...)`.
 Because `go test` exits 0 on an all-skip package, and `run.sh`'s `go_suite()` helper judges pass/fail
@@ -456,7 +456,7 @@ passed, 0 failed."** The same helper's echo filter (`grep -E "^(ok|FAIL|--- (PAS
 
 **Confirmed reproducible in the CI shape, not just locally.** `.github/workflows/real-infra.yml`
 runs `gofmt`/`go vet`, `scripts/dev.sh certs`, `scripts/dev.sh up`, then `scripts/dev.sh test` directly
-— it never builds `tools/byosmtp-migrate`. Reproduced by hand: deleting `tools/byosmtp-migrate/bin/`
+— it never builds `tools/send-byo-migrate`. Reproduced by hand: deleting `tools/send-byo-migrate/bin/`
 and re-running `scripts/dev.sh test` on the live Chunk 4 stack reproduces all three
 `template create failed` lines and still reports `HARNESS RESULT: 58 passed, 0 failed`. Building the
 binary by hand (`go build`, no file changed) made all 141 tests run and pass with zero regressions —
@@ -472,12 +472,12 @@ that outweighs the general principle that Phase 0 does not change inherited beha
 behavior being fixed here is "the harness silently reports false green," which is not a feature of
 module 2's design to preserve, it is a hole in the evidence Phase 0 exists to produce.
 
-**Fixed the same day.** `tests/harness/run.sh` now builds `tools/byosmtp-migrate/bin/byosmtp-migrate`
+**Fixed the same day.** `tests/harness/run.sh` now builds `tools/send-byo-migrate/bin/send-byo-migrate`
 itself, immediately after its `PASS`/`bad`/`hr` helper definitions and before any of its three
-template-DB steps — mirroring `gen_all_secrets()`'s existing inline build of `provision-box`.
+template-DB steps — mirroring `gen_all_secrets()`'s existing inline build of `provision-worker`.
 `.github/workflows/real-infra.yml` also builds it as its own explicit step, right after the
 `gofmt`/`go vet` lint step, so CI does not rely solely on `run.sh`'s self-build. **Verified by the
-standard the finding itself demands**: deleted `tools/byosmtp-migrate/bin/`, ran
+standard the finding itself demands**: deleted `tools/send-byo-migrate/bin/`, ran
 `bash scripts/dev.sh reset` (full clean-slate, empty volume) followed by `bash scripts/dev.sh test`
 with the binary still absent beforehand — `run.sh` rebuilt it, and the harness reported **58 passed,
 0 failed with zero `SKIP`** against a binary that did not exist when the run started, not one left
@@ -574,9 +574,9 @@ no observable risk here, since nothing consumes the additions until the drop hal
 Found while scoping G2's migrations, extending M3-P2-OD-10's finding. M3-P2-OD-10 deferred
 `health_store.go`'s `queryPoolHeadroom`/`queryWaitingForCapacity` and `health_alerts.go`'s
 `pool_exhausted` condition to *"G2 or G3, most plausibly G3."* But G2's own migrations (`0027`
-drops `accounts.pool_id`, `0028` drops `byosmtp.pools`) remove the exact objects those queries
-read — `queryPoolHeadroom`: `FROM byosmtp.pools p LEFT JOIN byosmtp.accounts a ON a.pool_id =
-p.id`; `queryWaitingForCapacity`'s `user_pools` CTE: `JOIN byosmtp.pools p`. Leaving them
+drops `accounts.pool_id`, `0028` drops `send_byo.pools`) remove the exact objects those queries
+read — `queryPoolHeadroom`: `FROM send_byo.pools p LEFT JOIN send_byo.accounts a ON a.pool_id =
+p.id`; `queryWaitingForCapacity`'s `user_pools` CTE: `JOIN send_byo.pools p`. Leaving them
 untouched through G2 does not mean "deferred" — it means `GET /v1/admin/health` hard-errors
 (undefined table/column) the instant the migration commits, which collides directly with G2's own
 exit criteria #8 (*"no pool reference... over `services/`"*) and #11 (*"full suite green with
@@ -589,12 +589,12 @@ with a no-op returning an empty `Pools` slice (`[]poolHeadroom{}`, matching the 
 "empty array, never a null field" contract at `health_store.go:434`); `queryWaitingForCapacity`'s
 `user_pools` CTE is gutted to a user-scoped account-existence check (structurally correct — "does
 this user have any account at all" — but not yet the full eligible-account-set semantics G3
-delivers); `health_alerts.go`'s `pool_exhausted` condition and its `JOIN byosmtp.pools` are removed
+delivers); `health_alerts.go`'s `pool_exhausted` condition and its `JOIN send_byo.pools` are removed
 in the same commit (the condition disappears, not merely its query — M3-P1-OD-9 already named
 `no_eligible_accounts` as its Phase-7-owned replacement, so removing it at G2 creates no
 operator-visible gap that isn't already tracked). `health_test.go`'s pool-headroom-specific
 assertions and `seedHealthPool` are deleted at G2 (subject matter gone, Rule 3 — not skipped); the
-four box-death/webhook tests already confirmed pool-free by M3-P2-OD-10 are untouched.
+four worker-death/webhook tests already confirmed pool-free by M3-P2-OD-10 are untouched.
 
 The full `accounts_exhausted` rewrite (M3-P2-OD-3) — real account-set eligibility semantics for
 headroom and the waiting-for-capacity count, plus new tests for both — stays at G3 as M3-P2-OD-10
@@ -609,7 +609,7 @@ into the schema-drop commit.
 
 **Extension found while applying the ruling, same day, not separately re-asked:**
 `platformapi/campaign_report.go`'s `campaignTotals` has the identical shape — its own `user_pools`
-CTE (`FROM byosmtp.pools p WHERE p.enabled = TRUE AND (p.owner_user_id = $2::uuid OR p.kind =
+CTE (`FROM send_byo.pools p WHERE p.enabled = TRUE AND (p.owner_user_id = $2::uuid OR p.kind =
 'shared')`) and `campaignEligibleAccountsSubquery` (`WHERE a.pool_id = up.pool_id`) — and neither
 M3-P2-OD-10 nor this item's own text named `platformapi` at all; both were scoped to `adminapi`'s
 health/alerts files only. `campaign_report_test.go` has genuine assertions on the resulting
@@ -748,7 +748,7 @@ both G3 and G4 closed.
 
 **Confirmed before fixing (Rule 2 — checking a ruled item isn't the same as re-opening it):** is this
 safe to fix standalone, outside any gate, with no new migration or contract-visible change? Verified
-live: `grep -rn "last_error_message" services/brain/internal/platformapi/` returns zero matches —
+live: `grep -rn "last_error_message" services/control/internal/platformapi/` returns zero matches —
 Phase 7's own §1.4/T7 gate already requires and enforces that this column has no reader on the
 platform-facing surface, so the string is genuinely internal-only (two-vocabulary rule already
 satisfied regardless of its contents). `pool_exhausted` was never an `error_class` enum value either
@@ -769,19 +769,19 @@ closeout, mirroring §8.5/§8.6's shape. No migration, no test change (none asse
 
 ---
 
-## M3-P3-OD-14 — RULED 2026-08-01: no connected box at verify time is a verify FAILURE, not a blocked create
+## M3-P3-OD-14 — RULED 2026-08-01: no connected worker at verify time is a verify FAILURE, not a blocked create
 
 Found while wiring Phase 3's C2 (verify-on-add, `Docs/history/phase-3-user-owned-accounts.md` §2). §2.5
 already locks that a verification failure does not roll back the create — the account is
 persisted with `credential_verification_state='failed'` and the client sees the detail. But every
-worked example in §2/§8.2/§8.3 assumes a real box reachable and answering; none addresses the
-case where `AnyConnectedBox()` returns nothing at all — no box currently registered on the stream,
+worked example in §2/§8.2/§8.3 assumes a real worker reachable and answering; none addresses the
+case where `AnyConnectedWorker()` returns nothing at all — no worker currently registered on the stream,
 so there is nowhere to even attempt the connect+AUTH.
 
-**The question, asked before implementing `dispatch.Verifier.Verify` (Rule 2):** is "no box
+**The question, asked before implementing `dispatch.Verifier.Verify` (Rule 2):** is "no worker
 connected" (a) an ordinary verify failure — same code path as a real provider rejecting AUTH, just
 a different external code — or (b) a distinct condition that should block the create outright
-(reject with 503/409, create no row) until a box is available?
+(reject with 503/409, create no row) until a worker is available?
 
 **RULED: (a) — an ordinary verify failure, external code `verify_connection_lost`.** No new state,
 no new code path. Reasoning:
@@ -789,26 +789,26 @@ no new code path. Reasoning:
 - **§2.5 already answers the shape question.** It locks that ANY verification failure — auth
   rejected, TLS unavailable, timeout — persists the row with `state='failed'` rather than rolling
   back, specifically so a bulk-add (§4) can report per-row outcomes on rows that exist and so a
-  user can fix a bad credential with one PATCH. "No box connected" is one more entry in that same
+  user can fix a bad credential with one PATCH. "No worker connected" is one more entry in that same
   failure space, not a structurally different kind of failure.
-- **Blocking the create makes account creation depend on box-fleet availability**, which no exit
+- **Blocking the create makes account creation depend on worker-fleet availability**, which no exit
   criterion in §12 requires and no other route in this phase does. The account-cap check, the
-  uniqueness pre-check, and the encryption step all run to completion regardless of box state;
-  making verify-on-add the one path that 503s on empty box fleet would be a new, undocumented
+  uniqueness pre-check, and the encryption step all run to completion regardless of worker state;
+  making verify-on-add the one path that 503s on empty worker fleet would be a new, undocumented
   availability coupling.
 - **`verify_connection_lost`'s own §2.3 definition — "the connection dropped mid-handshake" —
   already covers "there was never a connection to drop."** No sixth external code is needed; the
   existing one's user-facing meaning ("something on the network path failed") is accurate whether
-  the box vanished mid-verify or was never there to begin with. Introducing a distinct
-  `verify_no_box_available` code would be the kind of speculative surface-widening Rule 5's
+  the worker vanished mid-verify or was never there to begin with. Introducing a distinct
+  `verify_no_worker_available` code would be the kind of speculative surface-widening Rule 5's
   additive-only discipline exists to keep to actual demonstrated need.
 
-**Implementation:** `dispatch.Verifier.Verify` detects an empty `AnyConnectedBox()` and calls its
+**Implementation:** `dispatch.Verifier.Verify` detects an empty `AnyConnectedWorker()` and calls its
 own `applyVerifyReport` with a synthetic `{Outcome: "error", ErrorReason: "connection_closed"}` —
-the SAME write a genuine box-reported `connection_closed` would produce, from a second trigger
+the SAME write a genuine worker-reported `connection_closed` would produce, from a second trigger
 inside the same function rather than a second write path. The caller (`platformapi`'s
 account-create handler) sees an ordinary `VerifyResult{Verified: false, ExternalCode:
-"verify_connection_lost", ...}` and never needs to distinguish "no box" from "box that failed
+"verify_connection_lost", ...}` and never needs to distinguish "no worker" from "worker that failed
 mid-handshake" — by design, per the ruling above.
 
 ---
@@ -817,8 +817,8 @@ mid-handshake" — by design, per the ruling above.
 
 Found while wiring C3 (the test button, `Docs/history/phase-3-user-owned-accounts.md` §3.3). §3.3's own
 reasoning for the limit is explicit: *"Each click is a real auth attempt against a live provider
-from our box IPs. The limit is therefore not politeness — it is IP-reputation protection."* A
-failed AUTH attempt costs the shared box IPs' reputation identically to a successful one — the
+from our worker IPs. The limit is therefore not politeness — it is IP-reputation protection."* A
+failed AUTH attempt costs the shared worker IPs' reputation identically to a successful one — the
 provider sees the same connect+AUTH regardless of outcome. So the rate limit's own stated purpose
 requires counting both.
 
@@ -844,14 +844,14 @@ outcome.
 
 **Rejected alternatives and why:**
 - *Only count successes* — rejected because it directly contradicts §3.3's own stated reason for
-  the limit; a user could hammer a wrong password indefinitely against the shared box IPs without
+  the limit; a user could hammer a wrong password indefinitely against the shared worker IPs without
   ever tripping the guard the limit exists to provide.
-- *An in-memory counter, no DB row* — rejected because a Brain restart would silently reopen every
+- *An in-memory counter, no DB row* — rejected because a Control restart would silently reopen every
   account's daily quota, which is not a real IP-reputation guarantee, just a guarantee between
   restarts.
 
 **Consequence for C2's already-shipped code:** `dispatch.Verifier.applyVerifyReport`'s failure
-branch (the box-reported case) and the no-box synthetic case (M3-P3-OD-14, above) both gain the
+branch (the worker-reported case) and the no-worker synthetic case (M3-P3-OD-14, above) both gain the
 same audit write the success branch already has — one shared helper, called from all three sites,
 not three separately-maintained INSERTs.
 
@@ -876,7 +876,7 @@ as a campaign send is" is satisfied by reusing the SAME predicate (the consolida
 `accountBaseEligibilityFilter` plus the daily-limit check) against the one named account, not by
 reusing the cross-account selection query itself.
 
-**Consequence for the job it creates:** the `byosmtp.jobs` row this writes carries
+**Consequence for the job it creates:** the `send_byo.jobs` row this writes carries
 `assigned_account_id` pre-set to the clicked account (skipping the normal claim-time selection),
 and the dispatcher's push path must accept a pre-assigned account rather than re-selecting one —
 implemented as a distinct code path from the normal claim, not a flag threaded through it, since
@@ -890,12 +890,12 @@ because testing a substitute account answers a question the user did not ask).
 
 Found while implementing test-send (§3.2), one level deeper than M3-P3-OD-16's routing question.
 §3.2 itself is unambiguous that test-send "writes a real `job` row and real `job_events`" — Rule
-5's "never invent an outcome the box did not report" cuts both ways, so a real send that goes
-unrecorded is as dishonest as a fabricated one. But `byosmtp.jobs.job_item_id` is `NOT NULL` +
+5's "never invent an outcome the worker did not report" cuts both ways, so a real send that goes
+unrecorded is as dishonest as a fabricated one. But `send_byo.jobs.job_item_id` is `NOT NULL` +
 `UNIQUE`, referencing `public.job_items` — a platform-owned table under the Phase 0 bootstrap's own
-locked rule (`byosmtp_0000_bootstrap.up.sql`'s comment: *"The ONLY two operations permitted on
+locked rule (`send_byo_0000_bootstrap.up.sql`'s comment: *"The ONLY two operations permitted on
 platform-owned tables: read-only SELECT"*). Verified live before concluding this was a real
-blocker, not an assumption: `SELECT has_table_privilege('byosmtp_module', 'public.job_items',
+blocker, not an assumption: `SELECT has_table_privilege('send_byo_app', 'public.job_items',
 'INSERT')` returns `false` on the running stack. Test-send has no natural campaign/job_item to
 attach to — it is a standalone credential-check action, not part of any campaign — and the spec
 never anticipates this collision between §3.2's own recording requirement and Phase 0's own
@@ -905,7 +905,7 @@ platform-table boundary.
 grant on `public.job_items` so the module can create a genuine, minimal job_item row for itself, or
 (b) ship without the real jobs/job_events row, reporting the outcome only in the HTTP response?
 
-**RULED: (a) — grant `byosmtp_module` `INSERT`-only on `public.job_items`.** Reasoning:
+**RULED: (a) — grant `send_byo_app` `INSERT`-only on `public.job_items`.** Reasoning:
 
 - **§3.2's own locked requirement is unambiguous and was not re-opened by this finding** — a real
   send with no `job`/`job_events` row is exactly the "unreported real outcome" Rule 5 forbids, and
@@ -960,7 +960,7 @@ no semantic content change.
 
 **Applied:** `phase-4-from-gate.md` (12 references), `phase-5-autonomous-behaviour-and-limits.md`,
 and `plan-revision-log.md`'s chain table all updated to the shifted numbering in the same change.
-Phase 3's own migration is `byosmtp_0037_test_send_job_items_grant`.
+Phase 3's own migration is `send_byo_0037_test_send_job_items_grant`.
 
 ---
 
@@ -994,7 +994,7 @@ all updated to the shifted numbering in the same change — including three stal
 references in `phase-1-schema-delta.md` and `phase-8-polish-docs-close.md` left behind by **OD-18's**
 own sweep (found while re-verifying this cascade, not by the OD-18 pass itself — Rule 11: a claimed
 sweep is re-checked in the tree, not trusted by citation). Phase 3's own fourth migration is
-`byosmtp_0038_bulk_add_max_rows_config`.
+`send_byo_0038_bulk_add_max_rows_config`.
 
 ---
 
@@ -1026,11 +1026,11 @@ who created the row, and inventing one here would silently reintroduce the exact
 credential risk the term exists to close — just for the operator path specifically. Scoping the
 term to user-created accounts only was rejected as a bigger design fork than this phase's scope: it
 would give module 2's inherited operator model and module 3's user model two different eligibility
-rules over the SAME `byosmtp.accounts` table.
+rules over the SAME `send_byo.accounts` table.
 
 **Applied:** `adminapi/server.go` (`AccountVerifier`, `VerifyResult`, `NewServer`'s 4th param),
 `adminapi/account_create.go` (`runVerifyOnAdd`, called after the create's own commit, same §2.5
-precedent — a verification problem never demotes a real create), `cmd/brain/main.go`
+precedent — a verification problem never demotes a real create), `cmd/control/main.go`
 (`adminVerifierAdapter`, admin-server construction relocated after the Verifier), and
 `adminapi/harness_test.go`'s one `NewServer` call site (`nil` — no adminapi test dispatches a real
 send, so a nil verifier is correct there, matching every other package's own test-harness
@@ -1183,7 +1183,7 @@ the test button is the retry path.** Reasoning:
 
 - **§2.5's precedent is on point, not merely analogous.** Phase 3 already answered the general
   shape of this question for credential verify-on-add: a verification PROBLEM (there, an AUTH
-  failure or no connected box; here, DNS ignorance) never demotes or rolls back an otherwise-valid
+  failure or no connected worker; here, DNS ignorance) never demotes or rolls back an otherwise-valid
   create — the row the user asked for gets created, and the verification concern is reported
   alongside it, not substituted for it.
 - **§3's "fail closed" is about the CHECK's own verdict, not about the right to create a row.**
@@ -1218,8 +1218,8 @@ Found immediately after M3-P4-OD-14, wiring the same handler. §5.3.1 states the
 write is refused without an explicit field, and that "the account is created/updated with the
 From **unset** rather than warned-and-accepted" — a shape that works for PATCH (§2.3: the OLD
 `from_address` and its OLD verdict remain intact, since PATCH always has a prior row) but has no
-referent for CREATE: `byosmtp.accounts.from_address` is `NOT NULL` with no `DEFAULT`
-(`byosmtp_0005`), so there is no "unset" value a create could fall back to.
+referent for CREATE: `send_byo.accounts.from_address` is `NOT NULL` with no `DEFAULT`
+(`send_byo_0005`), so there is no "unset" value a create could fall back to.
 
 **The question, asked before implementing (Rule 2):** does CREATE refuse the whole POST (no row
 at all) when the From resolves to WARN and no acknowledgment was supplied, or does it create the
@@ -1267,7 +1267,7 @@ break-glass override (§2.8) needs its own account_events action value
 buried inside the generic `'updated'` action every admin PATCH already logs — the ruling's own
 words are explicit that this must be "deliberate and logged, never accidental," which a
 same-action-as-everything-else row would not satisfy. Widening `account_events_action_check`
-requires a migration (`DROP CONSTRAINT` + `ADD CONSTRAINT`, mirroring `byosmtp_0034`'s own
+requires a migration (`DROP CONSTRAINT` + `ADD CONSTRAINT`, mirroring `send_byo_0034`'s own
 precedent), and Phase 4's doc had allotted exactly two slots (`0039` config seeds, `0040` the
 predicate + acknowledgment columns) — this schema need was not anticipated when that allotment
 was written, the same shape of gap M3-P3-OD-17 found for test-send's job_items grant.
@@ -1286,7 +1286,7 @@ exists to prevent. A migration number's SEPARATENESS is what is being preserved 
 git-committedness. Phase 5/6/7 have not started building (no files on disk, no
 `schema_migrations` rows), so the cascade costs only a doc-reference relabel.
 
-**Applied:** Phase 4's own third migration is `byosmtp_0041_from_gate_override_action`. Cascade:
+**Applied:** Phase 4's own third migration is `send_byo_0041_from_gate_override_action`. Cascade:
 Phase 5 `0042`/`0043` (was `0041`/`0042`), Phase 6 `0044` (was `0043`), Phase 7 `0044` (unchanged
 relative position — still expected to take Phase 6's number if Phase 6 writes nothing
 structural). `Docs/history/phase-5-autonomous-behaviour-and-limits.md`,
@@ -1330,7 +1330,7 @@ stays non-routable until a later Test/PATCH supplies the acknowledgment.** Reaso
   actual, current, diagnosable state (`from_checked_at` advances, the copy names the real record
   and policy) instead of a stale answer from whenever they last checked.
 
-**Applied:** `POST /v1/byosmtp/accounts/{id}/test` gains an optional
+**Applied:** `POST /v1/send-byo/accounts/{id}/test` gains an optional
 `acknowledge_alignment_warning: true` field in its (previously empty) request body. The From check
 re-runs using the account's CURRENT `from_address`/`smtp_host`/`smtp_username` (the test button
 changes no fields — there is no "new" From to gate, only a re-check of the existing one). A
@@ -1343,7 +1343,7 @@ check could not run" — matching T7's own required behavior ("distinguishes 're
 'recomputes from stored columns'").
 
 Not subject to `account_test_rate_limit_per_day` (§2.4's own precedent, restated): that limit
-exists for box-IP-reputation protection against repeated AUTH attempts, a risk the DNS check does
+exists for worker-IP-reputation protection against repeated AUTH attempts, a risk the DNS check does
 not carry.
 
 ---
@@ -1354,9 +1354,9 @@ Found while testing Chunk 3's test-button wiring. The handler runs the From-gate
 persists its verdict to the database, per M3-P4-OD-17) BEFORE the credential `Verify` call. But
 the existing (Phase 3) credential path returns a whole-request `500 internal_error
 verification_unavailable` when `s.verifier == nil` — a condition unrelated to Phase 4, present
-whenever no box verifier was wired. Under the code as first written, that 500 discarded the
+whenever no worker verifier was wired. Under the code as first written, that 500 discarded the
 From-gate result from the RESPONSE entirely, even though the write had already committed to
-`byosmtp.accounts` — a caller pressing Test would see only a 500 and have no way to learn what the
+`send_byo.accounts` — a caller pressing Test would see only a 500 and have no way to learn what the
 From check found without a separate GET.
 
 **The question, asked before implementing (Rule 2):** does credential-verifier unavailability
@@ -1385,14 +1385,14 @@ running at all, not just one of them.
 ## M3-P5-OD-6 — RULED 2026-08-02: build the campaign upsert now; defer `jobs.campaign_id`'s FK to `campaigns`
 
 M3-P1-OD-4 (Phase 1) recorded a RULED-YES-BUT-DEFERRED position on whether `jobs.campaign_id`
-gains a `REFERENCES byosmtp.campaigns(id) ON DELETE RESTRICT` FK — deferred specifically because
+gains a `REFERENCES send_byo.campaigns(id) ON DELETE RESTRICT` FK — deferred specifically because
 the FK is only safe once `/v1/run` upserts the campaign row in the same transaction as the job
 insert (Phase 5 §5.3's own work), and adding the FK before that upsert exists would 23503 every
 job-creation path immediately. Phase 5 C2 is the phase that builds that upsert.
 
 **The question, asked before implementing (Rule 2):** now that the upsert genuinely exists, does
 this chunk also add the FK, discharging M3-P1-OD-4 for real? Doing so requires retrofitting a
-`campaigns` row insert/upsert into every direct `INSERT INTO byosmtp.jobs` site — not just
+`campaigns` row insert/upsert into every direct `INSERT INTO send_byo.jobs` site — not just
 `platformapi/store.go`'s production path, but four real-infra test-harness fixtures
 (`adminapi/health_test.go`, `dispatch/harness_test.go` (two call sites), `dispatch/
 send_test_action.go`, `platformapi/campaign_report_test.go`) — or each one 23503s on its very next
@@ -1411,13 +1411,13 @@ have it land as a side effect of building the upsert. **M3-P1-OD-4 stays open, n
 phase (or a dedicated follow-up) to pick up** — this is not a re-ruling of M3-P1-OD-4's "should the
 FK exist" question, only of "does Phase 5 C2 add it."
 
-**Applied:** `platformapi/store.go`'s `createJob` upserts a `byosmtp.campaigns` row (keyed on the
+**Applied:** `platformapi/store.go`'s `createJob` upserts a `send_byo.campaigns` row (keyed on the
 campaign id `public.job_items.campaign_id` already carries, `campaign_expiry_sec` resolved
 override→global and frozen at `expires_at` on first insert) inside the SAME advisory-locked
 transaction, before the `jobs` INSERT — but `jobs.campaign_id` itself gains no new constraint. The
 test-harness fixture files are UNCHANGED (no upsert retrofit needed on any of them, since none of
 them need `campaign_expiry_sec` freezing to test what they test) and continue to insert
-`byosmtp.jobs` rows with whatever `campaign_id` they already use, exactly as before this chunk.
+`send_byo.jobs` rows with whatever `campaign_id` they already use, exactly as before this chunk.
 
 ---
 
@@ -1430,7 +1430,7 @@ suspend/reinstate is its own distinct, queryable event rather than buried inside
 `'updated'` row — the same reasoning M3-P4-OD-16 already established for `'from_gate_overridden'`,
 and the same class of schema need `0034`/`0041` themselves widened `account_events_action_check`
 for. Widening the CHECK requires a migration (`DROP CONSTRAINT` + `ADD CONSTRAINT`, mirroring
-`byosmtp_0034`/`byosmtp_0041`'s own precedent), and Phase 5's doc had allotted exactly two slots
+`send_byo_0034`/`send_byo_0041`'s own precedent), and Phase 5's doc had allotted exactly two slots
 (`0042` config seeds, `0043` the failure-rate window's index) — this schema need was not
 anticipated when that allotment was written, discovered only once the suspend audit write was
 actually wired up rather than foreseen from the spec.
@@ -1452,8 +1452,8 @@ cascade costs only a doc-reference relabel.
 M3-P4-OD-16 — each found only while implementing the phase that needed the extra migration, never
 anticipated at planning time, and each ruled the same day rather than left as a gap.
 
-**Applied:** Phase 5's own third migration is `byosmtp_0044_account_events_suspend_action`
-(already written and applied — `db/migrations/byosmtp_0044_account_events_suspend_action.{up,down}.sql`
+**Applied:** Phase 5's own third migration is `send_byo_0044_account_events_suspend_action`
+(already written and applied — `db/migrations/send_byo_0044_account_events_suspend_action.{up,down}.sql`
 — so this migration itself is NOT renumbered; only the phases downstream of it shift). Cascade:
 Phase 6's expected migration shifts from `0044` to `0045` (still expected to write nothing
 structural, per Phase 6 §10's own conclusion); Phase 7's own migration shifts from `0044` to `0045`
@@ -1486,7 +1486,7 @@ it?
 **RULED: take `0045`.** There is nowhere else to put it — Phase 6 itself needs no migration for its
 own C1/C2 work, so `0045` was sitting unclaimed exactly as §10 predicted; M3-P3-OD-6's fix is the
 first real content to occupy it, and it is Phase 6 (the phase whose landing check found the gap) that
-should carry it, not a later phase. Applied: `byosmtp_0045_test_button_per_user_limit.{up,down}.sql`
+should carry it, not a later phase. Applied: `send_byo_0045_test_button_per_user_limit.{up,down}.sql`
 (already written and applied). **Cascade: Phase 7's own migration shifts from `0045` to `0046`.**
 `Docs/history/phase-6-per-user-config-and-routing.md` §10, `Docs/history/phase-7-visibility-notifications-contract.md`
 (migration number, §8's DDL section, M3-P7-OD-6/M3-P7-OD-9's own rulings which cite `0045` by number),
@@ -1507,11 +1507,11 @@ DDL against what actually landed in the tree — the same defect class M3-P7-OD-
 (two designs never diffed against each other), recurring because M3-P7-OD-9's own ruling was never
 re-verified against the migration it produced.**
 
-**The defect, as found.** Phase 7 §8's own "authoritative" DDL for `byosmtp.notification_state` (the
+**The defect, as found.** Phase 7 §8's own "authoritative" DDL for `send_byo.notification_state` (the
 block M3-P7-OD-9 designated as what `0033` must implement) is
 `('pending', 'delivered', 'failed', 'suppressed')`. The enum `0025` ACTUALLY created is
 `('pending', 'delivered', 'cleared')` — verified directly against the live database
-(`SELECT enumlabel FROM pg_enum WHERE enumtypid = 'byosmtp.notification_state'::regtype`), not
+(`SELECT enumlabel FROM pg_enum WHERE enumtypid = 'send_byo.notification_state'::regtype`), not
 assumed from the migration file. **Neither** document's DDL ever specified `'cleared'` as a state
 value; both Phase 1's superseded draft and Phase 7 §8 track clearing via a separate `cleared_at`
 TIMESTAMPTZ column, never a `state` value. So the live enum matches neither of the two documents it
@@ -1528,7 +1528,7 @@ add the full Phase 7 §8 pair (`'failed'` + `'suppressed'`) for DDL fidelity eve
 consumes `'failed'`, or (c) redesign the digest-suppression signal around the three existing values
 (e.g. a separate marker column) rather than touch the enum again.
 
-**RULED: (a) — add only `'suppressed'`.** `byosmtp_0047_notification_state_suppressed.{up,down}.sql`
+**RULED: (a) — add only `'suppressed'`.** `send_byo_0047_notification_state_suppressed.{up,down}.sql`
 (additive `ALTER TYPE ... ADD VALUE`, Rule 5-safe; the down file documents the same
 cannot-truly-reverse asymmetry M3-P1-OD-7 already established for `event_actor`'s `'user'` value).
 `'failed'` is **not** added: nothing in the delivery loop's design has a use for it — a delivery
@@ -1551,12 +1551,12 @@ way.
 subscription, enforced by enabling or disabling the module per user. There is no per-send charge,
 no credits, and no per-recipient price."* Phase 7 §4.1 repeats this and states the consequence for
 the contract: *"there is no per-recipient price... the shape is additive: the cost fields stay
-(`cost: 0`, `currency: "credits"`, `unit_price_credits: 0`, `tier: "byosmtp"`) with a documented
+(`cost: 0`, `currency: "credits"`, `unit_price_credits: 0`, `tier: "send_byo"`) with a documented
 note that they are retained for contract compatibility and are not meaningful under this module's
 pricing."* But the CURRENTLY LIVE code (`platformapi/handlers.go`'s `handleQuote`/`handleDescribe`)
 charges `recipient_count × unit_price_credits` with a seeded default of `1` — real, non-zero,
 per-recipient billing — and three docs (`api-contract.md`, `operator-runbook.md`,
-`byosmtp-module-local-test-guide.md`) all describe this as **"finalized."** A behavioral test
+`coldmail-send-byo-local-test-guide.md`) all describe this as **"finalized."** A behavioral test
 (`unitprice_test.go`'s `TestUnitPrice_QuoteAndDescribeReflectLiveConfig`) asserts the non-zero
 arithmetic directly. Two locked artifacts disagree, and — the same defect class as M3-P7-OD-9/-10 —
 neither side was diffed against the other before now.
@@ -1570,7 +1570,7 @@ Open Decision, or (c) something else.
 mutated** — so this is NOT a `default_value` edit. It follows M3-P5-OD-1's own precedent for
 exactly this situation (`quarantine_threshold`'s meaning changed, so Phase 5 `DELETE`d the key and
 re-`INSERT`ed it fresh under its own new seed site): a new migration `DELETE`s the
-`unit_price_credits` row Phase 9.5's `sender_0021` seeded and re-`INSERT`s it fresh with
+`unit_price_credits` row Phase 9.5's `send_byo_0021` seeded and re-`INSERT`s it fresh with
 `default_value = {"v":0}` — a NEW row's own default, at its own new seed site, never mutated again
 going forward. `quote`'s `cost`/`unit_price_credits` fields and `describe`'s
 `pricing.unit_price_credits`/`pricing.tiers[].unit_price_credits` are retained (Rule 5 — never
@@ -1580,7 +1580,7 @@ Rule-5 contract compatibility, not meaningful pricing. `unitprice_test.go` is re
 the NEW default (`0`) and that a live config write still moves both surfaces together (the property
 the test actually exists to prove — live-config responsiveness — is unchanged; only the arithmetic
 it asserts changes). `api-contract.md`, `operator-runbook.md`, and
-`byosmtp-module-local-test-guide.md` are corrected in the same change to state the flat-subscription
+`coldmail-send-byo-local-test-guide.md` are corrected in the same change to state the flat-subscription
 model rather than describe the old per-recipient arithmetic as finalized.
 
 ---
@@ -1682,34 +1682,34 @@ polish reveals a missing capability, it goes to future-work.md — do not build 
 **The three keys, each independently verified against the tree (not read off the docs' own claims,
 per Rule 11):**
 
-1. **`retry_count_4xx`** (`sender_0010`, inherited from module 2, `{"v":3}`). Confirmed via
-   `grep -rn "retry_count_4xx\|RetryCount4xx" services/brain` returning **zero** hits outside
+1. **`retry_count_4xx`** (`send_byo_0010`, inherited from module 2, `{"v":3}`). Confirmed via
+   `grep -rn "retry_count_4xx\|RetryCount4xx" services/control` returning **zero** hits outside
    `Docs/` — it is not even loaded into `dispatch.Config`, let alone consumed. `config-reference.md`
    itself already documents why: Phase 5 §6.2 named it a soft same-account retry hint, but "V1 has no
    per-job avoid-set or per-(job,account) attempt tracker to hook it into" — `backoffSecondsForClass`
    requeues purely off the exponential `retry_backoff_schedule` ladder, with zero reference to this
    key. Building the avoid-set mechanism is new work, forbidden here.
 
-2. **`variation_zero_width_rate_pct`** (`sender_0021`, `{"v":5}`). Confirmed via
-   `grep -rn "VariationZeroWidthRatePct" services/brain` — loaded into `dispatch.Config`
+2. **`variation_zero_width_rate_pct`** (`send_byo_0021`, `{"v":5}`). Confirmed via
+   `grep -rn "VariationZeroWidthRatePct" services/control` — loaded into `dispatch.Config`
    (`config.go:132,383`) but read nowhere else. `config-reference.md` already documents this as a
    **deliberate, ruled duplicate** (P9.5-OD-3) of the already-wired `variation_zero_width_rate`
    (a fraction 0–1, the actual source of truth) — the `_pct` key was seeded as an alternate
-   percent-based representation and ruled to stay unconsumed so two dials never drive the same box
+   percent-based representation and ruled to stay unconsumed so two dials never drive the same worker
    behavior. Its sibling in the same migration, `variation_css_micro_params.delta_px`, carries the
    identical pattern (also RESERVED, also a documented duplicate of `variation_css_magnitude_px`) —
    confirmed present but **not itself expiring at Phase 8** (no third field in
    `config-consumers.txt` for that sub-field's marker), so this item is scoped to the `_pct` key only,
    not its sibling.
 
-3. **`score_alert_threshold`** (`byosmtp_0046`, `{"v":30}`) — **the one that is not merely inert, but
+3. **`score_alert_threshold`** (`send_byo_0046`, `{"v":30}`) — **the one that is not merely inert, but
    a broken promise.** `config-reference.md` and `Docs/history/phase-7-visibility-notifications-contract.md`
    (lines 928, 1526-1529) both assert Phase 7 **is** this key's consumer — *"this phase is that
    consumer (§3.1's score warning, §8's dial)"* — stated as fact, not as a plan. Verified against the
    actual tree: `ScoreAlertThreshold` is loaded into `dispatch.Config` (`config.go:143,438`) and never
-   read anywhere else (`grep -rn "ScoreAlertThreshold" services/brain` returns only those two lines
+   read anywhere else (`grep -rn "ScoreAlertThreshold" services/control` returns only those two lines
    outside test files). The only notification ever enqueued anywhere in the codebase is
-   `"account_quarantined"` (`grep -rn "EnqueueNotification(" services/brain`, one call site,
+   `"account_quarantined"` (`grep -rn "EnqueueNotification(" services/control`, one call site,
    `account_effect.go:172`) — there is no score-warning digest event, no comparison of
    `account_status_score` against this threshold, anywhere. Phase 7's own spec claimed a consumer
    that was never built. This is a Rule 11 finding in its own right, independent of the expiry gate.
@@ -1753,13 +1753,13 @@ not something to be silenced by reverting the phase-file edit.
 ### RULING (2026-08-04) — (a) for the two, (c) for the third
 
 **`retry_count_4xx` → (a) DELETE.** **`variation_zero_width_rate_pct` → (a) DELETE.** Both drop at
-`byosmtp_0049`, with the down file re-`INSERT`ing each row verbatim from its original seed site
+`send_byo_0049`, with the down file re-`INSERT`ing each row verbatim from its original seed site
 (Rule 1: `default_value` is never mutated, so a rollback restores byte-for-byte rather than
 approximating). The authority is ADR-0016's two-condition test, invoked explicitly rather than as a
 general "nobody uses this" claim: (1) neither key ever had a genuine module-3 consumer at any point
 in module 3's own history — `retry_count_4xx` was never even loaded into `dispatch.Config`, and
 `variation_zero_width_rate_pct` was loaded and write-validated but never stamped onto the `push_job`
-wire block, so it never reached the box or changed a delivered byte; and (2) neither has a
+wire block, so it never reached the worker or changed a delivered byte; and (2) neither has a
 same-name replacement being reinterpreted — the surviving `variation_zero_width_rate` predates its
 duplicate and keeps its own name. This is dead inheritance, not a live contract, and it does NOT
 reopen Rule 5 generally.
@@ -1782,7 +1782,7 @@ become permanent by quietly losing its roadmap entry, which is the same failure 
 for phase labels. **This is a gate change made while discharging the gate's own finding**, so it is
 recorded here rather than left implicit — the flag OD-8 raised for exactly this contingency.
 
-**What landed, verifiable in the tree.** Migration `byosmtp_0049` (up: two `DELETE`s; down: two
+**What landed, verifiable in the tree.** Migration `send_byo_0049` (up: two `DELETE`s; down: two
 verbatim re-`INSERT`s); `config-consumers.txt` (two rows gone, third retargeted to `FW-M3-12`);
 `config-manifest.txt` and `config-reference.md` (87 → 85 keys, both directions of the `config_drift`
 equality); `future-work.md` (FW-M3-11, FW-M3-12); `dispatch/config.go` (the `_pct` field and its

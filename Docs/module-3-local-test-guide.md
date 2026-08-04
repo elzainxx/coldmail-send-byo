@@ -51,10 +51,10 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 - **Host antivirus intercepts host→localhost TLS.** Known environment quirk, not a defect. Probe mTLS **in-network** (container to container). If a check fails from the Windows host, re-run it from inside a container before believing it.
 - **`dev.sh reset` means reset.** Clean-slate stages need a genuinely fresh volume — a stale one silently skips migrations. It also does **not** rebuild images: after changing Go or Node source, `dev.sh build` first, or you test the old binary and read the result as a real RED.
 - **Git Bash rewrites container-absolute paths in `docker run` arguments.** Any step that copies a `docker run … -v "$PWD/db:/db:ro"` line out of `install-and-deploy.md` (Stage 2 does — Step 5's migration runner) gets the container-side `/db` expanded to `C:/Program Files/Git/db`, and the runner dies with `read migrations dir "C:/Program Files/Git/db/migrations": no such file or directory`. That is MSYS path conversion, not a defect and not a docs bug — the install doc targets Ubuntu. Prefix the command with `MSYS_NO_PATHCONV=1`. The same applies to `-e PREFLIGHT_SQL=/db/…` and to any `docker exec … psql -c` whose SQL contains a leading-slash literal.
-- **`dev.sh` and a bare `docker compose` describe DIFFERENT containers.** `scripts/dev.sh` hardcodes `-f docker-compose.yml -f tests/harness/compose.test.yml`, and that override puts Postgres's data directory on **tmpfs** and adds `fsync=off`. A bare `docker compose …` uses the base file only, where Postgres is volume-backed. So a snapshot/restart/outage instruction copied between the two is not the same experiment — the tmpfs stack loses the entire database on any container stop. Stage 9.10 carries the precondition this matters most for. Check with `docker inspect byosmtp-module-postgres-1 --format '{{.HostConfig.Tmpfs}}'` (`{{range .Mounts}}` does not list tmpfs mounts) and `--format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'` to see which files were actually merged.
+- **`dev.sh` and a bare `docker compose` describe DIFFERENT containers.** `scripts/dev.sh` hardcodes `-f docker-compose.yml -f tests/harness/compose.test.yml`, and that override puts Postgres's data directory on **tmpfs** and adds `fsync=off`. A bare `docker compose …` uses the base file only, where Postgres is volume-backed. So a snapshot/restart/outage instruction copied between the two is not the same experiment — the tmpfs stack loses the entire database on any container stop. Stage 9.10 carries the precondition this matters most for. Check with `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` (`{{range .Mounts}}` does not list tmpfs mounts) and `--format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'` to see which files were actually merged.
 - **Watch for a stale test template.** A migration not applied to the local test template makes test results meaningless. This bit during Phase 6. If results look strange, reset before debugging.
 - **Timing tests need a quiet machine.** Don't run pacing tests while a build is churning.
-- **One host, one log stream.** Tail the Brain and both boxes together during failure injection — you'll watch a heartbeat miss, the reclaim, and the re-dispatch scroll past in one place.
+- **One host, one log stream.** Tail the Control and both workers together during failure injection — you'll watch a heartbeat miss, the reclaim, and the re-dispatch scroll past in one place.
 
 ---
 
@@ -62,15 +62,15 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 
 ### Stage 0 — Environment sanity
 1. `scripts/dev.sh reset` — tear down completely, volumes included
-2. `scripts/dev.sh up` — Postgres, Brain, two boxes, Mailpit
+2. `scripts/dev.sh up` — Postgres, Control, two workers, Mailpit
 3. All containers healthy, none restart-looping; Mailpit reachable and empty; `sender` schema present via `psql`
 
 ---
 
 ### Stage 1 — Automated suite
 1. `scripts/dev.sh test` — the full harness
-2. The Go suites directly: dispatch, adminapi, platformapi, byosmtp, boxproto
-3. The box Node suite
+2. The Go suites directly: dispatch, adminapi, platformapi, send_byo, workerproto
+3. The worker Node suite
 4. **All seven CI gates**: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `user_output_scrub`, and the one-definition-site check
 5. `gofmt` / `go vet` clean
 
@@ -99,7 +99,7 @@ From a fresh reset, before creating anything, look at the system as a new user w
 ### Stage 4 — User account lifecycle
 The heart of module 3, and none of it existed in module 2.
 
-1. **Create an account** as tenant A via `/v1/byosmtp/*`, pointed at Mailpit
+1. **Create an account** as tenant A via `/v1/send-byo/*`, pointed at Mailpit
    - **Pass:** verify-on-add runs — connect, STARTTLS, AUTH, disconnect
 2. **Create one with a wrong password**
    - **Pass:** rejected, and **the real provider error is surfaced** — not a generic failure
@@ -129,7 +129,7 @@ Uses the domains from Part 1. The gate is setup-only, so this is where it's prov
 4. **Misaligned, `p=none`** → **allowed with a warning**, and the warning is present in the response (assert the warning, not just the allow)
 5. **Try to dispatch on an unacknowledged warning**
    - **Pass:** it does **not** dispatch until acknowledged
-6. **Acknowledge, restart the Brain**
+6. **Acknowledge, restart the Control**
    - **Pass:** the acknowledgment survives
 7. **Change the From to a different domain**
    - **Pass:** re-acknowledgment is required — the old one doesn't carry over
@@ -145,7 +145,7 @@ Uses the domains from Part 1. The gate is setup-only, so this is where it's prov
 ### Stage 6 — Security and tenant isolation
 Module 3 is multi-tenant, so this is a real test now.
 
-1. Create a credential, then `GET` it, list it, and grep the Brain and box logs
+1. Create a credential, then `GET` it, list it, and grep the Control and worker logs
    - **Pass:** the secret appears nowhere — only `has_credential`
 2. **Grep for the secret in base64, not just plaintext.** SMTP AUTH transmits it encoded
    - **Pass:** absent in both forms
@@ -208,12 +208,12 @@ Module 3 is multi-tenant, so this is a real test now.
    - **Pass:** job `bounced`, no retry, and the account's score and `consecutive_failures` **unchanged**
 7. **Daily limit** set low enough to hit mid-campaign
    - **Pass:** account pauses, jobs requeue, `report` shows *waiting for capacity* — never failed
-8. **`docker kill` a box container** mid-send (abrupt, not graceful)
+8. **`docker kill` a worker container** mid-send (abrupt, not graceful)
    - **Pass:** reclaimed, re-dispatched, and Mailpit shows **exactly one** copy
-9. **Restart the Brain** mid-campaign
+9. **Restart the Control** mid-campaign
    - **Pass:** orphans recover, nothing lost or duplicated
 10. **`docker stop` Postgres** for a few minutes, then start it
-    - **⚠ PRECONDITION — on the default stack this step DESTROYS the database instead of simulating an outage.** `scripts/dev.sh` always merges `tests/harness/compose.test.yml`, which puts Postgres's data directory on **tmpfs** (RAM). A `docker stop` frees that tmpfs, so `docker start` brings up an **empty** Postgres and the Brain reports `relation "byosmtp.jobs" does not exist` — a false RED that looks like a catastrophic recovery bug. Confirmed live, 2026-08-03. Bring up a **durable-volume stack** for this step only. Write `/tmp/compose.durable.yml`:
+    - **⚠ PRECONDITION — on the default stack this step DESTROYS the database instead of simulating an outage.** `scripts/dev.sh` always merges `tests/harness/compose.test.yml`, which puts Postgres's data directory on **tmpfs** (RAM). A `docker stop` frees that tmpfs, so `docker start` brings up an **empty** Postgres and the Control reports `relation "send_byo.jobs" does not exist` — a false RED that looks like a catastrophic recovery bug. Confirmed live, 2026-08-03. Bring up a **durable-volume stack** for this step only. Write `/tmp/compose.durable.yml`:
       ```yaml
       services:
         postgres:
@@ -229,8 +229,8 @@ Module 3 is multi-tenant, so this is a real test now.
       ```
       docker compose -f docker-compose.yml -f tests/harness/compose.test.yml -f /tmp/compose.durable.yml up -d
       ```
-      Verify before you trust the result — `docker inspect byosmtp-module-postgres-1 --format '{{.HostConfig.Tmpfs}}'` must print `map[]`, not `map[/var/lib/postgresql/data:]`. Note `--format '{{range .Mounts}}'` does **not** list tmpfs mounts at all, so it cannot be used for this check. Then seed accounts and a campaign on this stack (it starts empty) before injecting the outage.
-    - **Pass:** the Brain halts cleanly, **invents nothing** — no job marked sent or failed during the outage — and resumes with no double-processing. *The single most important assertion in this guide.*
+      Verify before you trust the result — `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` must print `map[]`, not `map[/var/lib/postgresql/data:]`. Note `--format '{{range .Mounts}}'` does **not** list tmpfs mounts at all, so it cannot be used for this check. Then seed accounts and a campaign on this stack (it starts empty) before injecting the outage.
+    - **Pass:** the Control halts cleanly, **invents nothing** — no job marked sent or failed during the outage — and resumes with no double-processing. *The single most important assertion in this guide.*
 11. **Quarantine every account** mid-campaign
     - **Pass:** jobs **wait**, not fail; re-enable one and the same jobs complete
 
@@ -259,7 +259,7 @@ Module 3 is multi-tenant, so this is a real test now.
    - **Pass:** it is **not** held in the digest
 4. Leave one condition ongoing across several evaluations
    - **Pass:** notified once, not repeatedly
-5. Restart the Brain with a dedup state active
+5. Restart the Control with a dedup state active
    - **Pass:** dedup survives — it's persisted, not in-memory
 6. **Read `/v1/admin/health`** against a known seeded state
    - **Pass:** the numbers match reality, not just a 200
@@ -271,15 +271,15 @@ Module 3 is multi-tenant, so this is a real test now.
 ### Stage 12 — Operational drills
 1. **KMS key restore** — back it up, destroy the working copy, restore from backup alone, decrypt an existing credential
    - **Pass:** decryption succeeds. Practise it where it costs nothing; in production, losing this key means every user re-enters their credentials
-2. **Add a box** — third container, fresh token and cert
-   - **Pass:** registers, appears in health, receives work with **no Brain reconfiguration**
-3. **Remove a box** cleanly → in-flight work recovers
-4. **`SIGTERM` the Brain** mid-campaign → drains, leaves work recoverable, next boot recovers it
-5. **Start a second Brain** → exits cleanly, no double-dispatch
+2. **Add a worker** — third container, fresh token and cert
+   - **Pass:** registers, appears in health, receives work with **no Control reconfiguration**
+3. **Remove a worker** cleanly → in-flight work recovers
+4. **`SIGTERM` the Control** mid-campaign → drains, leaves work recoverable, next boot recovers it
+5. **Start a second Control** → exits cleanly, no double-dispatch
 6. **Roll the latest migration down and back up** → reversible, no data loss
-   - **⚠ PRECONDITION.** The runner is forward-only by default and **refuses** a `down` outright: `down is forbidden unless BYOSMTP_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. That is the intended production posture (`install-and-deploy.md` Part 5), not a defect. Pass `-e BYOSMTP_MIGRATE_ALLOW_DOWN=true` for this drill, and one version at a time. In Git Bash also prefix `MSYS_NO_PATHCONV=1` (Part 2's path-rewriting gotcha applies to `-v "$PWD/db:/db:ro"` and `MIGRATIONS_DIR=/db/migrations`).
+   - **⚠ PRECONDITION.** The runner is forward-only by default and **refuses** a `down` outright: `down is forbidden unless SEND_BYO_MIGRATE_ALLOW_DOWN=true (forward-only in prod)`. That is the intended production posture (`install-and-deploy.md` Part 5), not a defect. Pass `-e SEND_BYO_MIGRATE_ALLOW_DOWN=true` for this drill, and one version at a time. In Git Bash also prefix `MSYS_NO_PATHCONV=1` (Part 2's path-rewriting gotcha applies to `-v "$PWD/db:/db:ro"` and `MIGRATIONS_DIR=/db/migrations`).
 7. **Delete an account**, then confirm it is never selected for a send while its record persists; after the retention window, confirm the secret is genuinely gone
-   - **⚠ PRECONDITION — two traps, both of which make this step appear to fail when the system is correct.** First: `purge_after` is **stamped at DELETE time** from the live `account_retention_window_sec` (`platformapi/account_delete.go`), deliberately — a later config change never retroactively moves an existing account's purge date. So **lower the retention window BEFORE the delete**, not after; lowering it afterwards leaves the already-stamped `purge_after` untouched and you will wait out the original window. Second: the purge sweeper re-reads `account_purge_sweep_interval_ms` only when it schedules the *next* sleep (`dispatch/purge.go`'s `PurgeRunner.Run`), so a live `PUT` does **not** shorten a sleep already in progress — either wait out the old interval once or restart the Brain to pick it up immediately. Both are config-not-code working as designed (Rule 1); neither is a purge bug.
+   - **⚠ PRECONDITION — two traps, both of which make this step appear to fail when the system is correct.** First: `purge_after` is **stamped at DELETE time** from the live `account_retention_window_sec` (`platformapi/account_delete.go`), deliberately — a later config change never retroactively moves an existing account's purge date. So **lower the retention window BEFORE the delete**, not after; lowering it afterwards leaves the already-stamped `purge_after` untouched and you will wait out the original window. Second: the purge sweeper re-reads `account_purge_sweep_interval_ms` only when it schedules the *next* sleep (`dispatch/purge.go`'s `PurgeRunner.Run`), so a live `PUT` does **not** shorten a sleep already in progress — either wait out the old interval once or restart the Control to pick it up immediately. Both are config-not-code working as designed (Rule 1); neither is a purge bug.
 
 ---
 
@@ -298,7 +298,7 @@ Module 3 is multi-tenant, so this is a real test now.
 Green on everything above does **not** tell you:
 
 - **Real provider quirks** — SES and Workspace differ in auth mechanisms, TLS behaviour, rate-limit responses, and identity rules. This is module 3's largest unknown, because your users' providers are arbitrary
-- **Inbox placement** — Mailpit accepts everything and has no spam filter
+- **Inworker placement** — Mailpit accepts everything and has no spam filter
 - **Real deliverability and domain reputation**
 - **Real bounce and complaint behaviour**
 - **Real network conditions** — containers on one host aren't a network
@@ -331,8 +331,8 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 - [ ] Credential update auto-clears an auth quarantine
 - [ ] Un-quarantine rate-limited; test-verified bypasses
 - [ ] Hard bounce doesn't penalise the account
-- [ ] Box death produces exactly one delivered copy
-- [ ] Brain restart loses and duplicates nothing
+- [ ] Worker death produces exactly one delivered copy
+- [ ] Control restart loses and duplicates nothing
 - [ ] **Database outage invents no outcomes**
 - [ ] Caps enforced; overrides apply per-user
 - [ ] Suspension halts losslessly and pauses the expiry clock
@@ -340,8 +340,8 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 - [ ] Ten failures produce one digest; immediate events aren't held; dedup survives restart
 - [ ] Health endpoint reflects true state
 - [ ] **KMS key restore drill passed**
-- [ ] Adding a box needs no Brain reconfiguration
-- [ ] Second Brain exits cleanly
+- [ ] Adding a worker needs no Control reconfiguration
+- [ ] Second Control exits cleanly
 - [ ] Deleted account never selected; secret gone after the window
 - [ ] All-toggles-off byte-identical; security holds with all toggles on
 - [ ] Auto-quarantine still in **shadow**

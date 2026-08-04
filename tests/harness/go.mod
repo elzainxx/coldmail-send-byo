@@ -1,4 +1,4 @@
-module github.com/byosmtp-module/harness
+module github.com/coldmail-send-byo/harness
 
 go 1.23
 

@@ -14,7 +14,7 @@ This page is only about wiring the signals up.
 |---|---|---|
 | `GET /healthz` | **none** | Liveness. "The process is up." |
 | `GET /readyz` | **none** | Readiness. DB reachable **and** singleton lock genuinely held. `200` = ready, `503` = not. |
-| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, box liveness, account summaries, error counts over a rolling window, shadow-mode summary, per-destination throttle patterns, and active alert conditions. |
+| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, worker liveness, account summaries, error counts over a rolling window, shadow-mode summary, per-destination throttle patterns, and active alert conditions. |
 
 `/healthz` and `/readyz` are deliberately unauthenticated and deliberately thin — they carry no
 operational detail, which is what makes exposing them to a monitoring service safe.
@@ -29,22 +29,22 @@ bearer key and exposes real operational state; it is a Domain B route, not a pro
 `/readyz` is the right probe because it fails for the two reasons that actually matter:
 
 ```
-GET http://<brain-host>:8080/readyz
+GET http://<control-host>:8080/readyz
 expect: HTTP 200 and body {"status":"ready","db":true,"singleton_lock":true,...}
 alert on: any non-200, or db:false, or singleton_lock:false
 ```
 
-- `db:false` — the Brain cannot reach Postgres. Dispatch has halted on bounded backoff; the Brain
+- `db:false` — the Control cannot reach Postgres. Dispatch has halted on bounded backoff; the Control
   stays alive and recovers on its own when the DB returns, needing no reconciliation.
-- `singleton_lock:false` — the Brain is running but does **not** hold the dispatch lock, so **nothing
+- `singleton_lock:false` — the Control is running but does **not** hold the dispatch lock, so **nothing
   is dispatching**. This is the failure a naive `/healthz` check misses entirely, and it is the
   reason to probe `/readyz` instead. Since 2026-07-29 (G11-OD-1 / ADR-0011) this is **enforced, not
   merely reported**: the dispatch, reclaim and retention loops pause while the lock is unheld, and the
   keeper re-attempts acquisition every `brain_singleton_reacquire_interval_sec` (default 5s), so a
   transient loss usually self-heals within seconds and the alert clears on its own. Two consecutive
-  failures therefore mean the lock is *genuinely* unavailable — most often because another Brain took
+  failures therefore mean the lock is *genuinely* unavailable — most often because another Control took
   it — not that a blip is in progress. See the runbook's
-  [`singleton_lock:false` on a Brain that was previously ready](operator-runbook.md#readyz-says-singleton_lockfalse-on-a-brain-that-was-ready-mid-life-lock-loss).
+  [`singleton_lock:false` on a Control that was previously ready](operator-runbook.md#readyz-says-singleton_lockfalse-on-a-control-that-was-ready-mid-life-lock-loss).
 
 A 30–60s interval is plenty. Alert on two consecutive failures rather than one, so a restart during a
 deploy does not page anyone.
@@ -53,15 +53,15 @@ Use `/healthz` only where you need a pure "is the process alive" check that stay
 outage — e.g. a container orchestrator's liveness probe, where restarting on a DB outage would be
 exactly the wrong response.
 
-Boxes expose **no** listener at all, so there is nothing to probe on a box host. Box liveness is
-observed from the Brain, in `boxes` on the admin health endpoint. That is by design (see
+Workers expose **no** listener at all, so there is nothing to probe on a worker host. Worker liveness is
+observed from the Control, in `workers` on the admin health endpoint. That is by design (see
 [`security-posture.md`](./security-posture.md) §4).
 
 ---
 
 ## 3. Alert webhook
 
-The Brain POSTs a JSON payload on the **rising edge** of each alert condition. Set the destination
+The Control POSTs a JSON payload on the **rising edge** of each alert condition. Set the destination
 with the `alert_webhook_url` config key — empty (the default) means alerting is off and conditions
 remain visible only via the health endpoint.
 
@@ -77,7 +77,7 @@ curl -fsS -X PUT "$ADMIN/v1/admin/config/alert_webhook_url" \
 It takes effect **immediately, with no redeploy** — the URL is re-read on each health evaluation.
 Only `http://` or `https://` values are accepted; anything else is rejected at write time.
 
-> **`BYOSMTP_ALERT_WEBHOOK_URL` in `.env.example` is inert.** No code reads that variable — the
+> **`SEND_BYO_ALERT_WEBHOOK_URL` in `.env.example` is inert.** No code reads that variable — the
 > webhook destination comes *only* from the `alert_webhook_url` config row. Setting the env var alone
 > does nothing. Recorded in [`future-work.md`](./future-work.md).
 
@@ -88,12 +88,12 @@ capability for the receiving system.
 
 ```json
 {
-  "condition": "box_death",
+  "condition": "worker_death",
   "severity": "critical",
   "subject": { "type": "box", "id": "<uuid>" },
   "detail":  { "...": "condition-specific" },
   "fired_at": "2026-07-28T14:03:11Z",
-  "module": "byosmtp"
+  "module": "send_byo"
 }
 ```
 
@@ -126,8 +126,8 @@ Because conditions are evaluated on request, wire a scheduled poll. Without it, 
 ```bash
 # /etc/cron.d/sender-health  — evaluate conditions every 5 minutes so the webhook can fire.
 # The response is discarded; the POINT is the evaluation. Keep the key out of the crontab itself.
-*/5 * * * * brain curl -fsS -m 10 -o /dev/null \
-  -H "Authorization: Bearer $(cat /etc/byosmtp/admin.key)" \
+*/5 * * * * control curl -fsS -m 10 -o /dev/null \
+  -H "Authorization: Bearer $(cat /etc/send_byo/admin.key)" \
   http://127.0.0.1:8080/v1/admin/health || true
 ```
 
@@ -137,7 +137,7 @@ Notes on that snippet:
 - The key is read from a `0400` file owned by the cron user, not embedded in the crontab (which is
   world-readable on many systems).
 - `|| true` so a failed poll does not generate cron mail noise; the uptime monitor on `/readyz` is
-  what tells you the Brain is down.
+  what tells you the Control is down.
 - **No `%` anywhere in a crontab command.** Cron treats `%` as a newline, so adding something like
   `-w '%{http_code}'` to that line silently truncates the command. Put anything that needs `%` in a
   script and call the script.
@@ -155,7 +155,7 @@ has had at least one `throttle`-classified `job_events` row inside the trailing
 accounts affected. This is deliberately **not** a per-user view — a user already sees their own
 account paused for throttling. What this array answers instead is a question no per-user view can:
 *are several unrelated users independently getting throttled by the same destination provider*, which
-is the shape of "our box IPs are rate-limited," not "one user is sending too aggressively."
+is the shape of "our worker IPs are rate-limited," not "one user is sending too aggressively."
 
 `distinct_users_affected` is the field to watch. Once it reaches `destination_throttle_user_threshold`
 for some domain, that domain also surfaces as a `destination_throttles` entry in `active_conditions[]`
@@ -192,7 +192,7 @@ There is no dedicated "last successful delivery" timestamp field on the health e
 loop's own log lines (`notify: delivered N notification(s) this tick`) are the only built-in signal,
 and going quiet in the log over more than a few `notification_tick_interval_sec` periods with pending
 work known to exist is the thing to alert on if you ship log-based alerting. Absent that, the
-observable proxy is the `byosmtp.notifications` table itself: a row whose `state = 'pending'` and
+observable proxy is the `send_byo.notifications` table itself: a row whose `state = 'pending'` and
 whose `first_seen_at` is older than `notification_digest_window_sec` (or `notification_dedup_window_sec`
 for a row already delivered once) with no advancing `notified_at` is exactly what a stalled loop looks
 like from the outside. This gap — no first-class "is the notification loop stuck" health field — is
@@ -202,22 +202,22 @@ recorded in [`future-work.md`](./future-work.md) §9 as **`FW-M3-10`** rather th
 
 ## 6. A concrete end-to-end example
 
-A minimal, complete hookup for a single-Brain deployment:
+A minimal, complete hookup for a single-Control deployment:
 
-1. **Uptime monitor** (any external service, or a second host): `GET http://<brain>:8080/readyz` every
-   60s, alert after two consecutive non-200s. Covers "Brain down", "DB unreachable", "not holding the
+1. **Uptime monitor** (any external service, or a second host): `GET http://<control>:8080/readyz` every
+   60s, alert after two consecutive non-200s. Covers "Control down", "DB unreachable", "not holding the
    dispatch lock".
 2. **Health poll**: the cron entry above, every 5 minutes. This is what makes the webhook work.
 3. **Webhook destination**: set `alert_webhook_url` to your incident channel's inbound URL. You now
-   get a message the first time an account is quarantined or a box dies. Treat this
-   value as **privileged config**: it is validated for scheme prefix only, so the Brain will POST from
+   get a message the first time an account is quarantined or a worker dies. Treat this
+   value as **privileged config**: it is validated for scheme prefix only, so the Control will POST from
    inside your trust boundary to any address it resolves — including loopback, RFC-1918, and cloud
-   link-local metadata. Constrain the Brain's egress at the network layer rather than relying on the
+   link-local metadata. Constrain the Control's egress at the network layer rather than relying on the
    value being sensible ([`security-posture.md`](./security-posture.md) §3.14).
 4. **On receiving an alert**: open the runbook at "Alert conditions → triage", and run
    `curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY" | jq` to see current state —
    the alert tells you *what*, the endpoint tells you *now*.
-5. **Log shipping** (optional but recommended): the Brain logs internal failure reasons keyed by
+5. **Log shipping** (optional but recommended): the Control logs internal failure reasons keyed by
    `request_id`, which is the *only* place the detail behind a client error envelope exists. Without
    log retention, a reported error is a code and a request id with nothing behind them.
 
@@ -231,8 +231,8 @@ the prerequisites in [`install-and-deploy.md`](./install-and-deploy.md).
 - **No metrics endpoint, no Prometheus exposition, no tracing exporter.** `GET /v1/admin/health` is
   a JSON snapshot, not a time series. If you want history, poll it and store the response — several
   fields (`send_rate_per_min`, `errors_last_window`) are already windowed and graph cleanly.
-- **No "cleared" webhook** (§3), and one asymmetry worth knowing: `box_death` derives from live state
-  (a box that reconnects drops out on its own), while `account_quarantined` is scoped to
+- **No "cleared" webhook** (§3), and one asymmetry worth knowing: `worker_death` derives from live state
+  (a worker that reconnects drops out on its own), while `account_quarantined` is scoped to
   `health_metrics_window_sec` because a quarantine is a point-in-time event. **That condition aging
   out of the window does not mean the account recovered** — use the standing `accounts.quarantined`
   count instead. The runbook covers this.

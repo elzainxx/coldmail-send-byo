@@ -49,36 +49,36 @@ claiming "at fork" is a claim to check, not a comment to trust.
 
 | Area | Paths | Inherited state at fork | Divergence observed (module 3) | Module-2 provenance |
 |---|---|---|---|---|
-| Box service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/box/` | Verbatim (Gate B: identity rename only) | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below; no longer verbatim | `module-2/phase-6-pacing-and-dead-box-detection.md`, `module-2/phase-7-runtime-hardening.md` |
-| Content variation (12 toggles, all-off byte-identical) | `services/box/src/variation*.js`, `tests/harness/phase8_variation.sh` | Verbatim | none — build plan: inherited whole; still verbatim | `module-2/phase-8-content-variation.md` |
-| Box↔Brain channel (mTLS, register/heartbeat, send stream, persist-ack) | `internal/boxlink/`, `internal/boxproto/`, `src/boxlink/` | Verbatim | none planned; still verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0008 |
+| Worker service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/worker/` | Verbatim (Gate B: identity rename only) | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below; no longer verbatim | `module-2/phase-6-pacing-and-dead-worker-detection.md`, `module-2/phase-7-runtime-hardening.md` |
+| Content variation (12 toggles, all-off byte-identical) | `services/worker/src/variation*.js`, `tests/harness/phase8_variation.sh` | Verbatim | none — build plan: inherited whole; still verbatim | `module-2/phase-8-content-variation.md` |
+| Worker↔Control channel (mTLS, register/heartbeat, send stream, persist-ack) | `internal/workerlink/`, `internal/workerproto/`, `src/workerlink/` | Verbatim | none planned; still verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0008 |
 | Credential encryption (AES-256-GCM, AAD-bound, key-id label check) | `internal/credential/`, `internal/kms/` | Verbatim | Phase 3 adds the break-glass read path around this code (`internal/adminapi`), the encryption primitives themselves unchanged | `module-2/phase-2-account-management.md` |
-| Job lifecycle, append-only event log, actor GUC | `db/migrations/byosmtp_0003..0008`, `byosmtp_0022` (see the function-body note below) | Verbatim (identifiers renamed `sender`→`byosmtp` only, Gate B) | Phase 1 additive (new columns/tables alongside, not touching these); **Phase 7 replaces `fn_job_events_on_state_change`'s body** (defined in `byosmtp_0022`, not the `byosmtp_0008` that created the function — see the function-body note) | ADR-0008 (grants trap), `module-2/phase-3-minimal-send-path.md` |
-| Idempotency (`provider_message_id`, `attempt_token`) | `byosmtp_0020`, `internal/dispatch/` | Verbatim | none planned; still verbatim | `module-2/phase-7-runtime-hardening.md` |
+| Job lifecycle, append-only event log, actor GUC | `db/migrations/send_byo_0003..0008`, `send_byo_0022` (see the function-body note below) | Verbatim (identifiers renamed `sender`→`send_byo` only, Gate B) | Phase 1 additive (new columns/tables alongside, not touching these); **Phase 7 replaces `fn_job_events_on_state_change`'s body** (defined in `send_byo_0022`, not the `send_byo_0008` that created the function — see the function-body note) | ADR-0008 (grants trap), `module-2/phase-3-minimal-send-path.md` |
+| Idempotency (`provider_message_id`, `attempt_token`) | `send_byo_0020`, `internal/dispatch/` | Verbatim | none planned; still verbatim | `module-2/phase-7-runtime-hardening.md` |
 | Error taxonomy, requeue-only re-dispatch | `internal/dispatch/classify.go` | Verbatim | Phase 5 (dual quarantine triggers) reads this classifier's output, does not modify it | `module-2/phase-5-error-taxonomy-status-quarantine.md` |
-| Pacing (per-lane random delay) | `internal/dispatch/` | Verbatim | Phase 6 (per-user tuning) — see §7.4 entry 2, the shrink-comment bug found exactly here | `module-2/phase-6-pacing-and-dead-box-detection.md`, ADR-0013 |
-| Reclaim loop, heartbeat dead-box detection, lease expiry, startup rescan | `internal/dispatch/reclaim*.go`, `rescan*.go` | Verbatim | none planned; still verbatim | `module-2/phase-6-pacing-and-dead-box-detection.md` |
-| Singleton guard incl. ADR-0011 pause + re-acquire | `internal/singleton/`, `byosmtp_0023` | Verbatim | none planned; still verbatim | ADR-0011 |
+| Pacing (per-lane random delay) | `internal/dispatch/` | Verbatim | Phase 6 (per-user tuning) — see §7.4 entry 2, the shrink-comment bug found exactly here | `module-2/phase-6-pacing-and-dead-worker-detection.md`, ADR-0013 |
+| Reclaim loop, heartbeat dead-worker detection, lease expiry, startup rescan | `internal/dispatch/reclaim*.go`, `rescan*.go` | Verbatim | none planned; still verbatim | `module-2/phase-6-pacing-and-dead-worker-detection.md` |
+| Singleton guard incl. ADR-0011 pause + re-acquire | `internal/singleton/`, `send_byo_0023` | Verbatim | none planned; still verbatim | ADR-0011 |
 | Dispatcher, routing, eligibility | `internal/dispatch/eligibility.go`, `dispatch.go` | Verbatim at fork | Phases 1, 2, 6 — heavy (pool removal, per-user config resolution, routing strategy); no longer verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0010 |
 | Admin + platform API surfaces | `internal/adminapi/`, `internal/platformapi/` | Verbatim at fork | Phases 3, 5, 6, 7 — heavy; no longer verbatim | `module-2/phase-2-account-management.md`, `module-2/phase-9-contract-and-doc-completions.md` |
-| Migration runner + preflight | `tools/byosmtp-migrate/`, `db/preflight/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
+| Migration runner + preflight | `tools/send-byo-migrate/`, `db/preflight/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
 | Harness + 7 CI gates | `tests/harness/`, `.github/workflows/` | Verbatim except identity rename (six gates at fork) | Phases 1–7 add coverage per phase; Phase 7 adds the 7th gate (`user_output_scrub`) | `module-2/phase-9_5-operability-and-control-plane-safety.md` |
-| Cert / secret / provisioning tooling | `tools/gen-certs.sh`, `gen-secrets.sh`, `provision-box/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
+| Cert / secret / provisioning tooling | `tools/gen-certs.sh`, `gen-secrets.sh`, `provision-worker/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
 | Local dev loop | `scripts/dev.sh`, `Makefile`, `docker-compose.yml` | Verbatim except identity rename | Gate B rename + host-port offset, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
 
 ## Two forecast corrections, carried from the plan rather than left for later discovery
 
 The table above already applies these; recorded here so nobody re-derives them:
 
-1. **The box is not untouched.** M3-P7-OD-2 (AUTH PLAIN in scope) and M3-P7-OD-8 (`scrubSecret`
-   throws on a zeroed buffer) are both planned changes to `services/box/src/smtp.js`. The
+1. **The worker is not untouched.** M3-P7-OD-2 (AUTH PLAIN in scope) and M3-P7-OD-8 (`scrubSecret`
+   throws on a zeroed buffer) are both planned changes to `services/worker/src/smtp.js`. The
    consequence this manifest exists to deliver: **a module 2 `smtp.js` bug will no longer apply
    to module 3 unchanged once Phase 7 lands.** The direction is not symmetric — module 3 is
    planned to be strictly *more* fail-closed on the credential path.
 2. **A migration-resident function body is not covered by a file-based row.** Phase 7 §8 does a
    `CREATE OR REPLACE` on `fn_job_events_on_state_change`. A function's live definition is the
-   **last** `CREATE OR REPLACE` in the chain — `sender_0022`, not the `sender_0008` that first
-   created it — so `git diff` on `sender_0008` alone returns empty and still tells you nothing
+   **last** `CREATE OR REPLACE` in the chain — `send_byo_0022`, not the `send_byo_0008` that first
+   created it — so `git diff` on `send_byo_0008` alone returns empty and still tells you nothing
    about whether the function diverged. For SQL-resident logic, check the **defining** migration,
    not the creating one.
 
@@ -139,7 +139,7 @@ not have to re-derive it.
    **Present, untested in module 2** — nothing there would catch a future transposition. Module 3
    pins it with an explicit assertion (construct with a known credential; assert `e.message` equals
    the reason and contains none of it) plus a transposition as its own negative control.
-6. **The box-side scrub is correct only by statement ordering nothing enforces.** In `stream.js`'s
+6. **The worker-side scrub is correct only by statement ordering nothing enforces.** In `stream.js`'s
    `finally`, the report is assembled before `credential.zero()` runs, and `scrubSecret` returns
    text **unchanged** on an already-zeroed buffer — so a scrub moved to after the zero would return
    raw provider text and still report success. Found by Phase 7 §9.1 (M3-P7-OD-8, ruled
@@ -154,7 +154,7 @@ not have to re-derive it.
    build migrated template databases gating 141 tests across four Go packages
    (`TEST_TEMPLATE_DB`); `.github/workflows/real-infra.yml` runs `gofmt`/`go vet` then
    `scripts/dev.sh certs`/`up`/`test` directly, with **no build step for that binary anywhere** —
-   unlike `provision-box`, which `gen_all_secrets()` builds inline. On a fresh checkout the
+   unlike `provision-worker`, which `gen_all_secrets()` builds inline. On a fresh checkout the
    binary is absent, all three `up-and-set-password` calls fail silently (`|| true`), all 141
    gated tests `t.Skip()`, and because `go test` exits 0 on an all-skip package and `run.sh`'s
    `go_suite()` judges pass/fail only by grepping for a `FAIL` line, the harness still prints
@@ -179,20 +179,20 @@ not have to re-derive it.
    dial wrong afterward, with nothing in the script's own output to flag it. Confirmed identical
    in module 2's own `tests/harness/load_e11.sh` (same missing capture/restore). **Present,
    unfixed in module 2.** Module 3 fixes it: `ORIG_CONCURRENCY` is captured before the first ramp
-   step and restored in `cleanup()` alongside the box-container teardown.
+   step and restored in `cleanup()` alongside the worker-container teardown.
 
 **Also tracked here, not only in `future-work.md`:** `FW-M3-8`, the two Go module vulnerabilities
 with live call paths inherited from module 2's own Phase 10 R3 finding. Module 3 forks the same
 `go.mod` for all four Go modules, so it forks the same two exposures — **re-verify rather than
 inherit the claim**, since an upstream fix may have landed since module 2's Phase 10 close.
 
-**Re-verified 2026-08-03 (Phase 8 hygiene sweep):** both are STILL LIVE. `services/brain/go.mod`
+**Re-verified 2026-08-03 (Phase 8 hygiene sweep):** both are STILL LIVE. `services/control/go.mod`
 carries `github.com/jackc/pgx/v5 v5.7.4` (fix is v5.9.2+) and `golang.org/x/text v0.21.0` (fix is
 v0.39.0+) — `go list -m all` confirms neither has moved since module 2's Phase 10 close. The claim
 is not stale.
 
 **`x/net/publicsuffix` re-vendor check (M3-P4-OD-7, ruled 2026-07-31) — run, recorded per Rule 11.**
-`go list -m -u golang.org/x/net` from `services/brain/` reports a newer release exists:
+`go list -m -u golang.org/x/net` from `services/control/` reports a newer release exists:
 `v0.21.0 [v0.57.0]`. **Not bumped**, for the identical, already-documented reason `future-work.md`'s
 Go-toolchain-upgrade entry gives for `pgx`/`x/text`: `go get golang.org/x/net@v0.57.0` was tried in
 isolation and confirmed to force `go 1.23 → go 1.25.0` in `go.mod` (verified directly, then
@@ -201,7 +201,7 @@ bumps do. This is not a separate defect — it is the SAME builder-pin trap catc
 and the fix is the same one-line-different action already registered: upgrade the builder image
 first, then bump all three (`pgx`, `x/text`, `x/net`) together and re-verify the full harness, rather
 than bumping `x/net` alone and leaving the builder pinned. **What was safe to fix now, and was
-fixed:** `services/brain/go.mod` misclassified `golang.org/x/net` as an indirect dependency (`//
+fixed:** `services/control/go.mod` misclassified `golang.org/x/net` as an indirect dependency (`//
 indirect`) when `internal/fromgate/dmarc.go` and `evaluator.go` both import
 `golang.org/x/net/publicsuffix` directly — moved to the direct `require` block, version unchanged
 (`v0.21.0`), zero behavior change, confirmed by `go build ./...` and the full real-infra test suite

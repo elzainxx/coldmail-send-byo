@@ -10,14 +10,14 @@ Start at the [root README](../README.md) if you have not already.
 
 | Doc | What it answers |
 |---|---|
-| [`install-and-deploy.md`](./install-and-deploy.md) | How do I stand this up on a real server, from a bare VPS to a verified first send? How do I add a box, redeploy, roll back? What is the safe migration/deploy ordering? |
+| [`install-and-deploy.md`](./install-and-deploy.md) | How do I stand this up on a real server, from a bare VPS to a verified first send? How do I add a worker, redeploy, roll back? What is the safe migration/deploy ordering? |
 | [`operator-runbook.md`](./operator-runbook.md) | Something is broken — what do I do? Diagnostic trees for the real failure modes. |
 | [`go-live-checklist.md`](./go-live-checklist.md) | What must be confirmed before the first live deployment? |
 | [`disaster-recovery.md`](./disaster-recovery.md) | KMS key backup and recovery, DB restore, credential/key rotation. **Read the key-backup section before going live** — losing the master key is unrecoverable, and module 3's operator cannot rotate it (no side channel to any user's plaintext). |
 | [`monitoring.md`](./monitoring.md) | Where do I point uptime monitoring and the alert webhook? |
 | [`capacity-planning.md`](./capacity-planning.md) | How many users and accounts do I need for N sends/day, and what binds first? |
 | [`user-facing-copy.md`](./user-facing-copy.md) | Every string a user reads, and the evidence it is audited against. A user reads the sentence, not an error code — this is the contract that keeps those sentences honest. |
-| [`byosmtp-module-local-test-guide.md`](./byosmtp-module-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
+| [`coldmail-send-byo-local-test-guide.md`](./coldmail-send-byo-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
 | [`smoke-test-real-provider.md`](./smoke-test-real-provider.md) | The first-contact-with-a-real-provider procedure. Written, deliberately not yet run. |
 
 ## Reference (the integrator/extender tier)
@@ -30,10 +30,10 @@ Start at the [root README](../README.md) if you have not already.
 | [`security-posture.md`](./security-posture.md) | What is protected, how, and the honest residual risks — written to two audiences (an operator's own risk, and a user trusting the operator with a third-party credential). The page to hand a security reviewer. | — |
 | [`future-work.md`](./future-work.md) | What is deliberately **not** built, and why it was deferred. | — |
 | [`advisory-locks.md`](./advisory-locks.md) | Every advisory-lock key in the repo + the reserved band. | — |
-| [`load-test-results.md`](./load-test-results.md) | The measured single-Brain throughput ceiling (committed artifact, not a dashboard). | — |
+| [`load-test-results.md`](./load-test-results.md) | The measured single-Control throughput ceiling (committed artifact, not a dashboard). | — |
 | [`user-copy-strings.txt`](./user-copy-strings.txt) | The machine-checked ledger backing `user-facing-copy.md`: every string, its surface, the evidence it claims. | (copy ledger gate) |
 | `config-manifest.txt`, `config-consumers.txt` | Machine-readable inputs to the config gates. Not prose — do not hand-edit without re-running the gates. | both config gates |
-| `byosmtp_module_backend_architecture.svg`, `byosmtp_module_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid` | The canonical diagrams. | — |
+| `send_byo_app_backend_architecture.svg`, `send_byo_app_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid` | The canonical diagrams. | — |
 
 **Operating rules for changing the code** are in [`../CLAUDE.md`](../CLAUDE.md) — canonical, and
 deliberately not mirrored here (OD-11).

@@ -11,13 +11,13 @@ deployment, work through [`Docs/go-live-checklist.md`](./Docs/go-live-checklist.
 
 ## How it works
 
-Two services and one database. The **Brain** (Go) is the only thing that talks to Postgres and the
+Two services and one database. The **Control** (Go) is the only thing that talks to Postgres and the
 only thing that can decrypt an SMTP credential; exactly one is ever active, guarded by a Postgres
 advisory lock. It claims queued jobs, picks a healthy sending account, decrypts that account's
-credential, and pushes the job over mutual TLS to a **sender box** (Node.js) — a dumb SMTP relay
+credential, and pushes the job over mutual TLS to a **sender worker** (Node.js) — a dumb SMTP relay
 that ships no database driver and no KMS SDK, holds the credential in memory only, zeroes it on
-every exit from the send path, and reports the outcome back. Boxes scale horizontally and are never publicly
-reachable. Everything tunable — 53 keys — is a seeded row in `byosmtp.config`, changeable at
+every exit from the send path, and reports the outcome back. Workers scale horizontally and are never publicly
+reachable. Everything tunable — 53 keys — is a seeded row in `send_byo.config`, changeable at
 runtime with no redeploy; there are no hardcoded tuning constants. Full shape in
 [`Docs/architecture-overview.md`](./Docs/architecture-overview.md).
 
@@ -27,8 +27,8 @@ Needs Docker + Docker Compose. From a clone:
 
 ```bash
 bash scripts/dev.sh certs   # dev CA + mTLS leaves + dev KMS key + operator key -> writes .env
-bash scripts/dev.sh up      # postgres -> migrate -> brain -> box -> mailpit, blocks on healthchecks
-bash scripts/dev.sh seed    # dev fixtures (system user + dev box row)
+bash scripts/dev.sh up      # postgres -> migrate -> control -> worker -> mailpit, blocks on healthchecks
+bash scripts/dev.sh seed    # dev fixtures (system user + dev worker row)
 bash scripts/dev.sh test    # the real-infra behavioral harness (should be all-green)
 ```
 
@@ -67,12 +67,12 @@ The full index, including the rule that keeps these docs from drifting, is
 CLAUDE.md                 operating rules — the build-discipline anchor
 docker-compose.yml        the dev stack, identical to what CI runs
 scripts/dev.sh            the one entrypoint for local dev
-services/brain/           Go orchestrator — the ONLY DB client, the SOLE decryptor
-services/box/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
+services/control/           Go orchestrator — the ONLY DB client, the SOLE decryptor
+services/worker/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
 db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.down.sql)
 db/preflight/             platform-table existence checks, run before migrating
-tools/                    byosmtp-migrate, gen-certs, gen-secrets, provision-box (box + admin keys)
-tests/harness/            real-infra behavioral harness (real Postgres, real box, real SMTP)
+tools/                    send-byo-migrate, gen-certs, gen-secrets, provision-worker (worker + admin keys)
+tests/harness/            real-infra behavioral harness (real Postgres, real worker, real SMTP)
 tests/harness/checks/     the 7 blocking CI gates
 Docs/                     living documentation (operate + extend)
 Docs/history/             provenance — phase specs, ADRs, decision ledger, build record
@@ -81,8 +81,8 @@ deploy/                   production override material
 
 ## Tests and CI
 
-Tests run against real infrastructure — real Postgres, a real Brain↔box mTLS channel, a real SMTP
-server. There are no mock-the-database or mock-the-box tests; that is a hard rule, not a
+Tests run against real infrastructure — real Postgres, a real Control↔worker mTLS channel, a real SMTP
+server. There are no mock-the-database or mock-the-worker tests; that is a hard rule, not a
 preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite.
 
 Seven blocking CI gates run on every push, each catching a specific class of drift (M3-P0-OD-10:
@@ -97,7 +97,7 @@ the count was originally corrected from "Five" to "Six" — `drain_grace` was al
 | `migration_lint` | the migration chain has a gap, a missing `.down.sql`, or a non-self-tracking file |
 | `config_consumption` | a seeded key has no real consumer and is not marked RESERVED |
 | `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
-| `no_secret_leak` | the box registration token or its hash appears in service logs (the SMTP-credential canary scan lives in the send-path harness) |
-| `user_output_scrub` | `jobs.last_smtp_response` gains a reader outside its single named accessor, `jobs.last_error_message` gains a reader in `platformapi/`, a notification payload reads the raw column instead of the accessor, or `boxproto.Report.SMTPResponse` gains an unledgered consumer (Phase 7 §1.6) |
+| `no_secret_leak` | the worker registration token or its hash appears in service logs (the SMTP-credential canary scan lives in the send-path harness) |
+| `user_output_scrub` | `jobs.last_smtp_response` gains a reader outside its single named accessor, `jobs.last_error_message` gains a reader in `platformapi/`, a notification payload reads the raw column instead of the accessor, or `workerproto.Report.SMTPResponse` gains an unledgered consumer (Phase 7 §1.6) |
 
 Run any of them directly: `bash tests/harness/checks/<name>.sh`.
