@@ -44,6 +44,17 @@ func TestUnitPrice_QuoteAndDescribeReflectLiveConfig(t *testing.T) {
 	if model, ok := pricing["model"].(string); !ok || model != "flat_subscription" {
 		t.Fatalf("describe pricing.model=%v, want \"flat_subscription\" (M3-P7-OD-11): %s", pricing["model"], descResp.raw)
 	}
+	// D22 / fix-plan 5b: at the seeded default the cost half is inert, and describe must SAY so —
+	// a 0 cost is otherwise indistinguishable from a broken price lookup.
+	// FAIL-VERIFY: delete the `cost_fields_inert` line from handleDescribe and this fails
+	// ("missing cost_fields_inert").
+	inert, ok := pricing["cost_fields_inert"].(bool)
+	if !ok {
+		t.Fatalf("describe pricing missing cost_fields_inert (D22: a 0 cost must be DECLARED inert, not silent): %s", descResp.raw)
+	}
+	if !inert {
+		t.Fatalf("describe pricing.cost_fields_inert=false at the seeded default unit_price_credits=0, want true: %s", descResp.raw)
+	}
 
 	// Live write: PUT unit_price_credits=3 (direct SQL, same effect as the real admin endpoint) —
 	// the VERY NEXT quote/describe must reflect it, no server restart. This proves the field is
@@ -62,6 +73,27 @@ func TestUnitPrice_QuoteAndDescribeReflectLiveConfig(t *testing.T) {
 	if unit, ok := pricing2["unit_price_credits"].(float64); !ok || unit != 3 {
 		t.Fatalf("describe pricing.unit_price_credits=%v after PUT unit_price_credits=3, want 3: %s", pricing2["unit_price_credits"], descResp2.raw)
 	}
+	// THE ANTI-VACUITY CONTROL for cost_fields_inert (Rule 10). The assertion above would pass
+	// against a hardcoded `"cost_fields_inert": true` — which is exactly the bug worth guarding
+	// against, because unit_price_credits is LIVE-RETUNABLE (Rule 1) and a frozen `true` would tell
+	// a client the cost half is inert while the module is actually charging 3 credits a recipient.
+	// So: after the live retune, the SAME field must read false. A literal `true` fails here.
+	// FAIL-VERIFY: change handleDescribe's `unit == 0` to a literal `true` and this fails
+	// ("cost_fields_inert=true after PUT unit_price_credits=3").
+	inert2, ok := pricing2["cost_fields_inert"].(bool)
+	if !ok {
+		t.Fatalf("describe pricing missing cost_fields_inert after retune: %s", descResp2.raw)
+	}
+	if inert2 {
+		t.Fatalf("describe pricing.cost_fields_inert=true after PUT unit_price_credits=3, want false "+
+			"(the declaration must be DERIVED from the live unit, never hardcoded — a frozen `true` "+
+			"tells a client the cost half is inert while the module charges 3/recipient): %s", descResp2.raw)
+	}
+	// And the number it describes really did move, so `false` is the honest answer above.
+	if cost, ok := resp2.body["cost"].(float64); !ok || cost != 30 {
+		t.Fatalf("quote cost=%v after retune, want 30 (control for cost_fields_inert=false): %s", resp2.body["cost"], resp2.raw)
+	}
+
 	// Both tiers move together with the single source of truth (Phase 9 §2.2, E2).
 	tiers, ok := pricing2["tiers"].([]any)
 	if !ok || len(tiers) != 2 {

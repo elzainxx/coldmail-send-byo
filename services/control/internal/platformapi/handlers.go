@@ -321,6 +321,24 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			"model":              "flat_subscription",
 			"unit_price_credits": unit,
 			"tiers":              describeTiers(unit),
+			// D22 / fix-plan 5b: quote's `cost` is a REAL number that is legitimately 0 under this
+			// module's flat-subscription pricing — indistinguishable, to a caller, from a broken
+			// price lookup that happened to return 0. That silence is the defect: D4 returns a
+			// detectable 400, this returns 200 with a number a cost-preview UI will render as
+			// "0 credits" with no error. The canonical contract rules the FIELDS stay (§1.6: "a
+			// module with no per-unit charge reports unit_price_credits: 0 and cost: 0 ... the right
+			// call"), so the fix is not to change the number — it is to say so out loud here, in the
+			// verb whose whole job is telling a client what it would otherwise hardcode.
+			//
+			// DERIVED FROM `unit`, NEVER HARDCODED. unit_price_credits is live-retunable from
+			// send_byo.config on every request (Rule 1, readUnitPriceCredits) and send_byo_0048 only
+			// changed its DEFAULT — the mechanism is still live. A literal `true` here would become
+			// a lie the first time an operator retunes the key, and it would be a lie in the one
+			// direction that costs money: a client told the cost half is inert while it is actually
+			// charging. Deriving it means the declaration cannot outlive the condition it describes.
+			// The retune half of TestUnitPrice_QuoteAndDescribeReflectLiveConfig is the control:
+			// PUT unit_price_credits=3 must flip this to false, so a hardcoded `true` fails.
+			"cost_fields_inert": unit == 0,
 		},
 		// Phase 7 §5.1: the extension routes beyond the core four, generated from the SAME slice
 		// server.go's routes() mounts (describe_routes.go) — cannot drift, by construction. NEVER
