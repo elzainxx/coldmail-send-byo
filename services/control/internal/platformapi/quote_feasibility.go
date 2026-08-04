@@ -15,6 +15,24 @@ import (
 	"github.com/coldmail-send-byo/control/internal/userconfig"
 )
 
+// The reason/warning/basis vocabulary §4.2–§4.3 defines, as constants rather than literals inlined
+// at the emission sites. Promoted for fix-plan item 8: `describe.vocabularies` must publish exactly
+// what quote can emit, and a published list built from re-typed string literals is a list that goes
+// stale the first time a code is renamed. Referencing these from staticVocabularies means the
+// declaration cannot diverge from the switch below — the compiler moves both or neither. The wire
+// values are unchanged; quote_feasibility_test.go still asserts the literal strings, which is what
+// makes this promotion self-controlling (a typo in a constant fails those existing tests).
+const (
+	quoteReasonDispatchDisabled       = "dispatch_disabled"
+	quoteReasonExceedsQueueCap        = "exceeds_queue_cap"
+	quoteReasonNoEligibleAccounts     = "no_eligible_accounts"
+	quoteReasonAllAccountsUnverified  = "all_accounts_unverified"
+	quoteReasonFromGateBlocked        = "from_gate_blocked"
+	quoteWarningLongDuration          = "long_duration"
+	quoteEstimateBasisCurrentCapacity = "current_eligible_capacity"
+	quoteCapNameQueueDepth            = "queue_depth_cap"
+)
+
 // quoteReason mirrors §4.2's reasons[] entry shape — one per binding constraint, empty when
 // feasible. limit/requested are pointers so a reason that has neither (none currently defined, but
 // the shape stays uniform) omits them rather than emitting 0.
@@ -124,18 +142,18 @@ func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, rec
 	// exceeds_queue_cap's relevance anyway — there is nothing to route regardless of the cap).
 	switch {
 	case !dispatchEnabled:
-		f.Reasons = []quoteReason{{Code: "dispatch_disabled"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonDispatchDisabled}}
 	case recipientCount > uc.MaxQueuedJobs:
 		limit, requested := uc.MaxQueuedJobs, recipientCount
-		f.Reasons = []quoteReason{{Code: "exceeds_queue_cap", Limit: &limit, Requested: &requested, CapName: "queue_depth_cap"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonExceedsQueueCap, Limit: &limit, Requested: &requested, CapName: quoteCapNameQueueDepth}}
 	case elig.totalAccounts == 0:
-		f.Reasons = []quoteReason{{Code: "no_eligible_accounts"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonNoEligibleAccounts}}
 	case elig.verifiedAccounts == 0:
-		f.Reasons = []quoteReason{{Code: "all_accounts_unverified"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonAllAccountsUnverified}}
 	case elig.fromBlockedAccounts == elig.totalAccounts:
-		f.Reasons = []quoteReason{{Code: "from_gate_blocked"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonFromGateBlocked}}
 	case elig.eligibleCount == 0:
-		f.Reasons = []quoteReason{{Code: "no_eligible_accounts"}}
+		f.Reasons = []quoteReason{{Code: quoteReasonNoEligibleAccounts}}
 	}
 
 	f.Feasible = len(f.Reasons) == 0
@@ -146,7 +164,7 @@ func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, rec
 	// §4.3 requirement 1: REQUIRED and non-null on every feasible:true response, computed from
 	// THIS MOMENT's eligible capacity — never omitted, even for a one-minute campaign.
 	f.EstimatedDurationSec = estimateDurationSec(recipientCount, f.EffectiveConcurrency, uc.SendDelayMinSec, uc.SendDelayMaxSec)
-	f.EstimateBasis = "current_eligible_capacity"
+	f.EstimateBasis = quoteEstimateBasisCurrentCapacity
 
 	projectionEnabled, ok, err := s.readConfigBool(ctx, "quote_capacity_projection_enabled")
 	if err != nil {
@@ -168,7 +186,7 @@ func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, rec
 		return quoteFeasibility{}, newErr(codeInternalError, "quote_long_duration_warn_sec_lookup_error")
 	}
 	if ok && f.EstimatedDurationSec >= warnSec {
-		f.Warnings = []quoteWarning{{Code: "long_duration", EstimatedDurationSec: f.EstimatedDurationSec, ThresholdSec: warnSec}}
+		f.Warnings = []quoteWarning{{Code: quoteWarningLongDuration, EstimatedDurationSec: f.EstimatedDurationSec, ThresholdSec: warnSec}}
 	}
 	return f, nil
 }

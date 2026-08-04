@@ -305,6 +305,15 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 	unit := s.readUnitPriceCredits(ctx)
+	// fix-plan item 8. Read LIVE from pg_enum on every describe — see describe_vocabularies.go's
+	// header for why this one FAILS the request rather than falling back the way readUnitPriceCredits
+	// above deliberately does (a tunable integer has an honest default; a vocabulary does not, and the
+	// only available fallback is the stale hardcoded list this item exists to delete).
+	vocabularies, verr := s.describeVocabularies(ctx)
+	if verr != nil {
+		s.fail(w, r, verr)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"module":      "send_byo",
 		"api_version": "v1",
@@ -317,8 +326,15 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			"content_variation":     true,
 		},
 		"pricing": map[string]any{
-			"currency":           "credits",
-			"model":              "flat_subscription",
+			"currency": "credits",
+			"model":    pricingModelFlatSubscription,
+			// fix-plan item 6: the declared value set, so a client can switch on `model` without
+			// already knowing every module's answer. ADDITIVE-ONLY (Rule 5) and deliberately WIDER than
+			// what any module reports today — it includes `free`, which neither sender emits, because
+			// the point is that a client writes its branch once and a third module's launch is not a
+			// client-side code change. The control asserts `model` is a MEMBER of `models`, so this
+			// module cannot report a value it did not declare.
+			"models":             pricingModels,
 			"unit_price_credits": unit,
 			"tiers":              describeTiers(unit),
 			// D22 / fix-plan 5b: quote's `cost` is a REAL number that is legitimately 0 under this
@@ -346,6 +362,14 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		// Domain A, and enumerating the admin surface to a platform token is a free map of it).
 		"extension_routes": describeExtensionRoutesJSON(s.extensionRoutes()),
 		"schemas":          describeSchemas(),
+		// fix-plan item 8, the two additions that turn `schemas` from "what shape" into "what shape AND
+		// what values". vocabularies{} publishes every enum a response on this surface can carry, read
+		// live from the schema; error_codes[] publishes what this module can emit, derived from the SAME
+		// codeStatus map writeError resolves a status from, so it can neither omit an emittable code nor
+		// invent one. Both exist because a UI that cannot ask gets its answers from prose and breaks
+		// silently when a value is added — the failure additive-only versioning was meant to prevent.
+		"vocabularies": vocabularies,
+		"error_codes":  describeErrorCodes(),
 		// bulk_add's UI copy contract (Phase 3 §4.3): the module has no UI, so what it owns is the
 		// CONTRACT the UI must honor. warning_code is versioned and additive-only (Rule 5);
 		// warning_text is the required baseline the UI MUST display before the file picker and

@@ -33,6 +33,15 @@ type bulkAddReq struct {
 	Accounts []bulkAddRow `json:"accounts"`
 }
 
+// The two §4.2 per-row outcomes, as constants rather than literals repeated at four return sites.
+// Promoted for fix-plan item 8 (describe.vocabularies must publish exactly what this response can
+// carry, derived from the emitting code rather than re-typed); the wire values are unchanged, and
+// account_bulk_add_test.go's existing literal assertions are the control on the promotion.
+const (
+	bulkAddStatusCreated  = "created"
+	bulkAddStatusRejected = "rejected"
+)
+
 // bulkAddRowResult is one row of the §4.2 result vector. Row is the 1-based input index (so a
 // caller can map an outcome back to their file); Status is "created" or "rejected". A row that is
 // created but fails verification is Status:"created", Verification:"failed" — §2.5's two
@@ -159,7 +168,7 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 		details = append(details, collect(validateDailyLimit(*row.DailyLimit))...)
 	}
 	if len(details) > 0 {
-		return bulkAddRowResult{Status: "rejected", Code: "validation_failed", Details: details}
+		return bulkAddRowResult{Status: bulkAddStatusRejected, Code: "validation_failed", Details: details}
 	}
 
 	rowCtx, cancel := dbCtx(ctx)
@@ -167,7 +176,7 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 
 	dailyLimit, lerr := s.resolveDailyLimit(rowCtx, row.DailyLimit)
 	if lerr != nil {
-		return bulkAddRowResult{Status: "rejected", Code: lerr.internalReason}
+		return bulkAddRowResult{Status: bulkAddStatusRejected, Code: lerr.internalReason}
 	}
 
 	// createAccountRow's own doc comment: give it ctx (this row's slice of the request's own
@@ -179,14 +188,14 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 		// account_cap_reached / duplicate_account_for_user / an unacknowledged-warning refusal
 		// (M3-P4-OD-15) / any other clean apiError from the SAME create path C1 uses — never a raw
 		// SQLSTATE (translateAccountWrite already scrubbed it inside createAccountRow).
-		res := bulkAddRowResult{Status: "rejected", Code: cerr.internalReason}
+		res := bulkAddRowResult{Status: bulkAddStatusRejected, Code: cerr.internalReason}
 		if len(cerr.details) > 0 {
 			res.Details = cerr.details
 		}
 		return res
 	}
 
-	res := bulkAddRowResult{Status: "created", AccountID: accIDStr, Verification: "unverified"}
+	res := bulkAddRowResult{Status: bulkAddStatusCreated, AccountID: accIDStr, Verification: "unverified"}
 	// Phase 4 §2.4: each row gets its OWN From verdict, reported alongside the credential one.
 	res.AlignmentState = verdict.State
 	if verdict.Outcome != fromgate.OutcomeIndeterminate {

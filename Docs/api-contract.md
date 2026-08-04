@@ -220,7 +220,7 @@ means the last page.
 
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
-| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) |
+| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
 
 **`GET /v1/describe`'s `extension_routes[]`** (M3-Phase 7 §5.1) — every Domain A user-facing route
 below except the core four (`quote`/`run`/`report`/`describe` are implicit, uniform across
@@ -231,6 +231,44 @@ auth:"platform_service_token", scope:"user", description, request_schema_ref?,
 response_schema_ref?}`; `schemas` holds the shapes those refs point into. Operator (`/v1/admin/*`)
 routes are NEVER declared here — `describe` is served on Domain A, and enumerating the admin
 surface to a platform token would be a free map of it.
+
+**`GET /v1/describe`'s `vocabularies{}` and `error_codes[]`** (fix-plan item 8) — `extension_routes`
++ `schemas` told a caller which routes exist and what SHAPE their bodies have, but never which
+VALUES those bodies can carry, so every UI hardcoded this module's enums out of prose. That is the
+per-module special-casing the alignment effort exists to remove, and worse: a module ADDING an enum
+value broke those clients silently, which is the exact failure additive-only versioning was meant to
+prevent.
+
+- **`vocabularies{}`** — one entry per value set a Domain A response can carry, keyed by the
+  vocabulary's name, each `{source, values[], fields[]}`. `source:"db_enum"` entries are read from
+  `pg_enum` **LIVE on every request**, in the type's own `enumsortorder` (the order is part of the
+  contract — a client rendering a legend sees it): an operator who runs `ALTER TYPE … ADD VALUE`
+  changes what `describe` publishes with **no code edit and no redeploy**. `source:"module_constant"`
+  entries are the sets with no DB enum behind them (`details[].issue`, `quote`'s `reasons[].code` /
+  `warnings[].code` / `capacity.estimate_basis`, the bulk-add row `status`, `notifications`'
+  `subject_type`/`condition`, and `pricing.model`), and their `values[]` reference the SAME Go
+  constants the emitting code path uses — never a re-typed literal. `fields[]` names the response
+  paths that carry the value; every leaf is asserted to be a real JSON field in the production
+  source, so a renamed response field cannot leave a dangling path.
+  Two schema enums are DELIBERATELY absent, each with a recorded reason: `box_status` (worker-fleet
+  state, operator-only) and `suspend_reason` (`platformapi` reads only the boolean `suspended` flag
+  and reports the outcome as the `conflict` code; the reason is operator context). The accounting is
+  gated in both directions — every `send_byo` enum type must be either published or excluded, never
+  both and never neither, so a NEW user-facing enum cannot ship undeclared.
+- **`error_codes[]`** — every code this module can emit with the HTTP status it maps to
+  (`[{code, http_status}]`, sorted by status then code), **DERIVED by walking the same `codeStatus`
+  map `writeError` resolves a status from**. It therefore cannot list a code the module cannot emit,
+  nor omit one it can. The status is what makes the list actionable for a client meeting an
+  unrecognised code: it degrades by status. The fixed **message is deliberately NOT published** — it
+  is operator-facing English rather than a branchable value, and publishing it would invite clients
+  to match on message text, the coupling the coded envelope exists to eliminate.
+- **`describe` FAILS CLOSED on a vocabulary error**, returning `internal_error` rather than a partial
+  set — the deliberate opposite of `unit_price_credits`, which falls back to its seeded default. A
+  tunable integer has an honest default; a vocabulary does not, since the only fallback available is
+  a hardcoded list, which is precisely the stale-declaration failure this field exists to remove. A
+  client told "these are the values" would be misinformed rather than merely unserved, and `describe`
+  is a discovery call, not the send path. Per the two-vocabulary rule the offending type name appears
+  only in the internal reason logged against the `request_id`, never on the wire.
 
 > The worker↔Control send channel is a THIRD, internal machine-to-machine channel (mTLS, worker-initiated
 > persistent stream on the workerlink stream port) carrying
