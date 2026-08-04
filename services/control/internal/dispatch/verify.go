@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coldmail-send-byo/control/internal/workerproto"
 	"github.com/coldmail-send-byo/control/internal/credential"
+	"github.com/coldmail-send-byo/control/internal/workerproto"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

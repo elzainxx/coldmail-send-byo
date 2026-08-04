@@ -21,7 +21,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/coldmail-send-byo/control/internal/adminapi"
-	"github.com/coldmail-send-byo/control/internal/workerlink"
 	"github.com/coldmail-send-byo/control/internal/config"
 	"github.com/coldmail-send-byo/control/internal/credential"
 	"github.com/coldmail-send-byo/control/internal/db"
@@ -30,6 +29,7 @@ import (
 	"github.com/coldmail-send-byo/control/internal/kms"
 	"github.com/coldmail-send-byo/control/internal/platformapi"
 	"github.com/coldmail-send-byo/control/internal/singleton"
+	"github.com/coldmail-send-byo/control/internal/workerlink"
 )
 
 func main() {

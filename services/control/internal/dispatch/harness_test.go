@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/coldmail-send-byo/control/internal/adminapi"
-	"github.com/coldmail-send-byo/control/internal/workerproto"
 	"github.com/coldmail-send-byo/control/internal/credential"
+	"github.com/coldmail-send-byo/control/internal/workerproto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -42,12 +42,12 @@ const systemUserID = "00000000-0000-0000-0000-000000000000"
 // workers, so a tick can push to more than one worker concurrently. PushJob can be made to fail (to
 // exercise the push-failed requeue).
 type recordingPusher struct {
-	mu         sync.Mutex
-	pushes     []workerproto.PushJob
-	workerID      string          // "" => AnyConnectedWorker returns "" (no worker) unless extraWorkers has an idle one
+	mu           sync.Mutex
+	pushes       []workerproto.PushJob
+	workerID     string          // "" => AnyConnectedWorker returns "" (no worker) unless extraWorkers has an idle one
 	extraWorkers []string        // additional registered worker ids (Chunk 1 multi-worker tests)
-	inFlightBy map[string]bool // per-worker in-flight marker
-	failPush   bool
+	inFlightBy   map[string]bool // per-worker in-flight marker
+	failPush     bool
 
 	// onPush fires INSIDE PushJob, before it returns — the ONLY point in one Tick that sits between
 	// Phase B's Admit call and Phase D's Stamp call (resolveAndPush's push happens strictly after

@@ -70,7 +70,7 @@ type TestSender interface {
 // adapter (main.go) maps dispatch.ErrAccountIneligibleForTestSend/ErrNoWorkerForTestSend onto these.
 var (
 	ErrAccountIneligible = fmt.Errorf("account not eligible for test-send")
-	ErrNoWorkerAvailable    = fmt.Errorf("no connected worker available for test-send")
+	ErrNoWorkerAvailable = fmt.Errorf("no connected worker available for test-send")
 )
 
 // Server is the platform API. It holds the DB pool (send_byo_app), the service-token
