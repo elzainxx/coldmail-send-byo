@@ -115,13 +115,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	// job_events account_id+created_at index the failure-rate window query needs), and 0044
 	// (M3-P5-OD-7: widen account_events_action_check for the per-user suspend/unsuspend audit
 	// actions, discovered only while implementing C2's suspend feature — the fourth such migration
-	// cascade in this build, after M3-P3-OD-18/19 and M3-P4-OD-16). This is the executable
-	// expectation of the migration chain.
+	// cascade in this build, after M3-P3-OD-18/19 and M3-P4-OD-16). Then 0050 (audit D5 /
+	// alignment-fix-plan item 9: the (user_id, first_seen_at, id) index the new user-facing
+	// notifications read route pages on — neither 0033 index can serve that query). This is the
+	// executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -348,6 +350,13 @@ func TestRunnerLifecycle(t *testing.T) {
 	}
 	if !indexExists(t, admin, "notifications_live_dedup_idx") {
 		t.Fatal("after Up: send_byo.notifications_live_dedup_idx missing (0033 not applied)")
+	}
+	// 0050 (audit D5 / fix-plan item 9): the index the user-facing notifications read route pages on.
+	// Neither 0033 index can serve it — the dedup index's second column is dedup_key and its partial
+	// predicate excludes cleared rows; the pending index only covers state='pending', which is almost
+	// no row in practice. Asserted here so "0050 ran" is a checked fact and not merely a tracking row.
+	if !indexExists(t, admin, "notifications_user_first_seen_idx") {
+		t.Fatal("after Up: send_byo.notifications_user_first_seen_idx missing (0050 not applied)")
 	}
 	if !columnExists(t, admin, "user_settings", "routing_strategy") {
 		t.Fatal("after Up: send_byo.user_settings.routing_strategy missing (0029 not applied)")
@@ -609,6 +618,12 @@ func TestRunnerLifecycle(t *testing.T) {
 			if v, d := configValueAndDefault(t, admin, "unit_price_credits"); v != `{"v": 1}` || d != `{"v": 1}` {
 				t.Fatalf("after Down 0048: unit_price_credits value=%s default_value=%s, want both {\"v\": 1} (down did not restore the original send_byo_0021 row)", v, d)
 			}
+		}
+		// The paired half of 0050's up-assertion: an index migration reverses completely, so the down
+		// must actually drop it. Without this, a down file that only DELETEd its tracking row would
+		// pass every other check in this loop.
+		if v == "0050" && indexExists(t, admin, "notifications_user_first_seen_idx") {
+			t.Fatal("after Down 0050: send_byo.notifications_user_first_seen_idx still present (down did not drop it)")
 		}
 		if v == "0043" && indexExists(t, admin, "job_events_account_id_created_at_idx") {
 			t.Fatal("after Down 0043: send_byo.job_events_account_id_created_at_idx still present (down did not drop it)")

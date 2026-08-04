@@ -441,6 +441,29 @@ above:
 | PUT | `/v1/send-byo/settings?user_id=<uuid>` | M3-Phase 6 | Set the caller's own `routing_strategy`. The tenant selector is the query parameter, taken from the session — never the request body, so a body-supplied `user_id` cannot redirect the write to another tenant. Accepts ONLY `routing_strategy`, validated against the enum; `400 validation_failed` for a missing/unrecognized value. This route CANNOT name an admin-owned dial (`send_delay_*`, `concurrency_per_user`, the resource caps) — not by a check, but structurally: `user_settings` and `user_config_overrides` are two different tables, and this handler decodes no field that could reach the other one. |
 | GET | `/v1/send-byo/usage?user_id=<uuid>&from=<YYYY-MM-DD>&to=<YYYY-MM-DD>` | M3-Phase 7 | **§6** — per-user, per-UTC-day usage metrics for platform capacity planning under the flat-subscription model. `from`/`to` are inclusive UTC dates, both optional (default: the last 30 UTC days ending today — a bounded default so an unscoped request cannot force a full-history aggregation). Returns `{user_id, from, to, accounts_configured, accounts_eligible, days: [{date, messages_attempted, messages_sent, messages_bounced, messages_failed, campaigns_run, peak_concurrency_used, distinct_destination_domains}]}`. `accounts_configured`/`accounts_eligible` are a SNAPSHOT at reporting time (distinguishes "has N accounts" from "has N accounts that work"); the `days[]` metrics are DERIVED from `jobs`/`job_events` on every request — no counter table, no increment-on-send path, so a fixed aggregation bug can be re-run against history. Read-only, no text fields, no per-account rows — outside the leak surface by construction (`user_output_scrub` covers it). |
 
+### Notifications
+
+**The read side of `send_byo.notifications`** (the alignment audit's finding D5, closed by
+`alignment-fix-plan.md` item 9). Before this route the table was write-only from the outside: the
+Control raised a notification on account quarantine (`internal/dispatch/account_effect.go`) and on
+campaign expiry (`internal/dispatch/campaign_expiry.go`), the operator surface could clear one
+(`POST /v1/admin/notifications/{id}/clear`), and **no caller could read one** — so the user whose
+account was quarantined had no in-contract way to learn it. "Delivery" here is a pure in-DB state
+flip: `internal/dispatch` imports no `net/http` and has no outbound channel, so the `notified_at` /
+`state='delivered'` columns record that the row was *marked* deliverable, never that anything
+reached a person. This route is that missing reader.
+
+| Method | Path | Phase | Purpose |
+|---|---|---|---|
+| GET | `/v1/send-byo/notifications?user_id=<uuid>&limit=<1..200>&cursor=<opaque>` | Pass 2 (audit D5 / item 9) | The caller's OWN notifications, **oldest first**, keyset-paginated on `(first_seen_at, id)`. Returns `{items: [...], next_cursor}`; `next_cursor` is `null` on the last page. Each item carries `{id, user_id, condition, subject_type, subject_id, severity, state, payload, first_seen_at, last_seen_at, notified_at, cleared_at}`. **No `state` or `severity` filter, deliberately**: every row is returned in every state, because the two conditions that exist (`account_quarantined`, `campaign_expired`) are both things a user needs to see *after* resolution too, and a default filter is how a caller silently stops seeing a category it never asked to hide. **Ascending order, deliberately**: a client that saves a cursor and polls resumes exactly where it stopped and never re-reads or skips a row — which a newest-first list cannot promise, since new rows arrive at the same end the cursor is anchored to. `payload` is returned **verbatim**, not field-allowlisted, so a future condition's payload is not silently truncated by a reader written before it existed; the write sites are pinned by a source-grep test instead, which is where the actual guarantee belongs. `dedup_key` is **NOT** exposed: it is the internal mechanism of the live-dedup unique index, and publishing it would both freeze that mechanism as contract and hand out a value that predicts whether a future event will be suppressed. Tenant scoping is the same query-parameter selector as the accounts surface, with the same no-existence-disclosure property: another tenant's rows are not 403, they are simply **absent**, byte-identically to a user who has none. |
+
+Served by `notifications_user_first_seen_idx` (migration `0050`): the table's two pre-existing
+indexes cannot serve this query — `notifications_live_dedup_idx (user_id, dedup_key) WHERE
+cleared_at IS NULL` orders by a hash-like second column and its partial predicate excludes exactly
+the cleared rows this route must return, and `notifications_pending_idx (user_id, severity,
+first_seen_at) WHERE state = 'pending'` covers almost no row in practice, since the enqueue path
+marks rows `delivered` immediately.
+
 ## Domain B — operator (`/v1/admin/*`)
 
 All under `/v1/admin/*`; every route requires the operator `platform_admin` bearer key

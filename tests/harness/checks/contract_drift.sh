@@ -68,7 +68,10 @@ if [[ "$adm_probe" == "401" ]]; then
   # An UNDOCUMENTED admin path must NOT be gated as a real route — it should 404 (no handler).
   und_adm="$(adm GET /v1/admin/secret-undocumented)"
   [[ "$und_adm" == "404" ]] || { echo "contract_drift FAIL: undocumented admin path returned $und_adm, want 404 — surface wider than the contract"; fail=1; }
-  echo "contract_drift: Phase 2+9.5+Phase5+Phase6 admin surface mounted — 21 routes gated (401), undocumented 404."
+  # Derived, for the same reason as the platform line below: this one happens to be correct today (21
+  # entries, 21 claimed), which is exactly why it is worth deriving — a correct literal is one edit
+  # away from being a wrong one, and nothing would catch it.
+  echo "contract_drift: Phase 2+9.5+Phase5+Phase6 admin surface mounted — ${#ADMIN_ROUTES[@]} routes gated (401), undocumented 404."
 else
   echo "contract_drift: admin surface not mounted (GET /v1/admin/accounts -> $adm_probe); skipping Phase 2 route checks (set ADMIN_API_KEY_HASHES to enable)."
 fi
@@ -100,6 +103,7 @@ if [[ "$pf_probe" == "401" ]]; then
     ["DELETE /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
     ["GET /v1/send-byo/settings"]=1 ["PUT /v1/send-byo/settings"]=1
     ["GET /v1/send-byo/usage"]=1
+    ["GET /v1/send-byo/notifications"]=1
   )
   for spec in "${!PLATFORM_ROUTES[@]}"; do
     m="${spec%% *}"; p="${spec#* }"
@@ -110,7 +114,13 @@ if [[ "$pf_probe" == "401" ]]; then
   # here at all, so an unauthenticated probe 404s (no handler), never 401 (gated-but-present).
   und_pf="$(pf POST /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000/quarantine)"
   [[ "$und_pf" == "404" ]] || { echo "contract_drift FAIL: .../quarantine on the platform surface returned $und_pf, want 404 — this route must not exist on Domain A"; fail=1; }
-  echo "contract_drift: Phase 3+Phase6+Phase7 platform surface mounted — 20 routes gated (401), quarantine correctly absent (404)."
+  # DERIVED from the array, not written as a literal. This line said "20 routes" while the array held
+  # 21 entries — the print-only drift class already recorded twice in Docs/history (phase-1-schema-
+  # delta.md:220, phase-2-strip-shared-pool.md:141): the gate was checking the right number of routes
+  # and REPORTING the wrong one, so the green line was misleading evidence rather than a failure.
+  # Adding the notifications route (fix-plan item 9) would have widened the gap to two. A count that
+  # reads ${#PLATFORM_ROUTES[@]} cannot drift from the set it describes.
+  echo "contract_drift: Phase 3+Phase6+Phase7 platform surface mounted — ${#PLATFORM_ROUTES[@]} routes gated (401), quarantine correctly absent (404)."
 else
   echo "contract_drift: platform surface not mounted (POST /v1/run -> $pf_probe); skipping Phase 3 route checks (set PLATFORM_TOKEN_HASHES to enable)."
 fi
@@ -132,7 +142,8 @@ for r in "/healthz" "/readyz" "/v1/worker/register" "/v1/worker/heartbeat" \
          "/v1/send-byo/accounts/{id}/pause" "/v1/send-byo/accounts/{id}/unpause" \
          "/v1/send-byo/accounts/{id}/unquarantine" \
          "/v1/send-byo/accounts/{id}/test" "/v1/send-byo/accounts/{id}/test-send" \
-         "/v1/send-byo/accounts/bulk" "/v1/send-byo/settings" "/v1/send-byo/usage"; do
+         "/v1/send-byo/accounts/bulk" "/v1/send-byo/settings" "/v1/send-byo/usage" \
+         "/v1/send-byo/notifications"; do
   grep -q "$r" Docs/api-contract.md || { echo "contract_drift FAIL: $r served but not documented in api-contract.md"; fail=1; }
 done
 

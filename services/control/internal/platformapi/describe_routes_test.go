@@ -117,6 +117,13 @@ func TestDescribe_ExtensionRoutesAreCallable(t *testing.T) {
 	// usage.get
 	e.do(t, methodFor("usage.get"), pathFor("usage.get", "")+"?user_id="+userID, nil).requireStatus(t, 200)
 
+	// notifications.list (audit D5 / fix-plan item 9). This user has no notifications, so the
+	// documented answer is 200 with an EMPTY items[] — a genuinely callable route, not a 404. The
+	// route's own behavior (what a populated list contains, tenant scoping, the keyset) is covered by
+	// notifications_read_test.go; what T6 adds is that a client which read ONLY describe can reach it.
+	e.do(t, methodFor("notifications.list"), pathFor("notifications.list", "")+"?user_id="+userID, nil).
+		requireStatus(t, 200)
+
 	// accounts.bulk_add — a fresh, separate call (a second account for the same user).
 	e.do(t, methodFor("accounts.bulk_add"), pathFor("accounts.bulk_add", ""),
 		map[string]any{"user_id": userID, "accounts": []map[string]any{

@@ -523,3 +523,68 @@ have each live suite delete its own fixtures on entry. Prefer the nonce: it also
 ordering dependency between SUITE 9, 10 and 11, which currently share `phase3_send.sh`'s fixtures.
 Until then, `scripts/dev.sh reset` before `scripts/dev.sh test` is mandatory, not optional — worth a
 line in the runbook either way.
+
+### FW-M3-15 — `accounts.list` and `accounts.events` can return a duplicate row across a page boundary
+
+**Registered:** 2026-08-04, found while building the notifications read route (fix-plan item 9).
+**Pre-existing defect in two shipped routes, NOT introduced by item 9.**
+
+**What it is.** `encodeAccountCursor` stores whatever timestamp string it is handed and
+`parseAccountCursor` casts it back to `timestamptz`. Both existing keyset routes hand it the value
+they DISPLAY, which `accountSelectCols`/`account_events.go` format with
+`to_char(... 'YYYY-MM-DD"T"HH24:MI:SS"Z"')` — **second** precision. So when the last row of a page
+has a fractional second, the cursor encodes a timestamp strictly EARLIER than that row. The next
+page's predicate `(created_at, id) > (cursor_ts, cursor_id)` therefore still matches the boundary
+row, and page 2 opens with a row the client already has.
+
+**Why it is reachable, not theoretical.** Two rows inside the same second is ordinary here: a paced
+`accounts/bulk` add writes a batch in one statement, and one `campaign_expiry` sweep writes its whole
+batch in one transaction. It needs no load spike — just two rows in one second and a page boundary
+falling between them.
+
+**Blast radius.** A duplicated item, not a skipped one — the predicate is `>`, so nothing is lost; a
+client that keys by `id` dedupes it away and a client that appends blindly shows one row twice. That
+is why this is registered rather than treated as urgent.
+
+**Why it is not fixed here.** The fix touches `accountSelectCols`, `scanAccount`, the events
+projection, and the shipped tests of two routes that item 9 does not otherwise go near — exactly the
+"one red, one cause" separation the execution passes are built on.
+
+**How item 9 avoids inheriting it.** `notifications_read.go` projects a THIRTEENTH column,
+`first_seen_at` at `.US` precision, used ONLY as the cursor value and never serialized. The keyset
+test's control is precisely a revert of that projection to `SS`, so the property cannot silently
+regress.
+
+**Fix shape.** Give the two account routes the same treatment: project a microsecond-precision
+cursor column alongside the displayed one. The control already exists in
+`notifications_read_test.go` and transfers directly — three rows at `.100`/`.500`/`.900` inside one
+second, paged at `limit=1`, asserting no id repeats.
+
+### FW-M3-16 — `describe`'s schema fragments declare `results` where two handlers return `items`
+
+**Registered:** 2026-08-04, found while adding item 9's `notifications_list_response` fragment.
+**Pre-existing contract inaccuracy, NOT introduced by item 9.**
+
+**What it is.** `describeSchemas()` declares `accounts_list_response` and `account_events_response`
+with a top-level key `results`. Both handlers actually return `items`. A client that generates its
+parser from `describe` — which is the entire point of `describe`, and what T6 exists to prove — reads
+the wrong key and sees an empty list rather than an error.
+
+**Why the existing tests do not catch it.** T6 drives every declared route and asserts the STATUS,
+plus that method/path/auth are usable; nothing compares a declared fragment's field names against
+the body the handler emits. So both halves are internally consistent and neither is checked against
+the other.
+
+**Why it is not fixed here.** It is a contract-surface change to two shipped routes' declarations,
+and under Rule 5 (additive-only, versioned) correcting a published key name deserves its own
+decision about whether to declare BOTH keys for a deprecation window or correct it outright — not a
+drive-by edit inside an unrelated item.
+
+**What item 9 did instead.** `notifications_list_response` declares `items`, matching what the
+handler returns, rather than copying the neighbouring fragments' mistake for consistency's sake. Its
+test asserts field-by-field parity in BOTH directions between the fragment and the live response, so
+this class of drift cannot start again on the new route.
+
+**Fix shape.** Correct the two fragments to `items`, and add the bidirectional parity assertion
+(already written for `notifications.list`) to the account routes so the fragment and the body are
+checked against each other, not merely each against itself.

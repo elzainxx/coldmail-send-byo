@@ -111,6 +111,14 @@ func (s *Server) extensionRoutes() []extensionRoute {
 			Description:       "Per-user, per-UTC-day usage metrics, derived from jobs/job_events (§6).",
 			ResponseSchemaRef: "#/schemas/usage_response",
 			Handler:           s.handleUsage},
+		// audit D5 / fix-plan item 9. Registered HERE and nowhere else, which is the whole point of
+		// this file: the route becomes callable and describe declares it in the same edit, so the
+		// class of defect this route fixes (the module records user-actionable events with no way to
+		// read them) cannot recur one level up as "the route exists but nobody can discover it".
+		{ID: "notifications.list", Method: "GET", Path: "/v1/send-byo/notifications", Auth: "platform_service_token", Scope: "user",
+			Description:       "The caller's own notifications (quarantines, campaign expiries), oldest first.",
+			ResponseSchemaRef: "#/schemas/notifications_list_response",
+			Handler:           s.handleNotificationsList},
 	}
 }
 
@@ -220,6 +228,40 @@ func describeSchemas() map[string]any {
 		"account_events_response": map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"results": map[string]any{"type": "array"}},
+		},
+		// notifications.list (audit D5 / fix-plan item 9). The property is "items" — the key the
+		// handler ACTUALLY returns, matching handleAccountEvents/handleAccountList. Note that the two
+		// fragments above say "results" while those same two handlers return "items": that is a
+		// pre-existing declaration inaccuracy, registered as FW-M3-16 rather than corrected here (it
+		// changes what two shipped routes declare, which is its own change with its own tests). This
+		// new fragment is written against the handler, not copied from the neighbours.
+		//
+		// state's enumerated values are the send_byo.notification_state type as it actually stands
+		// after send_byo_0047, INCLUDING 'cleared' — which dispatch never writes (ClearNotification
+		// stamps cleared_at and leaves state alone). It is declared because the enum declares it and a
+		// client that hard-fails on an unexpected value must not break if a later change starts
+		// writing it; cleared_at, not state, is the field to read for "is this resolved".
+		"notifications_list_response": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"items": map[string]any{"type": "array", "items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id": uuid, "user_id": uuid, "condition": str,
+						"subject_type": map[string]any{"type": []string{"string", "null"},
+							"enum": []any{"account", "campaign", "pool", nil}},
+						"subject_id": map[string]any{"type": []string{"string", "null"}, "format": "uuid"},
+						"severity":   map[string]any{"type": "string", "enum": []string{"critical", "warning", "info"}},
+						"state": map[string]any{"type": "string",
+							"enum": []string{"pending", "delivered", "suppressed", "cleared"}},
+						"payload":       map[string]any{"type": "object"},
+						"first_seen_at": str, "last_seen_at": str,
+						"notified_at": map[string]any{"type": []string{"string", "null"}},
+						"cleared_at":  map[string]any{"type": []string{"string", "null"}},
+					},
+				}},
+				"next_cursor": map[string]any{"type": []string{"string", "null"}},
+			},
 		},
 		"settings_object": map[string]any{
 			"type":       "object",
