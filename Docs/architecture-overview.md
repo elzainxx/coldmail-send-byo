@@ -6,8 +6,8 @@ and where each guarantee is enforced. It is the "how is this built" document. It
 no longer carries the per-phase build diary — that moved to `history/phase-build-record.md`, which
 is provenance rather than documentation.
 
-Canonical diagrams: `send_byo_app_backend_architecture.svg` and
-`send_byo_app_job_lifecycle_states.svg` (both in this directory).
+Canonical diagrams: `send_byo_backend_architecture.svg` and
+`send_byo_job_lifecycle_states.svg` (both in this directory).
 
 ## Deployment (locked)
 
@@ -66,7 +66,7 @@ The full threat model, what each boundary actually protects, and the honest resi
 
 The job state machine (`queued → assigned → sending → sent`, plus `sending → queued` requeue,
 `sending → bounced`, `queued → failed`) is drawn in
-`send_byo_app_job_lifecycle_states.svg`. Diagnosing where a job is stuck is
+`send_byo_job_lifecycle_states.svg`. Diagnosing where a job is stuck is
 `operator-runbook.md`.
 
 ## Where each guarantee lives

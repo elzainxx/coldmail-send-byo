@@ -33,7 +33,7 @@ Start at the [root README](../README.md) if you have not already.
 | [`load-test-results.md`](./load-test-results.md) | The measured single-Control throughput ceiling (committed artifact, not a dashboard). | — |
 | [`user-copy-strings.txt`](./user-copy-strings.txt) | The machine-checked ledger backing `user-facing-copy.md`: every string, its surface, the evidence it claims. | (copy ledger gate) |
 | `config-manifest.txt`, `config-consumers.txt` | Machine-readable inputs to the config gates. Not prose — do not hand-edit without re-running the gates. | both config gates |
-| `send_byo_app_backend_architecture.svg`, `send_byo_app_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid` | The canonical diagrams. | — |
+| `send_byo_backend_architecture.svg`, `send_byo_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid` | The canonical diagrams. | — |
 
 **Operating rules for changing the code** are in [`../CLAUDE.md`](../CLAUDE.md) — canonical, and
 deliberately not mirrored here (OD-11).
