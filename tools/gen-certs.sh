@@ -52,7 +52,7 @@ distinguished_name = dn
 prompt = no
 x509_extensions = v3ca
 [dn]
-CN = send_byo-dev-ca
+CN = send-byo-dev-ca
 [v3ca]
 basicConstraints = critical, CA:TRUE
 keyUsage = critical, keyCertSign, cRLSign

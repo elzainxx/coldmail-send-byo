@@ -69,7 +69,7 @@ docker-compose.yml        the dev stack, identical to what CI runs
 scripts/dev.sh            the one entrypoint for local dev
 services/control/           Go orchestrator — the ONLY DB client, the SOLE decryptor
 services/worker/             Node.js SMTP relay — no DB, no KMS, memory-only credentials
-db/migrations/            centrally-owned, self-tracking SQL (sender_NNNN_*.up/.down.sql)
+db/migrations/            centrally-owned, self-tracking SQL (send_byo_NNNN_*.up/.down.sql)
 db/preflight/             platform-table existence checks, run before migrating
 tools/                    send-byo-migrate, gen-certs, gen-secrets, provision-worker (worker + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real worker, real SMTP)

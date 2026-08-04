@@ -17,7 +17,7 @@ import (
 
 var errDownForbidden = errors.New("down forbidden")
 
-// migrationFile is one on-disk sender_NNNN_*.{up,down}.sql pair member.
+// migrationFile is one on-disk send_byo_NNNN_*.{up,down}.sql pair member.
 type migrationFile struct {
 	Version      string // "0001"
 	Name         string // "bootstrap"

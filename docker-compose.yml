@@ -83,9 +83,9 @@ services:
     # Host side is .env-driven (M3-P0-OD-6), offset +1000 from module 2's identical bindings so
     # both stacks can run simultaneously — see the postgres service comment above.
     ports:
-      - "${HOST_PORT_BRAIN_HEALTH:-9080}:8080"     # health/ready + platform API (Domain A) + admin API (Domain B)
-      - "${HOST_PORT_BRAIN_WORKERLINK:-9443}:8443"    # workerlink mTLS (Phase-0 register/heartbeat)
-      - "${HOST_PORT_BRAIN_STREAM:-9444}:8444"     # workerlink send-stream mTLS (Phase 3 credential channel)
+      - "${HOST_PORT_CONTROL_HEALTH:-9080}:8080"     # health/ready + platform API (Domain A) + admin API (Domain B)
+      - "${HOST_PORT_CONTROL_WORKERLINK:-9443}:8443"    # workerlink mTLS (Phase-0 register/heartbeat)
+      - "${HOST_PORT_CONTROL_STREAM:-9444}:8444"     # workerlink send-stream mTLS (Phase 3 credential channel)
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/readyz || exit 1"]
       interval: 3s

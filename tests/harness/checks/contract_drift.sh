@@ -13,10 +13,10 @@ fail=0
 
 # --- Documented Phase-0 routes (must match api-contract.md tables) ---
 # health (Domain: none in Phase 0)
-HOST_PORT_BRAIN_HEALTH="${HOST_PORT_BRAIN_HEALTH:-9080}"
-if ! curl -fsS "http://localhost:${HOST_PORT_BRAIN_HEALTH}/healthz" >/dev/null 2>&1; then echo "contract_drift FAIL: GET /healthz not served"; fail=1; fi
+HOST_PORT_CONTROL_HEALTH="${HOST_PORT_CONTROL_HEALTH:-9080}"
+if ! curl -fsS "http://localhost:${HOST_PORT_CONTROL_HEALTH}/healthz" >/dev/null 2>&1; then echo "contract_drift FAIL: GET /healthz not served"; fail=1; fi
 # readyz answers 200 or 503 (both are "served"); treat connection refusal as not-served.
-code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_BRAIN_HEALTH}/readyz" 2>/dev/null || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_CONTROL_HEALTH}/readyz" 2>/dev/null || echo 000)"
 [[ "$code" == "200" || "$code" == "503" ]] || { echo "contract_drift FAIL: GET /readyz not served (got $code)"; fail=1; }
 
 # workerlink mTLS routes (probed in-network). Expect 200 (register w/ token) then 200 (heartbeat).
@@ -33,7 +33,7 @@ rc="$(probe /v1/worker/heartbeat '{"box_id":"dev-worker-1"}')"
 # route is served, and is the additive-only assertion. (The behavioral suite proves the authed
 # behavior; here we only prove the surface matches the contract.) Method-appropriate probes.
 adm() { # $1=method $2=path -> http code (no auth header)
-  curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${HOST_PORT_BRAIN_HEALTH}$2" 2>/dev/null || echo 000
+  curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${HOST_PORT_CONTROL_HEALTH}$2" 2>/dev/null || echo 000
 }
 # Only run the admin-route checks if the surface is mounted (ADMIN_API_KEY_HASHES configured).
 # A collection GET without a key must be 401 when mounted; 404 means the surface is off.
@@ -77,7 +77,7 @@ fi
 # Behind the platform service-token gate. Probed WITHOUT a token: a real, mounted route answers
 # 401 unauthenticated (route exists but gated); a missing route 404s. So 401 proves the route is
 # served (the behavioral suite proves authed behavior). Method-appropriate probes.
-pf() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${HOST_PORT_BRAIN_HEALTH}$2" 2>/dev/null || echo 000; }
+pf() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${HOST_PORT_CONTROL_HEALTH}$2" 2>/dev/null || echo 000; }
 pf_probe="$(pf POST /v1/run)"
 if [[ "$pf_probe" == "401" ]]; then
   # M3-P3-OD-11 (RULED): the platform-surface account routes (Module 3 Phase 3 §1.2) are
@@ -116,7 +116,7 @@ else
 fi
 
 # --- No undocumented route: a path NOT in the contract must 404 ---
-und="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_BRAIN_HEALTH}/v1/undocumented-nonadmin" 2>/dev/null || echo 000)"
+und="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HOST_PORT_CONTROL_HEALTH}/v1/undocumented-nonadmin" 2>/dev/null || echo 000)"
 [[ "$und" == "404" ]] || { echo "contract_drift FAIL: undocumented path did not 404 (got $und) — surface wider than the contract"; fail=1; }
 
 # --- The contract doc actually lists these routes (doc <-> served lockstep) ---

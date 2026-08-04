@@ -97,8 +97,14 @@ done
 HASPMID="$(PSQL "SELECT provider_message_id IS NOT NULL FROM send_byo.jobs WHERE id='$JOB'" || true)"
 [[ "$HASPMID" == "t" ]] && ok "T1: provider_message_id persisted" || bad "T1: provider_message_id null on sent job"
 EVCHAIN="$(PSQL "SELECT string_agg(COALESCE(from_state::text,'g')||'>'||to_state||':'||actor, ' ' ORDER BY seq) FROM send_byo.job_events WHERE job_id='$JOB'" || true)"
-[[ "$EVCHAIN" == "g>queued:system queued>assigned:dispatcher assigned>sending:dispatcher sending>sent:worker" ]] \
-  && ok "T1: job_events chain correct (system/dispatcher/dispatcher/worker)" || bad "T1: event chain wrong: $EVCHAIN"
+# NOTE: the final actor is the send_byo.event_actor enum VALUE `box`, NOT `worker`. The service
+# renamed (box -> worker) but the enum value is live DB contract and is additive-only under Rule 5,
+# so it deliberately did NOT move. This is a DATA value being compared, not an identifier — the
+# Pass-1 rename sweep protected the quoted forms ('box'/"box") but this one is bare after a `:`
+# inside a longer string, so it was rewritten and this assertion failed. Left explicit so a future
+# sweep does not "fix" it back.
+[[ "$EVCHAIN" == "g>queued:system queued>assigned:dispatcher assigned>sending:dispatcher sending>sent:box" ]] \
+  && ok "T1: job_events chain correct (system/dispatcher/dispatcher/box)" || bad "T1: event chain wrong: $EVCHAIN"
 SLCOUNT="$(PSQL "SELECT count(*) FROM send_byo.send_logs WHERE job_id='$JOB'" || true)"
 [[ "$SLCOUNT" == "1" ]] && ok "T1: exactly one send_logs row" || bad "T1: send_logs count=$SLCOUNT, want 1"
 MPCOUNT="$(curl -s http://localhost:9025/api/v1/messages | grep -oE '"messages_count":[0-9]+' | cut -d: -f2 || true)"

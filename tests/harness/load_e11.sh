@@ -39,7 +39,7 @@ ADMKEY="$(grep -E '^ADMIN_API_KEY=' .env | cut -d= -f2-)"
 PLTOK="$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2-)"
 SYSUSER="00000000-0000-0000-0000-000000000000"
 
-# Host-side health/admin port — module 3 offsets host ports +1000 (M3-P0-OD-6, HOST_PORT_BRAIN_HEALTH
+# Host-side health/admin port — module 3 offsets host ports +1000 (M3-P0-OD-6, HOST_PORT_CONTROL_HEALTH
 # in .env, default 9080) so both modules' dev stacks can run side by side without a bind collision.
 # Module 2's own port (8080) is the fallback for a module 2 checkout, or if .env is genuinely absent.
 # HARDCODING 8080 here (module 2's own original) silently talks to nothing on module 3's stack — every
@@ -47,7 +47,7 @@ SYSUSER="00000000-0000-0000-0000-000000000000"
 # produces a confidently wrong all-zero report instead of a loud failure (found running this exact
 # script, Phase 8 §8). BASE_URL is read once at startup, not per-call, so a resolvable port is a
 # precondition of the whole run rather than a per-line risk.
-CONTROL_HEALTH_PORT="$(grep -E '^HOST_PORT_BRAIN_HEALTH=' .env 2>/dev/null | cut -d= -f2-)"
+CONTROL_HEALTH_PORT="$(grep -E '^HOST_PORT_CONTROL_HEALTH=' .env 2>/dev/null | cut -d= -f2-)"
 BASE_URL="http://localhost:${CONTROL_HEALTH_PORT:-8080}"
 
 hr; echo "E11: provisioning $N_WORKERES real worker processes (distinct identities, OD-15 option b)"; hr

@@ -303,6 +303,18 @@ reinstated policy would need the same new name for its dev/CI-only rollback path
 `sender` would trip on these two identifiers — build that gate only after this fix lands, or scope it
 to exclude these two names with a comment explaining why.
 
+**Update (2026-08-04, the `coldmail-send-byo` Pass-1 rename).** Still open, and now the LAST two
+`sender_` identifiers in the live tree. Two things changed around it:
+- The stale `sender_NNNN` prose this entry's parenthetical said had been fixed was NOT fully fixed:
+  three more sites survived into Pass 1 (`tools/send-byo-migrate/main.go:3` and `:99`,
+  `runner.go:20`, plus `README.md:72`) and were corrected there. They were comment/help-text only —
+  no glob read them — but the runner's own `--help` was telling operators the wrong filename
+  convention. Found by RUNNING the binary, not by grepping for it.
+- Pass 1 deliberately did NOT rename these two policies, for the reason this entry already gives,
+  now backed by an explicit ruling: DB-level names are ADDITIVE-ONLY under CLAUDE.md Rule 5, so the
+  rename pass moved code and prose identity only. That makes this entry's "needs its own additive
+  migration" the confirmed path, not just the preferred one.
+
 ### FW-M3-4 — Server-side bulk credential re-encryption (master-key rotation has no operator path)
 
 **Registered:** 2026-08-03, by Phase 8 §1.3's finding — the sharpest operational gap this phase
@@ -467,3 +479,47 @@ the docs. A spec asserting its own completion is not evidence of it.
 **Trigger to revisit.** The next phase that adds any notification kind (the marginal cost is then
 near zero — the severity/dedup decisions get made once for both), or the first user complaint about
 an account that silently degraded to unusable without warning.
+
+### FW-M3-13 — `dev.sh certs --force` drops its own argument
+
+**Registered:** 2026-08-04, found during the Pass-1 rename verification. **Pre-existing defect, NOT
+caused by the rename** — confirmed present before it.
+
+**What it is.** `scripts/dev.sh`'s dispatch reads `certs) gen_all_secrets "${2:-}"`, but inside the
+function the flag is read as `"${2:-}"` again — and by then `--force` is the function's `$1`, so the
+flag is silently dropped and `tools/gen-certs.sh` runs in its default no-clobber mode. Observed
+symptom: `dev.sh certs --force` appears to hang (it sat ~5 minutes) instead of regenerating.
+
+**Why it is not fixed here.** Pass 1 is rename-only by explicit instruction — "if you find a bug,
+note it for Pass 2; do not fix it here." Workaround used during Pass 1: invoke
+`bash tools/gen-certs.sh --force` directly, which honours the flag.
+
+**Fix shape.** Pass `"$@"` (or forward `$2` as the function's `$1`) and read `"${1:-}"` in
+`gen_all_secrets`. Needs a control: assert that with `--force` an existing cert's fingerprint
+CHANGES and that without it the fingerprint is unchanged — otherwise the test cannot fail.
+
+### FW-M3-14 — the live end-to-end suites require a clean slate; a second consecutive run self-conflicts
+
+**Registered:** 2026-08-04, found during the Pass-1 rename verification. **Pre-existing property, NOT
+caused by the rename.**
+
+**What it is.** SUITE 9/10/11's fixtures use FIXED `smtp_username` values (`sender@ourdomain.com`,
+`bulk-c4-*`, `verify-*`, `testbtn-rl@…`) against the live `platform` DB and never clean up. Phase 2's
+per-user uniqueness constraint is therefore violated on a second run in the same stack: account
+creation returns `409 conflict` on `smtp_username`, `$ACCT` is empty, and every downstream assertion
+cascades — including confusing artefacts like `status=301, want 202` (an empty id makes the URL path
+collapse and the mux redirects) and a *false* `S1: plaintext canary found in credential_ciphertext`.
+
+**Evidence.** Same tree, same commit: clean slate → **91 passed, 0 failed**; immediately re-running
+without a reset → 195 passed, **19 failed**, all traceable to the first `FAIL: P3: failed to create
+account`. Zero of the 19 were real defects.
+
+**Why it matters beyond convenience.** A cascade whose first symptom is a *security* assertion
+(`plaintext canary found`) is exactly the kind of red that gets mis-triaged as a real leak, or worse,
+dismissed as flaky. The suites are correct on a clean slate; they are just not idempotent.
+
+**Fix shape.** Either make the fixtures unique per run (suffix the usernames with a run nonce) or
+have each live suite delete its own fixtures on entry. Prefer the nonce: it also removes the hidden
+ordering dependency between SUITE 9, 10 and 11, which currently share `phase3_send.sh`'s fixtures.
+Until then, `scripts/dev.sh reset` before `scripts/dev.sh test` is mandatory, not optional — worth a
+line in the runbook either way.

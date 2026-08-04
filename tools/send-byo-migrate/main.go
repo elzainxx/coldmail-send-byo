@@ -1,6 +1,6 @@
 // Command send-byo-migrate is the thin, self-tracking migration runner (ADR-0003, OD-4).
 //
-// It keeps the LOCKED convention: every sender_NNNN_*.up.sql self-records into
+// It keeps the LOCKED convention: every send_byo_NNNN_*.up.sql self-records into
 // send_byo.schema_migrations via its own INSERT, and the .down.sql DELETEs it. This runner
 // does NOT write the tracking row — it only ORDERS and APPLIES pending files. It does not
 // adopt golang-migrate/dbmate (which would require editing locked migration bodies).
@@ -96,7 +96,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `send-byo-migrate — thin self-tracking migration runner
 
 usage:
-  send-byo-migrate up                 apply all pending sender_NNNN_*.up.sql in order
+  send-byo-migrate up                 apply all pending send_byo_NNNN_*.up.sql in order
   send-byo-migrate down <NNNN>        roll back exactly one version (dev only; needs
                                     SEND_BYO_MIGRATE_ALLOW_DOWN=true)
   send-byo-migrate status             show applied vs pending

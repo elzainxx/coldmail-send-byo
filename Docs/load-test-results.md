@@ -112,7 +112,7 @@ forever; (4) `concurrency_per_user_default` — the ramp's own variable — was 
 restored on exit, in EITHER module's copy of the script, silently leaving the dev stack at
 whatever the last ramp step set it to. Bugs 1-3 fixed directly (a pre-provisioned 500-user pool,
 each with its own real admin-API-created account, is now seeded once upfront and both ramps draw
-from it; `MEASURE_SEC=60`; `BASE_URL` reads `.env`'s `HOST_PORT_BRAIN_HEALTH`). Bug 4 fixed by
+from it; `MEASURE_SEC=60`; `BASE_URL` reads `.env`'s `HOST_PORT_CONTROL_HEALTH`). Bug 4 fixed by
 capturing the original value before the first ramp step and restoring it in `cleanup()` alongside
 the worker-container teardown.
 
