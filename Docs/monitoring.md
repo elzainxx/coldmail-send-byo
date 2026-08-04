@@ -14,7 +14,7 @@ This page is only about wiring the signals up.
 |---|---|---|
 | `GET /healthz` | **none** | Liveness. "The process is up." |
 | `GET /readyz` | **none** | Readiness. DB reachable **and** singleton lock genuinely held. `200` = ready, `503` = not. |
-| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, box liveness, account summaries, error counts over a rolling window, shadow-mode summary, and active alert conditions. |
+| `GET /v1/admin/health` | **Domain B operator key** | The operational snapshot: dispatch state, queue counts, box liveness, account summaries, error counts over a rolling window, shadow-mode summary, per-destination throttle patterns, and active alert conditions. |
 
 `/healthz` and `/readyz` are deliberately unauthenticated and deliberately thin — they carry no
 operational detail, which is what makes exposing them to a monitoring service safe.
@@ -97,8 +97,10 @@ capability for the receiving system.
 }
 ```
 
-Both conditions today carry `severity: "critical"`. The two conditions and how to triage each
-are in the runbook's "Alert conditions → triage" section.
+All three conditions today carry `severity: "critical"`. The three conditions and how to triage each
+are in the runbook's "Alert conditions → triage" section — including `destination_throttles`, the
+operator-only signal (below) for several distinct users being throttled against the same destination
+domain, which is a different question from any one user's own throttle pause.
 
 ### Delivery semantics — read these before relying on it
 
@@ -145,7 +147,60 @@ Notes on that snippet:
 
 ---
 
-## 4. A concrete end-to-end example
+## 4. Per-destination throttle patterns — an operator-only signal
+
+`GET /v1/admin/health` carries a `destination_throttles[]` array: for every destination domain that
+has had at least one `throttle`-classified `job_events` row inside the trailing
+`destination_throttle_window_sec`, the count of throttle events, distinct users affected, and distinct
+accounts affected. This is deliberately **not** a per-user view — a user already sees their own
+account paused for throttling. What this array answers instead is a question no per-user view can:
+*are several unrelated users independently getting throttled by the same destination provider*, which
+is the shape of "our box IPs are rate-limited," not "one user is sending too aggressively."
+
+`distinct_users_affected` is the field to watch. Once it reaches `destination_throttle_user_threshold`
+for some domain, that domain also surfaces as a `destination_throttles` entry in `active_conditions[]`
+(and therefore fires the alert webhook, §3) — the runbook's "Alert conditions → triage" section covers
+what to do about it. Below threshold, the domain is still visible in the full `destination_throttles[]`
+array, which is useful for spotting a domain trending toward the threshold before it crosses it.
+
+The aggregation reads only `job_events.destination_domain` — never `send_logs` — so it is unaffected
+by however short you set `debug_log_retention_days` ([`capacity-planning.md`](./capacity-planning.md)
+§5). Nothing to configure beyond the two dials named above; both are in
+[`config-reference.md`](./config-reference.md).
+
+---
+
+## 5. Notification delivery health — watch that the loop is actually delivering
+
+Phase 7 added a per-user notification delivery loop, on its own ticker
+(`notification_tick_interval_sec`), gated by its own kill switch (`notifications_enabled`, Rule 7 —
+deliberately **not** coupled to `dispatch_enabled`, since halting dispatch is exactly when a user most
+needs to be told something). Like any autonomous loop, a delivery loop that has silently stopped
+ticking is invisible unless something watches it — nothing about a stalled loop produces an error on
+its own; users simply stop being notified.
+
+**This loop is push-driven, not poll-driven, and that is the property worth understanding before
+looking for a health field.** Unlike the alert webhook (§3, which fires only when something calls
+`GET /v1/admin/health`), the notification delivery loop runs on its own ticker regardless of whether
+anyone polls anything — it does not depend on operator polling behavior the way `fireWebhooks` does.
+That removes one failure mode (nobody polls, nobody is notified) but does not remove the other one: the
+loop process itself can stop (a panic loop that keeps recovering but never progresses, a DB outage that
+never clears, the leadership gate never re-acquiring, or the kill switch left off after a maintenance
+window).
+
+There is no dedicated "last successful delivery" timestamp field on the health endpoint today — the
+loop's own log lines (`notify: delivered N notification(s) this tick`) are the only built-in signal,
+and going quiet in the log over more than a few `notification_tick_interval_sec` periods with pending
+work known to exist is the thing to alert on if you ship log-based alerting. Absent that, the
+observable proxy is the `byosmtp.notifications` table itself: a row whose `state = 'pending'` and
+whose `first_seen_at` is older than `notification_digest_window_sec` (or `notification_dedup_window_sec`
+for a row already delivered once) with no advancing `notified_at` is exactly what a stalled loop looks
+like from the outside. This gap — no first-class "is the notification loop stuck" health field — is
+recorded in [`future-work.md`](./future-work.md) §9 as **`FW-M3-10`** rather than closed here.
+
+---
+
+## 6. A concrete end-to-end example
 
 A minimal, complete hookup for a single-Brain deployment:
 
@@ -171,7 +226,7 @@ the prerequisites in [`install-and-deploy.md`](./install-and-deploy.md).
 
 ---
 
-## 5. What is deliberately not here
+## 7. What is deliberately not here
 
 - **No metrics endpoint, no Prometheus exposition, no tracing exporter.** `GET /v1/admin/health` is
   a JSON snapshot, not a time series. If you want history, poll it and store the response — several
@@ -185,7 +240,7 @@ the prerequisites in [`install-and-deploy.md`](./install-and-deploy.md).
   nothing downstream is observed. Deliverability monitoring has to come from the provider side. See
   the runbook's deliverability section and [`future-work.md`](./future-work.md).
 
-## 6. Related
+## 8. Related
 
 | Doc | For |
 |---|---|

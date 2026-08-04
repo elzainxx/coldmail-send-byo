@@ -311,6 +311,13 @@ surface to a platform token would be a free map of it.
 > ruled to wire only the two genuinely-new sub-values (the rate table, the skip-below threshold) onto
 > the existing keys' already-established delivery mechanism, and leave the two duplicate parameters
 > unconsumed rather than introduce a second, competing source of truth for the same box behavior.
+> **Since then, `variation_zero_width_rate_pct`'s config row has been DELETED** (`byosmtp_0049`,
+> M3-P8-OD-8, ruled 2026-08-04): a permanently-unconsumed duplicate has no honest expiry for its
+> `RESERVED` marker, and it never reached the box or altered a delivered byte, so the row went rather
+> than remaining a dial that does nothing. **The wire contract here is unchanged** — the box never
+> received this parameter, so nothing on the wire is added, removed, or renamed by that drop.
+> `variation_css_micro_params.delta_px` is untouched: it is a sub-field of a key whose other
+> sub-field (`skip_below_px`) *is* wired, so that row stays.
 
 ## Domain A, user-facing (`/v1/byosmtp/*`) — module 3's own extension, no module 2 counterpart
 

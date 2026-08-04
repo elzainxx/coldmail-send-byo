@@ -13,7 +13,7 @@ import (
 
 // userConsumeRoundRobin/userConsumeWithStrategy replicate what the deleted consumeFromPool did
 // (strategy lookup + cursor read/write + accountConsume), now keyed by userID instead of poolID —
-// consumeFromPool itself is gone in G1 (Docs/phase-2-strip-shared-pool.md §3.1 collapses it into
+// consumeFromPool itself is gone in G1 (Docs/history/phase-2-strip-shared-pool.md §3.1 collapses it into
 // selectAccountForJob, which takes a full claimedJob rather than a bare id). These test helpers
 // let the routing-strategy suite keep driving the consume directly, one strategy at a time,
 // without going through the claim path. Same-package whitebox test, so touching d.rrMu/d.rrCursor
@@ -85,7 +85,7 @@ func TestRouting_RoundRobin(t *testing.T) {
 
 // TestRouting_RoundRobin_CursorSurvivesAcrossUsers — the round_robin cursor is PER-USER (re-keyed
 // from per-pool in G1, since accountConsume/the cursor map are re-keyed on user_id —
-// Docs/phase-2-strip-shared-pool.md §3.4): two users' cursors cycle independently (advancing one
+// Docs/history/phase-2-strip-shared-pool.md §3.4): two users' cursors cycle independently (advancing one
 // must not perturb the other).
 func TestRouting_RoundRobin_CursorSurvivesAcrossUsers(t *testing.T) {
 	e := newDispatchEnv(t, "rrusers")
@@ -216,11 +216,11 @@ func TestRouting_Random(t *testing.T) {
 }
 
 // TestRouting_StrategyReadFromPoolColumn is DELETED in G1, not carried forward as a fixture-only
-// rewrite (Docs/phase-2-strip-shared-pool.md §4.1's DELETE bucket: "the subject matter is gone").
+// rewrite (Docs/history/phase-2-strip-shared-pool.md §4.1's DELETE bucket: "the subject matter is gone").
 // Its subject was "the strategy is read LIVE from a DB column every call, never cached" — a live
 // claim about pools.routing_strategy, which userRoutingStrategy does not read at all at G1 (it
 // returns a hardcoded constant, §3's G1 interim). The claim this test makes is therefore false
 // about the current code, not merely differently-fixtured. G3 must add the equivalent test once
-// userRoutingStrategy reads byosmtp.user_settings for real (Docs/phase-2-strip-shared-pool.md
+// userRoutingStrategy reads byosmtp.user_settings for real (Docs/history/phase-2-strip-shared-pool.md
 // §3.2 edit 3) — re-pointing at UPDATE byosmtp.user_settings SET routing_strategy=... instead of
 // UPDATE byosmtp.pools.

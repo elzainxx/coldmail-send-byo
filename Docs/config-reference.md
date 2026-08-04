@@ -19,7 +19,6 @@ hardcoded tuning constant" structurally checkable. `default_value` is never muta
 | `daily_limit_default` | `{"v": 500}` | integer | sender_0010 | Default max sends per account per day. |
 | `daily_reset_timezone` | `{"v": "UTC"}` | string | sender_0010 | Timezone (IANA tz name) defining the calendar "day" for limits. |
 | `daily_reset_hour` | `{"v": 0}` | integer | sender_0010 | Hour of day (0–23, in tz) when daily counters reset. Consumed by every daily-reset-boundary computation (eligibility/consume, account exhaustion, account scoring, the admin health endpoint) — wired in the Phase 9.5 CLOSEOUT config-consumption sweep (2026-07-27); seeded/validated since sender_0010 but not read by any of them before that. |
-| `retry_count_4xx` | `{"v": 3}` | integer | sender_0010 | **RESERVED / NOT-YET-CONSUMED** (flagged in the Phase 9.5 CLOSEOUT config-consumption sweep, 2026-07-27). Documented in Phase 5 §6.2 (ruling 4) as a SOFT/approximate early-life same-account retry hint, but V1 has no per-job avoid-set or per-(job,account) attempt tracker to hook it into (Phase 5's own §6.3 text) — `backoffSecondsForClass` requeues transient classes purely off the exponential `retry_backoff_schedule` ladder, with zero reference to this key. Writing it today has NO effect on requeue behavior. Wiring it requires designing the avoid-set/attempt-tracking mechanism Phase 5 explicitly deferred — an Open Decision for whichever phase takes it on, not a surgical fix. |
 | `dispatch_tick_interval_ms` | `{"v": 1000}` | integer | sender_0010 | Dispatcher poll interval / config re-read cadence (Phase 4). |
 | `send_delay_min_sec` | `{"v": 3}` | integer | sender_0010 | Lower bound of the random inter-send delay per lane (Phase 6). **Module 3 Phase 6**: admin-writable per-user override in `byosmtp.user_config_overrides.send_delay_min_sec` (NULL = inherit this global). Resolved by `internal/userconfig.Resolve`, threaded through `dispatch/loop.go`'s Phase B (once per user per tick), never re-read at Admit/Stamp. |
 | `send_delay_max_sec` | `{"v": 7}` | integer | sender_0010 | Upper bound of the random inter-send delay per lane (Phase 6). **Module 3 Phase 6**: admin-writable per-user override in `byosmtp.user_config_overrides.send_delay_max_sec` (NULL = inherit this global). Resolved by `internal/userconfig.Resolve`, same site as `send_delay_min_sec`. |
@@ -31,8 +30,9 @@ hardcoded tuning constant" structurally checkable. `default_value` is never muta
 
 ## Phase 5 state (+3 keys, `sender_0017`)
 
-Phase 5 seeds three new keys via `sender_0017` (and reuses the already-seeded
-`quarantine_threshold` and `retry_count_4xx` from `sender_0010` — no duplicate seeded). The two
+Phase 5 seeds three new keys via `sender_0017` (and reused the already-seeded
+`quarantine_threshold` and `retry_count_4xx` from `sender_0010` — no duplicate seeded; both of those
+keys have since been DELETED, at `byosmtp_0042` and `byosmtp_0049` respectively). The two
 `json` keys are validated for inner shape by the Phase 2 config endpoint and re-validated on read
 (reject-and-fall-back-to-default with a logged warning if malformed, never crash — §7).
 
@@ -42,9 +42,13 @@ Phase 5 seeds three new keys via `sender_0017` (and reuses the already-seeded
 | `retry_backoff_schedule` | `{"v":{"ladder_seconds":[30,120,600],"max_seconds":600}}` | json | sender_0017 | Exponential backoff ladder (seconds) for transient/timeout/unknown requeues, capped at max_seconds (Phase 5 §6.4). |
 | `throttle_pause_seconds` | `{"v":900}` | integer | sender_0017 | Duration (seconds) of a throttle pause before lazy auto-clear, and the throttle-class requeue delay (Phase 5 §4.3/§6.4). |
 
-**`retry_count_4xx` (seeded `sender_0010`) is documented as a SOFT/approximate early-life
-same-account retry hint (§6.2, ruling 4), NOT a hard per-account ceiling** — but see the
-**RESERVED / NOT-YET-CONSUMED** note on its own row above: no code path reads this key today.
+**`retry_count_4xx` (seeded `sender_0010`) was documented as a SOFT/approximate early-life
+same-account retry hint (§6.2, ruling 4), NOT a hard per-account ceiling — and is now DELETED at
+Phase 8's `byosmtp_0049`** (M3-P8-OD-8, ruled 2026-08-04). It carried a `RESERVED / NOT-YET-CONSUMED`
+marker whose `Phase 8` expiry came due, and no code path ever read it in module 3: it was never even
+loaded into `dispatch.Config`. Its consumer needs the per-job avoid-set / per-`(job,account)` attempt
+tracker Phase 5 §6.2 explicitly deferred, which is now registered as **FW-M3-11** — the capability is
+still wanted, so the dial will be re-seeded at the point it gains that real consumer, never before.
 Ceasing to use a failing account is governed by `status_score_weights` + Module 3 Phase 5's
 `quarantine_consecutive_threshold`/`quarantine_failure_rate_pct` (§10, below) — `quarantine_threshold`
 itself (the score-as-trigger dial documented here through module 2) is **DELETED at Module 3
@@ -129,6 +133,17 @@ column, enum, constraint, or index is added or altered. Every default preserves 
 except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safety choice (Phase 5's
 `enforce` behavior is reached by one config write — see `Docs/history/open-decisions.md`).
 
+**Ten of the eleven survive.** `variation_zero_width_rate_pct` is **DELETED at Phase 8's
+`byosmtp_0049`** (M3-P8-OD-8, ruled 2026-08-04): P9.5-OD-3 had ruled it a deliberate duplicate of
+`variation_zero_width_rate` (the fraction 0–1 below, which remains the sole source of truth) and ruled
+it stay unconsumed so two dials never drive the same box behavior. It was loaded into `dispatch.Config`
+and range-validated on write, but `variationSnapshot` never stamped it onto the `push_job` wire block,
+so it never reached the box and never changed a delivered byte. Its `RESERVED / NOT-YET-CONSUMED`
+marker's `Phase 8` expiry came due, and an unconsumable duplicate has no honest future expiry, so the
+row is gone rather than left as a dial that does nothing. Its sibling duplicate,
+`variation_css_micro_params.delta_px`, is a **sub-field** of a key whose other sub-field
+(`skip_below_px`) *is* consumed — that row stays, and it carries no expiring marker of its own.
+
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
 | `dispatch_enabled` | `{"v":true}` | boolean | sender_0021 | B1 global dispatch panic switch. `false` = the tick claims/routes/pushes nothing; queued jobs stay queued, nothing lost; reclaim/outcome/heartbeat/config-read continue. Phase 9.5 §1. |
@@ -139,9 +154,8 @@ except `autoquarantine_mode`, whose default `shadow` is a deliberate launch-safe
 | `health_metrics_window_sec` | `{"v":3600}` | integer | sender_0021 | B3 rolling window (seconds) for the rate/error/shadow counts in `GET /v1/admin/health`. Phase 9.5 §3.2. |
 | `brain_singleton_acquire_timeout_sec` | `{"v":60}` | integer | sender_0021 | B5 bounded wait (seconds) for the Brain **startup** singleton advisory lock before exiting non-zero. `0` = fail-fast, no wait. Phase 9.5 §5.2. Contrast `brain_singleton_reacquire_interval_sec`, which governs a **mid-life** loss. |
 | `brain_singleton_reacquire_interval_sec` | `{"v":5}` | integer | sender_0023 | How often (seconds) a Brain that **lost** the singleton advisory lock mid-life re-attempts `pg_try_advisory_lock`. While the lock is not held, dispatch/reclaim/retention are **PAUSED** (no claim, no push, no reclaim, no sweep), `readyz` reports `not_ready`, and the outcome path stays **up** so an in-flight send can still report. `0` = never re-acquire (stays paused until restarted) — also the fail-closed fallback if the row is unreadable. **READ ONCE AT STARTUP, not per tick** — unlike most keys here, a change takes effect only on the next Brain start (the keeper is handed the cadence at boot). Deliberate: this key governs recovery from a state in which the DB may be unreachable, so sourcing the cadence from a fresh DB read would leave it undefined in exactly the situation it exists for. G11-OD-1 / ADR-0011 option B. |
-| `unit_price_credits` | `{"v":1}` | integer | sender_0021 | S10 — credits charged per recipient (`quote`/`describe`). Was a documented constant; default unchanged, now retunable without a redeploy. Phase 9.5 §2.4. |
+| `unit_price_credits` | `{"v":0}` | integer | sender_0021, **re-seeded byosmtp_0048** | S10 — credits charged per recipient (`quote`/`describe`). Originally a documented constant (default `1`), made retunable without a redeploy in Phase 9.5 §2.4. **Re-seeded at `0` by `byosmtp_0048` (M3-P7-OD-11, ruled 2026-08-02):** module 3 prices as a flat monthly subscription (`module-3-build-plan.md` §1) — there is no per-recipient charge, so this key is genuinely inert at its default. Retained per Rule 5 for contract compatibility with `quote`/`describe`'s additive `cost`/`unit_price_credits`/`tier` fields, not because module 3 bills per recipient. Still live-retunable (Rule 1) if a future pricing model needs it. |
 | `variation_comment_intensity_rates` | `{"v":{"low":5,"medium":15,"high":30}}` | json | sender_0021 | S11 — percent of closing tags injected per `variation_comment_intensity` bucket. Was hardcoded 5/15/30; default unchanged. Box-consumed via `push_job.variation`. Phase 9.5 §2.4. |
-| `variation_zero_width_rate_pct` | `{"v":5}` | integer | sender_0021 | S11 — percent of word boundaries eligible for zero-width insertion (`variation_zero_width`). **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_zero_width_rate` (P8-OD-1, fraction 0–1); that key remains the sole source of truth for this rate to avoid two competing dials driving the same box behavior. Phase 9.5 §2.4. |
 | `variation_css_micro_params` | `{"v":{"delta_px":1,"skip_below_px":3}}` | json | sender_0021 | S11 — CSS micro-variation pixel delta + skip-below threshold (`variation_css_micro`). `skip_below_px` is box-consumed via `push_job.variation` (P9.5-OD-3) — that sub-field is CONSUMED. `delta_px` is **RESERVED / NOT-YET-CONSUMED (P9.5-OD-3, RULED)** — a documented duplicate of the already-wired `variation_css_magnitude_px` (P8-OD-1), which remains the sole source of truth for the CSS magnitude. Phase 9.5 §2.4. |
 
 ## Module 3 Phase 3 state (+7 keys, `byosmtp_0036` + `byosmtp_0038`)
@@ -223,13 +237,26 @@ were cleared by C2** (`internal/dispatch/notify.go`'s `NotificationRunner`, wire
 were cleared by C3's `quote` feasibility widening** (`internal/platformapi/quote_feasibility.go`),
 and **the two throttle-aggregation keys were cleared by C3's `GET /v1/admin/health` widening**
 (`internal/adminapi/health_throttle.go`/`health_alerts.go`) — no `RESERVED` marker remains on any
-of the three groups. Only `score_alert_threshold` stays `RESERVED` with its original `Phase 8`
-expiry: its consumer (the score-warning digest event, §3.1) is not yet built.
+of the three groups. Only `score_alert_threshold` stays `RESERVED`: its consumer (the score-warning
+digest event, §3.1) is not yet built.
+
+**Its expiry is retargeted from `Phase 8` to `FW-M3-12` (M3-P8-OD-8, ruled 2026-08-04).** Phase 7's
+own spec text asserted this phase *was* the consumer ("this phase is that consumer — §3.1's score
+warning, §8's dial"), stated as fact. Re-verification against the tree found it was not built at all:
+`ScoreAlertThreshold` is loaded in `dispatch/config.go` and read nowhere else, and the only
+notification ever enqueued anywhere in the codebase is `account_quarantined` (one call site,
+`account_effect.go`) — there is no score-warning digest event and no comparison of
+`account_status_score` against this threshold. That is a Rule 11 finding in its own right: a spec
+claiming a consumer it never shipped. The key is NOT deleted, because unlike the two keys
+`byosmtp_0049` drops, its consumer is still genuinely wanted — the feature is specified and buildable,
+just unbuilt, so it is registered as **FW-M3-12** and the marker now points at that tracked item.
+`config_consumption.sh` verifies the named item exists as a heading in `future-work.md`, so the marker
+cannot become permanent by quietly losing its roadmap entry.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
 | `notification_digest_window_sec` | `{"v":3600}` | integer | byosmtp_0046 | Batching window (sec) the notification delivery loop holds non-immediate-severity events before folding them into one digest (e.g. ten accounts failing inside the window → one notification, not ten). Consumed by `internal/dispatch/notify.go`'s `deliverDigests`/`usersWithDueDigest`. Phase 7 §3.2. |
-| `notification_dedup_window_sec` | `{"v":86400}` | integer | byosmtp_0046 | Re-notify interval (sec) for an ongoing condition (same `dedup_key`) whose `notified_at` has aged past this window with no fresh notification. Consumed by `internal/dispatch/notify.go`'s `EnqueueNotification` (the re-notify reset, at the write site) and `deliverImmediate`/`deliverOneUserDigest`. Phase 7 §3.3. |
+| `notification_dedup_window_sec` | `{"v":86400}` | integer | byosmtp_0046 | Re-notify interval (sec) for an ongoing condition (same `dedup_key`) whose `notified_at` has aged past this window with no fresh notification. Consumed by `internal/dispatch/notify.go`'s `EnqueueNotification` (the re-notify reset, at the write site) and `deliverImmediate`/`deliverOneUserDigest`. Phase 7 §3.3. **This window bounds only an ONGOING condition, never a resolved-then-recurring one** — a resolution stamps `cleared_at` (see the `cleared_at` note below and `api-contract.md`'s alert-webhook section), which takes the row out of `notifications_live_dedup_idx` so the next rising edge is a fresh row delivered on the next tick rather than waiting out this window. Before 2026-08-03 nothing stamped `cleared_at`, which made this key silently govern recurrences too. |
 | `notification_immediate_severities` | `{"v":["critical"]}` | array<string> | byosmtp_0046 | Severity tier(s) that bypass `notification_digest_window_sec` and deliver immediately rather than being folded into the next digest. Consumed by `internal/dispatch/notify.go`'s `deliverImmediate`/`usersWithDueDigest`. Phase 7 §3.1/§3.2. |
 | `notifications_enabled` | `{"v":true}` | boolean | byosmtp_0046 | Kill switch (Rule 7) for the notification delivery loop — the SIXTH single-Brain housekeeping loop. `false` halts delivery cleanly with no event loss (events still persist to `byosmtp.notifications`, just undelivered). Deliberately NOT coupled to `dispatch_enabled` — halting dispatch is exactly when a user most needs to be told something. Consumed by `internal/dispatch/notify.go`'s `NotificationRunner.tick`. Phase 7 §3.2. |
 | `notification_tick_interval_sec` | `{"v":60}` | integer | byosmtp_0046 | Poll interval (sec) for the notification delivery loop. Consumed by `internal/dispatch/notify.go`'s `NotificationRunner.Run`/`tick`. Phase 7 §3.2. |
@@ -237,7 +264,7 @@ expiry: its consumer (the score-warning digest event, §3.1) is not yet built.
 | `destination_throttle_user_threshold` | `{"v":3}` | integer | byosmtp_0046 | Distinct-users-affected count inside the throttle window at or above which the health endpoint surfaces a `destination_throttles` active condition (and therefore the alert webhook) for that destination domain. Consumed by `internal/adminapi/health_alerts.go`'s `buildActiveConditions`/`destinationThrottleConditions`. Phase 7 §7.1. |
 | `quote_capacity_projection_enabled` | `{"v":true}` | boolean | byosmtp_0046 | Toggles whether `/v1/quote` projects an estimated completion duration (feasibility framing: slow is feasible) rather than omitting `capacity.estimated_duration_sec`/`estimate_basis` entirely. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.2. |
 | `quote_long_duration_warn_sec` | `{"v":172800}` | integer | byosmtp_0046 | Projected-duration threshold (sec, default 48h) above which `/v1/quote`'s feasibility response carries a `long_duration` entry in `warnings[]` rather than a bare projection. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.3. |
-| `score_alert_threshold` | `{"v":30}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §3.1, C3 scope. |
+| `score_alert_threshold` | `{"v":30}` | integer | byosmtp_0046 | **RESERVED / NOT-YET-CONSUMED** (expiry **FW-M3-12**, retargeted from `Phase 8` by M3-P8-OD-8 — Phase 7's spec claimed to have built this consumer and had not) — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §3.1, C3 scope. |
 
 **Migration `byosmtp_0047_notification_state_suppressed`** adds the `'suppressed'` value to
 `byosmtp.notification_state` (M3-P7-OD-10) — a real schema/spec drift found while wiring the

@@ -211,12 +211,10 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateIntensityRates(key, value); perr != nil {
 			return perr
 		}
-	case "variation_zero_width_rate_pct":
-		// Phase 9.5 S11 §6: 0-100 (a documented duplicate of variation_zero_width_rate, P9.5-OD-3 —
-		// validated the same regardless of consumption status).
-		if n, ok := asInt(value); !ok || n < 0 || n > 100 {
-			return typeErr(key, issueOutOfRange, "config_variation_zero_width_rate_pct_out_of_range")
-		}
+	// No case for variation_zero_width_rate_pct: its row is DELETED at byosmtp_0049 (M3-P8-OD-8), and
+	// handleConfigPut 404s an unknown key BEFORE reaching this validator, so the case was unreachable
+	// dead code once the row went away. variation_zero_width_rate (the surviving fraction 0-1 dial)
+	// keeps its own validation elsewhere.
 	case "variation_css_micro_params":
 		// Phase 9.5 S11 §6 inner shape: delta_px 0-5, skip_below_px 0-20.
 		if perr := validateCSSMicroParams(key, value); perr != nil {

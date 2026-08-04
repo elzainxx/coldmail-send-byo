@@ -117,7 +117,7 @@ func (d *Dispatcher) RunStartupRescan(ctx context.Context) {
 		// than each discovering the outage with a full failing tick. Boot still proceeds — the Brain
 		// stays alive on bounded backoff and never crash-loops.
 		d.health.Note(err)
-		log.Printf("startup rescan: FAILED (%v) — proceeding; the continuous reclaim loop is the backstop", err)
+		log.Printf("startup rescan: FAILED (%v) — proceeding; the continuous reclaim loop is the backstop level=error", err)
 		return
 	}
 	d.health.Note(nil)

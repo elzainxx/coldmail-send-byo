@@ -114,6 +114,6 @@ func TestDailyLimitSanityCeiling(t *testing.T) {
 	e.do(t, "PUT", "/v1/admin/config/daily_limit_default", map[string]any{"value": 25_000}).requireStatus(t, 200)
 }
 
-// TestPoolImmutableFieldsRejected is DELETED at G2 (Docs/phase-2-strip-shared-pool.md §4.1's DELETE
+// TestPoolImmutableFieldsRejected is DELETED at G2 (Docs/history/phase-2-strip-shared-pool.md §4.1's DELETE
 // bucket): its subject, PATCH /v1/admin/pools' kind/owner_user_id immutability guard, no longer
 // exists — the route and the whole pool_list_update.go file it lived in are gone.

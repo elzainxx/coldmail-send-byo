@@ -8,7 +8,7 @@ This repository contains two services and one migration/tooling layer (see READM
   - tools/           — the migration runner (byosmtp-migrate), box provisioner, cert/secret tooling
 
 None of the above is a fork of a third-party project. This is a fork, at the repository level, of
-the sibling "sender" module (module 2), by the same owner — see `Docs/fork-point.md` and the top-
+the sibling "sender" module (module 2), by the same owner — see `Docs/history/fork-point.md` and the top-
 level LICENSE's "Scope" section. This NOTICE covers third-party components consumed as dependencies,
 not the fork relationship itself.
 

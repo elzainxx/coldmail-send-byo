@@ -1,4 +1,4 @@
--- sender_0007_create_jobs.up.sql — Phase 1: byosmtp.jobs (core state-machine table).
+-- byosmtp_0007_create_jobs.up.sql — Phase 1: byosmtp.jobs (core state-machine table).
 -- job_item_id is UNIQUE (exactly one sender job per platform job_item). provider_message_id is
 -- UNIQUE (idempotency). CHECK constraints tie lease/completed_at validity to state. Owned by
 -- byosmtp_owner. FKs to boxes/accounts SET NULL (a deleted box/account requeues, never orphans).

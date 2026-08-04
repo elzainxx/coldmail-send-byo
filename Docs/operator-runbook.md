@@ -62,6 +62,104 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 | Everything looks fine, `/readyz` is green, but nothing moves | The health surface cannot see a rejected config — [Step 8](#step-8--is-the-config-itself-rejected-a-config-fault-in-the-log) |
 | Everything looks fine but sends are landing badly | [Deliverability seems to be dropping](#deliverability-seems-to-be-dropping) |
 | You are not sure what "fine" looks like | [Reading the health endpoint](#reading-the-health-endpoint) |
+| **A specific user is complaining that THEIR sends are failing** | [A user says their sends are failing, and it is their server](#a-user-says-their-sends-are-failing-and-it-is-their-server) — skip everything above; this is the module's single most common incident |
+
+---
+
+## A user says their sends are failing, and it is their server
+
+This is module 3's flagship incident, and it is structurally different from every tree above: the
+cause is almost always **outside the operator's control**. Users bring their own SMTP accounts — a
+wrong password, an expired app-password, a provider-side rate limit, or a From address whose DNS
+never authenticated. You hold no credential the user did not give you, and no access to their
+provider's dashboard.
+
+**Your job here is NOT to fix it.** You cannot — there is nothing on this side to fix. Your job is
+to (a) read what the provider actually said, (b) decide whether the module misreported it, and (c)
+tell the user something true. Every step below is diagnostic-read-only; none of them changes state.
+
+**Before anything else, understand the boundary you are working inside:** the field you are about
+to read (`smtp_response` on `GET /v1/report`) is produced by the box scrubbing the provider's raw
+SMTP text at the moment it receives it (Phase 7 §1.2/§1.3) — the same scrubbed string is written to
+`byosmtp.jobs.last_smtp_response` and is what the platform's own `GET /v1/report` returns to the
+user. There is no richer operator-only view: `services/brain/internal/platformapi/provider_text.go`
+is the ONE reader of that column anywhere in the codebase (enforced by
+`tests/harness/checks/user_output_scrub.sh`, not merely by convention), and no admin/adminapi route
+projects it at all. **You cannot see more than the user sees on this path.** If the scrubbed text
+genuinely does not explain the failure, that is itself information — see the last step below.
+
+### Step 1 — Get the job's own account of what happened
+
+`GET /v1/report` is what the USER's own client calls — it is Domain A, gated by the platform
+service token, a completely different credential from your `$KEY` (Domain B). You do not hold that
+token and should not need it: the same two columns it reads are visible straight from the DB you
+already have SQL access to (Rule 6's domain separation, applied — the two auth domains never share a
+credential, so this is by design, not a gap):
+
+```sql
+SELECT id, state, last_error_class, last_smtp_response, attempt_count, completed_at
+  FROM byosmtp.jobs WHERE id = '<job-id>' AND user_id = '<user-id>';
+-- or for the whole campaign:
+SELECT id, state, last_error_class, last_smtp_response, attempt_count, completed_at
+  FROM byosmtp.jobs WHERE campaign_id = '<campaign-id>' AND user_id = '<user-id>';
+```
+
+Read `last_error_class` first — it tells you which of the six buckets the classifier placed this
+attempt in (`auth_failure`, `throttle`, `transport_4xx`, `timeout`, `bounce_permanent`, `unknown`) —
+then read `last_smtp_response` for the provider's own words. This is the SAME already-scrubbed text
+`GET /v1/report`'s `smtp_response` field serves the user (`services/brain/internal/platformapi/provider_text.go`
+is the only reader of this column anywhere in the codebase). Both columns are STICKY BY DESIGN — a
+`queued` job mid-retry can carry a failure detail from its previous attempt, which is useful context,
+not a bug — and the report endpoint suppresses them once `state='sent'`, so if you are cross-checking
+against what the user sees on a job that ultimately succeeded, expect the API response to omit them
+even though the columns above still hold the stale value.
+
+### Step 2 — Match the class to what you tell the user
+
+| `error_class` | What it means | What to tell the user |
+|---|---|---|
+| `auth_failure` | The provider rejected the credential itself — wrong/expired password, revoked app-password, or a provider that requires OAuth/2FA this module's plain SMTP AUTH cannot satisfy. | "Your provider rejected the SMTP login. Re-check the password, or confirm your provider does not require an app-specific password / OAuth." |
+| `throttle` | The provider is rate-limiting this account. Self-clearing — no action needed on your side. | "Your provider is rate-limiting this account; sends will resume automatically. If it's a recurring problem, ask about raising your provider's sending rate." |
+| `transport_4xx` | A transient provider/network rejection. Usually clears on retry. | "A temporary rejection from your provider — the system will retry automatically." |
+| `timeout` | The box never got a reply from the provider (or from the Brain). Could be the provider hanging, or an infra problem on OUR side. | Before telling the user anything, rule out our own infra: check [A box died](#a-box-died) and `boxes.active` in the health snapshot. Only once that is clean is this genuinely the provider's problem. |
+| `bounce_permanent` | The RECIPIENT address rejected — not the user's account, not the user's server. | "That recipient address bounced (invalid/nonexistent mailbox) — this isn't a problem with your sending setup." Never suggest fixing credentials or servers for a bounce. |
+| `unknown` | The classifier could not place the provider's response in any of the above. | Read `smtp_response` verbatim and use your own judgment — see Step 3. This is the one bucket without a canned answer. |
+
+### Step 3 — When `smtp_response` itself doesn't explain it
+
+Sometimes the scrubbed text is genuinely uninformative (a bare `421` with no reason string, or a
+provider that returns boilerplate). At that point you have exhausted what this module can tell you —
+there is no deeper log, no unscrubbed original, nothing else to query. Say so plainly: tell the user
+the provider's exact response text (it is not a secret — it is literally what their own server sent)
+and that the module has nothing more specific. Do not guess at a cause you cannot substantiate; a
+wrong guess sent to a user is worse than "we don't know, here's exactly what your provider said."
+
+### Step 4 — Decide whether the module misreported it (the one thing you CAN check)
+
+The one failure mode genuinely inside this module's control is a misclassification — a
+`transport_4xx` that should have been `auth_failure`, for instance. If a user disputes the
+diagnosis, check the account's raw event history for the pattern:
+
+```sql
+SELECT je.created_at, je.error_class, je.to_state, left(je.error_message, 200) AS internal_detail
+  FROM byosmtp.job_events je
+ WHERE je.account_id = '<account-uuid>' AND je.error_class IS NOT NULL
+ ORDER BY je.created_at DESC LIMIT 20;
+```
+
+**`error_message` here is internal-only** (the two-vocabulary rule — never repeat its contents to
+the user; it may carry SQL fragments, box-internal reasons, or the classifier's own working notes).
+Use it only to judge, on your own authority, whether `error_class` looks right for what
+`smtp_response`/`error_message` actually shows. If it looks wrong, that is a classifier bug — file
+it; do not hand-edit the job's `error_class` or `state`, and do not tell the user something the
+evidence does not support.
+
+### What you will never have on this path
+
+No provider dashboard access, no bounce/complaint feed (V1 has none — see
+[Deliverability seems to be dropping](#deliverability-seems-to-be-dropping)), no richer SMTP
+transcript than the one scrubbed line already shown, and no ability to act on the user's behalf with
+their provider. Every one of these is the user's relationship to fix, not yours.
 
 ---
 
@@ -351,7 +449,14 @@ an automatic recovery would put it straight back into rotation to fail again.
 
 ### Find out why
 
-Two triggers exist, and they mean very different things. The audit trail records which one fired:
+**Module 3 has PER-ACCOUNT, PER-USER thresholds — not module 2's pool-wide score.** There is no
+shared pool any more, so there is nothing to average across users: `quarantine_consecutive_threshold`
+and `quarantine_failure_rate_pct`/`quarantine_min_sample` are GLOBAL dial values, but the streak and
+the windowed failure rate they trigger on are each computed against ONE account's own
+`byosmtp.job_events` history — one user's noisy account never quarantines a different user's healthy
+one, and the account's `account_status_score` plays **no role in the decision at all** (it is purely
+informational — see the health endpoint's `shadow.*` fields, not a trigger input). The audit trail
+records which of the four `byosmtp.quarantine_reason` values fired:
 
 ```sql
 SELECT created_at, actor, action, reason, from_flags, to_flags
@@ -364,9 +469,18 @@ Look for the most recent row with `action = 'quarantine'`:
 
 | `actor` / `reason` | What happened | What to do |
 |---|---|---|
-| `system` / `auth_failure` | The provider rejected authentication. Quarantined **immediately**, regardless of score — a credential fault fails every send, so there is nothing to be gained by retrying. | Fix the credential. Then unquarantine. |
-| `system` / `score_below_threshold` | The account's health score fell under `quarantine_threshold` after a failure. A pattern, not a single event. | Read the score inputs below before deciding. |
-| `admin` / anything | A human did this, and `reason` says why. | Talk to that human. Do not silently revert an operator decision. |
+| `system` / `auth_failure` | The provider rejected authentication. Quarantined **immediately**, regardless of streak/rate — a credential fault fails every send, so there is nothing to be gained by retrying. | Fix the credential. Then unquarantine. |
+| `system` / `consecutive_failures` | This ONE account failed `quarantine_consecutive_threshold` times in a row (a streak, volume-independent — it can fire on an account's very first handful of sends). | Read the failure class breakdown below before deciding. |
+| `system` / `failure_rate` | Over the trailing `quarantine_failure_window_sec`, this account's failure rate crossed `quarantine_failure_rate_pct` — but only once at least `quarantine_min_sample` real attempts had been made. Catches the intermittent ~50%-failure case a streak counter alone would miss. | Read the failure class breakdown below before deciding. |
+| `system` / `manual` | Recorded when an operator or the user themselves quarantined the account through the flag-change path (distinct from the *unquarantine* audit action below). | Talk to whoever did it; `reason`/`request_id` on the row says who. Do not silently revert. |
+| `user` / anything | The user's own self-serve action on their own account (Module 3 §2 — users control their own assets). | This is expected; users can quarantine their own accounts. |
+
+Both `consecutive_failures` and `failure_rate` are consumed by
+`services/brain/internal/dispatch/account_effect.go`'s `quarantineDecision` — the single predicate
+every automatic quarantine flows through (`auth_failure` is checked FIRST and short-circuits the
+other two, so an auth fault on the Nth consecutive failure is still recorded as `auth_failure`, never
+`consecutive_failures` — load-bearing, because the credential-update auto-clear below is scoped to
+`auth_failure` only).
 
 ### For `auth_failure`: fix the credential, then unquarantine
 
@@ -374,31 +488,19 @@ This is the clean case. The account's SMTP username or password is wrong, expire
 provider-side — or the provider requires an app-password/OAuth mechanism this module's SMTP AUTH
 cannot satisfy. Update the credential with `PATCH /v1/admin/accounts/{id}` (omitting `smtp_secret`
 leaves it unchanged, so you must include it to actually rotate it), *then*
-`POST /v1/admin/accounts/{id}/unquarantine`.
+`POST /v1/admin/accounts/{id}/unquarantine`. The user has the same self-serve path: users are
+rate-limited to `unquarantine_max_per_day` clears per account per day (a fresh passing credential
+test bypasses that limit — see [`config-reference.md`](./config-reference.md) for both dials), so a
+user who fixed their own password usually never needs you at all.
 
 Unquarantining before fixing the credential guarantees a repeat: the next send will fail
 `auth_failure` and quarantine it again immediately.
 
-### For `score_below_threshold`: read the inputs first
+### For `consecutive_failures` / `failure_rate`: read the failure classes first
 
-The score is a pure function of three send-viability signals — consecutive failures, how close the
-account is to its daily limit, and how long since its last success. It is a stored snapshot,
-recomputed on every outcome for the one account that had the outcome. It uses **no bounce or
-complaint data at all** (there is none in V1). A quarantined account receives no outcomes, so its
-score simply *holds* at whatever value it had — it will not drift back up on its own, and that is
-why unquarantining alone does not "reset" anything.
-
-```sql
-SELECT id, account_status_score, consecutive_failures,
-       daily_sent_count, daily_limit,
-       last_success_at, last_failure_at,
-       NOW() - last_success_at AS since_last_success
-  FROM byosmtp.accounts WHERE id = '<account-uuid>';
-SELECT (SELECT value FROM byosmtp.config WHERE key = 'quarantine_threshold') AS threshold,
-       (SELECT value FROM byosmtp.config WHERE key = 'status_score_weights') AS weights;
-```
-
-Then read the failures that drove it down:
+Neither trigger is a health-score judgment — both are computed straight from real box-reported
+outcomes in `byosmtp.job_events` (`actor='box'`, excluding reclaim-loop and dispatcher-terminal rows,
+which never count as an "attempt"). Read what actually happened on those attempts:
 
 ```sql
 SELECT je.created_at, je.error_class, je.from_state, je.to_state, je.actor,
@@ -410,7 +512,8 @@ SELECT je.created_at, je.error_class, je.from_state, je.to_state, je.actor,
 
 The class distribution is the diagnosis:
 
-- **`auth_failure`** — see above. Credential problem, not a health problem.
+- **`auth_failure`** — should not appear here (it would have triggered `auth_failure` first, per the
+  short-circuit above); if it does, something upstream changed order — worth a closer look.
 - **`transport_4xx`** — transient provider/network trouble. If it has cleared, the account is
   probably fine and the quarantine was a correct reaction to a real outage.
 - **`throttle`** — you were sending faster than the provider allows. The account is healthy; your
@@ -421,8 +524,8 @@ The class distribution is the diagnosis:
 - **`unknown`** — the classifier could not place the provider's response. Read `error_message`
   directly; this is the bucket for genuinely novel provider behavior.
 - **`bounce_permanent`** — cannot be a cause. A bounce is a *recipient* fault and never penalizes an
-  account: it does not touch `consecutive_failures`, does not stamp `last_failure_at`, and does not
-  recompute the score. If you see bounces alongside a quarantine, they are coincident, not causal.
+  account: it does not touch `consecutive_failures`, does not stamp `last_failure_at`, and never
+  feeds either trigger. If you see bounces alongside a quarantine, they are coincident, not causal.
 
 ### When unquarantining is the wrong move
 
@@ -442,10 +545,13 @@ Do **not** unquarantine when:
 - **You do not know why it happened.** Guessing here is how one bad account quietly burns a sending
   domain. Read the trail first; it is three queries.
 
-After a legitimate unquarantine, the account re-enters rotation with its **old score still low**.
-Its first successful send resets `consecutive_failures` to 0 and stamps `last_success_at`, which
-recomputes the score upward. If that first send fails instead, the score recomputes downward and it
-may quarantine again immediately — which is the system correctly telling you the cause was not fixed.
+After a legitimate unquarantine, the account re-enters rotation with `consecutive_failures` at
+whatever it was when quarantine fired (it is NOT reset by unquarantining). Its first successful send
+resets `consecutive_failures` to 0 and stamps `last_success_at`. If that first send fails instead,
+`consecutive_failures` increments again and — since `quarantine_consecutive_threshold` was already
+met once — it may re-cross the same streak trigger and quarantine again immediately. That is the
+system correctly telling you the cause was not fixed; `account_status_score` also moves on both
+outcomes, but purely as an informational readout, never as what re-triggers the quarantine.
 
 ### The safety valve: shadow mode
 
@@ -457,9 +563,13 @@ all, someone set it to `enforce`. What shadow mode would have done is visible in
 ahealth | jq .shadow
 ```
 
-`would_quarantine_count` and `recent[]` (with each account's score and the threshold it crossed) are
-how you calibrate `quarantine_threshold` *before* handing the decision real authority. Promoting
-`shadow` → `enforce` is a go-live decision, covered in
+`would_quarantine_count` and `recent[]` (with each account's `trigger` —
+`auth_failure`/`consecutive_failures`/`failure_rate`, the same vocabulary a real quarantine uses) are
+how you calibrate `quarantine_consecutive_threshold`/`quarantine_failure_rate_pct`/
+`quarantine_min_sample` *before* handing the decision real authority. There is no score/threshold pair
+to read here any more — module 2's score-as-trigger dial is gone (§4: the score never independently
+quarantines), so shadow's `recent[]` names which of the four reasons it would have used, not a score.
+Promoting `shadow` → `enforce` is a go-live decision, covered in
 [`go-live-checklist.md`](./go-live-checklist.md).
 
 ---
@@ -758,7 +868,7 @@ DMARC aggregate reports, and postmaster tools. Bounce/complaint ingestion is reg
 | **Pacing** | `send_delay_min_sec` / `send_delay_max_sec`, `concurrency_per_user_default` | Randomized per-lane inter-send delay. Throughput ≈ lanes ÷ average delay — this is deliberately *not* a single global rate. |
 | **Content variation** | `variation_enabled` plus the per-feature `variation_*` keys | Reduces byte-identical repetition across messages (HTML minification, comment injection, CSS micro-variation, encoding/boundary rotation, preheaders, header style). All default to off/neutral, so the whole set at defaults is byte-identical to no variation at all. |
 | **Sender identity hygiene** | Per-account `from_address` / `from_name` | Must match what the provider has verified. A mismatch is a rejection or a spam signal, not a subtle effect. |
-| **Auto-quarantine** | `autoquarantine_mode`, `quarantine_threshold` | Pulls failing accounts out of rotation before they do more damage. In `shadow` (the default) it only *reports* — promote to `enforce` when you trust the threshold. |
+| **Auto-quarantine** | `autoquarantine_mode`, `quarantine_consecutive_threshold`, `quarantine_failure_rate_pct`, `quarantine_min_sample` | Pulls failing accounts out of rotation before they do more damage. In `shadow` (the default) it only *reports* — promote to `enforce` when you trust the thresholds. |
 
 > **`one_by_one` is not currently selectable by any operator.** Routing strategy is hardcoded to
 > `round_robin` for every user (a temporary interim state — per-user strategy selection is planned
@@ -819,7 +929,8 @@ job, locks nothing, and mutates nothing — so it is safe to poll. Field-by-fiel
   "boxes":    { "active": 6, "stale": 0, "disabled": 0, "oldest_active_heartbeat_age_sec": 12 },
   "accounts": { "healthy": 18, "paused": 4, "quarantined": 0, "disabled": 0, "at_daily_limit": 4 },
   "users":    [],
-  "active_conditions": []
+  "active_conditions": [],
+  "destination_throttles": []
 }
 ```
 
@@ -855,8 +966,9 @@ The signature of a healthy system: `dispatch_paused` false, `sends_last_window` 
 | `users[]` | empty, or all `headroom: "ok"` | Any row with `headroom: "exhausted"` → that user's account set is genuinely exhausted right now; cross-reference `accounts.{quarantined,paused,disabled,at_daily_limit}` to see why. |
 | `errors_last_window` | Small, spread across classes | Any class spiking. The six classes always appear, `0` included, so the shape is stable — a class at 0 is genuine, not missing data. Counts **failures, not rows**: one failing send contributes exactly 1 even if it is retried and later succeeds, so this is a usable incident size. |
 | `shadow.autoquarantine_mode` | `shadow` before go-live, `enforce` after you have calibrated | `off` means auto-quarantine is fully disabled — deliberate, but know that it is. |
-| `shadow.would_quarantine_count` / `recent[]` | Low | High in `shadow` mode → what `enforce` *would* be doing. This is your calibration data for `quarantine_threshold`. |
+| `shadow.would_quarantine_count` / `recent[]` | Low | High in `shadow` mode → what `enforce` *would* be doing. This is your calibration data for the `quarantine_consecutive_threshold`/`quarantine_failure_rate_pct`/`quarantine_min_sample` dials. |
 | `active_conditions[]` | `[]` | Non-empty → [Alert conditions](#alert-conditions--triage). |
+| `destination_throttles[]` | `[]` | Any entry → several DISTINCT users' accounts throttled sending to the SAME destination domain within `destination_throttle_window_sec` — a per-destination signal, Phase 7 §7, distinct from the per-account `errors_last_window.throttle` count above. Only entries AT OR ABOVE `destination_throttle_user_threshold` also raise the `destination_throttles` alert condition; this array shows every domain with any throttle activity in the window, so a domain can appear here before it is bad enough to alert on. Never carries provider response text (Rule 5) — counts and a domain only. See [Alert conditions → `destination_throttles`](#destination_throttles). |
 
 One window caveat worth knowing before you draw conclusions: `window_sec` is
 `health_metrics_window_sec`, and every "last window" number is scoped to it — a shorter window makes

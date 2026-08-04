@@ -103,7 +103,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.registry.authorize(req.BoxID, req.Token) {
 		// Two-vocabulary rule: no internal reason to the client.
-		log.Printf("box register REJECTED id=%q (token/cert mismatch)", req.BoxID)
+		log.Printf("box register REJECTED id=%q (token/cert mismatch) level=warn", req.BoxID)
 		http.Error(w, `{"code":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}

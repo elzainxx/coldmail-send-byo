@@ -1,6 +1,15 @@
 # Open decisions — consolidated ledger, phases 0–8
 
-**Status (2026-08-01): ALL 95 ITEMS ARE RULED.** The 79 original open decisions across the build
+**Status (2026-08-04): ALL 97 ITEMS ARE RULED.** The queue is empty again. The two that were
+AWAITING RULING as of 2026-08-03 — [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
+(the ledger path collision) and [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
+(three expired `RESERVED` config keys) — were both **ruled 2026-08-04**, and both rulings are landed
+in the tree, not merely recorded: OD-8's disposition is migration `byosmtp_0049` plus the
+manifest/reference/ledger/future-work updates and a replacement test; OD-7's is the absence of a move.
+The paragraph below (as of 2026-08-01) is left as-written for provenance; its "ALL 95 ITEMS ARE
+RULED" claim was accurate then, was superseded by M3-P8-OD-7 and -8 (both found during Phase 8), and
+the count is now 97 of 97.
+The 79 original open decisions across the build
 plan and phases 0–8 are disposed of — 15 closed by an earlier ruling, 2 merged into the decision
 they depend on, and **62 ruled on 2026-07-31** (50 `RULED-ACCEPTED` in one pass, 12 ruled
 individually). The 80th, [M3-P7-OD-9](#m3-p7-od-9--ruled-b-2026-07-31), was raised by the Chunk 3
@@ -80,6 +89,22 @@ is a docs-consistency correction, not a design ruling: §8.6's own text still de
 pre-M3-P4-OD-11 WAIT behavior for a deleted-only account; corrected to match the ruling that
 already governs it (FAIL, not WAIT).
 
+> **UPDATED 2026-08-04 — the queue reopened, then closed.** Both Phase 8 findings below were ruled
+> on 2026-08-04; the "AWAITING RULING" language in this addendum and the one after it is preserved as
+> written, because the sequence is the point (an item surfaced as a blocker before it was resolved is
+> a decision with recorded reasoning, not an undocumented guess inside a commit). Read them as
+> historical: the current count is 97 of 97 ruled.
+>
+> **UPDATED 2026-08-03 — the queue is no longer empty.** Phase 8's own reorganisation work found
+> [M3-P8-OD-7](#m3-p8-od-7--awaiting-ruling-docshistoryopen-decisionsmd-is-already-occupied-by-module-2s-own-ledger-phase-8s-spec-instructs-relocating-module-3s-ledger-to-that-same-path):
+> a genuine path collision between Phase 8's own §4.3(a) instruction and a Phase-6-ruled policy in
+> `Docs/history/README.md` (M3-P0-OD-9) over what may live at `Docs/history/open-decisions.md`.
+> Unlike every prior mid-build finding above, this one is **not** ruled the same day — it is a
+> question with no default answer this ledger's author is authorized to pick (Rule 2), so it is
+> recorded as **AWAITING RULING**, the one entry in that bucket. The "ALL ITEMS ARE RULED" status
+> line at the top of this file is stale as of this addendum; see M3-P8-OD-7 and the "Honest final
+> position" section below for the current, accurate count.
+
 > **The queue reopened and then closed, recorded rather than smoothed over.** The revision pass was
 > asked to confirm the needs-user list was empty *"or say so plainly rather than closing it."* The
 > Chunk 3 sweep found a **migration-chain collision** between Phase 1's `0033` and Phase 7's `0041`
@@ -102,7 +127,7 @@ own authority.
 each item's full context. Each points here.
 
 **Application.** The rulings are traced forward into every document they touch — see
-[`plan-revision-log.md`](plan-revision-log.md) for what changed where.
+[`plan-revision-log.md`](history/plan-revision-log.md) for what changed where.
 
 ---
 
@@ -115,8 +140,9 @@ each item's full context. Each points here.
 | `MERGED` — the same decision asked twice | 2 |
 | `RULED-ACCEPTED` 2026-07-31 — recommendation approved as written | **50** |
 | `RULED` 2026-07-31 — decided individually (7 BLOCKS + 5 RULE) | **12** |
-| **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop, M3-P7-OD-11 while starting the quote feasibility work), **all three ruled the same day found** | **3** |
-| **STILL NEEDING A RULING — all 82 items** | **0** |
+| **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop, M3-P7-OD-11 while starting the quote feasibility work, M3-P4-OD-12 during Phase 4's own build), **all four ruled the same day found** | **4** |
+| **RAISED by Phase 8** — M3-P8-OD-7 (a path collision between this phase's own spec and a Phase-6-ruled policy), M3-P8-OD-8 (three RESERVED config keys past their Phase-8 expiry, one with a falsely-claimed consumer) | **2** |
+| **STILL NEEDING A RULING — M3-P8-OD-7, M3-P8-OD-8** | **2** |
 
 **Three ruled against my recommendation.** M3-P5-OD-1 (I recommended repurpose; ruled: split the
 key), M3-P7-OD-8 (I put (b) to the user; ruled: both), M3-P0-OD-11 (I offered no recommendation;
@@ -246,11 +272,11 @@ approval changed none of it.
 
 | ID | Question | **RULED-ACCEPTED** |
 |---|---|---|
-| M3-P0-OD-1 | "Green before a single line is changed" vs. a rename being a change | Two gates. Gate A isolates fork defects from rename defects. **§7's checkboxes backfilled 2026-08-02**: both gates were genuinely executed and green (evidence existed all along in `Docs/fork-point.md` + commit `f7be832`), but the checklist itself was never literally ticked — found by Phase 6's mechanical landing check. Full tick-off: `Docs/phase-0-fork-and-baseline.md` §7 |
+| M3-P0-OD-1 | "Green before a single line is changed" vs. a rename being a change | Two gates. Gate A isolates fork defects from rename defects. **§7's checkboxes backfilled 2026-08-02**: both gates were genuinely executed and green (evidence existed all along in `Docs/history/fork-point.md` + commit `f7be832`), but the checklist itself was never literally ticked — found by Phase 6's mechanical landing check. Full tick-off: `Docs/history/phase-0-fork-and-baseline.md` §7 |
 | M3-P0-OD-5 | Module 3's advisory-lock band | Reserve `8_000_000_000–8_999_999_999`; mirrored keys `8_100_000_001`/`8_200_000_001`/`8_300_000_001`. Confirm with the platform owner as a pre-live gate |
 | M3-P0-OD-6 | Host-port collision on `5432`/`8080`/`8443`/`8444`/`8025` | `.env`-driven host side, module 3 defaults offset `+1000`. Container-internal ports and service DNS unchanged |
-| M3-P0-OD-8 | Do `CODEOWNERS`' handles exist for module 3? | Carry the structure verbatim; confirm or rename handles at Gate B. If no teams exist, record that it is inert and why. **CONFIRMED INERT 2026-08-02**: `origin` is a personal GitHub User account (no Teams concept); `@byosmtp-arch` is not a real account, `@platform-db` collides with an unrelated user; branch protection (required for enforcement) is unavailable on this repo's plan/visibility. Full detail: `Docs/phase-0-fork-and-baseline.md`'s M3-P0-OD-8 row |
-| M3-P0-OD-9 | How much of module 2's `Docs/history/` comes across | ADRs + phase specs for inherited subsystems only, in a marked `Docs/history/module-2/` with a README. Not the 156 KB ledger or 183 KB build record. **LANDED 2026-08-02 in Phase 6** — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED (the directory held a byte-identical copy of module 2's ENTIRE `Docs/history/`, not this narrower admitted subset): the 12 phase specs, `phase1-drafts/`, and 13 ADRs moved to `Docs/history/module-2/` with the required README; module 2's `open-decisions.md`/`phase-build-record.md` stayed at the top level (cited by literal path from inherited code); `Docs/history/definition-of-done.md` (the path CLAUDE.md cites) is now module 3's own vocabulary-adapted DoD, with module 2's original preserved at `Docs/history/module-2/definition-of-done.md`. Full detail: `Docs/phase-0-fork-and-baseline.md`'s M3-P0-OD-9 row |
+| M3-P0-OD-8 | Do `CODEOWNERS`' handles exist for module 3? | Carry the structure verbatim; confirm or rename handles at Gate B. If no teams exist, record that it is inert and why. **CONFIRMED INERT 2026-08-02**: `origin` is a personal GitHub User account (no Teams concept); `@byosmtp-arch` is not a real account, `@platform-db` collides with an unrelated GitHub Organization; branch protection (required for enforcement) is unavailable on this repo's plan/visibility. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-8 row |
+| M3-P0-OD-9 | How much of module 2's `Docs/history/` comes across | ADRs + phase specs for inherited subsystems only, in a marked `Docs/history/module-2/` with a README. Not the 156 KB ledger or 183 KB build record. **LANDED 2026-08-02 in Phase 6** — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED (the directory held a byte-identical copy of module 2's ENTIRE `Docs/history/`, not this narrower admitted subset): the 12 phase specs, `phase1-drafts/`, and 13 ADRs moved to `Docs/history/module-2/` with the required README; module 2's `open-decisions.md`/`phase-build-record.md` stayed at the top level (cited by literal path from inherited code); `Docs/history/definition-of-done.md` (the path CLAUDE.md cites) is now module 3's own vocabulary-adapted DoD, with module 2's original preserved at `Docs/history/module-2/definition-of-done.md`. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-9 row |
 | M3-P0-OD-10 | Module 2's README says five blocking gates; CI runs six | Fix at Gate B as a one-line exception to "identity only". The shared-code manifest's **second** entry (M3-P2-OD-2 is first). **The README fix landed at Gate B; the manifest entry itself did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Added as entry 2 in `Docs/shared-code-manifest.md`** |
 
 ### Phase 1 — schema delta
@@ -297,7 +323,7 @@ approval changed none of it.
 | M3-P4-OD-2 | Exempt providers with unguessable DKIM selectors from BLOCK? | Exempt. BLOCK requires evidence approaching proof; for these providers there is evidence neither way |
 | M3-P4-OD-5 | `net.Resolver` exposes no TTLs | Accept a decoupled short TTL. A DNS library is a real dependency for a cache whose worst case is latency |
 | M3-P4-OD-6 | Canary tests against real public domains | Keep them, marked and separable, allowed to fail loudly. They are the fact table's only drift signal |
-| M3-P4-OD-7 | `x/net/publicsuffix` bundles a PSL snapshot | Accept, with a re-vendor check in the Phase 8 hygiene sweep. **Found missing 2026-08-02 by Phase 6's mechanical landing check**: `Docs/phase-8-polish-docs-close.md` had zero mention of this commitment. Added to §5.4 as a spec requirement (Phase 8 itself has not run yet, so this is a spec fix, not a code-landing fix — Phase 8's own execution will discharge it when that phase runs) |
+| M3-P4-OD-7 | `x/net/publicsuffix` bundles a PSL snapshot | Accept, with a re-vendor check in the Phase 8 hygiene sweep. **Found missing 2026-08-02 by Phase 6's mechanical landing check**: `Docs/history/phase-8-polish-docs-close.md` had zero mention of this commitment. Added to §5.4 as a spec requirement (Phase 8 itself has not run yet, so this is a spec fix, not a code-landing fix — Phase 8's own execution will discharge it when that phase runs) |
 | M3-P4-OD-8 | An operator override for durably-broken DNS? | No per-account override — that is a bypass with a UI. `from_gate_mode` answers it operationally |
 
 ### Phase 5 — autonomous behaviour and limits
@@ -382,7 +408,7 @@ it independently of the citation.
 ## Consequences that cross phases
 
 The three sequenced rulings and the one key split, stated once here so no phase has to re-derive
-them. Applied in the phase docs; see [`plan-revision-log.md`](plan-revision-log.md).
+them. Applied in the phase docs; see [`plan-revision-log.md`](history/plan-revision-log.md).
 
 1. **The predicate consolidation is a prerequisite commit.** M3-P4-OD-3 ruled (a), and M3-P3-OD-4's
    term lands **after** it. Order: consolidate (own commit) → Phase 3's
@@ -664,7 +690,7 @@ pools as a live, current-behavior concept.
 
 Found while executing G4's predicate consolidation (M3-P4-OD-3). `dispatch/eligibility.go`'s
 `accountConsume` and `userHasEligible` both gained `AND a.deleted_at IS NULL` at G3
-(Docs/phase-2-strip-shared-pool.md §5.4). Two other sites that classify the SAME underlying
+(Docs/history/phase-2-strip-shared-pool.md §5.4). Two other sites that classify the SAME underlying
 condition never got the matching term:
 
 - `dispatch/exhaustion.go`'s `userHasSelfRecovering` — checks whether a non-eligible account will
@@ -715,7 +741,7 @@ health/alerting code) had actually landed — it had. Checking it turned up a di
 M3-P2-OD-3 ruled that `failExhaustedJobs`'s `last_error_message` literal renames from
 `pool_exhausted: all eligible accounts terminal_blocked (§5.1)` to `accounts_exhausted: …` "at G3,
 with `api-contract.md` and the report test in the same commit" (§8.3 of
-`Docs/phase-2-strip-shared-pool.md`). G3 landed (`67ae8c3`) without it — its own closeout checklist
+`Docs/history/phase-2-strip-shared-pool.md`). G3 landed (`67ae8c3`) without it — its own closeout checklist
 (§8.5, criteria 12-19) never listed the rename as one of the nine criteria, so it fell through
 silently rather than being deferred deliberately. `exhaustion.go:147` still read the old string after
 both G3 and G4 closed.
@@ -736,7 +762,7 @@ discovery, not a new ambiguity to defer into Phase 3.
 
 **Fix:** `exhaustion.go`'s `last_error_message` literal and its neighboring comment renamed to
 `accounts_exhausted`. `api-contract.md`'s `/v1/report` row updated from "pending a rename... at G3"
-to describing the rename as done. `Docs/phase-2-strip-shared-pool.md` gets a new §8.7 recording this
+to describing the rename as done. `Docs/history/phase-2-strip-shared-pool.md` gets a new §8.7 recording this
 closeout, mirroring §8.5/§8.6's shape. No migration, no test change (none asserted the old string).
 
 **Verified:** clean-slate reset, full harness green, all six CI gates green.
@@ -745,7 +771,7 @@ closeout, mirroring §8.5/§8.6's shape. No migration, no test change (none asse
 
 ## M3-P3-OD-14 — RULED 2026-08-01: no connected box at verify time is a verify FAILURE, not a blocked create
 
-Found while wiring Phase 3's C2 (verify-on-add, `Docs/phase-3-user-owned-accounts.md` §2). §2.5
+Found while wiring Phase 3's C2 (verify-on-add, `Docs/history/phase-3-user-owned-accounts.md` §2). §2.5
 already locks that a verification failure does not roll back the create — the account is
 persisted with `credential_verification_state='failed'` and the client sees the detail. But every
 worked example in §2/§8.2/§8.3 assumes a real box reachable and answering; none addresses the
@@ -789,7 +815,7 @@ mid-handshake" — by design, per the ruling above.
 
 ## M3-P3-OD-15 — RULED 2026-08-01: the test-button rate limit counts every attempt, not just successes
 
-Found while wiring C3 (the test button, `Docs/phase-3-user-owned-accounts.md` §3.3). §3.3's own
+Found while wiring C3 (the test button, `Docs/history/phase-3-user-owned-accounts.md` §3.3). §3.3's own
 reasoning for the limit is explicit: *"Each click is a real auth attempt against a live provider
 from our box IPs. The limit is therefore not politeness — it is IP-reputation protection."* A
 failed AUTH attempt costs the shared box IPs' reputation identically to a successful one — the
@@ -903,7 +929,7 @@ grant on `public.job_items` so the module can create a genuine, minimal job_item
 
 The direct numbering consequence of M3-P3-OD-17's grant, which needs its own migration. Phase 3's
 own inventory (§0.2) claimed exactly two migration numbers, `0035` and `0036`, both already spent
-(the verification-state columns/enum, and the six config-dial seeds). But `Docs/phase-4-from-gate.md`
+(the verification-state columns/enum, and the six config-dial seeds). But `Docs/history/phase-4-from-gate.md`
 already firmly claims `0037` (config seeds) and `0038` (the routing-predicate change +
 `from_verification_state` backfill) for its own, unrelated work — 12 separate references to those
 two numbers throughout that document.
@@ -922,9 +948,9 @@ mirrors the session's own established precedent for build-time discoveries: fix 
 is found, while it is still cheap to fix, rather than defer it and let it calcify.
 
 **The cascade turned out wider than the one-doc edit first assumed, and was verified rather than
-guessed at before executing:** `Docs/phase-5-autonomous-behaviour-and-limits.md` opens by stating
+guessed at before executing:** `Docs/history/phase-5-autonomous-behaviour-and-limits.md` opens by stating
 *"Phase 4 ended at `0038`"* and numbers its OWN migrations from that claim, and
-`Docs/plan-revision-log.md` documents the FULL chain across Phases 1–7 (`0025`–`0041`) with
+`Docs/history/plan-revision-log.md` documents the FULL chain across Phases 1–7 (`0025`–`0041`) with
 explicit per-phase ranges that assume Phase 4 ends at `0038`. Shifting Phase 4 by +1 without also
 shifting Phases 5/6/7 would leave a self-contradicting chain across four docs — worse than the
 single-phase gap this ruling exists to avoid. **Confirmed before executing: full cascade, Phases
@@ -1172,12 +1198,17 @@ the test button is the retry path.** Reasoning:
   the predicate — `from_verification_state='unverified'` already excludes it from routing until a
   successful check runs.
 
-**Applied:** `handleAccountCreate` (`platformapi`) and its `adminapi` counterpart run the From
-gate AFTER the row is committed (mirroring `runVerifyOnAdd`'s existing placement and its own
-"never inside the transaction" precedent), write nothing to `from_*` columns on an indeterminate
-outcome (the DNS evaluator's own `Verdict.Outcome==indeterminate` already carries no `State`), and
-surface the indeterminate result in the create response the same way a verify-on-add failure is
-already surfaced — informationally, never as the request's own error.
+**Applied:** `handleAccountCreate` (`platformapi/account_create.go:134`, before the `INSERT` at
+`:197`) and its `adminapi` counterpart (`account_create.go:91`, before the `INSERT` at `:170`) run
+the From gate BEFORE the row is inserted/committed — the opposite of `runVerifyOnAdd`'s placement,
+and deliberately so: M3-P4-OD-15's sibling ruling requires an unacknowledged WARN to produce no row
+at all, which is only achievable pre-INSERT. (This corrects an earlier version of this note that
+stated the gate runs "AFTER the row is committed, mirroring `runVerifyOnAdd`" — found backwards by
+Phase 8's landing check, 2026-08-03; `runVerifyOnAdd` genuinely does run post-commit, but From-gate
+create does not share that placement.) The gate writes nothing to `from_*` columns on an
+indeterminate outcome (the DNS evaluator's own `Verdict.Outcome==indeterminate` already carries no
+`State`), and surfaces the indeterminate result in the create response the same way a verify-on-add
+failure is already surfaced — informationally, never as the request's own error.
 
 ---
 
@@ -1258,9 +1289,9 @@ git-committedness. Phase 5/6/7 have not started building (no files on disk, no
 **Applied:** Phase 4's own third migration is `byosmtp_0041_from_gate_override_action`. Cascade:
 Phase 5 `0042`/`0043` (was `0041`/`0042`), Phase 6 `0044` (was `0043`), Phase 7 `0044` (unchanged
 relative position — still expected to take Phase 6's number if Phase 6 writes nothing
-structural). `Docs/phase-5-autonomous-behaviour-and-limits.md`,
-`Docs/phase-6-per-user-config-and-routing.md`, `Docs/phase-7-visibility-notifications-contract.md`,
-and `Docs/plan-revision-log.md`'s chain table updated in the same change.
+structural). `Docs/history/phase-5-autonomous-behaviour-and-limits.md`,
+`Docs/history/phase-6-per-user-config-and-routing.md`, `Docs/history/phase-7-visibility-notifications-contract.md`,
+and `Docs/history/plan-revision-log.md`'s chain table updated in the same change.
 
 ---
 
@@ -1428,10 +1459,10 @@ Phase 6's expected migration shifts from `0044` to `0045` (still expected to wri
 structural, per Phase 6 §10's own conclusion); Phase 7's own migration shifts from `0044` to `0045`
 (unchanged relative position — still expected to take Phase 6's number if Phase 6 writes nothing
 structural, per Phase 6 §10's "the next phase simply takes it" logic).
-`Docs/phase-5-autonomous-behaviour-and-limits.md`, `Docs/phase-6-per-user-config-and-routing.md`,
-`Docs/phase-7-visibility-notifications-contract.md`, `Docs/phase-0-fork-and-baseline.md`,
-`Docs/phase-1-schema-delta.md`, `Docs/phase-8-polish-docs-close.md`, and
-`Docs/plan-revision-log.md`'s chain table updated in the same change.
+`Docs/history/phase-5-autonomous-behaviour-and-limits.md`, `Docs/history/phase-6-per-user-config-and-routing.md`,
+`Docs/history/phase-7-visibility-notifications-contract.md`, `Docs/history/phase-0-fork-and-baseline.md`,
+`Docs/history/phase-1-schema-delta.md`, `Docs/history/phase-8-polish-docs-close.md`, and
+`Docs/history/plan-revision-log.md`'s chain table updated in the same change.
 
 ---
 
@@ -1457,9 +1488,9 @@ own C1/C2 work, so `0045` was sitting unclaimed exactly as §10 predicted; M3-P3
 first real content to occupy it, and it is Phase 6 (the phase whose landing check found the gap) that
 should carry it, not a later phase. Applied: `byosmtp_0045_test_button_per_user_limit.{up,down}.sql`
 (already written and applied). **Cascade: Phase 7's own migration shifts from `0045` to `0046`.**
-`Docs/phase-6-per-user-config-and-routing.md` §10, `Docs/phase-7-visibility-notifications-contract.md`
+`Docs/history/phase-6-per-user-config-and-routing.md` §10, `Docs/history/phase-7-visibility-notifications-contract.md`
 (migration number, §8's DDL section, M3-P7-OD-6/M3-P7-OD-9's own rulings which cite `0045` by number),
-and `Docs/plan-revision-log.md`'s chain table updated in the same change.
+and `Docs/history/plan-revision-log.md`'s chain table updated in the same change.
 
 **This is now the FIFTH such cascade in this build** — after M3-P3-OD-18, M3-P3-OD-19, M3-P4-OD-16,
 and M3-P5-OD-7 — the first one triggered by a landing-check finding rather than an in-flight
@@ -1554,13 +1585,234 @@ model rather than describe the old per-recipient arithmetic as finalized.
 
 ---
 
+## M3-P8-OD-7 — RULED (a) 2026-08-04: module 3's ledger stays at its own path; it is NOT moved onto module 2's
+
+**Raised while starting Phase 8's §3 docs reorganisation, before any file was moved.**
+
+**The contradiction, as found.** `phase-8-polish-docs-close.md` §4.3(a) instructs, in its own words:
+*"The file [`Docs/open-decisions.md`, module 3's own ledger] sits at `Docs/open-decisions.md`, i.e.
+in the **living** docs. §3's reorganisation moves the phase specs to `history/`, and the ledger
+belongs with them — module 2's counterpart is at `Docs/history/open-decisions.md`. Move it and fix
+the inbound pointers."* Read plainly, this instructs moving module 3's ledger TO
+`Docs/history/open-decisions.md`.
+
+But that exact path is **already occupied** — by design, not by accident. `Docs/history/README.md`
+(written at Phase 6, M3-P0-OD-9's landing) states explicitly: *"`open-decisions.md` | **Module 2's
+own** flag-don't-fix ledger, carried at this path (not moved into `module-2/`) because module 3's own
+inherited-code comments cite it directly by this exact path. Module 3's own, actively-growing
+ledger is `Docs/open-decisions.md` (top-level, living) — **do not confuse the two.**"* Moving module
+3's ledger to that identical path would either overwrite module 2's file outright (destroying a
+provenance artifact live inherited-code comments cite by literal path — a Rule 5/Rule 8-adjacent
+harm, not a cosmetic one) or require renaming module 2's file out of the way first, which
+`Docs/history/README.md`'s own ruling (M3-P0-OD-9) explicitly rejected doing for the identical
+reason (path-stable citation from inherited code).
+
+**Why this is not mine to resolve silently (CLAUDE.md Rule 2).** Two locked artifacts — the Phase 8
+spec's §4.3(a) instruction and the Phase 6-ruled `Docs/history/README.md` policy — directly
+contradict each other about what may live at `Docs/history/open-decisions.md`. Neither is
+obviously subordinate to the other: §4.3(a) is the currently-executing phase's spec; the
+`history/README.md` policy is an already-shipped, user-adjacent ruling (M3-P0-OD-9) protecting a
+live citation path in inherited code. Silently picking a name is exactly the "flag, don't silently
+fix" case Rule 2 exists for.
+
+**The question:** module 3's living `Docs/open-decisions.md` needs a new path once it moves into
+`Docs/history/` alongside the other now-historical phase specs — since `Docs/history/open-decisions.md`
+is taken. Options, none applied yet:
+
+(a) **Rename module 3's ledger on the move** — e.g. `Docs/history/module-3-open-decisions.md`
+(mirroring `module-3-build-plan.md`'s existing naming convention) or `Docs/history/decisions.md`.
+Module 2's file keeps its exact path and citation validity; module 3's own get a new, permanent one,
+which is a one-time rewrite of every inbound pointer (the doc's own header + the phase specs' §12
+cross-references + this file's own self-references), all mechanical.
+
+(b) **Leave module 3's ledger where it is** (`Docs/open-decisions.md`, living tier) rather than
+moving it into `history/` at all — treating an ACTIVELY-CITED, append-only decision log as
+operationally live material rather than closed provenance, on the theory that a ledger a build still
+reads (§9's sequencing table, §12's register, every phase spec's own §-cross-references) is not yet
+"nobody should read this to understand the system" (`history/README.md`'s own bar). This declines
+§3.1's instruction that the ledger belongs with the phase specs.
+
+(c) **Something else** — e.g. moving module 2's file instead (rejected: identical harm to the one
+M3-P0-OD-9 already ruled against, just aimed at the other file).
+
+**No file has been moved.** §3's reorganisation is paused on this one item; every other move (module
+3's 8 phase specs, `module-3-build-plan.md`, ADRs `0013`-`0016`) proceeds independently since none of
+those collide with an existing `history/` path.
+
+---
+
+### RULING (2026-08-04) — (a), and the ledger does not move at all
+
+**Module 2's file keeps `Docs/history/open-decisions.md` untouched.** Module 3's own ledger is NOT
+moved onto that path, so the collision never occurs. Between OD-7's options this is (a) — rename
+rather than overwrite — with the narrower conclusion that the rename is unnecessary because the move
+itself is what should be dropped: this file stays at `Docs/open-decisions.md`.
+
+**Reasoning.** The harm in overwriting is asymmetric and irreversible: module 2's ledger is cited by
+literal path from inherited-code comments, and M3-P0-OD-9 already ruled once, deliberately, that it
+stays at that exact path for that exact reason. Phase 8 §4.3(a)'s instruction — "the ledger belongs
+with them" — was written on the premise that the path was free. It was not. A currently-executing
+phase's spec does not override an already-shipped ruling protecting a live citation path; the spec
+was simply wrong about the facts on disk.
+
+**And this ledger is not closed provenance.** `history/README.md`'s own bar for the `history/` tier is
+"nobody should read this to understand the system." That is false of this file today: it is actively
+appended to (this very ruling, and M3-P8-OD-8's above), actively cited by every phase spec's
+cross-references, and — as of M3-P8-OD-8 — the document a reader must consult to understand why two
+config keys no longer exist. It is live operational material, so it stays in the living tier.
+
+**Consequence for Phase 8's §3.** Every other move proceeds as specified (module 3's 8 phase specs,
+`module-3-build-plan.md`, ADRs `0013`–`0016`). Only the ledger's own relocation is declined. No
+inbound pointer needs rewriting, which is the incidental benefit of declining rather than renaming:
+the header, the §12 register, and this file's own self-references all stay valid.
+
+---
+
+## M3-P8-OD-8 — RULED 2026-08-04: drop the two never-consumed keys, keep `score_alert_threshold` against a named future-work item
+
+**Raised while bumping `Docs/current-phase.txt` from `Phase 7` to `Phase 8`** (a mechanical, expected
+part of Phase 8's own work — CLAUDE.md's per-phase convention). That bump made
+`tests/harness/checks/config_consumption.sh`'s RESERVED-marker-expiry check (ADR-0014,
+M3-P2-OD-8's ruling) fire for real, exactly as ADR-0014 designed it to: three keys are `RESERVED`
+with an expiry of `Phase 8`, the tree is now at `Phase 8`, and the gate correctly goes red. This is
+the mechanism working, not a bug — but the DISPOSITION of each key is a real question, not a
+mechanical fix, and Phase 8's own brief forbids building new code to consume any of them ("if
+polish reveals a missing capability, it goes to future-work.md — do not build it").
+
+**The three keys, each independently verified against the tree (not read off the docs' own claims,
+per Rule 11):**
+
+1. **`retry_count_4xx`** (`sender_0010`, inherited from module 2, `{"v":3}`). Confirmed via
+   `grep -rn "retry_count_4xx\|RetryCount4xx" services/brain` returning **zero** hits outside
+   `Docs/` — it is not even loaded into `dispatch.Config`, let alone consumed. `config-reference.md`
+   itself already documents why: Phase 5 §6.2 named it a soft same-account retry hint, but "V1 has no
+   per-job avoid-set or per-(job,account) attempt tracker to hook it into" — `backoffSecondsForClass`
+   requeues purely off the exponential `retry_backoff_schedule` ladder, with zero reference to this
+   key. Building the avoid-set mechanism is new work, forbidden here.
+
+2. **`variation_zero_width_rate_pct`** (`sender_0021`, `{"v":5}`). Confirmed via
+   `grep -rn "VariationZeroWidthRatePct" services/brain` — loaded into `dispatch.Config`
+   (`config.go:132,383`) but read nowhere else. `config-reference.md` already documents this as a
+   **deliberate, ruled duplicate** (P9.5-OD-3) of the already-wired `variation_zero_width_rate`
+   (a fraction 0–1, the actual source of truth) — the `_pct` key was seeded as an alternate
+   percent-based representation and ruled to stay unconsumed so two dials never drive the same box
+   behavior. Its sibling in the same migration, `variation_css_micro_params.delta_px`, carries the
+   identical pattern (also RESERVED, also a documented duplicate of `variation_css_magnitude_px`) —
+   confirmed present but **not itself expiring at Phase 8** (no third field in
+   `config-consumers.txt` for that sub-field's marker), so this item is scoped to the `_pct` key only,
+   not its sibling.
+
+3. **`score_alert_threshold`** (`byosmtp_0046`, `{"v":30}`) — **the one that is not merely inert, but
+   a broken promise.** `config-reference.md` and `Docs/history/phase-7-visibility-notifications-contract.md`
+   (lines 928, 1526-1529) both assert Phase 7 **is** this key's consumer — *"this phase is that
+   consumer (§3.1's score warning, §8's dial)"* — stated as fact, not as a plan. Verified against the
+   actual tree: `ScoreAlertThreshold` is loaded into `dispatch.Config` (`config.go:143,438`) and never
+   read anywhere else (`grep -rn "ScoreAlertThreshold" services/brain` returns only those two lines
+   outside test files). The only notification ever enqueued anywhere in the codebase is
+   `"account_quarantined"` (`grep -rn "EnqueueNotification(" services/brain`, one call site,
+   `account_effect.go:172`) — there is no score-warning digest event, no comparison of
+   `account_status_score` against this threshold, anywhere. Phase 7's own spec claimed a consumer
+   that was never built. This is a Rule 11 finding in its own right, independent of the expiry gate.
+
+**Why this is not mine to resolve silently.** Two of the three (`retry_count_4xx`,
+`variation_zero_width_rate_pct`) have a clear, low-stakes disposition — delete the key (row +
+manifest + consumers ledger + reference doc, together, per ADR-0014's own instruction) since the
+alternative (building a consumer) is new work Phase 8 forbids, and deleting a `RESERVED, never
+consumed, ruled-duplicate` key is not the kind of removal Rule 5 protects (Rule 5 protects *live*
+contracts; these have never been live). But CLAUDE.md Rule 1's `default_value`-never-mutated
+discipline and Rule 5's general caution around removing anything means even a "clear" deletion is a
+schema change I should not make unprompted in a docs-only phase, and `score_alert_threshold` is a
+different kind of question entirely: deleting it abandons a feature Phase 7's own text promised
+(the score-warning digest), which is a product decision — not mine to make by deleting the row that
+was supposed to enable it.
+
+**The question:** for each of the three keys, one of:
+
+(a) **Delete it now, in one migration, together with the ledger/manifest/refdoc rows** — the
+ADR-0014-prescribed disposition for a `RESERVED` key past expiry with no consumer and no plan to
+build one this phase.
+
+(b) **Extend the expiry** (e.g. to a named future phase, or to an explicit "no expiry, permanently
+reserved" marker if `config_consumption.sh`'s syntax is meant to support that — it currently does
+not, so this option may require a small gate change, itself worth flagging separately if chosen) —
+appropriate if the key's eventual consumer is still wanted, just not in Phase 8.
+
+(c) **For `score_alert_threshold` specifically: register the missing score-warning digest as a
+future-work item** (it is a real, scoped, buildable feature — Phase 7 §3.1 already specified its
+shape) **and extend or clear the expiry accordingly**, rather than deleting a key a documented design
+still wants.
+
+**No key has been deleted, no expiry has been extended, and no future-work entry has been written
+for the missing score-warning digest.** `config_consumption.sh` is currently RED on all three keys
+pending this ruling — the phase-bump that surfaced this is real and stays (`Phase 8` is now genuinely
+the tree's phase), so this gate failure is expected to persist until each key's disposition is ruled,
+not something to be silenced by reverting the phase-file edit.
+
+---
+
+### RULING (2026-08-04) — (a) for the two, (c) for the third
+
+**`retry_count_4xx` → (a) DELETE.** **`variation_zero_width_rate_pct` → (a) DELETE.** Both drop at
+`byosmtp_0049`, with the down file re-`INSERT`ing each row verbatim from its original seed site
+(Rule 1: `default_value` is never mutated, so a rollback restores byte-for-byte rather than
+approximating). The authority is ADR-0016's two-condition test, invoked explicitly rather than as a
+general "nobody uses this" claim: (1) neither key ever had a genuine module-3 consumer at any point
+in module 3's own history — `retry_count_4xx` was never even loaded into `dispatch.Config`, and
+`variation_zero_width_rate_pct` was loaded and write-validated but never stamped onto the `push_job`
+wire block, so it never reached the box or changed a delivered byte; and (2) neither has a
+same-name replacement being reinterpreted — the surviving `variation_zero_width_rate` predates its
+duplicate and keeps its own name. This is dead inheritance, not a live contract, and it does NOT
+reopen Rule 5 generally.
+
+**`score_alert_threshold` → (c) KEEP, retarget the expiry.** The key stays; the missing consumer is
+registered as **FW-M3-12** (Phase 7 §3.1's score-warning digest, specified and buildable but never
+built). Deleting it would abandon a feature a documented design still wants — a product decision —
+and it also fails ADR-0016's condition (1) from the other side: it was seeded FOR a named consumer
+that is still wanted, so it is not dead inheritance. `retry_count_4xx`'s deferred avoid-set consumer
+is likewise registered, as **FW-M3-11**, so the capability survives the row's deletion: whichever
+phase builds the tracker re-seeds the key at the point it gains a real consumer, never before.
+
+**The gate gained a new expiry form, because option (b) was structurally unavailable.** OD-8's own
+text flagged this and it proved correct: `config_consumption.sh`'s `PHASE_ORDER` ends at `Phase 8`,
+the last phase, so a key deliberately kept because its consumer is still wanted has no future phase
+label left to name — the phase form could only ever report it as expired. The third field now also
+accepts a future-work item id (`FW-M3-N`), and the gate requires that item to exist as a heading in
+`future-work.md`. That keeps the teeth ADR-0014 built without lying about a date: the marker cannot
+become permanent by quietly losing its roadmap entry, which is the same failure mode ADR-0014 closed
+for phase labels. **This is a gate change made while discharging the gate's own finding**, so it is
+recorded here rather than left implicit — the flag OD-8 raised for exactly this contingency.
+
+**What landed, verifiable in the tree.** Migration `byosmtp_0049` (up: two `DELETE`s; down: two
+verbatim re-`INSERT`s); `config-consumers.txt` (two rows gone, third retargeted to `FW-M3-12`);
+`config-manifest.txt` and `config-reference.md` (87 → 85 keys, both directions of the `config_drift`
+equality); `future-work.md` (FW-M3-11, FW-M3-12); `dispatch/config.go` (the `_pct` field and its
+`readIntKey` call removed — `readIntKey` errors on a missing row, so leaving the read would have
+wedged every dispatch tick's config load); `adminapi/config_validate.go` (the `_pct` case, unreachable
+once `handleConfigPut` 404s the unknown key before validating); and `adminapi/phase95_config_range_test.go`,
+where the old range test for a now-absent key is replaced by `TestP8_ExpiredReservedKeysAreGone` —
+both drops asserted 404, the surviving dial asserted still-validating, so a silent re-seed fails the
+test and the gate together.
+
+**The Rule 11 finding stands on its own, independent of this ruling.** Phase 7's spec asserted, as
+fact, that it *was* `score_alert_threshold`'s consumer. It was not, and the claim survived Phase 7's
+own closeout. It was caught only because the expiry mechanism forced the disposition to be verified
+against the tree instead of read off the docs. Recorded in FW-M3-12 because the class matters more
+than the instance: a spec asserting its own completion is not evidence of it.
+
+---
+
 ## Honest final position
 
-**Needs-user: empty.** All **82** items are disposed of — the original 79, plus **M3-P7-OD-9**,
-**M3-P7-OD-10**, and **M3-P7-OD-11**, all raised mid-build, reported as open, and ruled the same day
-they were found. Nothing is deferred, nothing is "awaiting ruling", and no item was closed on my
-authority. **Phase 4's own build subsequently raised and ruled M3-P4-OD-12 the same day it was
-found** — see above.
+**Needs-user: two items — M3-P8-OD-7 and M3-P8-OD-8, above.** 82 of 84 items are disposed of — the
+original 79, plus **M3-P7-OD-9**, **M3-P7-OD-10**, **M3-P7-OD-11**, and **M3-P4-OD-12**, all raised
+mid-build, reported as open, and ruled the same day they were found. **M3-P8-OD-7** and **M3-P8-OD-8**
+are the two genuine exceptions, both found 2026-08-03 while executing Phase 8's own work: OD-7 is a
+real path collision between the Phase 8 spec's own §4.3(a) instruction and a Phase-6-ruled policy in
+`Docs/history/README.md`; OD-8 is three `RESERVED` config keys hitting their documented Phase-8
+expiry with no consumer, one of which (`score_alert_threshold`) Phase 7's own text claimed — falsely,
+on re-verification — to have already built a consumer for. Resolving either by picking an answer
+myself is exactly what Rule 2 forbids. Nothing else is deferred, and no other item was closed on my
+own authority.
 
 **One correction I had to make against my own earlier report, stated plainly:** M3-P3-OD-3's closure
 rested on a citation I had accepted, and on direct verification the citation was wrong — Phase 3

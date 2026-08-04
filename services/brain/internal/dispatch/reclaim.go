@@ -142,7 +142,7 @@ func (d *Dispatcher) ReclaimTick(ctx context.Context) (Config, int, error) {
 		if IsOutage(err) {
 			return cfg, reclaimed, err
 		}
-		log.Printf("reclaim: dead-box detector failed: %v", err)
+		log.Printf("reclaim: dead-box detector failed: %v level=error", err)
 	} else {
 		reclaimed += nA
 	}
@@ -150,7 +150,7 @@ func (d *Dispatcher) ReclaimTick(ctx context.Context) (Config, int, error) {
 		if IsOutage(err) {
 			return cfg, reclaimed, err
 		}
-		log.Printf("reclaim: lease-expiry detector failed: %v", err)
+		log.Printf("reclaim: lease-expiry detector failed: %v level=error", err)
 	} else {
 		reclaimed += nB
 	}
@@ -200,7 +200,7 @@ func (d *Dispatcher) reclaimDeadBoxes(ctx context.Context, cfg Config) (int, err
 	for _, box := range deadBoxes {
 		n, err := d.reclaimJobsOnBox(ctx, box, cfg)
 		if err != nil {
-			log.Printf("reclaim: box %s mass-reclaim failed: %v", box, err)
+			log.Printf("reclaim: box %s mass-reclaim failed: %v level=error", box, err)
 			continue // a per-box error must not abort the scan of the other dead boxes
 		}
 		total += n
@@ -252,7 +252,7 @@ func (d *Dispatcher) reclaimExpiredLeases(ctx context.Context, cfg Config) (int,
 	for _, jobID := range expired {
 		n, err := d.reclaimOneJob(ctx, jobID, cfg)
 		if err != nil {
-			log.Printf("reclaim: lease-expiry reclaim of job %s failed: %v", jobID, err)
+			log.Printf("reclaim: lease-expiry reclaim of job %s failed: %v level=error", jobID, err)
 			continue // a per-job error must not abort the others
 		}
 		total += n
@@ -335,7 +335,7 @@ func (d *Dispatcher) reclaimJobsOnBox(ctx context.Context, boxID string, cfg Con
 	for _, jobID := range jobIDs {
 		n, err := d.reclaimOneJobReason(ctx, jobID, cfg, "box heartbeat missed")
 		if err != nil {
-			log.Printf("reclaim: box %s job %s reclaim failed: %v", boxID, jobID, err)
+			log.Printf("reclaim: box %s job %s reclaim failed: %v level=error", boxID, jobID, err)
 			continue // a per-job error must not abort the rest of the box's jobs
 		}
 		total += n

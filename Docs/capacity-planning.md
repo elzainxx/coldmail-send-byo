@@ -27,24 +27,35 @@ result (which ceiling binds) is what this page is for, not the specific figures.
 | Ceiling | What sets it | Character |
 |---|---|---|
 | **Per-account daily volume** | `daily_limit` per account (default from `daily_limit_default`), enforced against a per-account daily counter that resets at `daily_reset_hour` in `daily_reset_timezone` | A **hard, deliberate** cap. Reached in the normal course of business. Raising it is a reputation decision, not a scaling one. |
-| **Single-Brain send rate** | The Brain's own dispatch throughput: **~370 sends/min measured**, ~300–370/min sustained band | A **soft, measured** ceiling on specific hardware. Not a designed limit. |
+| **Single-Brain send rate** | The Brain's own dispatch throughput | A **soft, measured** ceiling on specific hardware. Not a designed limit. **Measured for module 3, 2026-08-03 — see below.** |
 
-The measured figure is the 2026-07-26 run in [`load-test-results.md`](./load-test-results.md): 4 vCPU
-/ 8 GiB Docker host, 6 real boxes, RAM-backed Postgres. Read it with that run's own caveat — the box
-side was likely still a partial co-bottleneck at 6 boxes, so ~370/min is *this hardware's practical
-ceiling*, not the Brain's isolated maximum. Re-run `tests/harness/load_e11.sh` before any material
-capacity increase and append a dated entry; do not extrapolate from the table below.
+**Module 3's own measurement (2026-08-03, [`load-test-results.md`](./load-test-results.md)):
+2000–2600 sends/min**, at 4 boxes / dev-host hardware — HIGHER than module 2's 370/min, not lower.
+The pre-measurement prediction (Phase 8 §8.1) was that per-user config resolution, per-user
+pacing, and the Phase 7 notification loop would make module 3's ceiling lower; it measured higher
+instead, which turned out to be the more interesting result — per-user resolution's per-tick cost
+is evidently cheaper than the pool-routing/fallback path it replaced, at least at this hardware and
+box count. The evidence points at **user count, not per-user lane concurrency**, as module 3's
+actual limiting factor: a lanes-only ramp (module 2's own shape) never saturated even at 16
+lanes/16 users; a users-only ramp (lanes fixed at 2) saturated at 500 users, 133k+ jobs queued.
+Read [`load-test-results.md`](./load-test-results.md)'s 2026-08-03 entry for both ramps' full
+tables and the reasoning — this page's arithmetic below uses **2000/min** (the more conservative
+of the two measured maxima) as the working number, re-check against a fresh run before trusting it
+for a real capacity decision on different hardware.
 
-**370 sends/min is ~533,000 sends/day** if you could sustain it for 24 hours. You cannot, and you
-would not want to — but it establishes the scale: the Brain is not the constraint for any realistic
-V1 volume. Accounts are.
+**2000 sends/min is ~2.88 million sends/day** if you could sustain it for 24 hours. You cannot
+sustain it around the clock, and you would not want to — but it establishes the scale: the Brain is
+very unlikely to be the constraint for any realistic V1 volume. Accounts are, and by an even wider
+margin than module 2's own number suggested.
 
 ---
 
 ## 2. How many accounts do I need?
 
 Accounts needed ≈ **daily volume ÷ per-account daily limit**, then add headroom, because an account
-that is paused, quarantined, or throttled contributes nothing that day.
+that is paused, quarantined, or throttled contributes nothing that day. This table is per-user
+arithmetic, not per-pool — module 3 has no shared pools, so the account count below is the sum of
+whatever accounts, across however many users, are actually deployed.
 
 At the 500/account/day figure declared above (`daily_limit_default`):
 
@@ -54,9 +65,10 @@ At the 500/account/day figure declared above (`daily_limit_default`):
 | 5,000 | 10 | 13 | ~10/min | **Account daily limits.** |
 | 10,000 | 20 | 26 | ~21/min | **Account daily limits.** |
 | 25,000 | 50 | 65 | ~52/min | **Account daily limits.** |
-| 50,000 | 100 | 130 | ~104/min | **Account daily limits.** Brain at ~30% of measured ceiling. |
-| 100,000 | 200 | 260 | ~208/min | **Account daily limits** — but the Brain is now at ~55% of measured ceiling. Re-run the load test. |
-| 200,000 | 400 | 520 | ~417/min | **The Brain binds.** ~417/min exceeds the measured ~370/min. Spread the window, or re-run the load test with more boxes before committing. |
+| 50,000 | 100 | 130 | ~104/min | **Account daily limits.** Brain at ~5% of module 3's measured 2000/min ceiling. |
+| 100,000 | 200 | 260 | ~208/min | **Account daily limits.** Brain at ~10% of the measured ceiling — comfortable margin. |
+| 200,000 | 400 | 520 | ~417/min | **Account daily limits.** Brain at ~21% of the measured ceiling — still comfortable, unlike under module 2's inherited placeholder, where this row would have bound on the Brain. |
+| 1,000,000 | 2,000 | 2,600 | ~2083/min | **The Brain likely binds** at this volume (~2083/min approaches the measured 2000-2600/min band). Spread the window, or re-run the load test at your own box count/hardware before committing. |
 
 The peak-rate column assumes the volume is delivered inside an 8-hour window (`volume ÷ 480 min`),
 which is the realistic case for business-hours sending — and it is what turns the Brain into a
@@ -79,9 +91,9 @@ Two things this table does **not** account for, both of which push the account c
 ## 3. Why account daily limits almost always bind first
 
 For any volume where a small team would deploy this module, the arithmetic is one-sided: 26 accounts
-at the default limit cover 10k/day, and 10k/day is ~21 sends/min — under 6% of the measured Brain
-ceiling. You will add accounts long, long before you add a second Brain (which you cannot do anyway:
-the singleton is a locked invariant, and horizontal Brain scaling is
+at the default limit cover 10k/day, and 10k/day is ~21 sends/min — about 1% of module 3's measured
+2000/min Brain ceiling (see §1). You will add accounts long, long before you add a second Brain
+(which you cannot do anyway: the singleton is a locked invariant, and horizontal Brain scaling is
 [future work](./future-work.md)).
 
 The practical consequence: **treat "a tenant's accounts are exhausted for the day" as the normal
@@ -115,7 +127,8 @@ provider is a box doing nothing else.
 | 50 | 3 |
 | 100 | 4–6 |
 | 200 | 8–10 |
-| 370 (measured ceiling) | 12+ — and at this point re-run the load test |
+| 370 (module 2's own ceiling, for reference) | 12+ |
+| 2000 (module 3's measured ceiling — §1) | 4 boxes sustained this in the actual measurement; more boxes is still the right lever if you need to push past it |
 
 Floor of **two boxes regardless of volume**: one box is a single point of failure for the entire send
 path. Overflow is handled gracefully — when no box is free, the job is cleanly requeued as
@@ -148,9 +161,11 @@ table dominates it.
 
 Do not size from this page alone. Two checks first:
 
-1. **Re-run the load test on your hardware.** `bash tests/harness/load_e11.sh [N_BOXES] [MAX_LANES]`,
-   with a materially larger `N_BOXES` than 6 if you are anywhere near 200/min. Append a dated entry to
-   [`load-test-results.md`](./load-test-results.md) — it is a versioned artifact, never overwritten.
+1. **Re-run the load test on your hardware.** `bash tests/harness/load_e11.sh [N_BOXES] [MAX_LANES]`
+   runs BOTH the lanes-shaped and the user-axis ramp; use a materially larger `N_BOXES` than the
+   measured run's 4 if you are anywhere near 1000/min, and a higher `MAX_LANES`/user-axis step
+   range if you need to confirm the measured ceiling holds at your own scale. Append a dated entry
+   to [`load-test-results.md`](./load-test-results.md) — it is a versioned artifact, never overwritten.
 2. **Confirm your providers' real per-mailbox limits.** The seeded `daily_limit_default` is a
    conservative stand-in.
    The provider's actual limit — and its tolerance for the rate you send at — is the number that

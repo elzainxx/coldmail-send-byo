@@ -79,7 +79,7 @@ func (e *dispatchEnv) accountDailySentCount(t *testing.T, acctID string) int {
 func strPtr(s string) *string { return &s }
 
 // TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes (T1, THE test; renamed per
-// Docs/phase-2-strip-shared-pool.md §5.2) — ONE account, daily_limit=50, hammered by 8 GENUINE
+// Docs/history/phase-2-strip-shared-pool.md §5.2) — ONE account, daily_limit=50, hammered by 8 GENUINE
 // concurrent connections (8 separate pgxpool.New pools, so 8 independent physical connections —
 // not 8 goroutines sharing one pooled connection) each trying to consume it repeatedly, with
 // demand far exceeding capacity.
@@ -460,7 +460,7 @@ func TestAccountConsume_LazyResetSelfHeals(t *testing.T) {
 }
 
 // TestAccountConsume_ExhaustedUserAccountSetReturnsNotFound — renamed from
-// TestAccountConsume_ExhaustedPoolReturnsNotFound (Docs/phase-2-strip-shared-pool.md §4.2: "exhausted
+// TestAccountConsume_ExhaustedPoolReturnsNotFound (Docs/history/phase-2-strip-shared-pool.md §4.2: "exhausted
 // pool" -> "exhausted user account set"). A user whose every account is ineligible gets (false, nil),
 // never an error, and userHasEligible reports false for the SAME user (§4.1: exhaustion is defined
 // identically for both).

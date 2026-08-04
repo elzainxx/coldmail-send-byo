@@ -1,7 +1,7 @@
--- sender_0001_create_schema.up.sql — Phase 1 feature chain start (data model).
+-- byosmtp_0001_create_schema.up.sql — Phase 1 feature chain start (data model).
 -- The `sender` schema, its non-login owner `byosmtp_owner`, the login app role `byosmtp_module`,
 -- and `byosmtp.schema_migrations` were ALL created by the Phase 0 pre-feature bootstrap
--- (sender_0000, ADR-0002). This migration is therefore an IDEMPOTENT confirmation of that
+-- (byosmtp_0000, ADR-0002). This migration is therefore an IDEMPOTENT confirmation of that
 -- ground — it re-asserts schema existence + PUBLIC lockout without dropping anything the
 -- bootstrap owns. It records version 0001 so the locked feature chain (sender_0001..0020, per
 -- every Phase 1–9 spec + Phase 9 §4) begins exactly here, unshifted.

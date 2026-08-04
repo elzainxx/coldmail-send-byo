@@ -169,7 +169,7 @@ func (g *Guard) keep() {
 					g.notHeldSince.Store(time.Now().UnixNano())
 					g.reacquireFailures = 0
 					g.lastAttempt = time.Time{} // attempt immediately, don't wait out a stale interval
-					log.Printf("singleton: lock connection lost (%v); marking not-held — dispatch/reclaim/retention are now PAUSED (no claim, no push, no reclaim, no sweep) and readyz reports not_ready; the outcome path stays UP so an in-flight send can still report. Re-attempting acquisition (ADR-0011 option B)", err)
+					log.Printf("singleton: lock connection lost (%v); marking not-held — dispatch/reclaim/retention are now PAUSED (no claim, no push, no reclaim, no sweep) and readyz reports not_ready; the outcome path stays UP so an in-flight send can still report. Re-attempting acquisition (ADR-0011 option B) level=error", err)
 				}
 				continue
 			}

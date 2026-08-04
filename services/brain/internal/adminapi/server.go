@@ -120,7 +120,7 @@ func (s *Server) adminRoutes() []route {
 		{"POST", "/v1/admin/accounts/{id}/pause", s.handleAccountPause},
 		{"POST", "/v1/admin/accounts/{id}/unpause", s.handleAccountUnpause},
 
-		// Pools — UNMOUNTED AT G2 (Docs/phase-2-strip-shared-pool.md §2.4, per the user's ruling on
+		// Pools — UNMOUNTED AT G2 (Docs/history/phase-2-strip-shared-pool.md §2.4, per the user's ruling on
 		// M3-P2-OD-10: kept mounted through G1 only because ~150 HTTP-level fixture sites depended
 		// on POST /v1/admin/pools until the account write-path rewrite landed. That rewrite landed
 		// in the SAME commit, so the fixture dependency is gone and the five routes were removed

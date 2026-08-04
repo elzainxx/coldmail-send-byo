@@ -25,7 +25,7 @@ const (
 // evaluateChain classifies a user's account set into the §5.1 verdict. Order (first match):
 //  1. ∃ eligible account             → CLAIM (not exhausted).
 //  2. the user has NO accounts at all → WAIT (re-keyed from "chain is empty/unresolvable" —
-//     Docs/phase-2-strip-shared-pool.md §2.3: with pools gone there is no config gap that can
+//     Docs/history/phase-2-strip-shared-pool.md §2.3: with pools gone there is no config gap that can
 //     empty the account set, but a user simply having zero accounts is the same condition with the
 //     same correct answer. Ordered BEFORE the fail branch so it can never fall through).
 //  3. ∃ self_recovering account       → WAIT (a reset/throttle timer will re-open it automatically).

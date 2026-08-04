@@ -13,15 +13,21 @@
 # notification_immediate_severities, notifications_enabled, notification_tick_interval_sec,
 # destination_throttle_window_sec, destination_throttle_user_threshold,
 # quote_capacity_projection_enabled, quote_long_duration_warn_sec, score_alert_threshold — the
-# last REPLACING quarantine_threshold under a new name per M3-P5-OD-1's split).
+# last REPLACING quarantine_threshold under a new name per M3-P5-OD-1's split), then 85 after Phase
+# 8's 0049 (-2: retry_count_4xx and variation_zero_width_rate_pct DROPPED — M3-P8-OD-8, ruled
+# 2026-08-04, discharging two expired RESERVED markers under ADR-0016's two-condition test; neither
+# key ever had a genuine module-3 consumer. This is the first NET DECREASE in this manifest that is
+# not offset by a same-migration re-seed, so the "grows monotonically" claim above holds for keys
+# added, not for the total.)
 #
 # Phase 1 — sender_0010 (14 keys, the foundation; Phase 9 §4.1). quarantine_threshold DELETED at
 # Module 3 Phase 5's byosmtp_0042 (M3-P5-OD-1: its consumer branch was removed by this same
-# phase — the score never independently quarantines, §4).
+# phase — the score never independently quarantines, §4). retry_count_4xx DELETED at Phase 8's
+# byosmtp_0049 (M3-P8-OD-8: inherited from module 2 and never read by module 3 at any point — not
+# loaded, not validated; its avoid-set consumer was deferred by Phase 5 §6.2 and is now FW-M3-11).
 daily_limit_default
 daily_reset_timezone
 daily_reset_hour
-retry_count_4xx
 dispatch_tick_interval_ms
 send_delay_min_sec
 send_delay_max_sec
@@ -76,6 +82,12 @@ variation_thread_index
 
 # Phase 9.5 — sender_0021 (+11 keys: B1-B5 operability controls + S10/S11 config-not-code
 # completeness dials). Fully schema-neutral (no DDL, no new table/column/enum/constraint/index).
+# variation_zero_width_rate_pct DELETED at Phase 8's byosmtp_0049 (M3-P8-OD-8: P9.5-OD-3's ruled
+# duplicate of variation_zero_width_rate, loaded but never stamped onto the push_job wire block, so
+# it never reached the box or changed a delivered byte — the fraction key remains the sole dial).
+# unit_price_credits stays listed in this block (its original seed site) even though byosmtp_0048
+# delete+re-seeded it (M3-P7-OD-11) — this manifest tracks the key SET, not each row's newest write
+# site, so a re-seed under the same name does not move its line.
 dispatch_enabled
 autoquarantine_mode
 autopause_enabled
@@ -85,13 +97,12 @@ health_metrics_window_sec
 brain_singleton_acquire_timeout_sec
 unit_price_credits
 variation_comment_intensity_rates
-variation_zero_width_rate_pct
 variation_css_micro_params
 brain_singleton_reacquire_interval_sec
 
 # Module 3 Phase 3 — byosmtp_0036 (+6 keys: the user-owned account surface's dials — account cap,
 # test-button rate limit, retention window, bulk-add verification pacing, the purge loop's own
-# interval + batch size). Docs/phase-3-user-owned-accounts.md §7.
+# interval + batch size). Docs/history/phase-3-user-owned-accounts.md §7.
 account_test_rate_limit_per_day
 account_count_cap_per_user
 account_retention_window_sec
@@ -100,12 +111,12 @@ account_purge_sweep_interval_ms
 account_purge_delete_batch_size
 
 # Module 3 Phase 3 — byosmtp_0038 (+1 key: the bulk-add row-count bound, M3-P3-OD-8/19).
-# Docs/phase-3-user-owned-accounts.md §4.2.
+# Docs/history/phase-3-user-owned-accounts.md §4.2.
 bulk_add_max_rows
 
 # Module 3 Phase 4 — byosmtp_0039 (+7 keys: the From-gate DNS evaluator's dials — the kill switch,
 # the resolver override, the two DNS timeouts, the two cache TTLs, the SPF lookup-limit posture).
-# Docs/phase-4-from-gate.md §6.1.
+# Docs/history/phase-4-from-gate.md §6.1.
 from_gate_mode
 from_dns_resolver
 from_dns_lookup_timeout_ms
@@ -117,7 +128,7 @@ from_spf_lookup_limit_posture
 # Module 3 Phase 5 — byosmtp_0042 (+10 keys: the dual quarantine triggers, self-serve
 # un-quarantine, and resource-protection/campaign-expiry dials). quarantine_threshold is DELETED
 # in this same migration (moved to the top of this file's comment, M3-P5-OD-1).
-# Docs/phase-5-autonomous-behaviour-and-limits.md §10.1.
+# Docs/history/phase-5-autonomous-behaviour-and-limits.md §10.1.
 quarantine_consecutive_threshold
 quarantine_failure_rate_pct
 quarantine_failure_window_sec
@@ -130,13 +141,13 @@ campaign_expiry_sec
 campaign_expiry_sweep_interval_ms
 
 # Module 3 Phase 6 — byosmtp_0045 (+1 key: the per-user aggregate test-button rate limit,
-# M3-P3-OD-6, landed here rather than in Phase 3). Docs/phase-6-per-user-config-and-routing.md.
+# M3-P3-OD-6, landed here rather than in Phase 3). Docs/history/phase-6-per-user-config-and-routing.md.
 test_button_rate_limit_per_user_per_day
 
 # Module 3 Phase 7 — byosmtp_0046 (+10 keys: notification delivery loop + dedup/digest windows,
 # the operator health per-destination throttle aggregation, the quote capacity-projection dials,
 # and score_alert_threshold — REPLACING quarantine_threshold under a new name, M3-P5-OD-1's split).
-# Docs/phase-7-visibility-notifications-contract.md §8.
+# Docs/history/phase-7-visibility-notifications-contract.md §8.
 notification_digest_window_sec
 notification_dedup_window_sec
 notification_immediate_severities

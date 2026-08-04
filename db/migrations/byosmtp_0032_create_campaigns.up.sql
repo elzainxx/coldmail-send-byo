@@ -19,7 +19,7 @@
 -- at all; adding a RESTRICT FK now would make every existing job-creation path (store.go, and
 -- every harness fixture that inserts a jobs row directly) fail its very next INSERT with 23503,
 -- breaking the green build for a consumer that does not exist yet. G3's own exit criteria
--- (Docs/phase-2-strip-shared-pool.md §8.1 items 12-19) never list this FK — only Phase 1 §4.3's
+-- (Docs/history/phase-2-strip-shared-pool.md §8.1 items 12-19) never list this FK — only Phase 1 §4.3's
 -- DDL commentary does. Add it in the same Phase 5 commit that ships the upsert.
 
 CREATE TABLE byosmtp.campaigns (

@@ -58,7 +58,7 @@ func TestGrantsInvariant(t *testing.T) {
 
 	// Anti-vacuity: the schema must actually have the Phase 1 feature tables, or this test is
 	// meaningless. Assert the known set is present (a superset check — later phases add more).
-	// "pools" removed at G2 (Docs/phase-2-strip-shared-pool.md §5.1/§8.1 criterion 10) — the table
+	// "pools" removed at G2 (Docs/history/phase-2-strip-shared-pool.md §5.1/§8.1 criterion 10) — the table
 	// is dropped by 0028. G3 adds campaigns/notifications/user_config_overrides/user_settings/
 	// user_suspensions (0029-0033), landed here in the same commit as their migrations.
 	mustHave := []string{"account_events", "accounts", "boxes", "campaigns", "config", "job_events",

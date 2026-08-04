@@ -1,7 +1,9 @@
 // Package adminapi is the Brain's operator-only admin surface (Domain B): /v1/admin/*.
-// Phase 2 scope — account & pool CRUD + lifecycle, config management, credential intake. It is
-// the ONLY writer of account credentials (Encrypt-only; never Decrypt — OD-7). NO dispatch,
-// routing, SMTP, scoring, or auto-transitions live here (those are Phases 4/5+).
+// Phase 2 scope — account CRUD + lifecycle, config management, credential intake. Pool CRUD
+// (the original Phase 2 scope, module 2's shared/dedicated pool model) was deleted at Module 3's
+// G2 (Docs/history/phase-2-strip-shared-pool.md) — no pool routes, pool table, or pool concept survives.
+// This package is the ONLY writer of account credentials (Encrypt-only; never Decrypt — OD-7).
+// NO dispatch, routing, SMTP, scoring, or auto-transitions live here (those are Phases 4/5+).
 //
 // Two-vocabulary rule (CLAUDE.md Rule 5): a rich INTERNAL reason is logged against a request_id
 // and NEVER serialized; the client only ever sees {code, message, details[], request_id}. No

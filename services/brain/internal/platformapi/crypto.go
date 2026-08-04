@@ -10,7 +10,7 @@ import (
 // Encryptor is platformapi's OWN copy of the credential intake encrypt-on-write primitive —
 // byte-for-byte the same shape as adminapi.Encryptor (internal/adminapi/crypto.go). Duplicated
 // rather than imported: platformapi cannot import internal/adminapi (OD-7's package-isolation
-// precedent, cited at Docs/phase-2-strip-shared-pool.md §8.6) — the two Domain A/B surfaces never
+// precedent, cited at Docs/history/phase-2-strip-shared-pool.md §8.6) — the two Domain A/B surfaces never
 // share Go code, only the underlying KMS key material main.go loads once and hands to both
 // constructors. Encrypt-ONLY: there is no Decrypt method here either, mirroring the same
 // structural guarantee — even a compromised platform surface can write new credentials but never

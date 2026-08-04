@@ -1,5 +1,5 @@
 # DEV/TEST-ONLY fixture DNS server (Phase 4 "From gate" behavioral tests, per
-# Docs/phase-4-from-gate.md §7.1). NOT real infrastructure and NOT real prod DNS data — mirrors
+# Docs/history/phase-4-from-gate.md §7.1). NOT real infrastructure and NOT real prod DNS data — mirrors
 # the deploy/pg-init disclaimer convention: these zones exist solely so the SPF/DMARC/DKIM
 # alignment gate's behavioral tests can exercise a REAL resolver, real protocol, real
 # net.Resolver code path against REAL, controllable failure modes (SERVFAIL, hang/timeout,

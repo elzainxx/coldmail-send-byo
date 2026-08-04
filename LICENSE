@@ -27,7 +27,7 @@ This proprietary license applies to the project's own code and documentation:
 `scripts/`, `tests/`, and `Docs/`.
 
 This repository is a fork of the sibling "sender" module (module 2), forked at
-commit `21b65e65eba8f2cc16a84408bac6e018511ec46b` (see `Docs/fork-point.md`).
+commit `21b65e65eba8f2cc16a84408bac6e018511ec46b` (see `Docs/history/fork-point.md`).
 The fork carries no separate license grant of its own beyond this file; the
 owner is the same owner as the module it was forked from, and this file is
 the sole license covering both the inherited code and this module's own

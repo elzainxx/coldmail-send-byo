@@ -1,4 +1,4 @@
--- sender_0006_create_boxes.up.sql — Phase 1: byosmtp.boxes (sender box registry).
+-- byosmtp_0006_create_boxes.up.sql — Phase 1: byosmtp.boxes (sender box registry).
 -- id is client-supplied at registration (NOT gen_random_uuid()). token_hash never stores
 -- plaintext (bcrypt/PBKDF2 — verify logic is Phase 3). Owned by byosmtp_owner.
 

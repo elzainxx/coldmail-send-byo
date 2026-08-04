@@ -130,7 +130,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 			CampaignExpirySec:  cfg.CampaignExpirySec,
 		})
 		if ucErr != nil {
-			log.Printf("dispatch: userconfig.Resolve(%s) failed: %v — skipping this user for this tick", u, ucErr)
+			log.Printf("dispatch: userconfig.Resolve(%s) failed: %v — skipping this user for this tick level=error", u, ucErr)
 			continue
 		}
 
@@ -152,7 +152,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 			if IsOutage(err) {
 				return cfg, 0, err
 			}
-			log.Printf("dispatch: evaluateChain(%s) failed: %v — skipping this user for this tick", u, err)
+			log.Printf("dispatch: evaluateChain(%s) failed: %v — skipping this user for this tick level=error", u, err)
 			continue
 		}
 		switch verdict {
@@ -170,7 +170,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 			ring = append(ring, ringSlot{userID: u, grant: paced, uc: uc})
 		case verdictFail:
 			if err := d.failExhaustedJobs(ctx, u); err != nil {
-				log.Printf("dispatch: failExhaustedJobs(%s) failed: %v", u, err)
+				log.Printf("dispatch: failExhaustedJobs(%s) failed: %v level=error", u, err)
 			}
 		default: // verdictWait — leave the user's jobs queued, untouched (no claim, no write, no churn)
 		}
@@ -203,7 +203,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 			if IsOutage(err) {
 				return cfg, pushed, err
 			}
-			log.Printf("dispatch: claimForUser(%s) failed: %v — skipping this user for this tick, ring continues", slot.userID, err)
+			log.Printf("dispatch: claimForUser(%s) failed: %v — skipping this user for this tick, ring continues level=error", slot.userID, err)
 			continue
 		}
 		for _, job := range jobs {

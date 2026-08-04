@@ -4,6 +4,11 @@ One page, written to be handed to a reviewer. It states what is protected, the m
 protects it, and — the part that matters — the **residual risks that remain after all of it**. Where
 a control depends on something outside this codebase, that dependency is named rather than assumed.
 
+This page is written to **two audiences**: the operator deploying this system, and a user who is
+trusting the operator with their own third-party SMTP credential. Module 2 was a single-tenant
+system reviewed by its own operator; module 3 lets many unrelated users bring their own accounts, so
+several risks below are stated from the user's side, not just the operator's.
+
 Nothing here restates config defaults or endpoint shapes; those are in
 [`config-reference.md`](./config-reference.md) and [`api-contract.md`](./api-contract.md). Procedures
 live in [`disaster-recovery.md`](./disaster-recovery.md).
@@ -14,10 +19,10 @@ live in [`disaster-recovery.md`](./disaster-recovery.md).
 
 | Asset | Where it lives | Sensitivity |
 |---|---|---|
-| SMTP credentials | `byosmtp.accounts.credential_ciphertext` (AES-256-GCM); plaintext transiently in Brain and box memory | **Highest.** Grants the ability to send as the customer's domain. |
-| The credential master key | Outside the DB, Brain host only | **Highest.** Decrypts all of the above. |
-| Message content and recipients | `byosmtp.send_logs` (`body`, `subject`, `headers`, `recipient_email`) — **plaintext at rest** | High. Retention-bounded, not encrypted. |
-| Operator admin key (Domain B) | bcrypt hashes in the Brain env; plaintext never stored | High. Full control-plane authority. |
+| SMTP credentials | `byosmtp.accounts.credential_ciphertext` (AES-256-GCM); plaintext transiently in Brain and box memory | **Highest.** Grants the ability to send as the user's own domain. |
+| The credential master key | Outside the DB, Brain host only | **Highest.** Decrypts every user's credential. |
+| Message content and recipients | `byosmtp.send_logs` (`body`, `subject`, `headers`, `recipient_email`) — **plaintext at rest** | High. Retention-bounded, not encrypted. Belongs to many unrelated users, not one tenant. |
+| Operator admin key (Domain B) | bcrypt hashes in the Brain env; plaintext never stored | High. Full control-plane authority over every user's account. |
 | Platform service token (Domain A) | bcrypt hashes in the Brain env | High. Can queue sends and read campaign reports. |
 | Box registration tokens | bcrypt hash in `byosmtp.boxes.token_hash`; plaintext only in the box env | High. A box's actual authority to receive credentialed work. |
 | mTLS CA key | The CA host — **never** on a box, never on the Brain in a proper deploy | High. Mints box identities. |
@@ -27,291 +32,238 @@ live in [`disaster-recovery.md`](./disaster-recovery.md).
 ## 2. Controls, and the mechanism behind each
 
 Every row is a property the build treats as load-bearing (CLAUDE.md Rule 6) and enforces
-structurally where it can, rather than by convention.
+structurally where it can, rather than by convention. The mechanisms below are custody-agnostic —
+they carry over from module 2 unchanged, because encryption, memory hygiene, and transport security
+do not care whose credential they are protecting.
 
 | Property | Mechanism | Enforced by |
 |---|---|---|
-| Credentials are never stored in plaintext | AES-256-GCM, key held outside the DB | Schema + `internal/adminapi/crypto.go` |
-| A ciphertext cannot be moved between rows | AAD = `account.id ‖ credential_key_id`; a transplanted or re-labelled ciphertext fails authentication and releases nothing | `internal/credential`; harness test |
-| **Brain is the sole decryptor** | Decrypt exists in exactly one package (`internal/credential`), wired only into the dispatch path — never into `adminapi.Server` | Package split, not a flag. No `/v1/admin/*` route can reach plaintext. |
-| No `/v1/admin/*` **response** ever contains a plaintext credential | `adminapi.Encryptor` has **no Decrypt method** | Type surface; behavioral test asserts no admin route yields a credential. This bounds the API response surface, **not** a rogue operator key — see §3.11 |
+| Credentials are never stored in plaintext | AES-256-GCM, key held outside the DB | Schema + `internal/adminapi/crypto.go`, `internal/platformapi/crypto.go` |
+| A ciphertext cannot be moved between rows | AAD = `account.id ‖ credential_key_id`; a transplanted or re-labelled ciphertext fails authentication and releases nothing | `internal/credential/credential.go`; harness test |
+| **Brain is the sole decryptor** | Decrypt exists in exactly one package (`internal/credential`), wired only into the dispatch path — never into `adminapi.Server` or `platformapi.Server` | Package split, not a flag. No `/v1/admin/*` or `/v1/byosmtp/*` route can reach plaintext. |
+| No admin or platform API **response** ever contains a plaintext credential | `adminapi.Encryptor`/`platformapi.Encryptor` have **no Decrypt method** | Type surface; behavioral test asserts no admin/platform route yields a credential. This bounds the API response surface, **not** a rogue operator key — see R2 |
 | The box has no DB and no KMS access | It ships **no database driver and no KMS SDK** (`services/box/package.json` `dependencies: {}`), and mounts neither DB credentials nor key material | Dependency manifest + container mounts; a harness test asserts the box cannot read the key file |
-| The box holds credentials in memory only | Zeroed on **every send-path exit** — accept, SMTP error, thrown exception — by a `finally` the send cannot skip. Not on the SIGTERM or uncaught-exception paths: see §3.12 | `services/box/src/creds.js` + `stream.js`'s `finally`; behavioral tests cover all three send-path exits |
-| Credentials never appear in logs | Two scans. The `no_secret_leak` CI gate covers the **box registration token and its hash**; the SMTP-credential canary scan lives in the send-path harness (`phase3_send.sh`, `phase8_variation.sh`), which also checks `send_logs`, `jobs.last_error_message`, the delivered message, and the ciphertext column. The credential scan looks for the canary in **plaintext and in three base64 forms** — SMTP AUTH transmits the secret encoded, so a logged AUTH exchange leaks a *working* credential while a plaintext grep still reads clean (AUTH LOGIN base64s the secret alone, padded or trimmed; AUTH PLAIN base64s `\0user\0secret` as one blob in which the secret's own base64 is **not** a substring) | Blocking CI gate + harness on every push. Neither runs against a production log stream — see §5 |
+| The box holds credentials in memory only | Zeroed on **every send-path exit** — accept, SMTP error, thrown exception — by a `finally` the send cannot skip | `services/box/src/creds.js`'s `MemoryCredential.zero()` + `stream.js`'s `finally`; behavioral tests cover all three send-path exits. Not on shutdown or an uncaught exception outside the send path — see R1 |
+| Credentials never appear in logs | The SMTP-credential canary scan in the send-path harness checks `send_logs`, `jobs.last_error_message`, the delivered message, and the ciphertext column, in **plaintext and multiple base64 forms** | Harness on every push. Does not run against a production log stream — see §5 |
 | Box↔Brain is mutually authenticated and confidential | mTLS on both the register/heartbeat and the send-stream listeners | `internal/tlsutil`; no non-TLS path exists |
-| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`byosmtp.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on **next connect**. No CRL/OCSP needed to evict a box. The check runs at register only — it does not tear down a stream already open (§3.12). The legacy `:8443` register/heartbeat listener authorizes against `DEV_BOX_ID`/`DEV_BOX_TOKEN_HASH` from the **environment**, not `byosmtp.boxes`, so clearing the hash does not affect it; it carries no job stream and no credential (`internal/boxlink/boxlink.go`) |
-| AUTH never precedes TLS | STARTTLS-before-AUTH on 587/25; implicit TLS on 465. TLS is always established first — but the **certificate is verified only for public hosts**; a loopback/RFC-1918/link-local `smtp_host` is trusted without validation (a test affordance, §3.13) | `services/box/src/smtp.js` |
-| The two auth domains never share a credential | Domain A platform service token vs Domain B operator admin key, separate env vars, separate hash lists | `internal/config`; distinct middleware |
-| Both API surfaces fail **closed** | No configured hash ⇒ the surface is **not mounted** at all (logged as `admin API NOT mounted`) | `internal/config` + `cmd/brain` |
+| A decommissioned box is refused even with a valid cert | Authority is the **registration token** (`byosmtp.boxes.token_hash`), not the certificate; the cert is transport auth only | Clear/rotate the hash → refused on **next connect**. The legacy `:8443` register/heartbeat path also authorizes a single dev box against `DEV_BOX_ID`/`DEV_BOX_TOKEN_HASH` from the **environment**, not `byosmtp.boxes` (`internal/boxlink/boxlink.go`, `internal/config/config.go`) — that path carries no job stream and no credential |
+| AUTH never precedes TLS | STARTTLS-before-AUTH on 587/25; implicit TLS on 465. TLS is always established first — but certificate *verification* is host-conditional, see below | `services/box/src/smtp.js` |
+| The two auth domains never share a credential | Domain A platform service token vs Domain B operator admin key, separate env vars (`PLATFORM_TOKEN_HASHES`, `ADMIN_API_KEY_HASHES`), separate hash lists | `internal/config`; distinct middleware |
+| Both API surfaces fail **closed** | No configured hash ⇒ the surface is not mounted | `internal/config` + `cmd/brain` |
 | Bearer keys are not brute-forceable from the DB | Stored bcrypt-hashed, compared in constant time | `internal/adminapi/auth.go` |
-| Row-level security actually enforces | `byosmtp.accounts` is `FORCE ROW LEVEL SECURITY`, and the schema is owned by the **non-login, non-superuser** `byosmtp_owner` — a table owner would otherwise bypass its own policies | `sender_0000`, `sender_0012` |
-| The app role cannot alter the schema | `byosmtp_module` is login-only with enumerated grants, never ownership | `sender_0000`/`sender_0002` |
-| Audit trails cannot be rewritten | `job_events`/`account_events` are append-only; `send_logs` is write-once (reject-trigger + `REVOKE UPDATE`) | Triggers + grants |
+| Row-level security actually enforces | `byosmtp.accounts` is `FORCE ROW LEVEL SECURITY`, and the schema is owned by the **non-login, non-superuser** `byosmtp_owner` — a table owner would otherwise bypass its own policies | `byosmtp_0000`, `byosmtp_0012` |
+| The app role cannot alter the schema | `byosmtp_module` is login-only with enumerated grants, never ownership | `byosmtp_0000`/`byosmtp_0012` |
+| Audit trails cannot be rewritten | `job_events`/`account_events` are append-only (reject-trigger + `REVOKE UPDATE, DELETE`); `send_logs` is write-once (reject-trigger + `REVOKE UPDATE`) | `byosmtp_0008`, `byosmtp_0009`; triggers + grants |
 | No internal detail crosses a client boundary | Two-vocabulary rule: client envelopes carry only `{code, message, request_id}`; internal reasons go to logs keyed by that request id | `internal/adminapi/errors.go`; contract tests |
-| The alert webhook's **payload** leaks nothing | Treated as untrusted outbound egress: payload is condition code, severity, subject `{type,id}`, detail, timestamp, module — no content, credentials, reasons, SQL, or hostnames. Delivery failure is logged internally and dropped | `internal/adminapi/health_alerts.go`. The **destination** is unrestricted — §3.14 |
-| The Brain never invents an outcome | If the box did not confirm a send/failure/bounce, the Brain does not record one. A Brain-declared timeout requeues; it never fabricates | Dispatch/reclaim design; behavioral tests. This constrains the **Brain**, not a compromised box reporting on its own job — §3.15 |
+| The alert webhook's **payload** leaks nothing | Payload is condition code, severity, subject `{type,id}`, detail, timestamp — no content, credentials, reasons, SQL, or hostnames | `internal/adminapi/health_alerts.go`. The **destination** is unrestricted, ported from module 2 unchanged — see below |
+| The Brain never invents an outcome | If the box did not confirm a send/failure/bounce, the Brain does not record one. A Brain-declared timeout requeues; it never fabricates | `internal/dispatch/outcome.go`; behavioral tests. This constrains the **Brain**, not a compromised box reporting on its own job — see below |
 | Exactly one Brain is ever dispatching | Session-level Postgres advisory lock, bounded acquire then exit. SIGKILL releases it — no stale lock | `cmd/brain` + harness test |
-| Every autonomous subsystem has an off switch | `dispatch_enabled`, `autoquarantine_mode` (defaults to **shadow**, not enforce), `autopause_enabled`, `variation_enabled`, `alert_webhook_url` | Config-driven, runtime-changeable |
+| Every autonomous subsystem has an off switch | `dispatch_enabled`, `autoquarantine_mode` (defaults to **shadow**, not enforce), `autopause_enabled`, `variation_enabled`, `alert_webhook_url` | Config-driven, runtime-changeable — see [`config-reference.md`](./config-reference.md) |
 
 ---
 
-## 3. Residual risks — stated honestly
+## 3. Residual risks — stated honestly, to both audiences
 
-These are **not** hypotheticals we have mitigated. They are what remains true after everything in §2,
-and they are the section a reviewer should read first.
+These are **not** hypotheticals we have mitigated. They are what remains true after everything in
+§2, and this is the section both an operator and a user's advocate should read first. Four risks
+(R1–R4) are the spine, because they are the ones a user — not just the operator — has a direct stake
+in. The rest are inherited from module 2, with framing corrected where custody changed hands.
 
-### 3.1 A compromised box exposes the credentials of accounts actively sending through it
+### R1. A compromised box exposes the credentials of accounts actively sending through it
 
-Bounded, but real. A box necessarily receives a decrypted SMTP credential to make a send — that is
-what a box is for. So an attacker with code execution on a box host can read the credentials of the
-sends flowing through it while they hold that access.
+Structural, not a gap: the box must hold a decrypted credential to authenticate to the user's own
+SMTP server — that is what a box is for. An attacker with code execution on a box host can read the
+credentials of the sends flowing through it while they hold that access.
 
 What bounds the exposure:
 
 - **Only accounts actually dispatched to that box, only while it is running.** A box holds one job in
-  flight; credentials are scoped to a single send and zeroed when that send ends. There is no
+  flight; `MemoryCredential` (`services/box/src/creds.js`) copies the secret into a private `Buffer`
+  it alone controls, and `zero()` fills it with zeros and drops the reference on every send-path exit
+  — accept, SMTP error, thrown exception — via a `finally` in the stream handler. There is no
   credential cache, no store, and no on-disk copy.
-- **Not the tenant's other accounts.** A box cannot enumerate accounts, query the database, or ask
-  the Brain for a credential it was not sent — it has no DB access and no such request exists in
-  the protocol.
+- **Not the user's other accounts.** A box cannot enumerate accounts, query the database, or ask the
+  Brain for a credential it was not sent — it has no DB access (`services/box/package.json`:
+  `dependencies: {}`, no `pg` or KMS SDK) and no such request exists in the protocol.
 - **Not the master key.** The box holds no key material and cannot decrypt anything.
-- **Eviction needs no certificate revocation:** clear `byosmtp.boxes.token_hash` (or set
-  `status='disabled'`) and the box is refused on its **next connect**. No CRL, no OCSP.
 
-What does **not** bound it:
+What does **not** bound it, and this is the sentence to give a user, not just an operator: the
+exposed secret is **theirs** — a credential they entrusted to a third party (the operator) for a
+service they did not build, and they never chose to trust the specific box host that ends up holding
+it in memory. Zeroing bounds the window to accounts sending *during* the compromise; it does not make
+the compromise something the affected user consented to. Zeroing does **not** cover a shutdown
+signal or an uncaught exception outside the send path — a memory image captured at that instant
+(core dump, container checkpoint, `/proc/<pid>/mem`) may still hold one in-flight plaintext. See
+[`disaster-recovery.md`](./disaster-recovery.md) for the incident procedure.
 
-- **Eviction is not immediate, and this is the most important correction to make before an
-  incident.** The token/status check runs **only in the register handshake**
-  (`internal/boxlink/stream.go`). Once a stream is registered, job pushes are served from an
-  in-memory box map with no re-read of `byosmtp.boxes`, and the heartbeat path will even return a
-  `stale` box to `active` without re-checking the token. So an attacker who keeps the (box-initiated,
-  outbound) stream open **continues to receive one fresh plaintext credential per job** after the
-  operator has run the revocation SQL and believes the box is evicted. **Kill the host or cut its
-  network path first; the SQL is what stops it coming back, not what stops it now.** See
-  [`disaster-recovery.md`](./disaster-recovery.md) §4.
-- **Persistence.** An attacker with root on a box can keep harvesting for as long as the compromise
-  goes unnoticed, and a long-lived box that dispatch favors will see many accounts over time. There is
-  no per-send attestation and no way to detect credential exfiltration from a box from the Brain side.
+### R2. A break-glass operator read exists, and the user is not notified per access
 
-Treat box hosts as holding live credentials, and keep them off the public internet (§4).
+A `platform_admin` bearer key (Domain B) can drive any `/v1/admin/*` route, including reading and
+updating any user's account (`services/brain/internal/adminapi/account_read.go`,
+`account_update.go`). No admin route decrypts a credential in its response — `adminapi.Encryptor` has
+no Decrypt method — but the holder of that key has full control-plane authority over every account in
+the system, and there is **no per-access notification to the affected user** when an operator reads
+or touches their account. `byosmtp.account_events` records that an action happened, keyed by
+`request_id`; it does not tell the user.
 
-### 3.2 `send_logs` holds plaintext message bodies and recipient addresses at rest
+Module 2 called the analogous risk *"a Domain B operator can have any stored credential delivered in
+plaintext to a host they choose"* and treated it as an insider footnote, because module 2's operator
+and its one tenant were the same trust relationship. In module 3, the operator and the user are
+different parties, so this is the **primary** platform-operator-as-adversary-to-user threat, not a
+footnote. The absence of per-access notification is a real gap, registered as
+[`FW-M3-5`](./future-work.md#9-module-3s-own-deferred-work) — a per-access audit-notification path is
+not built.
 
-`byosmtp.send_logs.body`, `subject`, `headers`, and `recipient_email` are stored **unencrypted**. This
-was a deliberate V1 decision: retention (`ttl_expires_at`, driven by `debug_log_retention_days`) is
-the *sole* privacy control, and the sweep drops raw content once it expires.
+### R3. `send_logs` holds users' message bodies and recipient addresses at rest
 
-Consequences to be explicit about:
+`byosmtp.send_logs.body`, `subject`, `headers`, and `recipient_email` are stored **unencrypted**.
+Retention (`ttl_expires_at`, driven by `debug_log_retention_days` — default **7 days**, see
+[`config-reference.md`](./config-reference.md)) is the *sole* privacy control; the sweep drops raw
+content once it expires.
 
-- **A database dump within the retention window exposes message content and recipient lists** — even
-  though it exposes no usable credentials. For many deployments the recipient list is itself the
-  sensitive asset.
-- Retention is a **config row**, so an operator can silently widen it. A large
-  `debug_log_retention_days` is a privacy decision, not a tuning decision.
-- The table is write-once and DELETE-able only by the sweep, so content cannot be tampered with —
-  but nor can a specific recipient's content be redacted on request ahead of expiry without a manual
-  DELETE.
-- At-rest encryption for `send_logs` is registered in [`future-work.md`](./future-work.md), not built.
+The consequence module 2 never had: a database dump within the retention window exposes message
+content and recipient lists belonging to **every user on the platform**, not one operator's own
+mail. One compromise, many unrelated parties' campaign content — the blast radius is the whole
+tenant population, not a single tenant. Retention is a config row, so an operator can silently widen
+it; a large `debug_log_retention_days` is a privacy decision on behalf of users who never set it
+themselves. At-rest encryption for `send_logs` is registered in [`future-work.md`](./future-work.md),
+not built.
 
-Mitigations available today: keep `debug_log_retention_days` short; rely on the database's own
-at-rest encryption; restrict who can read the database at all.
+### R4. A deleted account's credential persists through the retention window
 
-### 3.3 "The platform cannot read credentials" depends on KMS/IAM separation being configured
+The self-serve `DELETE /v1/byosmtp/accounts/{id}` (`services/brain/internal/platformapi/
+account_delete.go`) is a **soft** delete: it stamps `deleted_at`/`deleted_by`/`purge_after` and leaves
+the row — and its `credential_ciphertext` — in place. `purge_after` is computed from
+`account_retention_window_sec` (default **2,592,000 seconds — 30 days**, see
+[`config-reference.md`](./config-reference.md)) and stamped **at delete time**, so a later change to
+the config key does not retroactively move an already-scheduled purge. Only the purge loop
+(`purge.go`) hard-deletes the row once `purge_after` has passed. The operator-facing
+`DELETE /v1/admin/accounts/{id}` (`account_delete_events.go`) is a genuine hard delete and is
+unaffected by this window — the 30-day gap is specific to the self-serve path.
 
-This is the most important caveat on this page, because it is the one that can be *believed* while
-being false.
+The plain consequence: *"I deleted my account"* and *"my password is no longer on your servers"* are
+**thirty days apart** by default, and a user clicking a delete button has no reason to assume that.
+State the window, state that it lives in `account_retention_window_sec`
+([`config-reference.md`](./config-reference.md)), and state that setting it to zero is an operator
+choice with its own cost — the retention exists so a deletion is auditable and reversible, not to
+delay a promise.
 
-The code splits the capabilities correctly and unconditionally: Encrypt-only in the admin surface,
-Decrypt-only in the send path. But in the dev/default configuration, **both entry points read the
-same local key file** (`KMS_DEV_KEY_FILE`). The separation is real at the code level and only
-becomes real at the *infrastructure* level when you point them at a genuine KMS in which:
+### The module authenticates to servers it does not control, using mechanisms those servers choose
 
-- the Decrypt principal is the **Brain role only**, and
-- the platform, operators, and CI hold **no** Decrypt capability.
+No module 2 counterpart. Module 3 lets **users name their own SMTP host**, so this system authenticates
+to servers an operator never vetted, using whichever AUTH mechanism that server advertises —
+`services/box/src/smtp.js`'s `chooseAuthMechanism` picks LOGIN when offered, otherwise PLAIN
+(M3-P7-OD-2, **ruled**: refusing PLAIN "breaks real users for a security convenience," rejected on
+product grounds). `doAuthPlain` then sends the credential as a single base64
+`"\0"+username+"\0"+password` blob — a materially different wire encoding from LOGIN's
+base64(password) alone, at a byte alignment that depends on the *username's* length, which the
+scrub cannot assume in advance.
 
-Nothing in this repo can verify that for you — it is a deployment sign-off, not a test. Until it is
-done, the honest statement is "anyone who can read the Brain's key file can decrypt every
-credential," and on a single-VPS install that is whoever has root on the Brain host. Do not tell a
-reviewer otherwise, and treat this as a go-live checklist item:
-[`go-live-checklist.md`](./go-live-checklist.md).
+This is bounded by test, not by policy: `services/box/test/smtp_plain_scrub.test.mjs` (Phase 7 §1.3)
+covers all three base64 byte alignments PLAIN's blob can produce plus the full PLAIN-blob form,
+each with a paired positive/negative control (a fixture proven to leak when the scrub is stubbed to
+identity, then proven clean with the real scrub). The honest sentence, not a stronger one: **the
+scrub is complete for LOGIN and PLAIN, verified by a test per form; a server that invents a
+mechanism we do not speak is refused at negotiation, not scrubbed after the fact.** The third party —
+the user's own SMTP provider — picks the mechanism; this system's job is to speak the mechanisms it
+knows completely, and refuse the ones it doesn't, rather than to control what a server it does not
+own will offer.
 
-### 3.4 Losing the master key is unrecoverable, by design
+### "The platform cannot read credentials" depends on KMS/IAM separation being configured
 
-The property that makes a stolen DB dump useless also means a lost key destroys every credential
-permanently. This is an accepted trade, not a defect — but it makes key backup a **security control
-in its own right**, and one whose failure mode is total. Procedure and the recovery drill:
-[`disaster-recovery.md`](./disaster-recovery.md) §1.
+The most important caveat on this page, because it is the one that can be *believed* while being
+false. The code splits the capabilities correctly and unconditionally: Encrypt-only in the admin and
+platform surfaces, Decrypt-only in the send path (`internal/credential`). But in the dev/default
+configuration, both entry points read the same local key file (`KMS_DEV_KEY_FILE`). The separation is
+real at the code level and only becomes real at the *infrastructure* level when you point them at a
+genuine KMS in which the Decrypt principal is the **Brain role only**, and the platform, operators,
+and CI hold **no** Decrypt capability. Nothing in this repo can verify that for you — it is a
+deployment sign-off, not a test. Until it is done, the honest sentence to give a reviewer is:
+**whoever has root on the Brain host can decrypt every user's credential.** On a single-VPS install
+that is a much harder sentence to hand a reviewer than module 2's version ever was, because "every
+user's credential" now means many unrelated third parties' passwords, not one tenant's own. Treat
+this as a go-live checklist item: [`go-live-checklist.md`](./go-live-checklist.md).
 
-### 3.5 Master-key rotation requires re-entering every password by hand
+### Losing the master key is unrecoverable, by design
 
-Because no operator-facing route can decrypt, re-encryption is re-entry. `credential_key_id` makes
-rotation *possible and safe* (no silent wrong-key decrypt), but there is no server-side bulk
-re-encrypt. In practice this raises the cost of rotation enough that it may be deferred — which is
-itself a risk worth naming. See [`disaster-recovery.md`](./disaster-recovery.md) §3.
+The property that makes a stolen DB dump useless also means a lost key destroys every user's
+credential permanently, all at once. This is an accepted trade, not a defect — but it makes key
+backup a **security control in its own right**, and one whose failure mode is total. Procedure and
+the recovery drill: [`disaster-recovery.md`](./disaster-recovery.md) §1.
 
-### 3.6 The operator admin key is a single, very powerful credential
+### Master-key rotation has no operator-side path
 
-Domain B has no roles, scopes, or per-operator identities: one bearer key grants full control-plane
-authority — create accounts, write credentials, change any config key, unquarantine anything. There
-is no per-operator attribution beyond the `request_id` recorded in the audit trail, so two operators
-sharing a key are indistinguishable in `account_events`. Multiple hashes can be configured, which
-makes per-operator keys and clean rotation possible, and is the recommended practice; it is not
-enforced. RBAC is not built.
+Strictly worse than module 2's equivalent: because no operator-facing route can decrypt,
+re-encryption under a new key would require a server-side bulk re-encrypt that does not exist.
+`credential_key_id` makes rotation *possible and safe* (no silent wrong-key decrypt), but the actual
+mechanics — decrypting under the old key and re-encrypting under the new, for every affected user's
+account — are not built. The full procedure, what can and cannot be rotated concurrently, and why
+this is worse for module 3 than for module 2 is in
+[`disaster-recovery.md`](./disaster-recovery.md) §3; this page states the fact and links rather than
+duplicating that procedure, since another change to this docs set covers it directly.
 
-Two gaps in what that audit trail actually captures, both worth knowing before an incident review:
+### There is no rate limiting or lockout on the API surfaces
 
-- **Config writes leave no DB audit row.** There is no `config_events` table. A `PUT
-  /v1/admin/config/{key}` is recorded **only** as a Brain process-log line keyed by `request_id`,
-  with no before value and no after value. So "when was `debug_log_retention_days` widened?" — the
-  question §3.2 makes matter — is answerable only from shipped logs, for as long as their retention
-  holds. Log shipping is therefore a security control here, not just an ops convenience
-  ([`monitoring.md`](./monitoring.md)).
-- **`account_events` records that an account was updated, not what changed.** An `updated` row
-  carries identical before/after flag snapshots (`paused`, `pause_reason`, `quarantined`, `disabled`)
-  and no changed-field list, so a `PATCH` that rewrote `smtp_host` is indistinguishable from a no-op
-  one. This is what makes §3.11 hard to detect after the fact.
+Neither Domain A nor Domain B limits authentication attempts or request volume. bcrypt comparison
+makes online brute-force expensive rather than impossible, and both surfaces should sit behind a
+private network or reverse proxy that does provide limiting. As shipped, an attacker who can reach
+the Brain's health/API port can try keys as fast as bcrypt allows, and nothing alerts on it.
 
-### 3.7 There is no rate limiting or lockout on the API surfaces
+### A compromised Brain host is total compromise
 
-Neither domain limits authentication attempts or request volume. bcrypt comparison makes online
-brute-force expensive rather than impossible, and both surfaces should sit behind a private network
-or reverse proxy that does provide limiting. As shipped, an attacker who can reach `:8080` can try
-keys as fast as bcrypt allows, and nothing alerts on it.
+The Brain is the sole decryptor, the only DB client, and the holder of every user's credential in
+turn. There is no compartment above it. All the box-side hardening is irrelevant to this case, and it
+is the reason the Brain host should have the smallest possible attack surface, and the reason the
+admin and platform APIs mount only when explicitly given a key.
 
-### 3.8 A compromised Brain host is total compromise
+### Certificate verification is skipped for private-IP SMTP hosts — and users can reach that path themselves
 
-The Brain is the sole decryptor, the only DB client, and the holder of every credential in turn.
-There is no compartment above it. All the box-side hardening is irrelevant to this case, and it is
-the reason the Brain host should have the smallest possible attack surface, and the reason the
-admin API mounts only when explicitly given a key.
+`AUTH never precedes TLS` holds unconditionally: TLS is always established before AUTH, on 465 by
+implicit TLS and on 587/25 by STARTTLS. But certificate *verification* is host-conditional:
+`services/box/src/smtp.js`'s `isPrivateHost` (loopback/RFC-1918/link-local) disables verification for
+those ranges — a test affordance so the harness can run against a local sink — and the box calls it
+directly on the `smtp_host` the account record carries (`const allowSelfSigned =
+isPrivateHost(host)`).
 
-### 3.9 No bounce, complaint, or delivery feedback exists in V1
+Module 2's operator was the only party who could ever get a private address into an account row. In
+module 3, **users name their own `smtp_host`** through the self-serve API, so `isPrivateHost` is
+reachable by any user who points their account at a private or link-local address — no operator
+action required. An account pointed there AUTHs over an **unverified** TLS connection, so an attacker
+positioned on that network path can MITM with a self-signed certificate and capture the plaintext
+credential. A public hostname is unaffected — verification is enforced there.
 
-A security-adjacent gap because it limits *detection*: a provider `250` is recorded as `sent`, and
-this system will never learn that a message bounced, was spam-filtered, or was silently dropped. If
-credentials were stolen and used elsewhere, or an account's reputation collapsed, this module would
-not surface it. Detection depends on provider-side monitoring. See the runbook's deliverability
-section and [`future-work.md`](./future-work.md).
+**Verify-on-add inherits this unchanged (M3-P3-OD-13, ruled):** `push_verify`/`verify_report` reuse
+`runSmtpSession` verbatim, so the verify path carries the identical risk. The consequence is sharper
+here than in module 2 because `credential_verification_state='verified'` is a **user-visible claim**
+— a user reading `verified` has no way to tell whether that success happened over a validated
+connection or an unverified one to a private address. The ruling was to **disclose, not fix**: the
+fix (narrowing which hosts may skip verification, or a dev-only flag separating the test affordance
+from production posture) is registered in [`future-work.md`](./future-work.md); this paragraph is
+that disclosure.
 
-### 3.10 The platform tables are trusted
+### A compromised box can fabricate the outcome of the job it legitimately holds
 
-`public.users` and `public.job_items` belong to the platform; this module reads them (SELECT only)
-and derives tenancy from them. A compromised or buggy platform can therefore direct sends and bind
-jobs to users. The trust boundary is at the module's edge, and it is intentional — but a reviewer
-should know that `user_id` is an input this module validates for existence, not for authority.
+"The Brain never invents an outcome" (§2) constrains the Brain, and it holds. The converse is not
+constrained. `internal/dispatch/outcome.go`'s guards check that the reporting box matches
+`assigned_box_id` and that `attempt_token` is current — which prevents replay across attempts and
+across boxes, **not** a lie about the current job. A report from the box that genuinely holds the
+job, with the correct token, is applied as-is: `accepted` marks the job `sent` with an
+attacker-chosen `provider_message_id` even if the mail was never sent; `error`/`bounced` feed account
+scoring, so fabricated `auth_failure`s can drive a user's real accounts into quarantine. Neither is
+detectable from this system, because there is no independent delivery feedback (no bounce/complaint
+ingestion) that could contradict the box.
 
-### 3.11 A Domain B operator can have any stored credential delivered in plaintext to a host they choose
+### The alert webhook's destination is unrestricted — blind SSRF from inside the trust boundary
 
-The §2 row "no `/v1/admin/*` response ever contains a plaintext credential" is structurally true and
-still worth having — but it bounds the **API response surface**, not the holder of the admin key.
-
-`PATCH /v1/admin/accounts/{id}` can set `smtp_host` on its own, and the credential columns are
-touched only when `smtp_secret` is present (the deliberate omit-means-unchanged design). So an
-operator — or anyone holding a leaked admin key — can repoint an existing account at a host they
-control while leaving the stored ciphertext untouched. On the next dispatch the Brain decrypts as
-normal and hands the plaintext to a box, which AUTHs to whatever host the account now names. No DB
-access is needed, no key-file access, and no Domain A token: ordinary campaign traffic through that
-account is the trigger. TLS is no obstacle — the attacker's host presents a valid certificate for its
-own name.
-
-Combined with §3.6's second bullet (`account_events` records no field-level diff), the redirect is
-also not visible in the audit trail. Mitigations available today are entirely operational: treat the
-admin key as equivalent to the credentials themselves, issue one hash per operator so a leak is
-attributable and revocable, and keep the key list short. A host allowlist and a rule requiring
-`smtp_secret` re-entry on an `smtp_host` change are registered in
-[`future-work.md`](./future-work.md), not built.
-
-### 3.12 Box credential zeroing covers the send path, not shutdown or an uncaught exception
-
-The box zeroes its in-memory credential in a `finally` around the SMTP session, so all three
-send-path exits — accept, SMTP error, thrown exception — are covered, and there are behavioral tests
-for each. Two exits are **not** covered:
-
-- **SIGTERM/SIGINT.** The shutdown handler stops the stream and exits; it holds no reference to the
-  in-flight credential and does not zero it.
-- **An uncaught exception or unhandled rejection outside the send path.** No handler is registered
-  for either, so there is no zeroing step on that exit.
-
-Practical meaning: a memory image captured at that instant — core dump, container checkpoint,
-hypervisor snapshot, `/proc/<pid>/mem` read by local root — may still contain the plaintext of one
-in-flight send. So `systemctl stop byosmtp-box` on a host you suspect is compromised is **not** a
-credential scrub; rotate that provider password rather than assuming it was cleared. Closing this is
-a behavior change and is registered in [`future-work.md`](./future-work.md).
-
-### 3.13 Certificate verification is skipped for private-IP SMTP hosts
-
-`AUTH never precedes TLS` (§2) holds unconditionally: TLS is always established before AUTH, on 465
-by implicit TLS and on 587/25 by STARTTLS, and the box aborts rather than AUTHing if STARTTLS is not
-offered. But certificate *verification* is host-conditional. The box disables it for `localhost`, the
-compose sink, `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, and `169.254/16` — a test
-affordance so the harness can run against a local sink. The Brain-side validator accepts any bare IP
-literal as `smtp_host`, so nothing stops a private address being stored on a real account.
-
-Consequence: an account pointed at a private-IP SMTP host AUTHs over an **unverified** TLS
-connection, so an attacker positioned on that network path (or one who arrived via §3.11's redirect)
-can MITM with a self-signed certificate and capture the plaintext credential. A public hostname is
-unaffected — verification is enforced there. Deploy-time check in §5; rejecting private-range
-`smtp_host` at write time is registered in [`future-work.md`](./future-work.md).
-
-**Amended (Module 3 Phase 3, M3-P3-OD-13 RULED):** verify-on-add (`push_verify`/`verify_report`)
-reuses `runSmtpSession` verbatim (§2.2 of `Docs/phase-3-user-owned-accounts.md`) and therefore
-inherits this exact risk unchanged — one implementation, one behavior, by design. The consequence
-is now sharper: **`credential_verification_state='verified'` is a user-visible claim**, where
-module 2's equivalent was operator-only. A user reading `verified` on their account has no way to
-tell whether that success happened over a validated connection or an unverified one to a private
-address. The ruling was to **disclose, not fix** here — the fix (a contract change narrowing which
-hosts may skip verification, or a new dev-only flag separating the test affordance from production
-posture) is larger than this phase and is registered in [`future-work.md`](./future-work.md)
-alongside the pre-existing entry above; this paragraph is that disclosure.
-
-### 3.14 The alert webhook's destination is unrestricted — blind SSRF from inside the trust boundary
-
-§2's webhook row is about the payload, and the payload is clean. The **destination** is validated for
-scheme prefix only: `alert_webhook_url` must be empty or start with `http://` or `https://`. There is
-no host, port, IP, or private-range restriction, so loopback, RFC-1918, and cloud link-local metadata
-addresses (`169.254.169.254`) are all accepted, and the Brain will POST to them from inside the trust
-boundary on every rising alert edge.
-
-Bounded: only a Domain B holder (or someone with DB write access) can set it, and both are already
-fully privileged by §3.6/§3.8. It is also **blind** — the response body is never returned to a caller
-and never logged as content — so exploitation is limited to reachability probing and side-effecting
-`POST`s. Still: treat the value as privileged config, and constrain the Brain's egress at the network
-layer rather than relying on the value being sensible. A destination allowlist is registered in
-[`future-work.md`](./future-work.md).
-
-### 3.15 A compromised box can fabricate the outcome of the job it legitimately holds
-
-§2's "the Brain never invents an outcome" constrains the Brain, and it holds. The converse is not
-constrained. The outcome guards check that the reporting box matches `assigned_box_id` and that the
-`attempt_token` is current — which prevents replay across attempts and across boxes, **not** a lie
-about the current job. A report from the box that genuinely holds the job, with the correct token, is
-applied as-is:
-
-- `accepted` marks the job `sent` with an attacker-chosen `provider_message_id`, so mail that was
-  never sent is recorded as delivered.
-- `error`/`bounced` feed account scoring, so fabricated `auth_failure`s can drive real accounts —
-  potentially every account a tenant has — into quarantine.
-
-Neither is detectable from this system, because §3.9 means there is no independent delivery feedback
-that could contradict the box. A per-send attestation is what would close it; see §3.1's note that
-there is none, and [`future-work.md`](./future-work.md).
-
-### 3.16 Two known Go module vulnerabilities are unpatched, with live call paths
-
-Not a design residual risk — a current, dated one, recorded here because a reviewer reading only §3
-would otherwise not see it:
-
-- **`GO-2026-5004`** — SQL injection via placeholder confusion in `pgx/v5`. The pinned version is
-  below the fix. This is the only database driver in the system, in the process that holds every
-  credential.
-- **`GO-2026-5970`** — infinite loop in `golang.org/x/text`.
-
-Both are real, both have live call paths, and neither is toolchain-only. Remediation was attempted in
-Phase 10 and reverted because the version bumps break the pinned builder image — so this is build
-infrastructure, not polish. The full history, versions, and remediation plan are in
-[`future-work.md`](./future-work.md) §5; it is a blocking pre-live item in
-[`go-live-checklist.md`](./go-live-checklist.md) (item 9). **Clear both before a pilot carries real
-data.**
+The webhook **payload** is clean (§2). The **destination**
+(`internal/adminapi/config_validate.go`'s `validateWebhookURL`) is checked for scheme prefix only —
+`http://` or `https://` — with no host, port, IP, or private-range restriction, so loopback,
+RFC-1918, and cloud link-local metadata addresses (`169.254.169.254`) are all accepted, and the Brain
+will POST to them from inside the trust boundary on every rising alert edge. Bounded: only a Domain B
+holder (or someone with DB write access) can set it, and both are already fully privileged. It is
+also **blind** — the response body is never returned to a caller or logged as content — so
+exploitation is limited to reachability probing and side-effecting `POST`s. Ported from module 2
+unchanged; a destination allowlist is registered in [`future-work.md`](./future-work.md).
 
 ---
 
@@ -324,10 +276,10 @@ data.**
 | Brain `:8444` (box send stream, mTLS — **carries decrypted credentials**) | box hosts only, private network | anywhere else |
 | **Any box listener** | — | **Nothing. A box exposes no inbound service at all and must never be publicly reachable.** It dials out to the Brain; there is nothing to connect *to*. |
 
-`/healthz` and `/readyz` are unauthenticated by design (they carry no operational detail — liveness
-and "DB reachable and singleton lock held"). Everything with real content is behind a bearer key.
-`GET /v1/admin/health` is authenticated Domain B and does expose operational state; do not wire it
-into an unauthenticated uptime check. See [`monitoring.md`](./monitoring.md).
+`/healthz` and `/readyz` are unauthenticated by design (they carry no operational detail). Everything
+with real content is behind a bearer key. `GET /v1/admin/health` is authenticated Domain B and does
+expose operational state; do not wire it into an unauthenticated uptime check. See
+[`monitoring.md`](./monitoring.md).
 
 ---
 
@@ -335,19 +287,38 @@ into an unauthenticated uptime check. See [`monitoring.md`](./monitoring.md).
 
 The codebase cannot check these; they are the deployment's half of the posture.
 
-- [ ] KMS Decrypt is granted to the **Brain role only** (§3.3). The platform, operators, and CI have none.
-- [ ] The master key is backed up off-host, encrypted, in two locations, and the **recovery drill has been run** ([`disaster-recovery.md`](./disaster-recovery.md) §1).
-- [ ] No box host has `DATABASE_URL`, any KMS variable, `ca.key`, or `brain.key`. Presence is an incident, not a misconfiguration.
+- [ ] KMS Decrypt is granted to the **Brain role only**, and **no human role holds it** — not an
+      operator, not a support engineer, not CI. The platform, operators, and CI have none.
+- [ ] The master key is backed up off-host, encrypted, in two locations, and the **recovery drill has
+      been run** ([`disaster-recovery.md`](./disaster-recovery.md) §1).
+- [ ] No box host has `DATABASE_URL`, any KMS variable, `ca.key`, or `brain.key`. Presence is an
+      incident, not a misconfiguration.
 - [ ] Boxes have **no** public ingress; box↔Brain traffic is on a private network.
-- [ ] `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each rotatable, each held by the smallest possible set.
-- [ ] `byosmtp` schema owner is `byosmtp_owner` (non-login, non-superuser) and `byosmtp.accounts` shows `relforcerowsecurity = t`.
-- [ ] `debug_log_retention_days` reflects a deliberate privacy decision (§3.2), not a default nobody looked at.
-- [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on nothing).
-- [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content besides retention).
-- [ ] No account has a **private-range or link-local `smtp_host`** (§3.13) — certificate verification is skipped for those, so the credential would cross an unverified connection. `SELECT id, smtp_host FROM byosmtp.accounts;` and eyeball it.
-- [ ] `alert_webhook_url` points where you think it does (§3.14) — the value is validated for scheme prefix only, and the Brain will POST to a private or link-local address just as readily as to your alerting service.
-- [ ] Both Go module advisories are cleared (§3.16) — `go-live-checklist.md` item 9. Do this before a pilot carries real data.
-- [ ] Your **own** log stream has been grepped for a known account's password. The shipped `no_secret_leak.sh` gate reads `.env` and compares only the **dev box token/hash** against the *dev compose* logs — against a production deployment it either aborts on the missing `.env` or prints `OK` having compared nothing. There is no production-ready credential-leak scan; write the grep yourself, or treat this box as unchecked.
+- [ ] `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each
+      rotatable, each held by the smallest possible set.
+- [ ] `byosmtp` schema owner is `byosmtp_owner` (non-login, non-superuser) and `byosmtp.accounts`
+      shows `relforcerowsecurity = t`.
+- [ ] `debug_log_retention_days` is set to a value **the operator can defend to a user** (R3) — not a
+      default nobody looked at. It governs how long a user's own message bodies and recipient lists
+      sit in plaintext after that user sent them.
+- [ ] `account_retention_window_sec` is understood and disclosed (R4) — a self-serve delete does not
+      remove the credential from the database for this many seconds.
+- [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on
+      nothing).
+- [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content
+      besides retention).
+- [ ] No account has a **private-range or link-local `smtp_host`** — certificate verification is
+      skipped for those, and users can set this themselves. `SELECT id, smtp_host FROM
+      byosmtp.accounts;` and eyeball it.
+- [ ] `alert_webhook_url` points where you think it does — the value is validated for scheme prefix
+      only, and the Brain will POST to a private or link-local address just as readily as to your
+      alerting service.
+- [ ] If a box egress allow-list is in place, confirm it does **not** silently break user-named SMTP
+      hosts — module 3's users choose their own `smtp_host`, so an allow-list scoped to a fixed set of
+      known providers will reject legitimate accounts rather than fail loudly.
+- [ ] Your **own** log stream has been grepped for a known account's password, in plaintext and in
+      base64. There is no production-ready credential-leak scan shipped for a live log stream; write
+      the grep yourself, or treat this as unchecked.
 
 ---
 
@@ -355,8 +326,9 @@ The codebase cannot check these; they are the deployment's half of the posture.
 
 | Doc | For |
 |---|---|
-| [`disaster-recovery.md`](./disaster-recovery.md) | Key backup, the recovery drill, rotation, compromise response. |
+| [`disaster-recovery.md`](./disaster-recovery.md) | Key backup, the recovery drill, rotation (including why module 3 has no operator-side rotation path), compromise response. |
 | [`go-live-checklist.md`](./go-live-checklist.md) | The pre-launch gate, including the IAM-separation sign-off. |
 | [`architecture-overview.md`](./architecture-overview.md) | Boundaries and the send path in detail. |
 | [`../CLAUDE.md`](../CLAUDE.md) | The build rules these properties come from — canonical. |
-| [`future-work.md`](./future-work.md) | `send_logs` at-rest encryption, bounce ingestion, and the rest of what is not built. |
+| [`config-reference.md`](./config-reference.md) | `debug_log_retention_days`, `account_retention_window_sec`, and every other tunable named above. |
+| [`future-work.md`](./future-work.md) | `FW-M3-5` (per-access notification), `send_logs` at-rest encryption, bounce ingestion, and the rest of what is not built. |

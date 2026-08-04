@@ -72,7 +72,7 @@ done
 PSQL "UPDATE byosmtp.config SET value = '{\"v\":\"off\"}' WHERE key = 'from_gate_mode'" >/dev/null
 
 # --- fixtures: one eligible account owned by the system user, targeting the sink, via the ADMIN
-# API. Re-keyed at G2 (Docs/phase-2-strip-shared-pool.md §6): base routing now reaches an account
+# API. Re-keyed at G2 (Docs/history/phase-2-strip-shared-pool.md §6): base routing now reaches an account
 # directly by user_id — no pool, no default_shared_pool_id operator setup step. ---
 # The account's credential is the CANARY secret (S1 scans for it). Sink accepts any AUTH over TLS.
 ACCT="$(curl -s -X POST http://localhost:9080/v1/admin/accounts -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"user_id\":\"00000000-0000-0000-0000-000000000000\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"$CANARY\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"P3 Suite\"}" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"

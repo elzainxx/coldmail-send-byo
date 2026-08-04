@@ -460,7 +460,7 @@ func TestT3f_SuperuserBypassesRLSButReadsOnlyCiphertext(t *testing.T) {
 // proves the constraint is the thing rejecting, not some unrelated error). This is the DB-level
 // verification proposed in phase1-drafts/07-test-plan.md §6.
 //
-// Sub-case (3), pools_fallback_not_self_check, is DELETED at G2 (Docs/phase-2-strip-shared-pool.md
+// Sub-case (3), pools_fallback_not_self_check, is DELETED at G2 (Docs/history/phase-2-strip-shared-pool.md
 // §4.1's DELETE bucket): its subject, byosmtp.pools.fallback_pool_id, no longer exists — the
 // fallback-chain concept and the whole table go with it.
 func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
@@ -518,7 +518,7 @@ func TestT7_CheckConstraintsRejectInvalid(t *testing.T) {
 	}
 }
 
-// TestT17_AccountsUserFKRestrict — G3 (Docs/phase-2-strip-shared-pool.md §8.1 criterion 17,
+// TestT17_AccountsUserFKRestrict — G3 (Docs/history/phase-2-strip-shared-pool.md §8.1 criterion 17,
 // M3-P1-OD-12): accounts_user_fk was re-keyed from CASCADE to RESTRICT at G2's 0027, restoring
 // DELIBERATELY the tenant-erasure guard the inherited pools_user_fk enforced accidentally.
 // Without this the erasure sequence "accounts -> pools -> user" would have silently collapsed to

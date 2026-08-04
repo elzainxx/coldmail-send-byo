@@ -96,7 +96,7 @@ func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int
 	total := 0
 	for _, c := range candidates {
 		if err := d.expireOneCampaign(ctx, c.id, c.userID); err != nil {
-			log.Printf("campaign_expiry: campaign %s (user %s) failed to expire: %v", c.id, c.userID, err)
+			log.Printf("campaign_expiry: campaign %s (user %s) failed to expire: %v level=error", c.id, c.userID, err)
 			continue // a per-campaign error must not abort the rest of this tick's batch
 		}
 		total++
@@ -198,7 +198,7 @@ func (r *CampaignExpiryRunner) tick(ctx context.Context) (interval time.Duration
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("campaign_expiry: sweep PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("campaign_expiry: sweep PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	if ok, wait := r.d.health.Ready(ctx); !ok {
@@ -213,7 +213,7 @@ func (r *CampaignExpiryRunner) tick(ctx context.Context) (interval time.Duration
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("campaign_expiry: sweep error: %v", err)
+		log.Printf("campaign_expiry: sweep error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)

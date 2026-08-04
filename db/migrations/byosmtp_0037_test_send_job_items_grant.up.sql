@@ -18,7 +18,7 @@
 --
 -- NUMBERING (M3-P3-OD-18): Phase 3 had already spent its allotted 0035/0036. This is Phase 3's
 -- third migration. Phase 4's doc (previously 0037/0038) is renumbered to 0038/0039 in the same
--- change, cascading through Phases 5/6/7's own doc claims — see Docs/plan-revision-log.md's
+-- change, cascading through Phases 5/6/7's own doc claims — see Docs/history/plan-revision-log.md's
 -- updated chain table and Docs/open-decisions.md's M3-P3-OD-17/18 entries for the full reasoning.
 --
 -- ADR-0008 note: this is a GRANT on an EXISTING platform table, not a new byosmtp-owned object —

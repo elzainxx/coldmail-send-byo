@@ -1,4 +1,4 @@
-// Package fromgate is Module 3 Phase 4's DNS evaluation primitive (Docs/phase-4-from-gate.md
+// Package fromgate is Module 3 Phase 4's DNS evaluation primitive (Docs/history/phase-4-from-gate.md
 // §1-§3, §6): does the From domain's SPF record, transitively expanded, authorize the sending
 // provider identified by smtp_host, and what does DMARC/DKIM add to that picture. This package
 // computes a VERDICT; it never writes to the database and never decides routing — §2's entry

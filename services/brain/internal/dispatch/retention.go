@@ -82,7 +82,7 @@ func (d *Dispatcher) RetentionTick(ctx context.Context) (Config, int, error) {
 func (d *Dispatcher) sweepExpiredSendLogs(ctx context.Context, cfg Config) (deleted, batches int, err error) {
 	batch := cfg.RetentionDeleteBatchSize
 	if batch <= 0 {
-		log.Printf("retention: retention_delete_batch_size is %d — skipping sweep (a zero batch must never become an unbounded DELETE)", batch)
+		log.Printf("retention: retention_delete_batch_size is %d — skipping sweep (a zero batch must never become an unbounded DELETE) level=warn", batch)
 		return 0, 0, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, sweepTickTimeout)
@@ -149,7 +149,7 @@ func (r *RetentionRunner) tick(ctx context.Context) (interval time.Duration) {
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("retention: sweep PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("retention: sweep PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	if ok, wait := r.d.health.Ready(ctx); !ok {
@@ -168,7 +168,7 @@ func (r *RetentionRunner) tick(ctx context.Context) (interval time.Duration) {
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("retention: sweep error: %v", err)
+		log.Printf("retention: sweep error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)

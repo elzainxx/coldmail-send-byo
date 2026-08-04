@@ -36,27 +36,35 @@ clone`, never a directory copy or a squashed import (`phase-0-fork-and-baseline.
 
 ## Structure
 
-One row per inherited area: **area · paths · inherited state at fork · divergence expected at
-phase N**.
+**Five fields per row, reconciled 2026-08-03 (Phase 8 §7.2)** — the original text promised
+*"area · paths · inherited state at fork · divergence expected at phase N · module-2 provenance
+reference"* but rendered only three columns for fifteen rows. Reconciled toward **five**, per §7.2's
+own recommendation: *"inherited state at fork"* is what makes a row checkable (verbatim vs. already
+diverged, independent of trusting the "divergence expected" forecast), and *"module-2 provenance
+reference"* is what makes a found bug traceable to the ADR or phase spec that explains the
+inherited code, without which a reader re-derives context every time. Both are cheap to state now
+and archaeology later. **Fork-state and divergence-observed (not merely "expected") are re-verified
+against the tree in this pass, not copied from the original forecast** — per Rule 11, a table
+claiming "at fork" is a claim to check, not a comment to trust.
 
-| Area | Paths | Divergence expected |
-|---|---|---|
-| Box service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/box/` | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below |
-| Content variation (12 toggles, all-off byte-identical) | `services/box/src/variation*.js`, `tests/harness/phase8_variation.sh` | none — build plan: inherited whole |
-| Box↔Brain channel (mTLS, register/heartbeat, send stream, persist-ack) | `internal/boxlink/`, `internal/boxproto/`, `src/boxlink/` | none planned |
-| Credential encryption (AES-256-GCM, AAD-bound, key-id label check) | `internal/credential/`, `internal/kms/` | Phase 3 (third-party secrets, break-glass read) |
-| Job lifecycle, append-only event log, actor GUC | `db/migrations/sender_0003..0008`, `sender_0022` (see the function-body note below) | Phase 1 (additive); Phase 7 replaces `fn_job_events_on_state_change`'s body |
-| Idempotency (`provider_message_id`, `attempt_token`) | `sender_0020`, `internal/dispatch/` | none planned |
-| Error taxonomy, requeue-only re-dispatch | `internal/dispatch/classify.go` | Phase 5 (dual quarantine triggers) |
-| Pacing (per-lane random delay) | `internal/dispatch/` | Phase 6 (per-user tuning) |
-| Reclaim loop, heartbeat dead-box detection, lease expiry, startup rescan | `internal/dispatch/reclaim*.go`, `rescan*.go` | none planned |
-| Singleton guard incl. ADR-0011 pause + re-acquire | `internal/singleton/`, `sender_0023` | none planned |
-| Dispatcher, routing, eligibility | `internal/dispatch/eligibility.go`, `dispatch.go` | Phases 1, 2, 6 — heavy |
-| Admin + platform API surfaces | `internal/adminapi/`, `internal/platformapi/` | Phases 3, 5, 6, 7 |
-| Migration runner + preflight | `tools/byosmtp-migrate/`, `db/preflight/` | Gate B rename only, applied |
-| Harness + 6 CI gates | `tests/harness/`, `.github/workflows/` | Phases 1–7 |
-| Cert / secret / provisioning tooling | `tools/gen-certs.sh`, `gen-secrets.sh`, `provision-box/` | Gate B rename only, applied |
-| Local dev loop | `scripts/dev.sh`, `Makefile`, `docker-compose.yml` | Gate B rename + host-port offset, applied |
+| Area | Paths | Inherited state at fork | Divergence observed (module 3) | Module-2 provenance |
+|---|---|---|---|---|
+| Box service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/box/` | Verbatim (Gate B: identity rename only) | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below; no longer verbatim | `module-2/phase-6-pacing-and-dead-box-detection.md`, `module-2/phase-7-runtime-hardening.md` |
+| Content variation (12 toggles, all-off byte-identical) | `services/box/src/variation*.js`, `tests/harness/phase8_variation.sh` | Verbatim | none — build plan: inherited whole; still verbatim | `module-2/phase-8-content-variation.md` |
+| Box↔Brain channel (mTLS, register/heartbeat, send stream, persist-ack) | `internal/boxlink/`, `internal/boxproto/`, `src/boxlink/` | Verbatim | none planned; still verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0008 |
+| Credential encryption (AES-256-GCM, AAD-bound, key-id label check) | `internal/credential/`, `internal/kms/` | Verbatim | Phase 3 adds the break-glass read path around this code (`internal/adminapi`), the encryption primitives themselves unchanged | `module-2/phase-2-account-management.md` |
+| Job lifecycle, append-only event log, actor GUC | `db/migrations/byosmtp_0003..0008`, `byosmtp_0022` (see the function-body note below) | Verbatim (identifiers renamed `sender`→`byosmtp` only, Gate B) | Phase 1 additive (new columns/tables alongside, not touching these); **Phase 7 replaces `fn_job_events_on_state_change`'s body** (defined in `byosmtp_0022`, not the `byosmtp_0008` that created the function — see the function-body note) | ADR-0008 (grants trap), `module-2/phase-3-minimal-send-path.md` |
+| Idempotency (`provider_message_id`, `attempt_token`) | `byosmtp_0020`, `internal/dispatch/` | Verbatim | none planned; still verbatim | `module-2/phase-7-runtime-hardening.md` |
+| Error taxonomy, requeue-only re-dispatch | `internal/dispatch/classify.go` | Verbatim | Phase 5 (dual quarantine triggers) reads this classifier's output, does not modify it | `module-2/phase-5-error-taxonomy-status-quarantine.md` |
+| Pacing (per-lane random delay) | `internal/dispatch/` | Verbatim | Phase 6 (per-user tuning) — see §7.4 entry 2, the shrink-comment bug found exactly here | `module-2/phase-6-pacing-and-dead-box-detection.md`, ADR-0013 |
+| Reclaim loop, heartbeat dead-box detection, lease expiry, startup rescan | `internal/dispatch/reclaim*.go`, `rescan*.go` | Verbatim | none planned; still verbatim | `module-2/phase-6-pacing-and-dead-box-detection.md` |
+| Singleton guard incl. ADR-0011 pause + re-acquire | `internal/singleton/`, `byosmtp_0023` | Verbatim | none planned; still verbatim | ADR-0011 |
+| Dispatcher, routing, eligibility | `internal/dispatch/eligibility.go`, `dispatch.go` | Verbatim at fork | Phases 1, 2, 6 — heavy (pool removal, per-user config resolution, routing strategy); no longer verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0010 |
+| Admin + platform API surfaces | `internal/adminapi/`, `internal/platformapi/` | Verbatim at fork | Phases 3, 5, 6, 7 — heavy; no longer verbatim | `module-2/phase-2-account-management.md`, `module-2/phase-9-contract-and-doc-completions.md` |
+| Migration runner + preflight | `tools/byosmtp-migrate/`, `db/preflight/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
+| Harness + 7 CI gates | `tests/harness/`, `.github/workflows/` | Verbatim except identity rename (six gates at fork) | Phases 1–7 add coverage per phase; Phase 7 adds the 7th gate (`user_output_scrub`) | `module-2/phase-9_5-operability-and-control-plane-safety.md` |
+| Cert / secret / provisioning tooling | `tools/gen-certs.sh`, `gen-secrets.sh`, `provision-box/` | Verbatim except identity rename | Gate B rename only, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
+| Local dev loop | `scripts/dev.sh`, `Makefile`, `docker-compose.yml` | Verbatim except identity rename | Gate B rename + host-port offset, applied; otherwise still verbatim | `module-2/phase-0-groundwork.md` |
 
 ## Two forecast corrections, carried from the plan rather than left for later discovery
 
@@ -87,7 +95,7 @@ marking rather than rewriting when it is found.
 
 ## Seeded findings — the module 2 bug log, carried from Phase 8 §7.4
 
-Seven entries, each found by a specific phase's planning work rather than by auditing module 2 for
+Eight entries, each found by a specific phase's planning work rather than by auditing module 2 for
 its own sake. This is a record for the all-modules polish pass, not a work queue — module 2 is
 sealed and these are not module 3's bugs to fix in module 2's tree. Module 3's own disposition
 (fixed / deliberately not back-ported / still latent) is stated per entry so a future reader does
@@ -161,7 +169,40 @@ not have to re-derive it.
    clean-slate reset and the harness, confirm 58/58 with zero `SKIP` and the binary rebuilt by the
    script, not by a leftover local artifact.
 
+8. **`load_e11.sh`'s throughput-ramp step never restores `concurrency_per_user_default` on exit.**
+   The ramp function itself sets this dial once per step (it IS the variable under test), but
+   neither this script nor its restore-on-exit trap ever captures or restores its ORIGINAL value —
+   unlike the delay/window dials the script already restores. A completed run silently leaves the
+   dev stack's `concurrency_per_user_default` at whatever the last ramp step set it to, not the
+   seeded default. Found running this exact script during module 3's own Phase 8 §8
+   remeasurement — the run finished cleanly, reported real numbers, and STILL left the config
+   dial wrong afterward, with nothing in the script's own output to flag it. Confirmed identical
+   in module 2's own `tests/harness/load_e11.sh` (same missing capture/restore). **Present,
+   unfixed in module 2.** Module 3 fixes it: `ORIG_CONCURRENCY` is captured before the first ramp
+   step and restored in `cleanup()` alongside the box-container teardown.
+
 **Also tracked here, not only in `future-work.md`:** `FW-M3-8`, the two Go module vulnerabilities
 with live call paths inherited from module 2's own Phase 10 R3 finding. Module 3 forks the same
 `go.mod` for all four Go modules, so it forks the same two exposures — **re-verify rather than
 inherit the claim**, since an upstream fix may have landed since module 2's Phase 10 close.
+
+**Re-verified 2026-08-03 (Phase 8 hygiene sweep):** both are STILL LIVE. `services/brain/go.mod`
+carries `github.com/jackc/pgx/v5 v5.7.4` (fix is v5.9.2+) and `golang.org/x/text v0.21.0` (fix is
+v0.39.0+) — `go list -m all` confirms neither has moved since module 2's Phase 10 close. The claim
+is not stale.
+
+**`x/net/publicsuffix` re-vendor check (M3-P4-OD-7, ruled 2026-07-31) — run, recorded per Rule 11.**
+`go list -m -u golang.org/x/net` from `services/brain/` reports a newer release exists:
+`v0.21.0 [v0.57.0]`. **Not bumped**, for the identical, already-documented reason `future-work.md`'s
+Go-toolchain-upgrade entry gives for `pgx`/`x/text`: `go get golang.org/x/net@v0.57.0` was tried in
+isolation and confirmed to force `go 1.23 → go 1.25.0` in `go.mod` (verified directly, then
+reverted), which breaks the pinned `golang:1.23-alpine` builder for the same reason the other two
+bumps do. This is not a separate defect — it is the SAME builder-pin trap catching a third module,
+and the fix is the same one-line-different action already registered: upgrade the builder image
+first, then bump all three (`pgx`, `x/text`, `x/net`) together and re-verify the full harness, rather
+than bumping `x/net` alone and leaving the builder pinned. **What was safe to fix now, and was
+fixed:** `services/brain/go.mod` misclassified `golang.org/x/net` as an indirect dependency (`//
+indirect`) when `internal/fromgate/dmarc.go` and `evaluator.go` both import
+`golang.org/x/net/publicsuffix` directly — moved to the direct `require` block, version unchanged
+(`v0.21.0`), zero behavior change, confirmed by `go build ./...` and the full real-infra test suite
+staying green.

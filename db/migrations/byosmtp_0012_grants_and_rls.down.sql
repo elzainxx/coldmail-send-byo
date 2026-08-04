@@ -1,7 +1,7 @@
--- sender_0012_grants_and_rls.down.sql — reverse grants + RLS (dev/CI only; forward-only in
+-- byosmtp_0012_grants_and_rls.down.sql — reverse grants + RLS (dev/CI only; forward-only in
 -- prod). Drops the RLS policies, disables RLS, and revokes the table/sequence grants this
 -- migration issued. Does NOT touch the two platform-table SELECT grants — those are owned by
--- the bootstrap (sender_0000) and reversed only by its down.
+-- the bootstrap (byosmtp_0000) and reversed only by its down.
 DROP POLICY IF EXISTS sender_module_full_access ON byosmtp.send_logs;
 DROP POLICY IF EXISTS sender_module_full_access ON byosmtp.job_events;
 DROP POLICY IF EXISTS sender_module_full_access ON byosmtp.config;

@@ -200,7 +200,7 @@ services:
       - "${HOST_PORT_MAILPIT:-9025}:8025"     # Mailpit web UI
       # 1025/587 stay internal to the compose network
 
-  # Phase 4 "From gate" (SPF/DMARC/DKIM alignment) test DNS infrastructure — Docs/phase-4-from-gate.md
+  # Phase 4 "From gate" (SPF/DMARC/DKIM alignment) test DNS infrastructure — Docs/history/phase-4-from-gate.md
   # §7.1. A real local authoritative DNS server serving zone files this repo owns, so the gate's
   # behavioral tests exercise the REAL resolver code path (net.Resolver, real protocol) against
   # REAL, controllable failure modes (SERVFAIL, timeout, NXDOMAIN) that a public registrar cannot

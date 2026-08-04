@@ -14,21 +14,29 @@ through.
 
 ---
 
-## 1. Provision at least one account per tenant that will send (REQUIRED — sending does not work without it)
+## 1. Confirm the self-serve account path actually reaches a user (REQUIRED — sending does not work without at least one account)
 
-**Why it blocks:** a job routes to an eligible account owned by its own `user_id` — there is no
-shared/pooled fallback layer to route through instead. A tenant with zero accounts stays cleanly
-`queued` forever (an empty account set is a capacity gap, not a fault, so it never fails the job) —
-it does not fail loudly, which means it is easy to forget for a tenant nobody has provisioned yet.
+**Why it blocks, and why this item is not "provision accounts" any more.** Module 3 has no shared
+or operator-provisioned account pool — that model was removed at Phase 2 (`Docs/history/phase-2-strip-shared-pool.md`).
+A job routes to an eligible account owned by its own `user_id`, and every account is added by the
+user themselves through `POST /v1/byosmtp/accounts` (or the operator's own equivalent,
+`POST /v1/admin/accounts`, for break-glass/support use — never as the normal path). A tenant with
+zero accounts stays cleanly `queued` forever (an empty account set is a capacity gap, not a fault,
+so it never fails the job) — this is a **correct steady state**, not a misconfiguration, and it does
+not fail loudly, which is exactly why this item exists: the operator's job before go-live is to
+confirm the self-serve path itself works, not to provision accounts for users.
 
 **Action:**
-1. Add at least one eligible account for the tenant: `POST /v1/admin/accounts {"user_id": "<uuid>", ...}`.
-2. Confirm: `GET /v1/admin/health` shows `accounts.healthy >= 1` and no unexpected
-   `queue.waiting_for_capacity`.
+1. As a real (or throwaway test) user, walk the actual self-serve flow: `POST /v1/byosmtp/accounts`
+   with a real SMTP credential, pass the From-gate check (`Docs/api-contract.md`), confirm the
+   account reaches a routable `from_verification_state`.
+2. Confirm: `GET /v1/admin/health` shows `accounts.healthy >= 1` for that user and no unexpected
+   `queue.waiting_for_capacity` for them.
 
 **Verify before declaring done:** run one real `quote`→`run`→`report` cycle against a throwaway
-`job_item` for the reserved system user (or any tenant with a provisioned account) and confirm it
-reaches `sent`.
+`job_item` for that user and confirm it reaches `sent`. This is the same journey `install-and-deploy.md`'s
+own clean-slate reproduction ends with — if the docs alone cannot get a user to a sent message, this
+item is not done.
 
 ---
 
@@ -140,21 +148,34 @@ surface (P9-A, RULED — Phase 9 §5.4a). Box lifecycle is an out-of-band operat
 deliberate launch-safety default. In `shadow`, the Brain computes the SAME quarantine decision it
 would in `enforce` and logs it (`account_events`, a `shadow_would_quarantine` observation), but
 does not act — the account keeps sending. This gives an operator a real trial period to observe
-what the scoring model WOULD do before it starts actually quarantining accounts.
+what the trigger predicate WOULD do before it starts actually quarantining accounts.
+
+**The trigger is per-account, not pool-wide, and it is NOT the status score.** Module 3 Phase 5
+replaced module 2's score-threshold trigger with `quarantineDecision`
+(`internal/dispatch/account_effect.go`), which fires on exactly three conditions, each an
+independently-tunable dial (`Docs/config-reference.md`): (1) an immediate `auth_failure` outcome,
+(2) `quarantine_consecutive_threshold` consecutive penalizing failures on one account, or (3) a
+windowed failure rate (`quarantine_failure_rate_pct` of attempts, over `quarantine_failure_window_sec`,
+once `quarantine_min_sample` attempts exist). `account_status_score` (`status_score_weights`) is
+now purely **informational** — it feeds none of these three branches; do not tune it expecting to
+change quarantine sensitivity.
 
 **What to watch before promoting to `enforce`:**
-1. Pull `account_events` filtered to shadow observations over a representative window (at least
-   several days of real send volume, ideally spanning a full `daily_reset` cycle).
-2. For each shadow-would-quarantine account, manually sanity-check: was the account genuinely
-   unhealthy (recurring `auth_failure`/`bounce_permanent`/sustained `throttle`), or is the score
-   formula (`status_score_weights`) producing a false positive on a healthy account under normal
-   transient noise?
+1. Pull `account_events` filtered to shadow observations (`quarantine_reason` present) over a
+   representative window (at least several days of real send volume, ideally spanning a full
+   `daily_reset` cycle).
+2. For each shadow-would-quarantine account, manually sanity-check which of the three triggers
+   fired and whether it was right: an immediate `auth_failure` is rarely a false positive; the
+   `consecutive_failures`/`failure_rate` triggers can fire on transient provider-side noise
+   (a temporary rate limit, a brief outage) rather than genuine account unhealthiness — check the
+   account's own outcome history before trusting the shadow flag.
 3. If the shadow decisions look correct (they consistently flag genuinely bad accounts and leave
    healthy ones alone), promote: `PUT /v1/admin/config/autoquarantine_mode {"value":"enforce"}`.
    No redeploy, no restart — the very next outcome-handling report picks up the new mode.
-4. If the shadow decisions look wrong (over- or under-sensitive), tune `quarantine_threshold`
-   and/or `status_score_weights` FIRST, re-observe another window, THEN promote — never promote
-   to `enforce` on a scoring model you haven't watched operate for real.
+4. If the shadow decisions look wrong (over- or under-sensitive), tune
+   `quarantine_consecutive_threshold`, `quarantine_failure_rate_pct`, and/or `quarantine_min_sample`
+   FIRST, re-observe another window, THEN promote — never promote to `enforce` on trigger dials you
+   haven't watched operate for real.
 5. `autoquarantine_mode="off"` remains available if the decision itself needs to be disabled
    entirely (not just deferred) — distinct from `shadow`, which still computes and logs.
 
@@ -221,7 +242,7 @@ it breaks the pinned builder — the details, and why it is build infrastructure
 are in [`future-work.md`](./future-work.md) §5.
 
 **Action:** upgrade the builder image, bump `pgx` to ≥ v5.9.2 and `x/text` to ≥ v0.39.0, then re-run
-the **full harness** and all 5 gates on the new toolchain. Do this before a pilot carries real data.
+the **full harness** and all 7 gates on the new toolchain. Do this before a pilot carries real data.
 
 ---
 
@@ -265,19 +286,72 @@ then a small real batch. It is written to be small, to addresses you control, an
 
 ---
 
+## 12. Confirm the master key has no rotation path, and sign off on that risk explicitly (REQUIRED — no module 2 counterpart)
+
+**Why it blocks, and why this has no equivalent in module 2's checklist.** Module 2's operator could,
+in principle, rotate the master key manually by re-entering every account's plaintext password by
+hand — tedious, but possible, because the operator had once held that plaintext at provisioning
+time. Module 3's operator has **never** held any user's plaintext SMTP password, at any point — the
+Brain is the sole decryptor (CLAUDE.md Rule 6), and credentials are Encrypted immediately on arrival,
+never returned. This means master-key rotation is **not an operator action at all**; a real rotation
+need would require a coordinated re-add campaign against the whole user base, one credential
+re-entry per user, gated on the least-responsive user's response time. See
+[`disaster-recovery.md`](./disaster-recovery.md) §3 and [`future-work.md`](./future-work.md) `FW-M3-4`
+for the full detail — this is item 8's key-backup drill's necessary complement, not a duplicate of it:
+item 8 protects against LOSING the key; this item is the accepted-risk sign-off for the fact that
+even a suspected-but-unconfirmed compromise cannot be cleanly rotated away.
+
+**Action:**
+- [ ] Read `disaster-recovery.md` §3 in full — specifically the paragraph stating rotation is not an
+      operator-side procedure — before going live, not after an incident makes it urgent.
+- [ ] Record an explicit, signed accepted-risk sign-off (who, when, against which version of
+      `disaster-recovery.md` §3) alongside the item 8 key-backup sign-off. This is not satisfied by
+      "we read future-work.md" (item 8's own final-pre-flight checkbox) — it needs its own signature,
+      because the consequence (a key compromise has no clean recovery short of re-onboarding every
+      user) is a distinct business decision from "we backed the key up."
+
+---
+
+## 13. Decide the `send_logs` retention window you can defend to a user (REQUIRED — no module 2 counterpart)
+
+**Why it blocks, and why this has no equivalent in module 2's checklist.** `byosmtp.send_logs` holds
+users' message bodies and recipient addresses in plaintext at rest, for `debug_log_retention_days`
+(seeded default: see [`config-reference.md`](./config-reference.md)) before the retention sweep
+purges them. Module 2's equivalent held **its own operator's** mail; module 3 holds **many unrelated
+users'** mail, which changes the blast radius of a single DB compromise from one tenant to all of
+them ([`security-posture.md`](./security-posture.md) §3 R3). The seeded default is a reasonable
+engineering choice, not necessarily one a specific deployment's users would consider reasonable if
+asked directly.
+
+**Action:**
+- [ ] Read the current `debug_log_retention_days` value (`config-reference.md`) and decide, explicitly,
+      whether that window is one you could state plainly to a user whose message body and recipient
+      list it holds — "we keep your sent message content in plaintext for N days after send, for
+      debugging" — and would still consider fair.
+- [ ] If not, change it via `PUT /v1/admin/config/debug_log_retention_days` **before** real user
+      content flows through the system — a shorter window going forward does not retroactively purge
+      already-written rows early.
+- [ ] Record the decision (value chosen, and the reasoning) alongside the other go-live sign-offs.
+      This is a product/trust decision, not a technical one, so it belongs here rather than in
+      `config-reference.md`'s own neutral default documentation.
+
+---
+
 ## Order of operations (recommended)
 
 1. **Before the first live migration run:** items 2 (column shapes) and 3 (advisory-lock band +
    migration credential) — these are platform-coordination items that must be settled before the
    module's schema exists in the live DB.
-2. **Before the first real credential is entered:** item 8 (key backup **and** the recovery drill).
-   Deliberately earlier than "before launch" — the moment a real `smtp_secret` exists, an unbacked-up
-   key is an unrecoverable-loss exposure. Item 9 (the two module vulns) belongs here too: fix the
-   build before it carries real data.
+2. **Before the first real credential is entered:** item 8 (key backup **and** the recovery drill)
+   and item 12 (the master-key-rotation risk sign-off) together — they are the same risk (an
+   unbacked-up key) viewed from two sides, so sign off on both before the moment a real `smtp_secret`
+   exists. Item 9 (the two module vulns) belongs here too: fix the build before it carries real data.
+   Item 13 (the `send_logs` retention decision) also belongs here — decide the window before real
+   user content starts accumulating in it.
 3. **Before the first live send:** item 4 (KMS/IAM sign-off) — the sole-decryptor security
    property must be verified against real infrastructure before any real credential is decrypted.
    Item 10 (monitoring) as well: going live unmonitored means finding out from a customer.
-4. **Before the first live campaign:** items 1 (account provisioning) and 5 (box
+4. **Before the first live campaign:** items 1 (the self-serve account path) and 5 (box
    provisioning) and 7 (account pre-warming) — the system has no capacity to route a job until
    these are done. Then item 11 (the real-provider smoke test) — the first live send is a
    deliberate, small, watched one, never a campaign.
@@ -288,8 +362,8 @@ then a small real batch. It is written to be small, to addresses you control, an
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 6 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
-      `config_consumption`, `no_secret_leak`, `drain_grace`.
+- [ ] All 7 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+      `config_consumption`, `drain_grace`, `no_secret_leak`, `user_output_scrub`.
 - [ ] The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
       you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
       wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev
@@ -299,10 +373,12 @@ then a small real batch. It is written to be small, to addresses you control, an
 - [ ] `GET /readyz` reports `db:true, singleton_lock:true`.
 - [ ] `GET /v1/admin/health` shows `accounts.healthy >= 1` for every tenant expected to send and
       `dispatch_paused:false`.
-- [ ] Items 1–5 and 7–11 above are done; item 6 is deliberately deferred to a post-launch
+- [ ] Items 1–5 and 7–13 above are done; item 6 is deliberately deferred to a post-launch
       observation window, per its own section.
 - [ ] The master key backup **and drill** (item 8) are done. This is the one item on this page whose
       omission cannot be corrected after the fact.
+- [ ] The master-key-rotation risk sign-off (item 12) and the `send_logs` retention window decision
+      (item 13) are both recorded — module 3's two go-live items with no module 2 counterpart.
 - [ ] You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
       particularly that there is **no bounce or complaint data**, so provider-side monitoring is your
       only deliverability feedback loop.

@@ -240,19 +240,43 @@ the next dispatch picks up the new secret. No restart, no downtime.
 Do this whenever a provider password changes, and always after an `auth_failure` quarantine — see
 the runbook's "An account got quarantined".
 
-### Rotating the master key (re-encrypting every credential)
+### Rotating the master key (re-encrypting every credential) — cannot be done as an operator action
 
-**Prerequisite that has no workaround: you must have every account's plaintext SMTP password.** The
-system cannot help you here, and this is not an oversight — the admin surface holds an *Encrypt-only*
-primitive with no Decrypt method, so no operator-facing route can read a credential back out
-(CLAUDE.md Rule 6). Re-encryption is therefore **re-entry**, not a server-side transform.
+**State this plainly, not as a variant of the routine case above: module 3's master key cannot be
+rotated by the operator.** Module 2's version of this procedure could at least assume *"you must have
+every account's plaintext SMTP password"* — a real limitation there, but not a structural
+impossibility, because a module 2 operator provisioned pools and sometimes has a password written
+down somewhere. Module 3 has no such fallback: the operator has **never held any user's plaintext SMTP
+password, at any point.** Every credential arrives already-plaintext-in-transit over mTLS and is
+Encrypted immediately by an *Encrypt-only* primitive with no Decrypt method
+(`services/brain/internal/adminapi/crypto.go`, `services/brain/internal/platformapi/crypto.go` — both
+Domain A and Domain B write-surfaces are Encrypt-only); the sole Decrypt capability in the entire Brain
+is `services/brain/internal/credential.Decryptor`, wired only into the send path
+(`internal/dispatch/dispatch.go`, `internal/dispatch/verify.go`) and never into either admin/platform
+API (CLAUDE.md Rule 6). There is no side channel and no escrow.
 
-That is a real limitation, and it is the honest state of V1: a server-side bulk re-encrypt would
-require a Brain-side rotation path that can decrypt-under-old and encrypt-under-new. That capability
-does not exist and is registered in [`future-work.md`](./future-work.md); building it here would be a
-new feature, not polish.
+Re-encrypting under a new master key therefore requires **every user** to re-enter their own SMTP
+credential — a coordinated re-add campaign against the whole user base, one `PATCH
+/v1/byosmtp/accounts/{id}` (or the operator equivalent) per user, run by people the operator does not
+control the schedule of. It takes as long as the **least-responsive user**, and accounts belonging to
+a user who never comes back stay on the old key indefinitely — which is a live send-outage for that
+user's accounts (step 5 below refuses to unfreeze while any row is unmigrated) or, if a partial
+unfreeze is forced, a permanently-orphaned old-labelled row per CLAUDE.md Rule 1's config-ordering
+posture on rejecting rather than clamping.
 
-Safe ordering — the sequence that never leaves a row unreadable while dispatch is live:
+**This is not a procedure this phase builds.** Inventing an operator-side workaround would require a
+second Decrypt call site outside the send path, which Rule 6 forbids adding casually. The honest
+answer for V1 is registered in [`future-work.md`](./future-work.md) §9 as **`FW-M3-4`**: the current
+control is *"do not lose the master key,"* not a plan — back it up per §1 like your business depends
+on it, because for every user's credential, it does.
+
+A server-side bulk re-encrypt (a Brain-side path that can decrypt-under-old and encrypt-under-new)
+would close this, but that capability does not exist and building it here would be a new feature, not
+polish — see `FW-M3-4`.
+
+Safe ordering below is written for completeness (and it is what the servers-side path in `FW-M3-4`
+would still need if it existed) — but read the paragraph above first: step 4 is the one that is not
+achievable as an operator action today.
 
 1. **Prepare.** Generate the new key (32 random bytes) and choose the next label:
    `cred-dek-v1` → `cred-dek-v2`. Back the new key up **before** using it (§1) — a key you rotate to
@@ -364,11 +388,13 @@ harvesting a new credential per job while your ticket says "box evicted".
 3. **Rotate the SMTP passwords of every account that dispatched to that box** while it may have been
    compromised. `SELECT DISTINCT assigned_account_id FROM byosmtp.jobs WHERE assigned_box_id = '<box>'
    AND updated_at > '<suspected start>';` gives you the list. Do not skip this because the box was
-   stopped: shutdown does **not** zero the in-flight credential (`security-posture.md` §3.12), and a
+   stopped: shutdown does **not** zero the in-flight credential
+   ([`security-posture.md`](./security-posture.md#r1-a-compromised-box-exposes-the-credentials-of-accounts-actively-sending-through-it)), and a
    box that ran for a while saw many accounts.
 4. **Distrust what that box reported.** A compromised box can report any outcome for a job it
    legitimately held — including `accepted` for mail never sent, and fabricated `auth_failure`s that
-   may already have quarantined healthy accounts (`security-posture.md` §3.15). Review
+   may already have quarantined healthy accounts
+   ([`security-posture.md`](./security-posture.md#a-compromised-box-can-fabricate-the-outcome-of-the-job-it-legitimately-holds)). Review
    `byosmtp.account_events` for quarantines in the window and un-quarantine what the box lied about;
    treat `sent` rows from that box as unverified.
 5. **The master key is not exposed.** A box holds no key material and cannot decrypt anything, so this
@@ -376,6 +402,13 @@ harvesting a new credential per job while your ticket says "box evicted".
    it costs re-entry of every password for no gain here.
 6. Re-issue that box's leaf cert before reusing the host, and mint a **new** registration token; never
    redeploy the old token.
+7. **Tell the affected users.** Every account that step 3's query returned had a third-party
+   credential (its SMTP password) pass through a box you no longer trust — that is a real exposure of
+   a secret the user owns, not the platform's. Whether notification is legally required is outside
+   this document's scope; that it is **owed** is not. This is the one step in this procedure that is
+   about people, not systems, and it does not go away because the box is stopped and the passwords are
+   rotated — those steps limit the *ongoing* damage, they do not undo the exposure that already
+   happened.
 
 ---
 

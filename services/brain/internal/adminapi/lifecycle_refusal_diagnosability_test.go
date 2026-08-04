@@ -95,7 +95,7 @@ func TestLifecycleRefusalsAreDiagnosable(t *testing.T) {
 	}
 }
 
-// TestPoolKindRequiredVsInvalid is DELETED at G2 (Docs/phase-2-strip-shared-pool.md §4.1's DELETE
+// TestPoolKindRequiredVsInvalid is DELETED at G2 (Docs/history/phase-2-strip-shared-pool.md §4.1's DELETE
 // bucket — moved here from G1 by M3-P2-OD-10 alongside the rest of the pool admin surface): its
 // subject, POST /v1/admin/pools' kind field, no longer exists. §4.1 recommended re-pointing the
 // PATTERN (required-vs-invalid enum-field diagnosability) at a surviving enum field rather than

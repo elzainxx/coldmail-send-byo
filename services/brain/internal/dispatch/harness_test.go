@@ -209,7 +209,7 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 
 // seedSystemUser ensures the reserved system user row exists in public.users. G1-era pool-fixture
 // helpers (seedPool, seedPoolWithStrategy, seedSharedPool, setDefaultSharedPool,
-// clearDefaultSharedPool, seedDedicatedPool) DIED at G2 (Docs/phase-2-strip-shared-pool.md §2.5) —
+// clearDefaultSharedPool, seedDedicatedPool) DIED at G2 (Docs/history/phase-2-strip-shared-pool.md §2.5) —
 // their subject, byosmtp.pools, no longer exists.
 func (e *dispatchEnv) seedSystemUser(t *testing.T) {
 	t.Helper()
@@ -220,7 +220,7 @@ func (e *dispatchEnv) seedSystemUser(t *testing.T) {
 }
 
 // seedAccountForUser is seedAccount with an EXPLICIT userID instead of the hardcoded system user
-// (G1 addition — Docs/phase-2-strip-shared-pool.md §4.4's class of gap: a fixture need the
+// (G1 addition — Docs/history/phase-2-strip-shared-pool.md §4.4's class of gap: a fixture need the
 // inventory did not list). accountConsume/userHasEligible filter on user_id (§3.2), so a test
 // needing genuine account-set ISOLATION between two fixtures — e.g. "each shape must be
 // unambiguously in its own candidate set" — cannot get that from seedAccount alone, since every

@@ -133,7 +133,7 @@ func TestFairness_PreClaimGate_ExhaustedUserNotClaimed(t *testing.T) {
 
 // TestFairness_PreClaimGate_ZeroAccountsNoChurn (T10-style, via the gate; renamed from
 // UnconfiguredSharedPoolNoChurn — re-keyed from "default_shared_pool_id UNSET", a concept gone with
-// pools, Docs/phase-2-strip-shared-pool.md §2.3) — a base user with ZERO accounts is never claimed
+// pools, Docs/history/phase-2-strip-shared-pool.md §2.3) — a base user with ZERO accounts is never claimed
 // for across multiple ticks: no churn, no crash, clean queued state — proving the P4-5 gate treats
 // a user with no accounts at all identically to a fully-exhausted one (both WAIT, never FAIL).
 func TestFairness_PreClaimGate_ZeroAccountsNoChurn(t *testing.T) {

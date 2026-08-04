@@ -33,12 +33,34 @@ func TestPhase95_BrainSingletonAcquireTimeoutSecRangeEnforced(t *testing.T) {
 	e.do(t, "PUT", "/v1/admin/config/brain_singleton_acquire_timeout_sec", map[string]any{"value": 600}).requireStatus(t, 200)
 }
 
-func TestPhase95_VariationZeroWidthRatePctRangeEnforced(t *testing.T) {
-	e := newTestEnv(t, "p95rangezwrpct")
-	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate_pct", map[string]any{"value": -1}).requireStatus(t, 400)
-	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate_pct", map[string]any{"value": 101}).requireStatus(t, 400)
-	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate_pct", map[string]any{"value": 0}).requireStatus(t, 200)
-	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate_pct", map[string]any{"value": 100}).requireStatus(t, 200)
+// TestP8_ExpiredReservedKeysAreGone replaces the former
+// TestPhase95_VariationZeroWidthRatePctRangeEnforced, which range-validated a key that no longer
+// exists. byosmtp_0049 (M3-P8-OD-8, ruled 2026-08-04) DELETES both variation_zero_width_rate_pct
+// (P9.5-OD-3's ruled duplicate, loaded but never stamped onto the push_job wire block) and
+// retry_count_4xx (inherited from module 2, never read by module 3 at any point), discharging two
+// RESERVED markers whose Phase 8 expiry came due.
+//
+// THE CONTROL, and why it is the assertion that matters: the negative half asserts each dropped key
+// now 404s, and the positive half asserts the SURVIVING dial variation_zero_width_rate still
+// validates and writes. If a future migration re-seeds either row without also wiring a real
+// consumer, the 404 assertions fail here AND config_consumption.sh goes red — the row cannot come
+// back silently. If instead someone "fixes" this test by deleting it, the positive half's loss is
+// visible in the diff. Real Postgres, real HTTP against the production Server — no mocks (Rule 3).
+func TestP8_ExpiredReservedKeysAreGone(t *testing.T) {
+	e := newTestEnv(t, "p8reservedgone")
+
+	// Negative control: both dropped keys are unknown to the config surface now. 404 (not 400) is
+	// the specific evidence the ROW is gone rather than merely rejecting values — handleConfigPut
+	// 404s an unknown key before it ever reaches the range validator.
+	for _, key := range []string{"variation_zero_width_rate_pct", "retry_count_4xx"} {
+		e.do(t, "GET", "/v1/admin/config/"+key, nil).requireStatus(t, 404)
+		e.do(t, "PUT", "/v1/admin/config/"+key, map[string]any{"value": 5}).requireStatus(t, 404)
+	}
+
+	// Positive control: the surviving dial is untouched — still present, still range-validated, still
+	// writable. Without this half, dropping every variation key would pass the test above.
+	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate", map[string]any{"value": 1.5}).requireStatus(t, 400)
+	e.do(t, "PUT", "/v1/admin/config/variation_zero_width_rate", map[string]any{"value": 0.05}).requireStatus(t, 200)
 }
 
 func TestPhase95_VariationCommentIntensityRatesShapeEnforced(t *testing.T) {

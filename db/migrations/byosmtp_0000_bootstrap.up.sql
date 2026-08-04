@@ -1,10 +1,10 @@
--- sender_0000_bootstrap.up.sql — Phase 0 pre-feature bootstrap (ADR-0002).
+-- byosmtp_0000_bootstrap.up.sql — Phase 0 pre-feature bootstrap (ADR-0002).
 -- Numbered 0000 (pre-feature groundwork) so the LOCKED feature chain stays exactly
--- sender_0001..sender_0020 as every Phase 1–9 spec and the Phase 9 §4 config reference assume.
--- Creates the EMPTY sender schema owned by a non-login/non-superuser owner (OD-13/ADR-0004),
+-- byosmtp_0001..sender_0020 as every Phase 1–9 spec and the Phase 9 §4 config reference assume.
+-- Creates the EMPTY byosmtp schema owned by a non-login/non-superuser owner (OD-13/ADR-0004),
 -- the login app role, the migration tracking table, and the enumerated grants. It creates
 -- NO feature tables, enums, or config — those are Phase 1+ (the feature chain begins at
--- sender_0001_create_schema). Runs as an admin/owner-capable role (OD-1). Role passwords are
+-- byosmtp_0001_create_schema). Runs as an admin/owner-capable role (OD-1). Role passwords are
 -- NEVER in migration SQL.
 
 -- 1) Roles. Idempotent guards so this is safe under managed/out-of-band role provisioning.

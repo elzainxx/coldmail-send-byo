@@ -88,7 +88,7 @@ func (d *Dispatcher) Drain(ctx context.Context, timeout time.Duration) int {
 	start := time.Now()
 	n, err := d.InFlightCount(ctx)
 	if err != nil {
-		log.Printf("shutdown: cannot count in-flight jobs (%v) — ending the drain immediately; everything in-flight is LEFT IN PLACE and recovered by the next boot's rescan (§4.3)", err)
+		log.Printf("shutdown: cannot count in-flight jobs (%v) — ending the drain immediately; everything in-flight is LEFT IN PLACE and recovered by the next boot's rescan (§4.3) level=error", err)
 		return -1
 	}
 	if n == 0 {
@@ -117,7 +117,7 @@ func (d *Dispatcher) Drain(ctx context.Context, timeout time.Duration) int {
 		}
 		n, err = d.InFlightCount(ctx)
 		if err != nil {
-			log.Printf("shutdown: in-flight re-count failed (%v) — ending the drain; remaining jobs are left in place", err)
+			log.Printf("shutdown: in-flight re-count failed (%v) — ending the drain; remaining jobs are left in place level=error", err)
 			return -1
 		}
 		if n == 0 {

@@ -169,9 +169,11 @@ not rewritten; see M3-P0-OD-12 for the fix and its own from-a-deleted-binary ver
 **This section was missing from the original Gate B commit** (`f7be832`, "Gate B: rename module
 identity sender -> byosmtp, nothing else") — the rename genuinely happened and was genuinely
 verified against real infra, but the evidence lived only in that commit's own message, never
-transcribed here where §7's exit criteria expect it. Found by Phase 6's now-permanent mechanical
-landing check (M3-P0-OD-1): §7's Gate B checkboxes were still all unchecked despite the work being
-done. Backfilled from `f7be832`'s commit message, which is the authoritative record — nothing new
+transcribed here where §7's exit criteria expect it. Found by Phase 7's mechanical landing check
+(M3-P0-OD-1) — the pass that made the check permanent, per that phase's own landing-check commit,
+`d3d50ac`, "Phase 7 landing check (round 2)"; Phase 6's own landing-check commit (`721d9cb`) never
+touched this file. §7's Gate B checkboxes were still all unchecked despite the work being done.
+Backfilled from `f7be832`'s commit message, which is the authoritative record — nothing new
 was run to produce this section; it restates what that commit already proved.
 
 - `git diff <module3-fork-point tag>..f7be832` — identity literals only (schema/role/table names,

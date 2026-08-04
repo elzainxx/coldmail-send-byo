@@ -11,7 +11,7 @@
 -- migration, so this is Phase 3's fourth migration. Phase 4's doc (previously 0038/0039 under
 -- M3-P3-OD-18) shifts by +1 to 0039/0040 to make room for this migration, cascading through Phases
 -- 5/6/7. Full reasoning and the authoritative shift live in Docs/open-decisions.md's M3-P3-OD-19
--- entry and Docs/plan-revision-log.md's chain table; this comment states only what THIS migration
+-- entry and Docs/history/plan-revision-log.md's chain table; this comment states only what THIS migration
 -- does.
 
 INSERT INTO byosmtp.config (key, value, default_value, description, value_type) VALUES

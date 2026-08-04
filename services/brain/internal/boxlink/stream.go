@@ -162,14 +162,14 @@ func (s *StreamServer) handle(conn net.Conn) {
 
 	if !s.authorizeBox(reg.BoxID, reg.Token) {
 		// Two-vocabulary rule: the box learns only the clean code; the reason is logged internally.
-		log.Printf("boxlink stream: register REJECTED id=%q (token/cert mismatch) — stream closed, no job/credential pushed", reg.BoxID)
+		log.Printf("boxlink stream: register REJECTED id=%q (token/cert mismatch) — stream closed, no job/credential pushed level=warn", reg.BoxID)
 		_ = enc.Encode(boxproto.RegisterAck{Type: boxproto.TypeRegisterAck, RequestID: reg.RequestID, Accepted: false, Code: "unauthenticated"})
 		return
 	}
 
 	// Upsert-by-identity (§3.1/P3-4): status→active, last_heartbeat_at=NOW(), merge box_metadata.
 	if err := s.markActive(reg); err != nil {
-		log.Printf("boxlink stream: register accepted but DB update failed for id=%q: %v — closing", reg.BoxID, err)
+		log.Printf("boxlink stream: register accepted but DB update failed for id=%q: %v — closing level=error", reg.BoxID, err)
 		_ = enc.Encode(boxproto.RegisterAck{Type: boxproto.TypeRegisterAck, RequestID: reg.RequestID, Accepted: false, Code: "internal_error"})
 		return
 	}
@@ -203,7 +203,7 @@ func (s *StreamServer) handle(conn net.Conn) {
 		lineBytes, err := br.ReadBytes('\n')
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				log.Printf("boxlink stream: box id=%q stream closed (%v)", reg.BoxID, err)
+				log.Printf("boxlink stream: box id=%q stream closed (%v) level=warn", reg.BoxID, err)
 			}
 			return
 		}
@@ -222,7 +222,7 @@ func (s *StreamServer) dispatchFrame(boxID string, line []byte) {
 	switch probe.Type {
 	case boxproto.TypeHeartbeat:
 		if err := s.touchHeartbeat(boxID); err != nil {
-			log.Printf("boxlink stream: heartbeat DB update failed for id=%q: %v", boxID, err)
+			log.Printf("boxlink stream: heartbeat DB update failed for id=%q: %v level=error", boxID, err)
 		}
 	case boxproto.TypeReport:
 		var rep boxproto.Report
@@ -407,7 +407,7 @@ func (s *StreamServer) readOutcomeBufferTTLSec() int {
 	defer cancel()
 	var raw []byte
 	if err := s.db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='box_outcome_buffer_ttl_sec'`).Scan(&raw); err != nil {
-		log.Printf("boxlink stream: box_outcome_buffer_ttl_sec unreadable (%v) — box uses its bootstrap default", err)
+		log.Printf("boxlink stream: box_outcome_buffer_ttl_sec unreadable (%v) — box uses its bootstrap default level=warn", err)
 		return 0
 	}
 	var wrap struct {

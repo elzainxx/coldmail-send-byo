@@ -308,16 +308,17 @@ runSmtpSession(job, credential, { timeoutMs, stopAfterAuth: true })
 ```
 
 `stopAfterAuth` makes the function `QUIT` and return immediately after step (4) `doAuthLogin`
-(`smtp.js:203`), skipping MAIL FROM / RCPT TO / DATA (`:206-222`). **This is the whole mechanism.**
+(early return at `smtp.js:235-238`), skipping MAIL FROM (`:241`) / RCPT TO (`:244`) / DATA (`:251`).
+**This is the whole mechanism.**
 
 **And it is not optional — omitting `dataBytes` DELIVERS A REAL EMAIL.** This is the single most
 important finding in the phase and it is a live hazard, not a theoretical one. `opts` today carries
-**only** `timeoutMs` (`smtp.js:166-167`); there is no mode flag, and lines `:206-222` run MAIL FROM,
-RCPT TO, and DATA **unconditionally** after AUTH. Calling the function without `dataBytes` does not
-abort: `:217` is `const payload = dotStuff(job.dataBytes) + "\r\n.\r\n"`, and `dotStuff` (`:307-309`)
-does `String(data)` — so `undefined` becomes **the literal message body `"undefined"`** and a real
-message is delivered to `job.recipient`. There is **no code path through this function that stops at
-AUTH.**
+**only** `timeoutMs` and `stopAfterAuth` (`smtp.js:179-180`); absent `stopAfterAuth`, MAIL FROM, RCPT
+TO, and DATA (`:241-251`) run **unconditionally** after AUTH. Calling the function without
+`dataBytes` does not abort: `:252` is `const payload = dotStuff(job.dataBytes) + "\r\n.\r\n"`, and
+`dotStuff` (`:391-393`) does `String(data)` — so `undefined` becomes **the literal message body
+`"undefined"`** and a real message is delivered to `job.recipient`. There is **no code path through
+this function that stops at AUTH.**
 
 Two consequences, stated plainly because both are easy to get wrong:
 

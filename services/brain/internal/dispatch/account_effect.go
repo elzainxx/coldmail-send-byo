@@ -77,7 +77,7 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 	case "off", "shadow", "enforce":
 		// recognized — proceed below.
 	default:
-		log.Printf("dispatch: autoquarantine_mode=%q unrecognized — defaulting to shadow (safe default, never enforce)", mode)
+		log.Printf("dispatch: autoquarantine_mode=%q unrecognized — defaulting to shadow (safe default, never enforce) level=warn", mode)
 		mode = "shadow"
 	}
 	var reason string

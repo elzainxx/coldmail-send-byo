@@ -14,12 +14,12 @@ func (e *testEnv) mkAccount(t *testing.T, userID, host, user string) string {
 	}).requireStatus(t, 201).str("id")
 }
 
-// TestT7_PerUserUniqueness — renamed from TestT7_PerPoolUniqueness (Docs/phase-2-strip-shared-pool.md
+// TestT7_PerUserUniqueness — renamed from TestT7_PerPoolUniqueness (Docs/history/phase-2-strip-shared-pool.md
 // §4.2): subject re-keyed from accounts_pool_host_user_unique (sender_0013, dropped at G2's 0027)
 // to accounts_user_host_username_unique (Phase 1 §3.1, created by the same migration). Duplicate
 // (host,user) for the SAME user => 409; same pair for a DIFFERENT user => 201; a PATCH that would
 // collide within one user's own set => 409. The partial-index (soft-delete) case is G3 scope
-// (Docs/phase-2-strip-shared-pool.md §8.1 criterion 16) — deleted_at does not have a delete API
+// (Docs/history/phase-2-strip-shared-pool.md §8.1 criterion 16) — deleted_at does not have a delete API
 // surface until Phase 3.
 func TestT7_PerUserUniqueness(t *testing.T) {
 	e := newTestEnv(t, "t7")
@@ -230,7 +230,7 @@ func TestT11_LowerDailyLimitBelowCounter(t *testing.T) {
 }
 
 // TestT12_CrossUserDuplicateIndependentCounters — renamed from
-// TestT12_CrossPoolDuplicateIndependentCounters (Docs/phase-2-strip-shared-pool.md §4.2): "same
+// TestT12_CrossPoolDuplicateIndependentCounters (Docs/history/phase-2-strip-shared-pool.md §4.2): "same
 // mailbox in two pools" becomes "same mailbox under two users." Same (host,user) for two DIFFERENT
 // users => two rows with independent daily_sent_count.
 func TestT12_CrossUserDuplicateIndependentCounters(t *testing.T) {

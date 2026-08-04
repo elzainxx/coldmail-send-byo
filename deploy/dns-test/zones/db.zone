@@ -1,6 +1,6 @@
 ; DEV/TEST-ONLY FIXTURE ZONE — NOT real DNS data, NOT a real domain's records.
 ; Serves the "test." TLD (RFC 2606 reserves .test for exactly this purpose) for the Phase 4
-; "From gate" SPF/DMARC/DKIM alignment behavioral tests. See Docs/phase-4-from-gate.md §7.1 and
+; "From gate" SPF/DMARC/DKIM alignment behavioral tests. See Docs/history/phase-4-from-gate.md §7.1 and
 ; deploy/dns-test/README.md for the full zone-to-fixture-purpose mapping. Mirrors the
 ; deploy/pg-init disclaimer convention: these records exist only to give the Go test suite a
 ; REAL, controllable authoritative answer for each edge case (misalignment, malformed SPF, void

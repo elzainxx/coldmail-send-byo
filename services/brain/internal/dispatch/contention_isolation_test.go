@@ -1,6 +1,6 @@
 package dispatch
 
-// Test B — the structural no-contention proof (Docs/phase-2-strip-shared-pool.md §5.3, G3
+// Test B — the structural no-contention proof (Docs/history/phase-2-strip-shared-pool.md §5.3, G3
 // criterion 15). Phase 0 §3.4 named this gate Phase-2-owned: "structural no-contention — with
 // per-user accounts and one campaign per user, contention is impossible — proven, not assumed."
 //

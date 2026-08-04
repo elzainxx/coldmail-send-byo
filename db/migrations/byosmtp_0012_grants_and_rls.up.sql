@@ -1,4 +1,4 @@
--- sender_0012_grants_and_rls.up.sql — Phase 1: table-level DML grants to byosmtp_module + RLS.
+-- byosmtp_0012_grants_and_rls.up.sql — Phase 1: table-level DML grants to byosmtp_module + RLS.
 --
 -- Reconciliation note (ground = Phase 0 sender_0000): the bootstrap's `ALTER DEFAULT
 -- PRIVILEGES FOR ROLE byosmtp_owner ... GRANT ... TO byosmtp_module` keys on the *creator* of an
@@ -11,7 +11,7 @@
 -- no-ops against a table that was never granted UPDATE/DELETE.
 --
 -- The two read-only platform-table grants (public.users, public.job_items) are owned by the
--- bootstrap (sender_0000) and are deliberately NOT re-issued or revoked here — so rolling back
+-- bootstrap (byosmtp_0000) and are deliberately NOT re-issued or revoked here — so rolling back
 -- 0012 never disturbs a grant the still-applied bootstrap owns.
 
 -- === Table DML grants (mutable tables: full DML) ========================================

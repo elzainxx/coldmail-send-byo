@@ -18,10 +18,20 @@
 #
 # RESERVED expiry (M3-P2-OD-8, ruled 2026-07-31): the third field is REQUIRED and names the
 # gate/phase by which the marker must be gone — checked against Docs/current-phase.txt. A marker
-# whose expiry has passed fails the gate, so the hatch cannot quietly become permanent. This is
-# why the two rows below carry a phase, not why they're exempt: retry_count_4xx and
-# variation_zero_width_rate_pct were both found RESERVED with no expiry by accident during a
-# Phase 9.5 review sweep, which is exactly the failure mode this field exists to close.
+# whose expiry has passed fails the gate, so the hatch cannot quietly become permanent. The two keys
+# that motivated the field, retry_count_4xx and variation_zero_width_rate_pct, were both found
+# RESERVED with no expiry by accident during a Phase 9.5 review sweep — exactly the failure mode it
+# exists to close. Both have since been DISCHARGED: the field fired for real at Phase 8's
+# current-phase.txt bump and both keys were DROPPED at byosmtp_0049 (M3-P8-OD-8, ruled 2026-08-04),
+# so the mechanism is now proven end to end, from accidental marker to actual disposition.
+#
+# The third field may instead name a future-work item id (FW-M3-N). Phase 8 is the last phase, so a
+# key kept deliberately because a specified-but-unbuilt consumer is still wanted has no future phase
+# label left to name — the phase form could only ever call it expired. The FW form keeps the teeth
+# without lying about a date: config_consumption.sh requires the named item to exist as a heading in
+# Docs/future-work.md, so the marker cannot become permanent by quietly losing its roadmap entry.
+# score_alert_threshold is the one key on this form (-> FW-M3-12, the score-warning digest Phase 7
+# §3.1 specified and never built).
 #
 # Maintenance rule (mirrors the ADR-0008 grants-invariant discipline): every new seeded key gets a
 # line here in the SAME change that adds the migration — the gate fails a key with no line at all,
@@ -30,7 +40,6 @@
 daily_limit_default|resolveDailyLimit
 daily_reset_timezone|DailyResetTimezone
 daily_reset_hour|DailyResetHour
-retry_count_4xx|RESERVED|Phase 8
 dispatch_tick_interval_ms|DispatchTickIntervalMS
 send_delay_min_sec|userconfig.Resolve
 send_delay_max_sec|userconfig.Resolve
@@ -76,7 +85,6 @@ health_metrics_window_sec|health_metrics_window_sec
 brain_singleton_acquire_timeout_sec|readSingletonAcquireTimeout
 unit_price_credits|readUnitPriceCredits
 variation_comment_intensity_rates|VariationCommentIntensityRates
-variation_zero_width_rate_pct|RESERVED|Phase 8
 variation_css_micro_params|VariationCSSMicroParams
 brain_singleton_reacquire_interval_sec|readSingletonReacquireInterval
 account_test_rate_limit_per_day|readAccountTestRateLimit
@@ -113,4 +121,4 @@ destination_throttle_window_sec|destination_throttle_window_sec
 destination_throttle_user_threshold|destination_throttle_user_threshold
 quote_capacity_projection_enabled|quote_capacity_projection_enabled
 quote_long_duration_warn_sec|quote_long_duration_warn_sec
-score_alert_threshold|RESERVED|Phase 8
+score_alert_threshold|RESERVED|FW-M3-12

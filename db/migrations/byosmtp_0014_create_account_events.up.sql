@@ -1,4 +1,4 @@
--- sender_0014_create_account_events.up.sql — Phase 2 (ruling 4): the account audit sink.
+-- byosmtp_0014_create_account_events.up.sql — Phase 2 (ruling 4): the account audit sink.
 -- New additive append-only table, SAME discipline as byosmtp.job_events (0008): REVOKE
 -- UPDATE, DELETE + a BEFORE UPDATE reject-trigger; NO BEFORE DELETE trigger (it would block
 -- the FK ON DELETE SET NULL path — the Phase 1 #23 lesson), DELETE denied by the revoked

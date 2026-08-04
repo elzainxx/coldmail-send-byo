@@ -27,7 +27,7 @@ import (
 // filter — quarantined/disabled/deleted are STRUCTURAL exclusions, distinct from the daily-limit/
 // throttle CYCLE logic that differs per consumer (consume admits an expired throttle pause;
 // self-recovering treats one as still-blocked-but-timed; health's healthy-count wants neither).
-// Consolidated per M3-P4-OD-3 (Docs/phase-2-strip-shared-pool.md/phase-4-from-gate.md §8.1):
+// Consolidated per M3-P4-OD-3 (Docs/history/phase-2-strip-shared-pool.md/phase-4-from-gate.md §8.1):
 // before this, accountConsume's CTE and userHasEligible's WHERE each carried this fragment as a
 // separately hand-copied literal, and exhaustion.go's userHasSelfRecovering carried NEITHER —
 // which is exactly how M3-P4-OD-11 was found: G3 added deleted_at IS NULL to the first two sites
@@ -228,7 +228,7 @@ FROM consumed`
 // selectAccountForJob resolves the job's routing strategy and atomically consumes the first
 // eligible account in the job's owner's account set. No chain, no loop, no fallback — collapsed
 // from the pre-Phase-2 three-layer resolution (chain → pool loop → per-pool consume) to one layer,
-// per Docs/phase-2-strip-shared-pool.md §3.1. cfg is the caller's ALREADY-LOADED config (Tick loads
+// per Docs/history/phase-2-strip-shared-pool.md §3.1. cfg is the caller's ALREADY-LOADED config (Tick loads
 // it once per cycle, §0 OD-14 only requires per-tick freshness) — this avoids re-reading all of
 // byosmtp.config once per claimed job.
 func (d *Dispatcher) selectAccountForJob(ctx context.Context, job claimedJob, cfg Config) (selectedAccount, bool, error) {
@@ -339,7 +339,7 @@ SELECT EXISTS (
 var userHasEligibleQuery = fmt.Sprintf(userHasEligibleQueryTmpl, accountBaseEligibilityFilter)
 
 // userHasEligible is the read-only EXISTS form of the eligibility predicate (§4.1
-// USER_HAS_ELIGIBLE, renamed from poolHasEligible per Docs/phase-2-strip-shared-pool.md §3.1),
+// USER_HAS_ELIGIBLE, renamed from poolHasEligible per Docs/history/phase-2-strip-shared-pool.md §3.1),
 // used by the pre-claim gate (Chunk 5) to test exhaustion WITHOUT consuming. Defining exhaustion as
 // "would the consume affect zero rows" via the IDENTICAL WHERE (not a separately-maintained
 // predicate) makes it impossible for the exhaustion test to drift from the real selection logic.

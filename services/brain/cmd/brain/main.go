@@ -255,7 +255,7 @@ func main() {
 	go notifier.Run(ctx)
 	go func() {
 		if err := stream.Serve(); err != nil {
-			log.Printf("boxlink stream server stopped: %v", err)
+			log.Printf("boxlink stream server stopped: %v level=error", err)
 		}
 	}()
 	log.Printf("boxlink send-stream mTLS server on %s (client cert required; credential channel)", cfg.BoxlinkStreamAddr)

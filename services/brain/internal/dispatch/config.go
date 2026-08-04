@@ -24,7 +24,7 @@ import (
 // Phase 3 consumed the first two; Phase 4 additionally consumes the tick interval, the per-user
 // concurrency ceiling, and the daily-reset timezone — ALL ALREADY seeded in Phase 1's sender_0010
 // (Phase 4 adds NO new key, §0). Every value is read at runtime from byosmtp.config, never
-// hardcoded. default_shared_pool_id's field/reader died at G2 (Docs/phase-2-strip-shared-pool.md
+// hardcoded. default_shared_pool_id's field/reader died at G2 (Docs/history/phase-2-strip-shared-pool.md
 // §1.2, M3-P2-OD-1) along with the rest of the pool layer.
 type Config struct {
 	JobMaxProcessingTimeSec   int    // job_max_processing_time_sec — the lease duration (§1.1/§5.1)
@@ -129,7 +129,6 @@ type Config struct {
 	BrainSingletonAcquireTimeoutSec int            // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
 	UnitPriceCredits                int            // unit_price_credits — S10 (§2.4)
 	VariationCommentIntensityRates  IntensityRates // variation_comment_intensity_rates — S11 (§2.4)
-	VariationZeroWidthRatePct       int            // variation_zero_width_rate_pct — S11 (§2.4)
 	VariationCSSMicroParams         CSSMicroParams // variation_css_micro_params — S11 (§2.4)
 
 	// Phase 7 notification delivery dials (byosmtp_0046; config-not-code, §8). The delivery loop's
@@ -380,9 +379,10 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	c.VariationCommentIntensityRates = readIntensityRates(ctx, db)
-	if c.VariationZeroWidthRatePct, err = readIntKey(ctx, db, "variation_zero_width_rate_pct"); err != nil {
-		return c, err
-	}
+	// variation_zero_width_rate_pct is NOT read here: its row is DELETED at byosmtp_0049
+	// (M3-P8-OD-8). It was P9.5-OD-3's ruled duplicate of variation_zero_width_rate — loaded here
+	// but never stamped onto the push_job wire block, so it never reached the box. readIntKey errors
+	// on a missing row, so leaving this read in place would wedge every dispatch tick's config load.
 	c.VariationCSSMicroParams = readCSSMicroParams(ctx, db)
 
 	// Module 3 Phase 5's ten keys (byosmtp_0042). Missing keys are a hard error like every other
@@ -555,7 +555,7 @@ func readBackoffSchedule(ctx context.Context, db *pgxpool.Pool) BackoffSchedule 
 	defer cancel()
 	var raw []byte
 	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='retry_backoff_schedule'`).Scan(&raw); err != nil {
-		log.Printf("dispatch: retry_backoff_schedule unreadable (%v) — using documented default", err)
+		log.Printf("dispatch: retry_backoff_schedule unreadable (%v) — using documented default level=warn", err)
 		return backoffScheduleDefault
 	}
 	var wrap struct {
@@ -563,12 +563,12 @@ func readBackoffSchedule(ctx context.Context, db *pgxpool.Pool) BackoffSchedule 
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
 		len(wrap.V.LadderSeconds) == 0 || wrap.V.MaxSeconds <= 0 {
-		log.Printf("dispatch: retry_backoff_schedule malformed — using documented default (§7)")
+		log.Printf("dispatch: retry_backoff_schedule malformed — using documented default (§7) level=warn")
 		return backoffScheduleDefault
 	}
 	for _, s := range wrap.V.LadderSeconds {
 		if s <= 0 {
-			log.Printf("dispatch: retry_backoff_schedule has a non-positive rung — using documented default (§7)")
+			log.Printf("dispatch: retry_backoff_schedule has a non-positive rung — using documented default (§7) level=warn")
 			return backoffScheduleDefault
 		}
 	}
@@ -583,7 +583,7 @@ func readScoreWeights(ctx context.Context, db *pgxpool.Pool) ScoreWeights {
 	defer cancel()
 	var raw []byte
 	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='status_score_weights'`).Scan(&raw); err != nil {
-		log.Printf("dispatch: status_score_weights unreadable (%v) — using documented default", err)
+		log.Printf("dispatch: status_score_weights unreadable (%v) — using documented default level=warn", err)
 		return scoreWeightsDefault
 	}
 	var wrap struct {
@@ -592,7 +592,7 @@ func readScoreWeights(ctx context.Context, db *pgxpool.Pool) ScoreWeights {
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
 		wrap.V.WFail < 0 || wrap.V.WProx < 0 || wrap.V.WRecency < 0 ||
 		wrap.V.FailSaturation <= 0 || wrap.V.RecencyHorizonHours <= 0 {
-		log.Printf("dispatch: status_score_weights malformed — using documented default (§7)")
+		log.Printf("dispatch: status_score_weights malformed — using documented default (§7) level=warn")
 		return scoreWeightsDefault
 	}
 	return *wrap.V
@@ -606,7 +606,7 @@ func readIntensityRates(ctx context.Context, db *pgxpool.Pool) IntensityRates {
 	defer cancel()
 	var raw []byte
 	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='variation_comment_intensity_rates'`).Scan(&raw); err != nil {
-		log.Printf("dispatch: variation_comment_intensity_rates unreadable (%v) — using documented default", err)
+		log.Printf("dispatch: variation_comment_intensity_rates unreadable (%v) — using documented default level=warn", err)
 		return intensityRatesDefault
 	}
 	var wrap struct {
@@ -615,7 +615,7 @@ func readIntensityRates(ctx context.Context, db *pgxpool.Pool) IntensityRates {
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
 		wrap.V.Low < 0 || wrap.V.Low > 100 || wrap.V.Medium < 0 || wrap.V.Medium > 100 ||
 		wrap.V.High < 0 || wrap.V.High > 100 {
-		log.Printf("dispatch: variation_comment_intensity_rates malformed — using documented default (§7)")
+		log.Printf("dispatch: variation_comment_intensity_rates malformed — using documented default (§7) level=warn")
 		return intensityRatesDefault
 	}
 	return *wrap.V
@@ -628,7 +628,7 @@ func readCSSMicroParams(ctx context.Context, db *pgxpool.Pool) CSSMicroParams {
 	defer cancel()
 	var raw []byte
 	if err := db.QueryRow(ctx, `SELECT value FROM byosmtp.config WHERE key='variation_css_micro_params'`).Scan(&raw); err != nil {
-		log.Printf("dispatch: variation_css_micro_params unreadable (%v) — using documented default", err)
+		log.Printf("dispatch: variation_css_micro_params unreadable (%v) — using documented default level=warn", err)
 		return cssMicroParamsDefault
 	}
 	var wrap struct {
@@ -636,7 +636,7 @@ func readCSSMicroParams(ctx context.Context, db *pgxpool.Pool) CSSMicroParams {
 	}
 	if err := json.Unmarshal(raw, &wrap); err != nil || wrap.V == nil ||
 		wrap.V.DeltaPx < 0 || wrap.V.DeltaPx > 5 || wrap.V.SkipBelowPx < 0 || wrap.V.SkipBelowPx > 20 {
-		log.Printf("dispatch: variation_css_micro_params malformed — using documented default (§7)")
+		log.Printf("dispatch: variation_css_micro_params malformed — using documented default (§7) level=warn")
 		return cssMicroParamsDefault
 	}
 	return *wrap.V

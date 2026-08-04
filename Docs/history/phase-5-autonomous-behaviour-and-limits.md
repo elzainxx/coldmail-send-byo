@@ -700,10 +700,11 @@ all of it, including the default. Rule 7 is satisfied by inheritance.
 ### 8.2 What Phase 5 changes
 
 Only one thing: the shadow observation row must record **which trigger** would have fired, now that
-there are three. `quarantineTrigger` (`account_effect.go:126+`) currently maps class →
-`score | auth_failure`. It becomes the `quarantine_reason` the §1.4 table would have assigned, so a
-shadow row and a real quarantine name the same thing in the same vocabulary — an operator comparing
-shadow output to enforce output is comparing like with like.
+there are three. `quarantineDecision` (`account_effect.go:146-154`) currently maps class →
+`score | auth_failure`. It becomes the `quarantine_reason` the §1.4 table would have assigned, written
+by `writeShadowQuarantineEvent` (`account_effect.go:336`), so a shadow row and a real quarantine name
+the same thing in the same vocabulary — an operator comparing shadow output to enforce output is
+comparing like with like.
 
 Shadow rows continue to use **only locked `account_events` columns** (module 2 §2.1's schema-neutral
 encoding). No new table, no new column, no new action value.

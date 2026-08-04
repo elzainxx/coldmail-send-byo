@@ -2,7 +2,7 @@
 
 **Inherited from module 2 at the fork (`module3-fork-point`,
 `21b65e65eba8f2cc16a84408bac6e018511ec46b`), verbatim below through §8.** This is module 2's own
-register, carried across by the clone per `Docs/phase-0-fork-and-baseline.md` §1.2 — its entries
+register, carried across by the clone per `Docs/history/phase-0-fork-and-baseline.md` §1.2 — its entries
 describe module 2's build, not module 3's, and are left as-written (identifiers renamed to `byosmtp`
 by Gate B; no content rewritten). **§9 is module 3's own entry**, appended here rather than kept in a
 second file, because two deferred-work registers is exactly the staleness CLAUDE.md Rule 4 exists to
@@ -226,7 +226,7 @@ survives, and the acknowledgment path stays for every address that has not been 
 
 ### FW-M3-2 — Disposition of four inherited §2 pool-capability entries, retired/re-scoped by the G2 drop
 
-**Registered:** 2026-07-31, per `Docs/phase-1-schema-delta.md` §2.1's own disposition table, applied
+**Registered:** 2026-07-31, per `Docs/history/phase-1-schema-delta.md` §2.1's own disposition table, applied
 at G2 (the phase that actually drops `byosmtp.pools`). Module 2's §2 table above is **not edited** —
 it describes module 2's own build and stays as-written, per this document's own top-of-file policy.
 This entry is the module-3-side record of what happened to four of its rows once pools left module
@@ -241,7 +241,7 @@ This entry is the module-3-side record of what happened to four of its rows once
 
 ### FW-M3-3 — `pacer.slots` and `dispatch.rrCursor` are unbounded per-user in-memory maps
 
-**Registered:** 2026-08-02, by M3-P6-OD-1's ruling (`Docs/phase-6-per-user-config-and-routing.md`
+**Registered:** 2026-08-02, by M3-P6-OD-1's ruling (`Docs/history/phase-6-per-user-config-and-routing.md`
 §3.4, §5.4). Found missing from this file on 2026-08-02 by Phase 6's mechanical landing check — the
 ruling's own text names `future-work.md` as this entry's home, and it was never actually written
 here.
@@ -272,3 +272,198 @@ whether that's acceptable is a product question, not an engineering one).
 **Trigger to revisit.** Sustained production tenant counts high enough that the two maps' aggregate
 memory becomes measurable against the Brain's own footprint, or a tenant-churn pattern (many
 short-lived users) that makes the "slow" in "slow leak" no longer true.
+
+### FW-M3-9 — Two RLS policy names still carry the `sender_` identity literal
+
+**Registered:** 2026-08-03, found by Phase 8's mechanical landing check (re-run across phases 0-7).
+
+**What it is.** Gate B's rename (`f7be832`) renamed the `sender` schema qualifier and ~1,105
+non-`Docs/` occurrences of the literal, but two RLS **policy names** were missed: `sender_module_full_access`
+(`db/migrations/byosmtp_0012_grants_and_rls.up.sql`, reinstated verbatim by
+`byosmtp_0028_drop_pools.down.sql`'s rollback path for `byosmtp.pools`) and
+`account_events_sender_module_rw` (`byosmtp_0014_create_account_events.up.sql`). Both are live policy
+identifiers in the current schema, not comments — `f7be832`'s own "do-not-rename list verified
+untouched, zero references to schema `sender`" claim is true for the schema qualifier and false for
+these two free-standing identifiers. (The stale header-comment prose citing `sender_NNNN` filenames
+and "sender schema" in `byosmtp_0000/0001/0006/0007/0012/0014`'s own file headers was comment-only
+and was fixed directly, same landing check.)
+
+**Why it is not a Phase 8 fix.** Renaming a live policy name is a schema change, which needs its own
+additive migration (`DROP POLICY` + `CREATE POLICY` under the new name, both idempotent against
+`byosmtp_0028_drop_pools.down.sql`'s dev/CI-only reinstatement) — not a hand-edit of an already-applied
+migration file. Phase 8 is docs/polish only (CLAUDE.md's Phase 8 spec, self-check review only); a
+schema-mutating migration is out of scope here.
+
+**What the fix would be.** A new migration renaming both policies to `byosmtp_module_full_access` /
+`account_events_byosmtp_module_rw`, additive-only (old policy dropped, new one created with identical
+`USING`/`WITH CHECK` clauses — a rename, not a behavior change). `byosmtp_0028_drop_pools.down.sql`'s
+reinstated policy would need the same new name for its dev/CI-only rollback path to stay consistent.
+
+**Trigger to revisit.** Any future grep-based drift/residual-literal gate keyed on the literal
+`sender` would trip on these two identifiers — build that gate only after this fix lands, or scope it
+to exclude these two names with a comment explaining why.
+
+### FW-M3-4 — Server-side bulk credential re-encryption (master-key rotation has no operator path)
+
+**Registered:** 2026-08-03, by Phase 8 §1.3's finding — the sharpest operational gap this phase
+surfaced, stated in full at [`disaster-recovery.md`](./disaster-recovery.md) §3.
+
+**What it is.** A Brain-side path that can decrypt-under-the-old-key and encrypt-under-the-new-key in
+one operation, so a master-key rotation re-encrypts every `byosmtp.accounts` row without asking any
+user to do anything.
+
+**Why it matters more here than it did for module 2.** Module 2's equivalent entry (§3 above,
+inherited verbatim) frames this as convenience: an operator *could* rotate today by re-entering every
+plaintext password by hand, and the gap is only that it is manual. Module 3 has no such fallback.
+Verified against the tree: `services/brain/internal/adminapi/crypto.go` and
+`services/brain/internal/platformapi/crypto.go` each implement an Encrypt-only primitive with no
+Decrypt method; the only `Decrypt` in the Brain is `services/brain/internal/credential.Decryptor`,
+constructed once in `cmd/brain/main.go` and injected solely into `internal/dispatch` (`dispatch.go`,
+`verify.go`) — never into either admin or platform API. The operator has **never held any user's
+plaintext SMTP password, at any point** (credentials arrive already-plaintext-in-transit over mTLS and
+are Encrypted immediately, per CLAUDE.md Rule 6). So master-key rotation in module 3 is not "manual but
+possible" — it is **not an operator action at all**. It is a coordinated re-add campaign against the
+whole user base, one credential re-entry per user, gated on how quickly the least-responsive user
+responds.
+
+**Why it is not built here.** Same structural reason as module 2's version: this needs a **second**
+Decrypt call site outside the send path, which CLAUDE.md Rule 6 forbids adding casually. Building it
+requires a ruling on where such a path may live, how it is audited, and how its blast radius (a
+Decrypt-capable admin surface) is bounded — a design decision, not a Phase 8 polish task.
+
+**Trigger to revisit.** The first real master-key rotation need in production, at which point "do not
+lose the master key" (the only current control — back it up per §1) stops being sufficient and the
+re-add-campaign cost becomes concrete enough to weigh against building this.
+
+### FW-M3-5 — Per-access user notification for break-glass operator credential reads
+
+**Registered:** 2026-08-03, by Phase 8 §1.5's `security-posture.md` rewrite (R2), per the phase-8
+spec's own plan (`Docs/history/phase-8-polish-docs-close.md` §4.2).
+
+**What it is.** A `platform_admin` bearer key (Domain B) can drive any `/v1/admin/*` route, including
+reading and updating any user's account (`services/brain/internal/adminapi/account_read.go`,
+`account_update.go`). No admin route decrypts a credential in its response — `adminapi.Encryptor` has
+no Decrypt method — but the holder of that key has full control-plane authority over every account in
+the system, and there is no per-access notification to the affected user when an operator reads or
+touches their account. `byosmtp.account_events` records that an action happened, keyed by
+`request_id`; it does not tell the user.
+
+**Why it matters more here than it did for module 2.** Module 2's operator and its one tenant were the
+same trust relationship, so the analogous risk (an operator delivering a stored credential to a host
+of their choosing) was treated as an insider footnote. In module 3 the operator and the user are
+different parties, so this is the **primary** platform-operator-as-adversary-to-user threat, not a
+footnote.
+
+**Why it is not built here.** An audit-notification path is a product decision — which actions
+notify, whether delivery is synchronous or batched, and whether it reuses or competes with the
+existing `byosmtp.notifications` delivery loop — not a Phase 8 polish task.
+
+**Trigger to revisit.** The first real operator-adversary incident, or a user/compliance request for
+per-access transparency into break-glass reads.
+
+### FW-M3-10 — No first-class "notification delivery loop is stuck" health signal
+
+**Registered:** 2026-08-03, by Phase 8 §1.4's monitoring.md pass.
+
+**What it is.** `GET /v1/admin/health` has no dedicated field reporting the notification delivery
+loop's own liveness — no "last successful delivery" timestamp, no pending-backlog age, nothing
+analogous to `boxes.oldest_active_heartbeat_age_sec` for boxes. Verified against the tree:
+`services/brain/internal/adminapi/health_handler.go`'s `healthResponse` and `health_store.go`'s
+`healthSnapshot` carry no notification-related field at all, and no admin route reads
+`byosmtp.notifications`.
+
+**Why it matters.** The loop (`internal/dispatch/notify.go`'s `NotificationRunner`) is deliberately
+push-driven, not poll-driven (§3.2 of the Phase 7 spec, rejecting module 2's poll-only
+`fireWebhooks` shape for exactly this reason) — so it does not depend on operator polling behavior
+the way the alert webhook does. But that only removes one failure mode. The loop process itself can
+still stop making progress (a panic loop that keeps recovering without ever delivering, the DB-outage
+gate never clearing, the ADR-0011 leadership gate never re-acquiring, or `notifications_enabled` left
+off after a maintenance window) with nothing on the health endpoint to say so — a user simply stops
+being notified, silently, exactly the failure mode `monitoring.md` §5 now documents as unmonitored.
+
+**Why it is not built here.** A first-class health field needs a design decision (which measure —
+oldest pending row's age? a persisted last-tick timestamp? — and against which of the two windows,
+`notification_digest_window_sec` or `notification_dedup_window_sec`) that Phase 8 (docs/polish) is not
+scoped to make. The interim workaround — querying `byosmtp.notifications` directly for a pending row
+older than its governing window, or watching the loop's own `notify: delivered N notification(s) this
+tick` log line go quiet — is documented in `monitoring.md` §5 as a stated gap, not a fix.
+
+**Trigger to revisit.** The first live incident where a stalled notification loop went unnoticed
+longer than it should have, or the next phase that adds a new autonomous loop and needs a general
+answer to "how does an operator know a housekeeping loop is still alive" rather than one more
+loop-specific workaround.
+
+### FW-M3-11 — `retry_count_4xx`'s deferred consumer: the per-job avoid-set / per-`(job,account)` attempt tracker
+
+**Registered:** 2026-08-04, by M3-P8-OD-8's ruling (the key's own disposition).
+
+**What it is.** A soft, approximate bound on how many times a transient 4xx transport failure is
+retried *on the same account* before the job is routed elsewhere — distinct from the global backoff
+ladder, which decides *when* to retry but never *where*. Phase 5 §6.2 (ruling 4) specified this as a
+SOFT same-account retry hint, explicitly NOT a hard per-account ceiling, and seeded
+`retry_count_4xx` (`{"v":3}`) for it back in module 2's `sender_0010`.
+
+**Why it matters.** Without it, `backoffSecondsForClass` requeues transient classes purely off the
+exponential `retry_backoff_schedule` ladder with no memory of which account already failed this job.
+A job whose failures are account-specific rather than recipient-specific therefore keeps landing on
+the same bad account until that account's own quarantine/pause machinery catches up independently —
+slower than routing away on the second attempt would be. The dial to express "try twice, then move
+on" has no mechanism behind it.
+
+**Why it is not built here.** It needs the per-job avoid-set or per-`(job,account)` attempt tracker
+Phase 5 §6.3 explicitly deferred — a real schema and dispatch-path design decision (where the
+per-attempt account history lives, how it interacts with `attempt_token`, and whether the avoid-set
+is advisory or binding when it would leave zero eligible accounts, which collides with the
+wait-vs-fail ordering invariant in CLAUDE.md §0b). Phase 8 is docs/polish and its brief forbids
+building a missing capability: "if polish reveals a missing capability, it goes to future-work.md —
+do not build it."
+
+**State of the dial.** `retry_count_4xx`'s config row is **DELETED** at `byosmtp_0049` (M3-P8-OD-8).
+It was never read by module 3 at any point — not loaded into `dispatch.Config`, not validated on
+write — so it was dead inheritance from module 2, and its `RESERVED` marker's `Phase 8` expiry had
+come due. **The capability is still wanted; only the inert row is gone.** Whichever phase builds the
+avoid-set re-seeds the key at that point, under ADR-0016's own discipline (seed at real consumption,
+never before, so it is never a Rule-1 violation in the gap).
+
+**Trigger to revisit.** The first phase that touches per-attempt routing history for any reason
+(e.g. a real avoid-set for the From-gate or credential-verification paths), or a live incident where
+a job visibly ping-ponged on one failing account while healthy accounts sat idle.
+
+### FW-M3-12 — `score_alert_threshold`'s missing consumer: the score-warning digest event
+
+**Registered:** 2026-08-04, by M3-P8-OD-8's ruling. **This item is load-bearing:**
+`Docs/config-consumers.txt` names it as `score_alert_threshold`'s `RESERVED` expiry, and
+`config_consumption.sh` fails if this heading disappears — so do not delete it without disposing of
+the key in the same change.
+
+**What it is.** A notification event raised when an account's `account_status_score` falls below
+`score_alert_threshold` (`{"v":30}`, seeded `byosmtp_0046`) — an ALERT-only signal, never an
+independent quarantine trigger. Phase 7 §3.1 already specifies its shape, and §8 documents the dial.
+It is the surviving half of M3-P5-OD-1's split: the score stopped being a quarantine trigger and was
+supposed to become a *warning* instead.
+
+**Why it matters.** As things stand a user gets told when an account is already quarantined, but
+never that one is *degrading* — the whole point of keeping a score once it no longer quarantines. The
+only notification enqueued anywhere in the codebase is `account_quarantined` (one call site,
+`internal/dispatch/account_effect.go`), so the score is currently informational-only with no path to
+the user at all.
+
+**Why it is not built here.** Phase 8 is docs/polish and forbidden from building a missing
+capability. It is genuinely small — a threshold comparison at the existing scoring site plus an
+`EnqueueNotification` call with a new notification kind — but a new user-facing notification kind
+needs its severity tier chosen (which decides whether it bypasses
+`notification_digest_window_sec`), its `dedup_key` shape decided (per-account, presumably, so a
+flapping score does not re-notify each tick), and a behavioral test with a control that fails when
+the threshold is not honored.
+
+**The Rule 11 finding that surfaced it, recorded because the class matters more than the instance.**
+Phase 7's own spec text and `Docs/history/phase-7-visibility-notifications-contract.md` (lines 928,
+1526–1529) both assert Phase 7 **is** this key's consumer — *"this phase is that consumer (§3.1's
+score warning, §8's dial)"* — stated as fact, not as a plan. It was never built. The claim survived
+Phase 7's own closeout and was caught only when Phase 8's `current-phase.txt` bump made the key's
+`RESERVED` expiry fire and the disposition had to be verified against the tree rather than read off
+the docs. A spec asserting its own completion is not evidence of it.
+
+**Trigger to revisit.** The next phase that adds any notification kind (the marginal cost is then
+near zero — the severity/dedup decisions get made once for both), or the first user complaint about
+an account that silently degraded to unusable without warning.

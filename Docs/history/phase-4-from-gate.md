@@ -1205,14 +1205,18 @@ Of the tests added by the ruling: T2b and T3c sit with T2 (same package, same zo
 copy assertion over the response builder and belongs beside it, not in the harness — it needs no DNS
 and no DB. T8c belongs with T8/T8b in the admin API tests.
 
-**As actually implemented (Chunks 2-3):** T9, T13, and T13c ended up in `internal/dispatch`'s own Go
+**As actually implemented (Chunks 2-3):** T9 and T13 ended up in `internal/dispatch`'s own Go
 test package (`from_gate_eligibility_test.go`, alongside `eligibility_test.go`'s existing suite)
 rather than the shell-driven real-infra harness — the dispatch package already has a real
 Postgres-backed `TryDispatch`/`recordingPusher` round trip in-package (the same harness Phase 3's own
-eligibility tests use), and none of these three properties need a live box or Mailpit to observe: the
+eligibility tests use), and neither of these two properties need a live box or Mailpit to observe: the
 job's state transition (`queued`→`sending`) IS the "actually sends" assertion the original §7.2
-language called for, proven against real dispatch code, not a stand-in. **T13b** landed in
-`platformapi` instead (`TestFromGate_T13b_AcknowledgmentPersistsAndIsReadable`, Chunk 2) reading the
+language called for, proven against real dispatch code, not a stand-in. **T13c** landed in
+`platformapi` instead (`TestFromGate_T13c_ReacknowledgmentRequiredOnlyWhenVerdictChanges`,
+`from_gate_test.go:499`) — re-acknowledgment-on-verdict-change is a store-layer property (does the
+stored acknowledgment survive a fresh Test-button re-run), not a dispatch-eligibility one, so it sits
+with the other store-layer From-gate tests rather than in `internal/dispatch`. **T13b** likewise
+landed in `platformapi` (`TestFromGate_T13b_AcknowledgmentPersistsAndIsReadable`, Chunk 2) reading the
 persisted acknowledgment columns directly after a fresh `newTestEnv` clone (a brand-new Server +
 Postgres connection, itself standing in for "not the same in-memory state") rather than literally
 killing and restarting a live Brain process — sufficient because neither `platformapi` nor

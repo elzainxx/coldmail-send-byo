@@ -35,7 +35,7 @@ type Dispatcher struct {
 	px  Pusher
 
 	// rrMu/rrCursor is the in-memory per-user round_robin account cursor (§3.1, P4-6; re-keyed from
-	// per-pool to per-user in G3 — Docs/phase-2-strip-shared-pool.md §3.4): soft state, re-derived
+	// per-pool to per-user in G3 — Docs/history/phase-2-strip-shared-pool.md §3.4): soft state, re-derived
 	// (reset to empty) on Brain restart — an accepted ≤one-rotation transient skew (§5.3), never
 	// load-bearing for correctness (SKIP LOCKED + accounts_daily_sent_check are).
 	rrMu     sync.Mutex
@@ -303,7 +303,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 	plaintext, err := d.dec.Decrypt(acctUUID, acct.keyID, acct.ciphertext, acct.nonce)
 	if err != nil {
 		// Cannot decrypt (rotation/tamper): requeue, do not push. Never log the ciphertext.
-		log.Printf("dispatch: decrypt failed for account %s (job %s): %v — requeued", acct.id, job.id, err)
+		log.Printf("dispatch: decrypt failed for account %s (job %s): %v — requeued level=error", acct.id, job.id, err)
 		d.requeueNoAccount(ctx, job.id)
 		return false, nil
 	}
@@ -330,7 +330,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 	// credential is never pushed for a poisoned job.
 	if bad := validateNoInjection(fromName, acct.fromAddress, job.recipient, job.subject, replyTo); bad != "" {
 		zero(plaintext)
-		log.Printf("dispatch: job %s has CR/LF in %q — requeued, not sent (header-injection guard)", job.id, bad)
+		log.Printf("dispatch: job %s has CR/LF in %q — requeued, not sent (header-injection guard) level=warn", job.id, bad)
 		d.requeue(ctx, job.id, "header_injection:"+bad)
 		return false, nil
 	}
@@ -382,7 +382,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 		zero(plaintext)
 		d.requeuePushFailed(ctx, job.id)
 		if err != nil {
-			log.Printf("dispatch: markSending failed for job %s: %v — requeued", job.id, err)
+			log.Printf("dispatch: markSending failed for job %s: %v — requeued level=error", job.id, err)
 		}
 		return false, err
 	}
@@ -407,7 +407,7 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, boxID s
 	pj.SMTP.Secret = ""
 	if err != nil {
 		// Push failed (box vanished): requeue to a legal state; the box never got the credential.
-		log.Printf("dispatch: push_job failed for job %s to box %s: %v — requeued", job.id, boxID, err)
+		log.Printf("dispatch: push_job failed for job %s to box %s: %v — requeued level=warn", job.id, boxID, err)
 		d.requeuePushFailed(ctx, job.id)
 		return false, nil
 	}
@@ -519,7 +519,7 @@ func (d *Dispatcher) requeue(ctx context.Context, jobID, reason string) {
 		return err
 	})
 	if err != nil {
-		log.Printf("dispatch: requeue(%s) job %s failed: %v", reason, jobID, err)
+		log.Printf("dispatch: requeue(%s) job %s failed: %v level=error", reason, jobID, err)
 	}
 }
 
@@ -528,13 +528,13 @@ func (d *Dispatcher) readLease(ctx context.Context, jobID string) (time.Time, bo
 	defer cancel()
 	var t *time.Time
 	if err := d.db.QueryRow(ctx, `SELECT lease_expires_at FROM byosmtp.jobs WHERE id=$1`, jobID).Scan(&t); err != nil {
-		log.Printf("dispatch: readLease(%s) query failed: %v — pushing without an echoed lease deadline", jobID, err)
+		log.Printf("dispatch: readLease(%s) query failed: %v — pushing without an echoed lease deadline level=error", jobID, err)
 		return time.Time{}, false
 	}
 	if t == nil {
 		// A job just marked 'sending' must carry a non-null lease (jobs_lease_valid_check); a NULL
 		// read here means the state machine's own invariant was violated somewhere upstream.
-		log.Printf("dispatch: readLease(%s) returned a NULL lease on a job just marked sending — state-machine invariant violated", jobID)
+		log.Printf("dispatch: readLease(%s) returned a NULL lease on a job just marked sending — state-machine invariant violated level=error", jobID)
 		return time.Time{}, false
 	}
 	return *t, true

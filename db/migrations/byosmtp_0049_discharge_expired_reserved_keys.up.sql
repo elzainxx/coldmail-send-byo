@@ -1,0 +1,64 @@
+-- byosmtp_0049_discharge_expired_reserved_keys.up.sql — M3-P8-OD-8 RULED 2026-08-04.
+--
+-- WHAT THIS DISCHARGES. ADR-0014's RESERVED-marker expiry fired for real when Phase 8 bumped
+-- Docs/current-phase.txt from 'Phase 7' to 'Phase 8': three keys carried `RESERVED|Phase 8` in
+-- Docs/config-consumers.txt with no runtime consumer, so config_consumption.sh went red exactly as
+-- designed (the hatch cannot quietly become permanent). The gate's own remedy text — "Remove the key
+-- (row+manifest+refdoc+ledger together) or the code that was supposed to consume it by now" — is what
+-- this migration performs for two of the three. The third (score_alert_threshold) is NOT dropped; see
+-- the note at the bottom of this file.
+--
+-- WHY DROPPING THESE TWO IS PERMITTED. CLAUDE.md Rule 5 is additive-only and M3-P1-OD-3's fork-time
+-- exemption expired at Phase 1's close, so a config-row drop needs its own justification every time.
+-- ADR-0016 (quarantine_threshold, Phase 5) established the narrow two-condition test and this
+-- migration invokes exactly that test, not a general "nobody uses this" claim:
+--
+--   (1) the key never had a genuine module-3 consumer at ANY point in module 3's own build history
+--       (not merely "no consumer right now"), and
+--   (2) the replacement, if any, is a different key under a different name — never the same key
+--       reinterpreted.
+--
+-- retry_count_4xx (inherited from module 2, sender_0010:32, {"v":3}) — condition (1) holds:
+--   `grep -rn 'retry_count_4xx\|RetryCount4xx' services/` returns ZERO hits. It is not read, not
+--   validated, and not even loaded into dispatch.Config — it has been an inert seed row through
+--   every module-3 phase. Phase 5 §6.2 documented it as a SOFT same-account retry hint, but V1 has
+--   no per-job avoid-set or per-(job,account) attempt tracker to hook it into, and
+--   backoffSecondsForClass requeues purely off the exponential retry_backoff_schedule ladder with
+--   zero reference to this key. Condition (2) is vacuous: there is no replacement. Wiring it means
+--   designing the avoid-set mechanism Phase 5 explicitly deferred, which is new feature work Phase
+--   8's brief forbids ("if polish reveals a missing capability, it goes to future-work.md — do not
+--   build it"), so it is registered as FW-M3-11 instead.
+--
+-- variation_zero_width_rate_pct (sender_0021, {"v":5}) — condition (1) holds: it is loaded into
+--   dispatch.Config (config.go) and range-validated on write, but variationSnapshot never copies it
+--   onto the push_job wire block, so it has never reached the box and never altered a byte of a
+--   delivered message. P9.5-OD-3 RULED it a deliberate duplicate of the already-wired
+--   variation_zero_width_rate (a fraction 0-1, which IS stamped as boxproto.Variation.ZeroWidthRate)
+--   and ruled it stay unconsumed precisely so two dials never drive the same box behavior. Condition
+--   (2) holds in the strongest form: the replacement predates the duplicate and keeps its own name,
+--   so nothing is being reinterpreted. Its sibling duplicate, variation_css_micro_params.delta_px, is
+--   a SUB-FIELD of a key whose other sub-field (skip_below_px) IS consumed — the row stays, and it
+--   carries no expiring ledger marker of its own, so it is out of scope here.
+--
+-- This does NOT reopen Rule 5. Both keys are dead inheritance, not live contracts: no client codes
+-- against byosmtp.config, nothing references a config row by FK, and a config row is data in an
+-- inherited table rather than a contract object (0042's own §11 reconciliation). A future phase
+-- citing "nobody uses this anymore" for a key that DID have a real module-3 consumer at some point
+-- is NOT covered by this reasoning and needs its own ruling, exactly as ADR-0016 states.
+--
+-- The down file re-INSERTs both rows VERBATIM from their original seed sites (Rule 1: default_value
+-- is never mutated, so a rollback restores byte-for-byte what existed before, not an approximation).
+DELETE FROM byosmtp.config WHERE key IN ('retry_count_4xx', 'variation_zero_width_rate_pct');
+
+-- score_alert_threshold (byosmtp_0046, {"v":30}) is DELIBERATELY NOT DROPPED HERE. Its disposition
+-- is M3-P8-OD-8 option (c): the key stays, and the missing consumer — the score-warning digest event
+-- Phase 7 §3.1 already specified but never built (Phase 7's own spec text claimed this consumer
+-- existed; re-verification found it did not, a Rule 11 finding in its own right) — is registered as
+-- FW-M3-12. Deleting the row would abandon a feature a documented design still wants, which is a
+-- product decision, and it also fails ADR-0016's condition (1) differently: the key was seeded FOR a
+-- named consumer that is still wanted, so it is not dead inheritance. Its ledger marker's expiry is
+-- retargeted to that future-work item instead of a phase label, via config_consumption.sh's FW-
+-- expiry form (added in this same change) — the marker keeps teeth by pointing at a tracked,
+-- named item rather than a phase that has already arrived.
+
+INSERT INTO byosmtp.schema_migrations (version) VALUES ('0049');

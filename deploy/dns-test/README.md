@@ -3,7 +3,7 @@
 **DEV/TEST-ONLY. NOT real prod DNS data.** Mirrors the disclaimer convention in
 `deploy/pg-init/00-platform-fixtures.sql`: everything under this directory is a fixture this
 repo owns outright, built solely so the SPF/DMARC/DKIM alignment gate's behavioral tests
-(`Docs/phase-4-from-gate.md` §7) can exercise a **real** DNS resolver, real protocol, real
+(`Docs/history/phase-4-from-gate.md` §7) can exercise a **real** DNS resolver, real protocol, real
 `net.Resolver` code path — the production evaluator, unmodified — against controllable failure
 modes (SERVFAIL, a genuine timeout, NXDOMAIN) that a public registrar cannot be made to produce
 on demand, and against edge cases (multiple records, malformed SPF, >10-lookup chains, macros)

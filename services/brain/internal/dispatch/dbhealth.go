@@ -97,7 +97,7 @@ func (h *DBHealth) Ready(ctx context.Context) (bool, time.Duration) {
 	wait := backoffFor(h.failures)
 	down := time.Since(h.haltedSince).Truncate(time.Second)
 	h.mu.Unlock()
-	log.Printf("db outage: still unreachable after %s (%d consecutive probes): %v — loops remain PAUSED, no state invented; re-probing in %s",
+	log.Printf("db outage: still unreachable after %s (%d consecutive probes): %v — loops remain PAUSED, no state invented; re-probing in %s level=error",
 		down, h.failures, err, wait)
 	return false, wait
 }
@@ -125,7 +125,7 @@ func (h *DBHealth) Note(err error) (outage bool) {
 	h.mu.Unlock()
 	if first {
 		// Internal detail goes to the log only (two-vocabulary, Rule 5) — never to a client.
-		log.Printf("db outage DETECTED: %v — HALTING dispatch/reclaim/retention loops cleanly. No job will be marked sent/failed/bounced/queued while the DB is unreachable (§2.2); in-flight jobs stay exactly as stored. Re-probing in %s", err, wait)
+		log.Printf("db outage DETECTED: %v — HALTING dispatch/reclaim/retention loops cleanly. No job will be marked sent/failed/bounced/queued while the DB is unreachable (§2.2); in-flight jobs stay exactly as stored. Re-probing in %s level=error", err, wait)
 	}
 	return true
 }

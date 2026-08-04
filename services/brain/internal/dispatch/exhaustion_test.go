@@ -162,7 +162,7 @@ func TestExhaustion_SelfRecoveringWaits(t *testing.T) {
 	}
 }
 
-// TestExhaustion_EmptyChainWaits is DELETED in G1 (Docs/phase-2-strip-shared-pool.md §4.1's
+// TestExhaustion_EmptyChainWaits is DELETED in G1 (Docs/history/phase-2-strip-shared-pool.md §4.1's
 // DELETE bucket: "the subject matter is gone" — a Phase 1 §2.1 inventory gap, same class as the
 // credential_test.go helper §4.4 flags). Its claim was "an account can EXIST yet be structurally
 // unreachable because a config key (default_shared_pool_id) is unset" — exactly the pool-era

@@ -153,11 +153,13 @@ func TestVariation_RateParametersReachPushJob(t *testing.T) {
 
 // TestVariation_S11RatesReachPushJob — Phase 9.5 S11 (§2.4): the two genuinely-new sub-values
 // (variation_comment_intensity_rates' per-bucket table, variation_css_micro_params.skip_below_px)
-// are read live and stamped onto push_job.variation. The other two sub-values in the S11 keys
-// (variation_zero_width_rate_pct, variation_css_micro_params.delta_px) are documented duplicates
-// of Phase 8's already-wired variation_zero_width_rate/variation_css_magnitude_px (P9.5-OD-3,
-// RULED) and are deliberately NOT re-tested here — TestVariation_RateParametersReachPushJob above
-// already covers those two dials.
+// are read live and stamped onto push_job.variation. The other two sub-values in the S11 keys were
+// documented duplicates of Phase 8's already-wired variation_zero_width_rate/
+// variation_css_magnitude_px (P9.5-OD-3, RULED) and are deliberately NOT re-tested here —
+// TestVariation_RateParametersReachPushJob above already covers those two dials. Of the two,
+// variation_zero_width_rate_pct's ROW IS NOW GONE (byosmtp_0049, M3-P8-OD-8: a duplicate that never
+// reached the box had no honest future expiry for its RESERVED marker); variation_css_micro_params.
+// delta_px remains, being a sub-field of a key whose skip_below_px sub-field this test does cover.
 func TestVariation_S11RatesReachPushJob(t *testing.T) {
 	e := newDispatchEnv(t, "variations11")
 	ctx := context.Background()

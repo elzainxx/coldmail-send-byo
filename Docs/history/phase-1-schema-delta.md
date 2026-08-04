@@ -217,7 +217,7 @@ absence.
 | `POST /v1/admin/pools` + `PUT /v1/admin/config/default_shared_pool_id` fixture | `tests/harness/phase3_send.sh:65-75` | live send path has no account without it |
 | same fixture | `tests/harness/load_e11.sh:39-41,85`; `tests/harness/phase8_variation.sh:4` (reuses phase3's fixtures); `tests/harness/run.sh:125,257`; `tests/manual/launch-campaign.sh:48,50` | as above |
 | 5 hardcoded pool routes asserted to serve `401` | `tests/harness/checks/contract_drift.sh:53-56` | gate fails once the routes are unmounted |
-| `"22 routes gated"` count | `contract_drift.sh:69` | message + intent drift |
+| `"21 routes gated"` count (current tree — grows as routes are added; was `"22 routes gated"` at `:69` when this row was written) | `contract_drift.sh:71` | message + intent drift (print-only, not an assertion) |
 | doc-lockstep grep for `/v1/admin/pools` in `api-contract.md` | `contract_drift.sh:100` | gate fails once the doc row is removed |
 
 **Docs dependents:** `api-contract.md:135` (the `POST /v1/admin/pools` body) and `:163-167` (the five

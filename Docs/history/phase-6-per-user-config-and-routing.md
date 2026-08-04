@@ -153,16 +153,18 @@ From the verified consumer sweep of module 2's tree. **Hot path** means per-tick
 
 | Consumer | Dial(s) | Site (module 2 path) | Hot? |
 |---|---|---|---|
-| Lane ceiling — `lanes := ceiling - inFlight[u]` | `concurrency_per_user` | `dispatch/loop.go:93` | **yes**, per tick per user |
-| `pace.Admit(u, ceiling, lanes)` | `concurrency_per_user` | `dispatch/loop.go:122` | **yes**, per tick per user |
-| `pace.Stamp(u, ceiling, min, max)` | `concurrency_per_user`, `send_delay_min_sec`, `send_delay_max_sec` | `dispatch/loop.go:182` | **yes**, per actual push |
+| Lane ceiling — `lanes := ceiling - inFlight[u]` | `concurrency_per_user` | `dispatch/loop.go:93` at spec time, now `:137` (line numbers shift with later phases' edits) | **yes**, per tick per user |
+| `pace.Admit(u, ceiling, lanes)` | `concurrency_per_user` | `dispatch/loop.go:122` at spec time, now `:166` | **yes**, per tick per user |
+| `pace.Stamp(u, ceiling, min, max)` | `concurrency_per_user`, `send_delay_min_sec`, `send_delay_max_sec` | `dispatch/loop.go:182` at spec time, now `:230` | **yes**, per actual push |
 | Campaign-size cap A | `max_campaign_size` | Phase 5 §5.2 | no — per campaign create |
 | Queue cap B | `max_queued_jobs` | Phase 5 §5.2 | no — per campaign create |
 | Expiry freeze | `campaign_expiry_sec` | Phase 5 §5.3 | no — **frozen at insert** |
 | Admin read-back (`GET`) | all six | §4.2 | no |
 
 **Three hot-path sites for one dial, and they must agree.** `concurrency_per_user` is read at
-`loop.go:93`, `:122`, and `:182` within a single tick. §3 is about what happens if they don't.
+`loop.go:137`, `:166`, and `:230` (current tree — Phase 8 landing check, 2026-08-03; the `:93`/`:122`/`:182`
+citations above are this table's original spec-time line numbers, left as-written for provenance)
+within a single tick. §3 is about what happens if they don't.
 
 **Two of these consumers already exist as inline `COALESCE`s, and removing them is a Phase 6
 deliverable — not a cleanup.** Phase 5 §10.2 is explicit about the handoff: it declined to build a
@@ -806,6 +808,31 @@ Merge recommendation from the review: **APPROVE**. Exit criterion 9's dispatch-h
 fully discharged — the spec-level review (§9.1) and this implementation-level review (§9.2) are the
 two, and neither substitutes for the other, per the same "review vs. test" distinction §9.1 already
 drew.
+
+**Addendum, 2026-08-03 (Phase 8 landing check, re-opened per CLAUDE.md Rule 11):** the "exactly two
+call sites" claim above is now stale on its face — Phase 7 added a third, `platformapi/quote_feasibility.go:96`
+(`computeQuoteFeasibility`, commit `148f63f`), never checked against this section's own trigger
+question. Re-opened and re-verified against the landed code, not just noted:
+
+- `computeQuoteFeasibility` calls `userconfig.Resolve(ctx, s.db, userID, ...)` once, against the bare
+  pool (no transaction), inside a single HTTP request handler (`quote`/feasibility check) — a one-shot,
+  read-only computation whose result is returned to the caller and discarded. It writes nothing, is
+  never re-entered, and is not on the dispatch tick's path.
+- `grep -rn "d\.pace\|d\.rrCursor" internal/platformapi/` returns zero hits: this call site never
+  touches the pacer's in-memory register (§3) or the routing cursor (§5.4) — the two pieces of shared
+  state this section's hazard question is actually about.
+- This is exactly what `userconfig`'s own package doc (`internal/userconfig/*.go:1-16`) prescribes:
+  "Call it ONCE per unit of work (one Tick, one Handle, one request)... resolving per-site instead is
+  what corrupts the pacer's in-memory register." `computeQuoteFeasibility`'s unit of work is "one
+  request" — it resolves once and never re-reads, so it is compliant with the contract by construction,
+  not merely absent of a bug.
+
+**Verdict, re-closed: CLOSED.** The call-site count is now three, corrected here; the hazard this
+section exists to rule out (a concurrent override producing two disagreeing effective values used by
+the SAME tick's Admit/Stamp pair) does not apply to a call site that is off the dispatch tick entirely.
+No code change required. This addendum is the fix for landing-check gap #10 (Phase 8, C1) — the prior
+"Exactly two" sentence is left as-written above for provenance; this addendum, not that sentence, is
+now authoritative on the call-site count.
 
 ---
 

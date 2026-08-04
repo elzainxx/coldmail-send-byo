@@ -224,7 +224,7 @@ func (s *Server) createAccountRow(gateCtx context.Context, userID, host string, 
 // and §2.5 forbids treating a verification problem as a create failure.
 func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
 	if s.verifier == nil {
-		log.Printf("platformapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified'", accountID)
+		log.Printf("platformapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified' level=warn", accountID)
 		return
 	}
 	opTimeout, ok, err := s.readConfigInt(ctx, "smtp_operation_timeout_sec")
@@ -232,7 +232,7 @@ func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
 		opTimeout = 0 // Verify/runSmtpSession fall back to their own bootstrap defaults on 0
 	}
 	if _, err := s.verifier.Verify(ctx, accountID, userID, opTimeout); err != nil {
-		log.Printf("platformapi: verify-on-add for account %s failed to complete: %v", accountID, err)
+		log.Printf("platformapi: verify-on-add for account %s failed to complete: %v level=error", accountID, err)
 	}
 }
 

@@ -1292,9 +1292,12 @@ The most valuable stage.
      parameter is load-bearing. Verifying a *rate* needs enough draws to distinguish it from its
      neighbours — 2 recipients cannot tell 0.05 from 0.15, which is why this uses a
      deliberately word-heavy body rather than the HTML fixture.
-   - **Trap:** `variation_zero_width_rate` (0–1) and `variation_zero_width_rate_pct` (percent) are
-     documented duplicates of one parameter under different units (P9.5-OD-3, RULED). Only
-     `..._rate` is wired to the box; setting `..._pct` alone changes nothing.
+   - **Trap (now closed):** `variation_zero_width_rate` (0–1) and `variation_zero_width_rate_pct`
+     (percent) were documented duplicates of one parameter under different units (P9.5-OD-3, RULED).
+     Only `..._rate` was ever wired to the box, so setting `..._pct` alone changed nothing — which is
+     why `..._pct`'s row is **DELETED** at `byosmtp_0049` (M3-P8-OD-8). `PUT`ting it now returns
+     `404`, not a silent no-op, so the trap is structural rather than a note you have to remember.
+     `..._rate` is unchanged and remains the only dial.
 5. Confirm Thread-Index emits nothing
    - **Observed: PASS.** `variation_thread_index=true`, then inspected the delivered headers: no
      `Thread-Index`, `Thread-Topic`, `References`, or `In-Reply-To` on either message. The header

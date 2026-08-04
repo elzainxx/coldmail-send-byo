@@ -1,7 +1,7 @@
 package adminapi
 
 // config_test.go — TestT10_ConfigValueTypeValidation and assertNoRawDBLeak, relocated from
-// pools_config_test.go at G2 (Docs/phase-2-strip-shared-pool.md §4.1: TestT10's subject is config
+// pools_config_test.go at G2 (Docs/history/phase-2-strip-shared-pool.md §4.1: TestT10's subject is config
 // value_type validation, which survives whole — R-fixture only, it never touched a pool). The other
 // four tests in that file (TestT4_PoolOwnerRules, TestT5_DeletePoolWithAccounts,
 // TestT6_FallbackCycleRejected, TestT13_SharedPoolRequiresSystemUser) DIED at G2 — their subject,

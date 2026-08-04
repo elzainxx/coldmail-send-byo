@@ -1,9 +1,9 @@
 # Sender Module
 
-A backend-only email-sending service. A platform hands it a mail list and a template; it handles
-everything else — routing across a pool of SMTP accounts, pacing, retries, error classification,
-and pulling unhealthy accounts out of rotation. There is no UI and no user-facing surface: the
-platform calls its API, and operators run it.
+An email-sending service where users bring their own SMTP accounts. A platform hands it a mail
+list and a template; a user adds their own SMTP credential through a self-serve account surface,
+and the module handles the rest — routing across that user's own accounts, pacing, retries, error
+classification, and pulling unhealthy accounts out of rotation.
 
 **Status: complete and sealed.** Eleven build phases are implemented, tested against real
 infrastructure, and closed. Verdict is GO for a pilot. Nothing is marked open. Before a first live
@@ -36,8 +36,8 @@ That gives you a working stack sending into [Mailpit](http://localhost:8025) —
 so nothing leaves your machine. `bash scripts/dev.sh help` lists the rest (`logs`, `ps`, `reset`,
 `down`). `make` delegates to the same script where it is available.
 
-Nothing actually sends until `default_shared_pool_id` is set — that is expected, not a bug. See
-[`Docs/operator-runbook.md`](./Docs/operator-runbook.md).
+A fresh install with zero users and zero accounts is a correct steady state, not a bug — it is
+waiting for a user to add their own account. See [`Docs/operator-runbook.md`](./Docs/operator-runbook.md).
 
 ## Where to go next
 

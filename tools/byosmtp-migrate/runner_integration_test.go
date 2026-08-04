@@ -96,7 +96,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// The full feature chain: bootstrap 0000, the locked Phase-1 data model sender_0001..0012,
 	// then Phase 2's additive migrations sender_0013 (per-pool account uniqueness index) and
 	// sender_0014 (the byosmtp.account_events audit sink), through module 2's close at 0024, then
-	// module 3's own additions from 0025 (Docs/phase-1-schema-delta.md §6): 0025 new enum types +
+	// module 3's own additions from 0025 (Docs/history/phase-1-schema-delta.md §6): 0025 new enum types +
 	// event_actor ADD VALUE 'user', 0026 accounts' Phase-1 columns, 0027 accounts become
 	// user_id-owned (drops pool_id), 0028 drops byosmtp.pools/pool_kind/default_shared_pool_id,
 	// then G3's own additions 0029-0034: 0029 user_settings, 0030 user_config_overrides, 0031
@@ -121,7 +121,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -146,7 +146,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	// Prove the Phase-1 feature objects exist and are owned by byosmtp_owner (so FORCE RLS on
 	// byosmtp.accounts genuinely enforces — ADR-0004). "pools" removed at G2 — 0028 drops the
 	// table, so by the time Up() reaches head it no longer exists to own-check. G3 adds the five
-	// module-3 tables (Docs/phase-2-strip-shared-pool.md §5.1's ADR-0008 grants table).
+	// module-3 tables (Docs/history/phase-2-strip-shared-pool.md §5.1's ADR-0008 grants table).
 	for _, tbl := range []string{"accounts", "boxes", "jobs", "job_events", "send_logs", "config", "account_events",
 		"campaigns", "notifications", "user_config_overrides", "user_settings", "user_suspensions"} {
 		assertTableOwner(t, admin, "byosmtp", tbl, "byosmtp_owner")
@@ -179,9 +179,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// destination_throttle_user_threshold, quote_capacity_projection_enabled,
 	// quote_long_duration_warn_sec, score_alert_threshold — the last REPLACING quarantine_threshold
 	// under a new name per M3-P5-OD-1's split, already counted as a deletion at 0042 above, so this
-	// is a net +10 not +9) = 87.
-	if n := configKeyCount(t, admin); n != 87 {
-		t.Fatalf("after Up: byosmtp.config has %d keys, want 87 (77 pre-Phase-7 + 10 Phase 7 seeds, §8)", n)
+	// is a net +10 not +9) = 87. MINUS Phase 8's TWO (0049: retry_count_4xx and
+	// variation_zero_width_rate_pct, M3-P8-OD-8 — the first NET DECREASE in the chain that is not
+	// offset by a same-migration re-seed; both were RESERVED with a Phase 8 expiry that came due
+	// and neither ever had a genuine module-3 consumer, so ADR-0016's two-condition test permits
+	// the row drop) = 85. The absence assertions below are the anti-vacuity companions to this count:
+	// a count alone could be satisfied by dropping the WRONG two keys.
+	if n := configKeyCount(t, admin); n != 85 {
+		t.Fatalf("after Up: byosmtp.config has %d keys, want 85 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049, §8)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -215,16 +220,33 @@ func TestRunnerLifecycle(t *testing.T) {
 	if !columnExists(t, admin, "jobs", "attempt_token") {
 		t.Fatal("after Up: byosmtp.jobs.attempt_token missing (sender_0020 not applied)")
 	}
-	// Phase 9.5's eleven operability + completeness config seeds (sender_0021) — anti-vacuity.
+	// Phase 9.5's operability + completeness config seeds (sender_0021) — anti-vacuity. Ten of the
+	// original eleven; variation_zero_width_rate_pct is asserted ABSENT below instead, since 0049
+	// deletes it (M3-P8-OD-8).
 	for _, key := range []string{
 		"dispatch_enabled", "autoquarantine_mode", "autopause_enabled", "variation_enabled",
 		"alert_webhook_url", "health_metrics_window_sec", "brain_singleton_acquire_timeout_sec",
-		"unit_price_credits", "variation_comment_intensity_rates", "variation_zero_width_rate_pct",
+		"unit_price_credits", "variation_comment_intensity_rates",
 		"variation_css_micro_params",
 	} {
 		if !configKeyExists(t, admin, key) {
 			t.Fatalf("after Up: byosmtp.config missing %q (sender_0021 Phase 9.5 seed not applied)", key)
 		}
+	}
+	// 0049's two drops (M3-P8-OD-8): both keys were RESERVED with a Phase 8 expiry that came due and
+	// neither ever had a genuine module-3 consumer. Asserting ABSENCE after a full Up is the
+	// anti-vacuity check that 0049 actually ran — a DELETE leaves no schema object behind for a
+	// column/index/function check to see, so the missing row IS the only observable evidence.
+	for _, key := range []string{"retry_count_4xx", "variation_zero_width_rate_pct"} {
+		if configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: byosmtp.config still has %q (byosmtp_0049 did not delete it)", key)
+		}
+	}
+	// ...and the key 0049 deliberately KEPT, so "0049 ran" can never be satisfied by a migration that
+	// over-deletes. score_alert_threshold stays RESERVED against future-work item FW-M3-12 rather than
+	// being dropped, because its consumer (Phase 7 §3.1's score-warning digest) is still wanted.
+	if !configKeyExists(t, admin, "score_alert_threshold") {
+		t.Fatal("after Up: byosmtp.config is missing score_alert_threshold — byosmtp_0049 must drop exactly two keys and keep this one (M3-P8-OD-8)")
 	}
 	// sender_0022's shared error-transition predicate — the single definition both job_events
 	// triggers gate their error context on. Anti-vacuity that the migration ran: it is a
@@ -268,7 +290,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Up: a CONTENT update on byosmtp.job_events (actor -> 'admin') was PERMITTED — sender_0024's carve-out is too wide, or the append-only trigger is gone entirely; the audit log is mutable")
 	}
 
-	// --- Module 3's own migrations, 0025-0028 (Docs/phase-1-schema-delta.md §6) ---
+	// --- Module 3's own migrations, 0025-0028 (Docs/history/phase-1-schema-delta.md §6) ---
 	// 0025: six new enum types + event_actor ADD VALUE 'user'.
 	for _, typ := range []string{"quarantine_reason", "from_verification_state", "dmarc_policy",
 		"suspend_reason", "notification_severity", "notification_state"} {
@@ -312,7 +334,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Up: byosmtp.config still has default_shared_pool_id (0028 did not delete the row, M3-P2-OD-1)")
 	}
 
-	// --- G3's own migrations, 0029-0034 (Docs/phase-2-strip-shared-pool.md §8.1 criterion 12) ---
+	// --- G3's own migrations, 0029-0034 (Docs/history/phase-2-strip-shared-pool.md §8.1 criterion 12) ---
 	for _, tbl := range []string{"user_settings", "user_config_overrides", "user_suspensions", "campaigns", "notifications"} {
 		if !tableExists(t, admin, tbl) {
 			t.Fatalf("after Up: byosmtp.%s missing (G3 not applied)", tbl)
@@ -343,7 +365,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		}
 	}
 
-	// --- Phase 3's own migrations, 0035-0036 (Docs/phase-3-user-owned-accounts.md §2.4/§7) ---
+	// --- Phase 3's own migrations, 0035-0036 (Docs/history/phase-3-user-owned-accounts.md §2.4/§7) ---
 	if !enumTypeExists(t, admin, "credential_verification_state") {
 		t.Fatal("after Up: byosmtp.credential_verification_state enum type missing (0035 not applied)")
 	}
@@ -563,6 +585,23 @@ func TestRunnerLifecycle(t *testing.T) {
 		// something that cannot happen.
 		if v == "0047" && !enumValueExists(t, admin, "notification_state", "suppressed") {
 			t.Fatal("after Down 0047: byosmtp.notification_state is missing value 'suppressed' — impossible (Postgres has no DROP VALUE) unless the type itself was dropped/recreated, which 0047's down must not do")
+		}
+		// 0049's down re-INSERTs both dropped keys VERBATIM from their original seed sites (Rule 1:
+		// default_value is never mutated) — a genuine reversal, the same shape as 0042's
+		// quarantine_threshold restore. Asserting the exact default_value, not merely the key's
+		// presence, is what catches a down file that "restores" an approximation: a one-way DELETE or
+		// a re-seed at a guessed default would both leave a later re-Up() operating on a chain state
+		// the forward path never produced.
+		if v == "0049" {
+			if val, def := configValueAndDefault(t, admin, "retry_count_4xx"); val != `{"v": 3}` || def != `{"v": 3}` {
+				t.Fatalf("after Down 0049: retry_count_4xx value=%s default_value=%s, want both {\"v\": 3} (down did not restore the original sender_0010 row verbatim)", val, def)
+			}
+			// NOTE the space: the column is JSONB, so ::text renders canonically as {"v": 5} even
+			// though sender_0021's literal was {"v":5} with none. Same reason 0048's assertion above
+			// reads {"v": 1} against a {"v":1} literal.
+			if val, def := configValueAndDefault(t, admin, "variation_zero_width_rate_pct"); val != `{"v": 5}` || def != `{"v": 5}` {
+				t.Fatalf("after Down 0049: variation_zero_width_rate_pct value=%s default_value=%s, want both {\"v\": 5} (down did not restore the original sender_0021 row verbatim)", val, def)
+			}
 		}
 		// 0048's down restores the ORIGINAL sender_0021 row verbatim ({"v":1}) — a genuine reversal,
 		// unlike 0047's one-way-door enum value, since this migration only touches a table row.
@@ -860,7 +899,7 @@ func tableExists(t *testing.T, c *pgx.Conn, name string) bool {
 }
 
 // enumTypeExists reports whether an enum (or any) type of the given name exists in the byosmtp
-// schema (module 3's 0025/0028 anti-vacuity — Docs/phase-1-schema-delta.md §6).
+// schema (module 3's 0025/0028 anti-vacuity — Docs/history/phase-1-schema-delta.md §6).
 // hasTablePrivilege reports whether role holds the given privilege on qualifiedTable (e.g.
 // "public.job_items") — the anti-vacuity check for 0037's narrow INSERT-only grant (M3-P3-OD-17).
 func hasTablePrivilege(t *testing.T, c *pgx.Conn, role, qualifiedTable, privilege string) bool {
@@ -900,7 +939,7 @@ func enumValueExists(t *testing.T, c *pgx.Conn, enumType, value string) bool {
 }
 
 // accountEventsActionAllowed reports whether account_events_action_check's definition permits the
-// given action literal — 0034's anti-vacuity (Docs/phase-2-strip-shared-pool.md §8.1 criterion 12):
+// given action literal — 0034's anti-vacuity (Docs/history/phase-2-strip-shared-pool.md §8.1 criterion 12):
 // proving the CHECK's DDL was actually widened, not merely that the constraint still exists under
 // the same name (a DROP+ADD with the OLD list would leave the name and object count unchanged).
 func accountEventsActionAllowed(t *testing.T, c *pgx.Conn, action string) bool {

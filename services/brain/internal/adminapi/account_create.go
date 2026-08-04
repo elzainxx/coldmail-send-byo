@@ -216,7 +216,7 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 // FAILURE — that is a normal VerifyResult) is logged, never surfaced to the caller.
 func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
 	if s.verifier == nil {
-		log.Printf("adminapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified'", accountID)
+		log.Printf("adminapi: account %s created with verification UNAVAILABLE (no verifier configured) — state remains 'unverified' level=warn", accountID)
 		return
 	}
 	opTimeout := 0
@@ -226,7 +226,7 @@ func (s *Server) runVerifyOnAdd(ctx context.Context, accountID, userID string) {
 		}
 	}
 	if _, err := s.verifier.Verify(ctx, accountID, userID, opTimeout); err != nil {
-		log.Printf("adminapi: verify-on-add for account %s failed to complete: %v", accountID, err)
+		log.Printf("adminapi: verify-on-add for account %s failed to complete: %v level=error", accountID, err)
 	}
 }
 

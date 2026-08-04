@@ -214,6 +214,39 @@ func TestFromGate_M3P4OD14_IndeterminateCreateStillSucceeds(t *testing.T) {
 	}
 }
 
+// T12 (store-layer persistence half — Phase 8 landing-check gap #14): from_gate_mode="off" is not
+// merely a fromgate.Evaluate() unit-tested outcome (internal/fromgate's own T12 covers that); it
+// must also persist through the real create path exactly like any other definitive outcome — off's
+// fixed "aligned" writes from_checked_at and is included in the eligibility-affecting column set,
+// not silently skipped because no DNS lookup ran. fromgate.Verdict carries no CheckedAt field (a
+// pure, DB-free evaluator has no clock of its own — from_checked_at is the DATABASE's NOW(), set by
+// the caller's write path, per from_gate.go's fromGateColumnSet), so this property can only be
+// observed here, at the store layer.
+func TestFromGate_T12_OffModePersistsCheckedAtAndAlignedState(t *testing.T) {
+	e := newTestEnv(t, "fromgateoffmode")
+	e.setConfigStr(t, "from_gate_mode", "off")
+	userID := e.seedUser(t, "fgoffmode@example.com")
+
+	create := e.do(t, "POST", "/v1/byosmtp/accounts",
+		fromGateCreateReq(userID, "user@blackhole.test", nil)).
+		requireStatus(t, 201)
+	acctID := create.str("id")
+
+	var state string
+	var checkedAt *string
+	if err := e.admin.QueryRow(context.Background(),
+		`SELECT from_verification_state, to_char(from_checked_at, 'YYYY-MM-DD')
+		 FROM byosmtp.accounts WHERE id = $1`, acctID).Scan(&state, &checkedAt); err != nil {
+		t.Fatalf("read from-gate columns: %v", err)
+	}
+	if state != "aligned" {
+		t.Fatalf("off mode: from_verification_state=%q, want aligned (M3-P4-OD-12: off writes aligned, disclosed as skipped)", state)
+	}
+	if checkedAt == nil || *checkedAt == "" {
+		t.Fatal("off mode: from_checked_at is NULL — a definitive outcome (off's fixed aligned) must set it like any other, even though no DNS lookup ran")
+	}
+}
+
 // The gate applies to EVERY row in bulk-add (§2.4) — a mixed batch reports each row's own verdict,
 // and an unacknowledged-warn row is rejected individually without aborting the whole batch.
 func TestFromGate_BulkAdd_PerRowVerdictsIncludingUnacknowledgedRefusal(t *testing.T) {

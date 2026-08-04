@@ -64,7 +64,7 @@ func (d *Dispatcher) PurgeTick(ctx context.Context) (Config, int, error) {
 func (d *Dispatcher) sweepExpiredAccounts(ctx context.Context, cfg Config) (purged, batches int, err error) {
 	batch := cfg.AccountPurgeDeleteBatchSize
 	if batch <= 0 {
-		log.Printf("purge: account_purge_delete_batch_size is %d — skipping sweep (a zero batch must never become an unbounded DELETE)", batch)
+		log.Printf("purge: account_purge_delete_batch_size is %d — skipping sweep (a zero batch must never become an unbounded DELETE) level=warn", batch)
 		return 0, 0, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, purgeTickTimeout)
@@ -132,7 +132,7 @@ func (r *PurgeRunner) tick(ctx context.Context) (interval time.Duration) {
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("purge: sweep PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("purge: sweep PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	if ok, wait := r.d.health.Ready(ctx); !ok {
@@ -149,7 +149,7 @@ func (r *PurgeRunner) tick(ctx context.Context) (interval time.Duration) {
 		if r.d.health.Note(err) {
 			return r.d.health.RetryIn()
 		}
-		log.Printf("purge: sweep error: %v", err)
+		log.Printf("purge: sweep error: %v level=error", err)
 		return defaultTickIntervalOnLoadErr
 	}
 	r.d.health.Note(nil)

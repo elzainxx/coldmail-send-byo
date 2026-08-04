@@ -77,7 +77,7 @@ func (r *Runner) tick(ctx context.Context) (interval time.Duration) {
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("dispatch: tick PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("dispatch: tick PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	// Phase 7 §2.2 (P7-3): the outage gate. While the DB is unreachable this loop is PAUSED — it
@@ -161,7 +161,7 @@ func (r *ReclaimRunner) tick(ctx context.Context) (interval time.Duration) {
 	interval = defaultTickIntervalOnLoadErr
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("reclaim: tick PANIC recovered: %v — skipping this tick, will retry", rec)
+			log.Printf("reclaim: tick PANIC recovered: %v — skipping this tick, will retry level=error", rec)
 		}
 	}()
 	// Phase 7 §2.2 (P7-3): the SAME outage gate the dispatch loop uses (shared via the Dispatcher),

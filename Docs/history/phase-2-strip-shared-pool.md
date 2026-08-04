@@ -809,7 +809,9 @@ Rule 1 gains no new obligation.
 
 **G1 — dispatch-side pool logic deleted, schema untouched.**
 1. `grep -rniE 'resolvePoolChain|dedicatedPools|resolveSharedFallback|isEnabledSharedPool|dedupeCapped|maxFallbackHops|poolInfo|consumeFromPool|poolRoutingStrategy|poolHasEligible'` over `services/brain` returns **zero non-test hits**. The account write-path symbols (`deriveUserID`, `poolTenancy`, `duplicateInPool`, `poolDisabledWarning`, `systemUserProvisioned`) are deliberately **excluded** from this grep — they die at G2 (§2.1.1), and G2's criterion #6a covers them.
-2. The four whole files (§2.1) are deleted; `decodeInto` and `userExists` relocated verbatim if still needed.
+2. The four whole files (§2.1) are deleted; `userExists` relocated verbatim if still needed, `decodeInto`
+   relocated verbatim if still needed **or deleted outright if it has zero remaining callers** — commit
+   `238ec17` found zero and deleted it rather than relocating a dead helper.
 3. The 5 pool routes are unmounted; `contract_drift.sh` passes with its pool entries removed, its printed count corrected to **16** (§1.3), and `api-contract.md` updated in the **same commit**.
 4. Every DELETE-bucket test file/function (§4.1) is **removed from the tree** — not `t.Skip`ed. `grep -rn 't.Skip' ` over the changed files returns nothing new.
 5. Fixtures still create a vestigial pool row for `accounts_pool_fk`; **the full inherited suite is green**.

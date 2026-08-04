@@ -289,7 +289,7 @@ func postWebhookWithRetry(webhookURL string, c activeConditionJSON) {
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("alert webhook: marshal failed for condition %q: %v — dropped", c.Condition, err)
+		log.Printf("alert webhook: marshal failed for condition %q: %v — dropped level=error", c.Condition, err)
 		return
 	}
 	var lastErr error
@@ -314,7 +314,7 @@ func postWebhookWithRetry(webhookURL string, c activeConditionJSON) {
 			time.Sleep(time.Duration(attempt) * time.Second)
 		}
 	}
-	log.Printf("alert webhook: condition %q delivery failed after %d attempt(s): %v — dropped (never blocks dispatch)",
+	log.Printf("alert webhook: condition %q delivery failed after %d attempt(s): %v — dropped (never blocks dispatch) level=error",
 		c.Condition, webhookMaxAttempts, lastErr)
 }
 
