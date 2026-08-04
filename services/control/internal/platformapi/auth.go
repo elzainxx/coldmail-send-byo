@@ -111,12 +111,35 @@ func logLevelFor(code string) string {
 	return "error"
 }
 
-// sanitizePath keeps only the route shape (no query string, which could carry ids).
+// sanitizePath keeps only the route shape (no query string, which could carry ids) and neutralizes
+// CONTROL CHARACTERS, so one request can never write two log lines.
+//
+// The control-character mapping closes a live log-forgery defect, found while adding the mux-level
+// 405/404 (item 7b) and fixed here rather than left for someone to notice. r.URL.Path is the DECODED
+// path, so a %0A inside a matched wildcard segment arrives as a literal newline; every line above is
+// a single Printf, so that newline SPLITS THE LINE and the remainder is indistinguishable from a
+// genuine entry with an attacker-chosen request_id. Reproduced against the live stack:
+//
+//	curl "http://localhost:9080/v1/admin/config/x%0Aadmin%20request_id=req_FORGED%20outcome=ok" \
+//	     -H "Authorization: Bearer nope"
+//
+// wrote a second, timestamp-less line reading `admin request_id=req_FORGED outcome=ok
+// outcome=rejected reason=admin_key_invalid_or_missing level=warn`. The defect predates item 7b, but
+// 7b WIDENS it: the new fallbacks log ARBITRARY unmatched paths, not only paths that matched a
+// registered pattern.
+//
+// Every byte below 0x20 (CR, LF, TAB, NUL...) plus DEL becomes '?': a substitution, not a deletion,
+// so the logged path still shows that something was there.
 func sanitizePath(p string) string {
 	if i := strings.IndexByte(p, '?'); i >= 0 {
-		return p[:i]
+		p = p[:i]
 	}
-	return p
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, p)
 }
 
 // context helpers -----------------------------------------------------------------------------

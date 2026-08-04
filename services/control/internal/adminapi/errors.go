@@ -25,6 +25,7 @@ const (
 	codeUnauthenticated         = "unauthenticated"           // 401
 	codeForbidden               = "forbidden"                 // 403 (reserved; unused in V1's single scope)
 	codeNotFound                = "not_found"                 // 404
+	codeMethodNotAllowed        = "method_not_allowed"        // 405 (additive, fix-plan item 7b / audit D17)
 	codeConflict                = "conflict"                  // 409
 	codeUnprocessable           = "unprocessable"             // 422
 	codeRateLimited             = "rate_limited"              // 429 (off by default in V1)
@@ -49,6 +50,7 @@ var fixedMessages = map[string]string{
 	codeUnauthenticated:         "Missing or invalid admin API key.",
 	codeForbidden:               "This action is not permitted.",
 	codeNotFound:                "The requested resource was not found.",
+	codeMethodNotAllowed:        "This method is not allowed on this path.",
 	codeConflict:                "The request conflicts with the current state.",
 	codeUnprocessable:           "The request is well-formed but cannot be processed.",
 	codeRateLimited:             "Too many requests.",
@@ -61,6 +63,7 @@ var codeStatus = map[string]int{
 	codeUnauthenticated:         http.StatusUnauthorized,
 	codeForbidden:               http.StatusForbidden,
 	codeNotFound:                http.StatusNotFound,
+	codeMethodNotAllowed:        http.StatusMethodNotAllowed,
 	codeConflict:                http.StatusConflict,
 	codeUnprocessable:           http.StatusUnprocessableEntity,
 	codeRateLimited:             http.StatusTooManyRequests,

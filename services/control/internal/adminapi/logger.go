@@ -44,12 +44,31 @@ func (s *Server) logOK(rid string, r *http.Request, detail string) {
 }
 
 // sanitizePath strips any query string from the logged path (query params are not expected to
-// carry secrets on this surface, but bodies/queries are never logged verbatim regardless).
+// carry secrets on this surface, but bodies/queries are never logged verbatim regardless) and
+// neutralizes CONTROL CHARACTERS so one request can never write two log lines.
+//
+// The control-character mapping closes a live log-forgery defect (found while adding item 7b's
+// mux-level 405/404, and reproduced on this exact surface): r.URL.Path is the DECODED path, so a
+// %0A inside a matched {key} segment arrives as a literal newline, and since each line above is one
+// Printf, that newline SPLITS THE LINE. The live repro wrote a second, timestamp-less line reading
+// `admin request_id=req_FORGED outcome=ok outcome=rejected reason=admin_key_invalid_or_missing
+// level=warn` — indistinguishable from a genuine entry apart from the missing timestamp. See
+// internal/platformapi/auth.go's sanitizePath for the full note; the fix is duplicated per package
+// (OD-7 isolation), like every other member of this file's logging set.
+//
+// Every byte below 0x20 plus DEL becomes '?': a substitution, not a deletion, so the logged path
+// still shows that something was there.
 func sanitizePath(p string) string {
 	if i := indexByte(p, '?'); i >= 0 {
-		return p[:i]
+		p = p[:i]
 	}
-	return p
+	out := []rune(p)
+	for i, r := range out {
+		if r < 0x20 || r == 0x7f {
+			out[i] = '?'
+		}
+	}
+	return string(out)
 }
 
 func indexByte(s string, b byte) int {

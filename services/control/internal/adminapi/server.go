@@ -43,6 +43,10 @@ type VerifyResult struct {
 // credential Encryptor, the operator-key Authenticator, and (Module 3 Phase 3 C5) the
 // AccountVerifier seam for verify-on-add. It registers its routes on a mux that the Control mounts
 // under /v1/admin/*.
+//
+// handler is what Handler() returns: the mux WRAPPED in methodDispatch, so a method mismatch or an
+// unmatched /v1/admin/* path leaves through the error envelope instead of ServeMux's plain text
+// (fix-plan item 7b). It is built once at construction, not per request.
 type Server struct {
 	db            *pgxpool.Pool
 	enc           *Encryptor
@@ -50,6 +54,7 @@ type Server struct {
 	verifier      AccountVerifier
 	fromGateCache *fromgate.Cache
 	mux           *http.ServeMux
+	handler       http.Handler
 }
 
 // NewServer wires the admin routes. db is the send_byo_app pool (never superuser); enc is the
@@ -84,8 +89,12 @@ func (s *Server) newFromGateCacheFromConfig() *fromgate.Cache {
 	return fromgate.NewCache(time.Duration(positiveSec)*time.Second, time.Duration(negativeSec)*time.Second)
 }
 
-// Handler exposes the mux so the Control can mount it (e.g. under a parent mux).
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler exposes the served handler so the Control can mount it (e.g. under a parent mux).
+//
+// This returns the WRAPPED handler, never s.mux directly: returning the bare mux would restore the
+// plain-text 405/404 that item 7b exists to remove, and it would do so silently — every route would
+// still work. That is why the wrapper is built in routes() and stored.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // route is one (method, pattern, handler) registration. adminRoutes is the SINGLE declared list
 // routes() mounts from — Module 3 Phase 6 §4.1's T10 requirement ("enumerate the mux's registered
@@ -152,10 +161,17 @@ func (s *Server) adminRoutes() []route {
 // key gate) — no route reaches s.mux.HandleFunc any other way, so a route present in adminRoutes()
 // is structurally guaranteed to be authenticated (§4.1's "per-handler decorator, not middleware"
 // risk is closed by construction: there is exactly one call site that can register a route at all).
+//
+// The SAME slice also builds the shape mux behind Handler()'s method-dispatch wrapper (item 7b), so
+// a route cannot be served without a shape entry — which would make a wrong verb on it answer 404
+// instead of 405.
 func (s *Server) routes() {
-	for _, rt := range s.adminRoutes() {
+	rs := s.adminRoutes()
+	for _, rt := range rs {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.requireAuth(rt.handler))
 	}
+	shape, allow := buildShapeMux(rs)
+	s.handler = s.methodDispatch(s.mux, shape, allow)
 }
 
 // fail writes the clean external envelope for e and logs the internal reason against rid. It is

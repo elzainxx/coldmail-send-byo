@@ -78,6 +78,10 @@ var (
 // Encrypt-only credential primitive — a separate instance from adminapi.Encryptor (OD-7
 // isolation), sharing only the underlying KMS key material main.go loads once — plus the
 // AccountVerifier seam for verify-on-add.
+//
+// handler is what Handler() returns: the mux WRAPPED in methodDispatch, so a method mismatch or an
+// unmatched path leaves through the error envelope instead of ServeMux's plain text (fix-plan item
+// 7b). It is built once at construction, not per request.
 type Server struct {
 	db            *pgxpool.Pool
 	auth          *Authenticator
@@ -87,6 +91,7 @@ type Server struct {
 	testSender    TestSender
 	fromGateCache *fromgate.Cache
 	mux           *http.ServeMux
+	handler       http.Handler
 }
 
 // NewServer wires the Domain-A routes. kick may be nil (run still succeeds; the dispatcher's own
@@ -126,30 +131,36 @@ func (s *Server) newFromGateCacheFromConfig() *fromgate.Cache {
 	return fromgate.NewCache(time.Duration(positiveSec)*time.Second, time.Duration(negativeSec)*time.Second)
 }
 
-// Handler exposes the mux for mounting under /v1/* on the Control's HTTP server.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler exposes the served handler for mounting under /v1/* on the Control's HTTP server.
+//
+// This returns the WRAPPED handler, never s.mux directly: returning the bare mux would restore the
+// plain-text 405/404 that item 7b exists to remove, and it would do so silently — every route
+// would still work. That is why the wrapper is built in routes() and stored, rather than composed
+// at each call site that mounts this surface.
+func (s *Server) Handler() http.Handler { return s.handler }
 
 // routes registers the platform routes (Go 1.22+ method+path patterns), each behind the
-// service-token gate. Additive-only; the served set must match Docs/api-contract.md.
+// service-token gate, and builds the method-dispatch wrapper from the SAME table (item 7b).
+// Additive-only; the served set must match Docs/api-contract.md.
 //
 // Module 3 Phase 3 (§1.2) adds the user-owned account surface under the namespaced
 // /v1/send-byo/accounts... path (M3-P3-OD-1: the prefix token is `send_byo`, matching the schema
 // name). quarantine/unquarantine are DROPPED from this surface (§1.2) — Phase 5 owns the
 // user-facing un-quarantine bypass; only its hook (§2.4's verification columns) ships here.
+//
+// platformRoutes() flattens the core four and describe_routes.go's extensionRoutes() into the ONE
+// list this loop registers from — nothing reaches s.mux.HandleFunc except this loop, so a route is
+// structurally guaranteed to be (a) authenticated and (b) present in the shape mux that decides
+// 405-vs-404. The extension registry remains the single DECLARATION site (§5.1: a route cannot be
+// served without a describe declaration, and a declaration cannot exist without the mux entry it
+// names); platformRoutes() only projects it into what dispatch needs.
 func (s *Server) routes() {
-	s.mux.HandleFunc("POST /v1/quote", s.requireAuth(s.handleQuote))
-	s.mux.HandleFunc("POST /v1/run", s.requireAuth(s.handleRun))
-	s.mux.HandleFunc("GET /v1/report", s.requireAuth(s.handleReport))
-	s.mux.HandleFunc("GET /v1/describe", s.requireAuth(s.handleDescribe))
-
-	// Every route beyond the core four (§5.1: quote/run/report/describe are implicit — uniform
-	// across modules) is declared ONCE in describe_routes.go's extensionRoutes() and mounted from
-	// that SAME slice here — Phase 7 §5.1's own requirement that describe be generated from the
-	// mux, not hand-maintained. A route cannot be served without a describe declaration, and a
-	// declaration cannot exist without the mux entry it names.
-	for _, rt := range s.extensionRoutes() {
-		s.mux.HandleFunc(rt.Method+" "+rt.Path, s.requireAuth(rt.Handler))
+	rs := s.platformRoutes()
+	for _, rt := range rs {
+		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.requireAuth(rt.handler))
 	}
+	shape, allow := buildShapeMux(rs)
+	s.handler = s.methodDispatch(s.mux, shape, allow)
 }
 
 // dbCtx bounds a per-request DB operation.
