@@ -242,7 +242,8 @@ it breaks the pinned builder — the details, and why it is build infrastructure
 are in [`future-work.md`](./future-work.md) §5.
 
 **Action:** upgrade the builder image, bump `pgx` to ≥ v5.9.2 and `x/text` to ≥ v0.39.0, then re-run
-the **full harness** and all 7 gates on the new toolchain. Do this before a pilot carries real data.
+the **full harness** and all 8 blocking checks on the new toolchain (the 7 gates plus
+`config_consumption_selftest.sh`). Do this before a pilot carries real data.
 
 ---
 

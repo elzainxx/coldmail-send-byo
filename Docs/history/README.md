@@ -35,9 +35,15 @@ explanation of why those two specifically were NOT carried into `module-2/`).
 `fork-point.md`, and `plan-revision-log.md` moved here from the living tier — they describe how the
 module was built, not how to run it. **Module 3's own `Docs/open-decisions.md` (the living,
 actively-growing ledger — do NOT confuse it with this directory's inherited `open-decisions.md`
-below) has NOT yet moved**, pending [M3-P8-OD-7](../open-decisions.md#m3-p8-od-7--awaiting-ruling-docshistoryopen-decisionsmd-is-already-occupied-by-module-2s-own-ledger-phase-8s-spec-instructs-relocating-module-3s-ledger-to-that-same-path):
-this exact path is already occupied by module 2's own ledger (see below), and the two cannot share a
-filename without either overwriting one or renaming it — an open question, not yet ruled.
+below) has NOT moved and WILL NOT move** — [M3-P8-OD-7](../open-decisions.md#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
+was **RULED 2026-08-04: no move, no path change.** This exact path is already occupied by module 2's
+own ledger (see below), and the two cannot share a filename without either overwriting one or renaming
+it; Phase 8 §4.3(a)'s relocation instruction is therefore superseded, and the ruling's disposition is
+*the absence of a move* — there is no commit to point at, which is why it is written down here.
+**Both files now carry a one-line ownership header naming the module they belong to** (added
+2026-08-05), so the shared filename can no longer be resolved by guesswork: this directory's copy says
+MODULE 2, and `../open-decisions.md` says MODULE 3. *(This paragraph's own link was corrected in the
+same change — it pointed at the heading's pre-ruling "AWAITING RULING" text and no longer resolved.)*
 
 | File / dir | What it is | Consult it when |
 |---|---|---|
@@ -48,7 +54,7 @@ filename without either overwriting one or renaming it — an open question, not
 | `plan-revision-log.md` | Per-document record of what changed in the module 3 plan set during the 2026-07-31 open-decisions ruling pass, and where. | You want to check an application of a ruling rather than just trust it happened. |
 | `decisions/NNNN-*.md` | **Module 3's own ADRs**, numbered from `0013` (module 2's ADRs 0000–0012 live in `module-2/decisions/`, not renumbered, not added to). Append-only; superseding writes a new ADR and flips the old one's status. | You want the Context/Decision/Consequences for a module-3-specific settled trade-off. |
 | `definition-of-done.md` | **Module 3's own** nine-item DoD gate, vocabulary-adapted (`byosmtp.*`, module 3's own additive-only framing per CLAUDE.md Rule 5 / M3-P1-OD-3). Per-phase tick-offs are NOT centralized here — each phase spec records its own DoD status inline. Module 2's original copy (with its own tick-off history) is `module-2/definition-of-done.md`. | You are checking what the nine DoD items require, or which phase doc to consult for its own tick-off. |
-| `open-decisions.md` | **Module 2's own** flag-don't-fix ledger, carried at this path (not moved into `module-2/`) because module 3's own inherited-code comments cite it directly by this exact path. Module 3's own, actively-growing ledger is `Docs/open-decisions.md` (top-level, living — still there as of this note, see the update above) — do not confuse the two. | An inherited-code comment or migration cites `Docs/history/open-decisions.md` and you need the source ruling. |
+| `open-decisions.md` | **Module 2's own** flag-don't-fix ledger, carried at this path (not moved into `module-2/`) because module 3's own inherited-code comments cite it directly by this exact path. Module 3's own, actively-growing ledger is `Docs/open-decisions.md` (top-level, living — and staying there permanently per the ruling above). The file itself now opens with a header saying MODULE 2, so the two are distinguishable from their first line rather than only from this table. | An inherited-code comment or migration cites `Docs/history/open-decisions.md` and you need the source ruling. |
 | `phase-build-record.md` | **Module 2's own** build diary, carried at this path for the same path-citation reason as `open-decisions.md` above. Not module 3's build diary. | You want to know which module-2 phase introduced something a comment cites this file for. |
 | `mailflow-worker (Sender Inspiration)/` | A **reference codebase** (not part of this repo; gitignored, has its own nested `.git`). The content-variation and header-engineering implementations were adapted from it. | You are changing variation logic and want the original reference. |
 

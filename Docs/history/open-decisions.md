@@ -1,5 +1,7 @@
 # Open Decisions ledger ("flag, don't fix")
 
+> **OWNER: MODULE 2 (`coldmail-send-managed`). This is NOT module 3's history.** It is module 2's own ledger, carried into module 3's repo at module 2's original relative path so that direct citations in inherited code (`Docs/history/open-decisions.md P8-OD-1`, and the like) keep resolving without a rewrite. **Module 3's own, living ledger is [`../open-decisions.md`](../open-decisions.md)** — that is the one that grows; this one is frozen provenance. The two files have the same name and neither title said so, which is exactly the confusion this line exists to end (added 2026-08-05). The `M3-P*-OD-*` ids belong to the living ledger; ids here are module 2's (`P8-OD-1`, `OD-13`, …). This header is the only edit made here in module 3's build — see `Docs/history/README.md` on why the body is left as-written, and note that this file was byte-identical to module 2's own copy in `coldmail-send-managed` until this line diverged them on purpose.
+
 Every contradiction, ambiguity, or assumption that needs a ruling — never silently resolved
 (CLAUDE.md Rule 2). Items ruled by the user are marked **RULED** with the disposition
 implemented. Items where Phase 0 applied the plan's *recommended* disposition as its build

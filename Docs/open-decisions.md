@@ -1,5 +1,7 @@
 # Open decisions — consolidated ledger, phases 0–8
 
+> **OWNER: MODULE 3 (`coldmail-send-byo`). This is the LIVING ledger — the one that grows.** Its ids are `M3-P<phase>-OD-<n>`. Do not confuse it with [`history/open-decisions.md`](history/open-decisions.md), which has the same filename one directory down and is **module 2's** frozen ledger, carried at module 2's original path for citation stability (ruled at M3-P8-OD-7: no move, no path change). If you are recording a new module-3 decision, it goes here (added 2026-08-05).
+
 **Status (2026-08-04): ALL 97 ITEMS ARE RULED.** The queue is empty again. The two that were
 AWAITING RULING as of 2026-08-03 — [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
 (the ledger path collision) and [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
@@ -96,7 +98,10 @@ already governs it (FAIL, not WAIT).
 > historical: the current count is 97 of 97 ruled.
 >
 > **UPDATED 2026-08-03 — the queue is no longer empty.** Phase 8's own reorganisation work found
-> [M3-P8-OD-7](#m3-p8-od-7--awaiting-ruling-docshistoryopen-decisionsmd-is-already-occupied-by-module-2s-own-ledger-phase-8s-spec-instructs-relocating-module-3s-ledger-to-that-same-path):
+> [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s):
+> *(link target corrected 2026-08-05 — the prose of this addendum is preserved as written, per the
+> note above, but its anchor pointed at the heading's old "AWAITING RULING" text and stopped resolving
+> when the ruling renamed the heading. A dead link is not provenance, it is rot.)*
 > a genuine path collision between Phase 8's own §4.3(a) instruction and a Phase-6-ruled policy in
 > `Docs/history/README.md` (M3-P0-OD-9) over what may live at `Docs/history/open-decisions.md`.
 > Unlike every prior mid-build finding above, this one is **not** ruled the same day — it is a

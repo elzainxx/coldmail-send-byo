@@ -72,7 +72,8 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 2. The Go suites directly: dispatch, adminapi, platformapi, send_byo, workerproto
 3. The worker Node suite
 4. **All seven CI gates**: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `user_output_scrub`, and the one-definition-site check
-5. `gofmt` / `go vet` clean
+5. **`config_consumption_selftest`** — the paired control for gate 5, and blocking in CI in its own right. Not a "gate" in the drift sense (it asserts nothing about this tree's state), but it must be green: since `send_byo_0051` dropped the last RESERVED key, it is the ONLY thing that executes `config_consumption.sh`'s expiry logic at all. Needs no stack.
+6. `gofmt` / `go vet` clean
 
 **Pass:** every suite green, every gate green, **zero skipped tests**. A skip is a test you think you have and don't.
 
@@ -310,7 +311,7 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 ## Part 5 — Pre-deploy sign-off
 
 - [ ] Full harness green from a clean slate, zero skips
-- [ ] All seven CI gates green
+- [ ] All seven CI gates green, plus `config_consumption_selftest` (Stage 1 step 5)
 - [ ] Clean-slate reproduction completed from the docs alone
 - [ ] Empty state tells a new user what's missing
 - [ ] Verify-on-add runs and **delivers no mail** (Mailpit empty)

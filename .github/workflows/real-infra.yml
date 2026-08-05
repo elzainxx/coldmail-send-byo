@@ -52,6 +52,18 @@ jobs:
         if: always()
         run: bash tests/harness/checks/config_consumption.sh
 
+      # The PAIRED CONTROL for the step above. It is a separate step, not folded into the gate, so a
+      # failure names which of the two broke. It is BLOCKING and load-bearing: with
+      # score_alert_threshold dropped at send_byo_0051 the real ledger has ZERO RESERVED keys, so
+      # config_consumption.sh's entire expiry branch is dead code on this tree — it prints OK for 84
+      # keys without evaluating a single expiry. Without this step, the withdrawal of the FW-M3-N form
+      # could be deleted and the gate would still pass on every run, forever. Needs no database or
+      # stack (it builds a throwaway repo skeleton in a temp dir), which is why it sits with the
+      # static gates rather than the harness.
+      - name: Consumption gate SELF-TEST — the RESERVED-expiry branch the real ledger no longer reaches (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/config_consumption_selftest.sh
+
       - name: Shutdown gate — SIGTERM grace clears shutdown_drain_timeout_sec (BLOCKING)
         if: always()
         run: bash tests/harness/checks/drain_grace.sh
