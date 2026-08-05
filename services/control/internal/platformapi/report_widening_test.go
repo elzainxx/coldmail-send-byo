@@ -161,8 +161,19 @@ func TestReportWidening_CampaignItems_FailureSurfacesProviderTextAndClass(t *tes
 	// A requeued (still-queued, non-terminal) job has NO failed_at — the failure is real (it has
 	// smtp_response/error_class) but the JOB itself has not terminally failed; completed_at is
 	// only set on sent/failed/bounced.
-	if v, ok := item["failed_at"]; ok && v != nil {
-		t.Fatalf("results[0].failed_at=%v, want null/omitted on a requeued (non-terminal) job", v)
+	//
+	// PRESENT AND NULL, not "null or omitted" (tightened for fix-plan item 11). This read
+	// `if v, ok := item["failed_at"]; ok && v != nil`, which passed when the key was ABSENT — so
+	// the campaign shape could have silently adopted the single-job shape's omit-the-key
+	// convention here and this assertion would have stayed green. That divergence is a deliberate
+	// contract (M3-P7-OD-4); report_null_convention_test.go is the mechanism that holds it, and
+	// this line no longer contradicts it.
+	v, present := item["failed_at"]
+	if !present {
+		t.Fatalf("results[0] omits failed_at; the campaign shape's convention is an explicit null (M3-P7-OD-4): %s", resp.raw)
+	}
+	if v != nil {
+		t.Fatalf("results[0].failed_at=%v, want null on a requeued (non-terminal) job", v)
 	}
 	if strings.Contains(resp.raw, "internal_slug_should_never_surface") {
 		t.Fatalf("the internal error_reason slug leaked into the campaign report: %s", resp.raw)
