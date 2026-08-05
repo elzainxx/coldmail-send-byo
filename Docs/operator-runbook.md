@@ -190,14 +190,38 @@ If the process is clearly **alive** and answering but reports `singleton_lock:fa
 mid-life lock loss — a different situation from a Control that never started. Go straight to
 [`readyz` says `singleton_lock:false` on a Control that WAS ready](#readyz-says-singleton_lockfalse-on-a-control-that-was-ready-mid-life-lock-loss).
 
-### Step 2 — Is dispatch switched off?
+### Step 2 — Is dispatch switched off, and at WHICH rung?
 
-`dispatch_enabled` is the panic switch. When it is `false` the Control claims, routes, and pushes
-nothing — deliberately, cleanly, with zero job loss.
+There are two dials, and one field that answers both at once. Read the rung first:
 
 ```bash
-ahealth | jq .dispatch.dispatch_paused    # true  ->  this is your cause
+ahealth | jq '.dispatch | {dispatch_rung, dispatch_paused}'
 ```
+
+`dispatch_rung` (added by fix-plan item 12, `send_byo_0052`) names the rung the Control is
+**actually** at — the composition of `dispatch_mode` with the older `dispatch_enabled` boolean, not
+the raw value of either. `dispatch_paused` is the retained boolean and is exactly
+`dispatch_rung != "serving"`. If those two ever disagree, stop and treat it as a bug in this
+surface, not as an ambiguous system state.
+
+| `dispatch_rung` | claims (sending) | intake (`POST /v1/run`) | reclaim sweep | what it is for |
+|---|---|---|---|---|
+| `serving` | ✅ | ✅ `202` | ✅ | normal operation — the only rung where mail moves |
+| `accept_and_defer` | ❌ | ✅ `202` | ✅ | **the default halt.** Stop sending, keep accepting. Provider incident, credential rotation, a bad template caught mid-campaign. Queue depth grows; nothing is lost |
+| `refuse_new` | ❌ | ❌ `503 paused` | ✅ | you are already over queue capacity, or the halt will outlast the campaign-expiry window. Callers get a clear `503` instead of silently accumulating work that will expire |
+| `stopped` | ❌ | ❌ `503 paused` | ❌ | the deepest rung. Also stops the reclaim sweep, so leases and heartbeat-misses are NOT reaped. Use only when you are about to operate on the DB or the worker fleet and want nothing at all touching job rows |
+
+**Which one to pull.** Default to `accept_and_defer` — it is the least destructive thing that stops
+mail, and it is where an unreadable or typo'd `dispatch_mode` lands too. Escalate to `refuse_new`
+only when accepting more work is itself the problem. Reach for `stopped` only for DB/fleet surgery:
+with the reclaim sweep off, a worker that dies leaves its jobs stuck in `assigned`/`sending` until
+you raise the rung again, which is a real cost, not a formality.
+
+**A pull at `refuse_new` or deeper is caller-visible.** `POST /v1/run` answers `503 paused` and
+creates zero job rows. Tenants integrating against this module are told to retry a `503` unchanged
+later — but an extended halt at `refuse_new` will show up as their submissions failing, so announce
+it. `POST /v1/quote` is deliberately never gated: a feasibility question must stay answerable
+during an incident.
 
 The Control also says so in its own log, once per occurrence rather than once per tick:
 
@@ -206,11 +230,20 @@ dispatch: dispatch_paused_by_operator — dispatch_enabled=false; this tick clai
 nothing, queued jobs are untouched, reclaim/outcome/heartbeat continue
 ```
 
-**Fix:** set `dispatch_enabled` back to `true` via `PUT /v1/admin/config/dispatch_enabled`. It takes
-effect on the very next tick — no redeploy. Queued jobs resume from exactly where they were.
+**Fix:** `PUT /v1/admin/config/dispatch_mode` with `serving`, and (if it is `false`)
+`PUT /v1/admin/config/dispatch_enabled` back to `true` — **both**, since either one alone holds the
+Control at `accept_and_defer`. That is the single most common mistake here: pulling one dial,
+raising the other, and concluding the system is broken because mail still is not moving.
+`dispatch_rung` is what tells you the other half is still down. Changes take effect on the very next
+tick — no redeploy — and queued jobs resume from exactly where they were.
 
-Note what stays running while dispatch is paused: the reclaim loop, the outcome handler, and worker
-heartbeats. A paused Control still finishes in-flight work correctly; it just starts nothing new.
+A bad value cannot be written: `PUT /v1/admin/config/dispatch_mode` rejects anything outside the
+four rungs with `400 validation_failed`, so a typo fails at your own request rather than silently
+halting mail at a rung you did not choose.
+
+Note what stays running at `accept_and_defer` and `refuse_new`: the reclaim loop, the outcome
+handler, and worker heartbeats. A paused Control still finishes in-flight work correctly; it just
+starts nothing new. `stopped` is the exception — see the table.
 
 ### Step 3 — Does this tenant have any account at all?
 

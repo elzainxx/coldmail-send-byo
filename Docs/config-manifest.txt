@@ -166,3 +166,11 @@ destination_throttle_window_sec
 destination_throttle_user_threshold
 quote_capacity_projection_enabled
 quote_long_duration_warn_sec
+
+# Fix-plan item 12 — send_byo_0052 (+1 key: the graduated dispatch kill-switch ladder). This is the
+# first key added outside a numbered phase: it lands in the Pass-2 alignment sweep, whose subject is
+# closing gaps found across all three modules, not delivering a new phase. dispatch_enabled is NOT
+# dropped alongside it (ADR-0016's two-condition test fails condition (1) — the boolean has many live
+# consumers) and is instead composed as a severity FLOOR of accept_and_defer, which is exactly what it
+# already did. Docs/config-reference.md carries the operator-facing description.
+dispatch_mode

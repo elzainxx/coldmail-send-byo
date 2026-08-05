@@ -120,7 +120,8 @@ type Config struct {
 
 	// Phase 9.5 operability & control-plane safety dials (all eleven seeded send_byo_0021;
 	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
-	DispatchEnabled                   bool           // dispatch_enabled — B1 global panic switch (§1.1)
+	DispatchEnabled                   bool           // dispatch_enabled — B1 global panic switch (§1.1); a severity FLOOR on DispatchMode, see rung.go
+	DispatchMode                      string         // dispatch_mode — the graduated ladder, serving|accept_and_defer|refuse_new|stopped (send_byo_0052, fix-plan item 12). Read via EffectiveRung(), never directly by a gate.
 	AutoquarantineMode                string         // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
 	AutopauseEnabled                  bool           // autopause_enabled — B2 kill-switch (§2.2)
 	VariationEnabled                  bool           // variation_enabled — B2 master kill-switch (§2.3)
@@ -358,6 +359,15 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	// error like every other dial above — the migration seeds them, so an absent row means a
 	// pre-send_byo_0021 schema, not a legitimate operator override.
 	if c.DispatchEnabled, err = readBoolKey(ctx, db, "dispatch_enabled"); err != nil {
+		return c, err
+	}
+	// dispatch_mode (send_byo_0052, fix-plan item 12) — the graduated ladder that supersedes
+	// dispatch_enabled's role without replacing the key. Loaded raw and UNVALIDATED here on purpose:
+	// resolveRung is the one place an unrecognized value is dispositioned (fail toward the safer rung,
+	// §1.11.4), so a garbage row must reach it rather than being normalized or rejected at load. A
+	// hard error here would mean one typo prevents the Control from booting at all — strictly worse
+	// than booting into accept_and_defer, where no mail leaves and nothing is lost.
+	if c.DispatchMode, err = readStringKey(ctx, db, "dispatch_mode"); err != nil {
 		return c, err
 	}
 	if c.AutoquarantineMode, err = readStringKey(ctx, db, "autoquarantine_mode"); err != nil {

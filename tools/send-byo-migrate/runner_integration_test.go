@@ -123,7 +123,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -190,11 +190,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	// open-ended future-work item FW-M3-12, and that retarget is what the ruling reverses, since an
 	// expiry pointing at an item with no date can never come due. ADR-0016's two-condition test is
 	// satisfied: it never had a module-3 consumer at any point — Phase 7's spec CLAIMED to be that
-	// consumer and was not — and there is no replacement key to reinterpret) = 84. The absence
+	// consumer and was not — and there is no replacement key to reinterpret) = 84. PLUS ONE at 0052
+	// (dispatch_mode, fix-plan item 12 — the graduated dispatch kill-switch ladder; the first key added
+	// outside a numbered phase, and notably NOT paired with a drop of dispatch_enabled: ADR-0017 records
+	// why ADR-0016's two-condition test FAILS condition (1) there, the boolean having many live
+	// consumers, so it is composed as a severity floor instead of removed) = 85. The absence
 	// assertions below are the anti-vacuity companions to this count: a count alone could be satisfied
 	// by dropping the WRONG keys.
-	if n := configKeyCount(t, admin); n != 84 {
-		t.Fatalf("after Up: send_byo.config has %d keys, want 84 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051)", n)
+	if n := configKeyCount(t, admin); n != 85 {
+		t.Fatalf("after Up: send_byo.config has %d keys, want 85 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051 + 1 seeded at 0052)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -258,6 +262,27 @@ func TestRunnerLifecycle(t *testing.T) {
 	// pure-DELETE migration ran at all.
 	if configKeyExists(t, admin, "score_alert_threshold") {
 		t.Fatal("after Up: send_byo.config still has score_alert_threshold (send_byo_0051 did not delete it)")
+	}
+	// send_byo_0052's one seed (fix-plan item 12, the graduated dispatch kill-switch ladder). A pure
+	// INSERT into config leaves no schema object behind either, so the row itself is the only observable
+	// evidence the migration ran — and unlike 0049/0051 the evidence here is PRESENCE plus the seeded
+	// VALUE. The value matters more than the key's existence: seeding any rung other than `serving`
+	// would ship a system that starts up halted, and seeding a value outside the four-rung enum would
+	// make the Control degrade to accept_and_defer on its first tick forever. Both failures are silent
+	// (no error, mail simply does not move), which is exactly the class this test exists to catch. Both
+	// value and default_value are pinned: an operator PUT moves `value`, and `default_value` is what a
+	// future reseed or a config-reference cross-check reads, so a migration that seeded only one of them
+	// correctly would leave the other as the lie.
+	if val, def := configValueAndDefault(t, admin, "dispatch_mode"); val != `{"v": "serving"}` || def != `{"v": "serving"}` {
+		t.Fatalf("after Up: dispatch_mode value=%s default_value=%s, want both {\"v\": \"serving\"} (send_byo_0052 either did not run or seeded a rung that starts the system halted)", val, def)
+	}
+	// ...and the companion that 0052 did NOT drop dispatch_enabled. ADR-0017 records why: ADR-0016's
+	// two-condition drop test fails condition (1) for that boolean (it has many live consumers), so it
+	// is RETAINED and composed as a severity floor of accept_and_defer rather than replaced. A future
+	// edit that "tidies up" the superseded-looking boolean would break Rule 5 and every existing
+	// runbook step that names it; it fails here.
+	if !configKeyExists(t, admin, "dispatch_enabled") {
+		t.Fatal("after Up: send_byo.config has lost dispatch_enabled — 0052 adds the rung ladder and must RETAIN the boolean (Rule 5; ADR-0017: it is composed as a floor, not replaced, because ADR-0016's condition (1) fails for it)")
 	}
 	// The over-delete guard 0049 used to get from the assertion above has MOVED, not evaporated — it is
 	// now in the Down loop, at the window between Down 0051 and Down 0049, where score_alert_threshold
@@ -658,6 +683,24 @@ func TestRunnerLifecycle(t *testing.T) {
 			}
 			if configKeyExists(t, admin, "retry_count_4xx") {
 				t.Fatal("after Down 0051: retry_count_4xx is present, but 0049's down has not run yet — 0051 must own exactly its own row, and 0049 must own the other two (an over-broad down in either file lands here)")
+			}
+		}
+		// The paired half of 0052's up-assertion. A seed migration reverses by DELETing its row, and
+		// nothing else about it is observable, so without this a 0052 down that only removed its own
+		// schema_migrations entry would pass every other check in this loop — leaving a key in the live
+		// config table that the manifest (post-revert) no longer lists, which is precisely the state
+		// config_drift exists to catch and would then catch on a clean restore instead of here.
+		//
+		// The over-delete half matters too, and for a sharper reason than usual: dispatch_enabled sits
+		// right next to this row conceptually, is the thing 0052 supersedes in spirit, and is EXACTLY
+		// what an over-broad down file would sweep up ("remove the dispatch switches this migration
+		// introduced"). Deleting it would leave a system with no kill-switch at all after a revert.
+		if v == "0052" {
+			if configKeyExists(t, admin, "dispatch_mode") {
+				t.Fatal("after Down 0052: send_byo.config still has dispatch_mode (down did not delete its seeded row)")
+			}
+			if !configKeyExists(t, admin, "dispatch_enabled") {
+				t.Fatal("after Down 0052: dispatch_enabled is GONE — 0052's down must remove exactly its own row; sweeping up the retained boolean leaves a reverted system with no dispatch kill-switch at all")
 			}
 		}
 		// The paired half of 0050's up-assertion: an index migration reverses completely, so the down

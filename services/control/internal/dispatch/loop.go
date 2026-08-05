@@ -82,15 +82,20 @@ func (d *Dispatcher) Tick(ctx context.Context) (Config, int, error) {
 		return cfg, 0, nil
 	}
 
-	// Phase 9.5 B1 (§1.2): the global dispatch panic switch. Checked at the very top, before any
-	// claim/route/push — this tick performs NO claim, no route, no push, and writes NOTHING. Queued
-	// jobs stay exactly queued (no state change, no job_events row); the reclaim loop, the outcome
+	// Phase 9.5 B1 (§1.2) + fix-plan item 12: the dispatch kill-switch ladder. Checked at the very
+	// top, before any claim/route/push — this tick performs NO claim, no route, no push, and writes
+	// NOTHING. Queued jobs stay exactly queued (no state change, no job_events row); the outcome
 	// handler, heartbeats, and config reads all continue independently (they are driven by their own
 	// loops/handlers, not gated here). The loop keeps ticking at its normal interval — it does not
-	// sleep-forever or exit — so it resumes the instant the key flips back to true. Throttled so a
-	// long pause produces one log line per interval, never a flood.
-	if !cfg.DispatchEnabled {
-		d.logDispatchPausedByOperator()
+	// sleep-forever or exit — so it resumes the instant the rung is released. Throttled so a long
+	// pause produces one log line per interval, never a flood.
+	//
+	// ClaimsAllowed is false at THREE rungs (accept_and_defer, refuse_new, stopped) and honours
+	// dispatch_enabled=false as a severity floor, so this one gate covers the boolean's entire former
+	// behaviour plus the two rungs above it. What differs between those rungs is enforced elsewhere:
+	// intake at platformapi's handleRun, the reclaim sweep in ReclaimTick. See rung.go.
+	if !cfg.ClaimsAllowed() {
+		d.logDispatchPausedByOperator(cfg)
 		return cfg, 0, nil
 	}
 

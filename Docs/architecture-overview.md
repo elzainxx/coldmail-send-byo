@@ -87,7 +87,14 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 ## Control plane
 
 Every autonomous subsystem has a kill-switch or mode dial, honored at runtime with no redeploy:
-`dispatch_enabled` (panic switch — halts dispatch cleanly, zero job loss, resumable),
+`dispatch_mode` (the panic switch, a graduated four-rung ladder — `serving` / `accept_and_defer` /
+`refuse_new` / `stopped`, seeded `serving`; each rung stops strictly more than the one above, and
+`refuse_new` and deeper also refuse `POST /v1/run` with `503 paused`. `accept_and_defer` is the
+default halt: stop sending, keep accepting, lose nothing. The rung the Control is actually at is
+reported as `dispatch.dispatch_rung` on `/v1/admin/health`),
+`dispatch_enabled` (the original boolean panic switch — RETAINED and still honored, composed as a
+severity FLOOR of `accept_and_defer` rather than as an independent lever, which is exactly what it
+already did),
 `autoquarantine_mode` (`off`/`shadow`/`enforce`, seeded **shadow**), `autopause_enabled`,
 `variation_enabled`, and `alert_webhook_url` (empty = alerting off). Their exact semantics and
 defaults are in `config-reference.md`; when and how to flip them is `operator-runbook.md`.

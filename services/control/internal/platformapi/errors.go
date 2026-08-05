@@ -20,7 +20,29 @@ const (
 	codeUnprocessable    = "unprocessable"      // 422
 	codeRateLimited      = "rate_limited"       // 429
 	codeInternalError    = "internal_error"     // 500
+	codePaused           = "paused"             // 503 (additive, fix-plan item 12)
 )
+
+// codePaused is the intake refusal at the `refuse_new` and `stopped` rungs of the dispatch ladder
+// (send_byo_0052, rung.go). Three notes, because each was a decision:
+//
+//   - IT IS SPELLED THE SAME AS M1's. M1's control-plane emits `paused` over 503 for exactly this
+//     condition — an operator deliberately pulled a kill-switch rung — and a platform client should
+//     not need a per-module word for one state (canonical-module-contract §1.3). Transcribed from
+//     M1's internal/api/errors.go, not imported: the modules are separate Go modules (OD-7), so this
+//     is a checked copy, and M1's own comment about the reverse direction applies here too — a
+//     rename on either side is invisible to the other. That direction is fix-plan item 14's job.
+//
+//   - 503 AND NOT 429. A rate limit says "you are asking too often"; this says "this module is not
+//     working right now, through no fault of your request." A client that treats 503 as retriable
+//     back-off does the right thing; one that reads 429 might legitimately conclude it should shard
+//     its callers, which would not help at all.
+//
+//   - IT IS NOT `unavailable`. M1 carries BOTH, distinguishing "this deployment is not wired" from
+//     "an operator pulled a rung" — and M1's item-18 work put a test on holding them apart. This
+//     module has no unwired-deployment state to express (it cannot boot without its DB), so it takes
+//     only the half it can actually emit. Adding an `unavailable` it never returns would put a code
+//     in the published error_codes[] that no request can ever produce.
 
 // issue slugs — the fixed field-level vocabulary (never free-text echoing input). The full
 // documented enum is Docs/api-contract.md's `details[].issue`.
@@ -41,6 +63,7 @@ var fixedMessages = map[string]string{
 	codeUnprocessable:    "The request is well-formed but cannot be processed.",
 	codeRateLimited:      "Too many requests.",
 	codeInternalError:    "An unexpected error occurred.",
+	codePaused:           "Dispatch is paused by an operator; retry later.",
 }
 
 var codeStatus = map[string]int{
@@ -52,6 +75,7 @@ var codeStatus = map[string]int{
 	codeUnprocessable:    http.StatusUnprocessableEntity,
 	codeRateLimited:      http.StatusTooManyRequests,
 	codeInternalError:    http.StatusInternalServerError,
+	codePaused:           http.StatusServiceUnavailable,
 }
 
 // fieldDetail is one structured field-level error.
