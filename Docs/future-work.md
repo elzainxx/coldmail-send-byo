@@ -443,10 +443,24 @@ a job visibly ping-ponged on one failing account while healthy accounts sat idle
 
 ### FW-M3-12 — `score_alert_threshold`'s missing consumer: the score-warning digest event
 
-**Registered:** 2026-08-04, by M3-P8-OD-8's ruling. **This item is load-bearing:**
-`Docs/config-consumers.txt` names it as `score_alert_threshold`'s `RESERVED` expiry, and
-`config_consumption.sh` fails if this heading disappears — so do not delete it without disposing of
-the key in the same change.
+**Registered:** 2026-08-04, by M3-P8-OD-8's ruling. **Amended 2026-08-05: this item is no longer
+load-bearing, and the key it was written for is gone.** As registered, it was cited by
+`Docs/config-consumers.txt` as `score_alert_threshold`'s `RESERVED` expiry, and
+`config_consumption.sh` failed if this heading disappeared. That coupling is withdrawn: the FW-expiry
+form is gone from the gate (it now rejects `FW-M3-N` by name) and `score_alert_threshold` was
+**DROPPED at `send_byo_0051`** rather than re-marked, on the ground that re-pointing a `RESERVED`
+expiry at an open-ended future-work item is precisely how a `RESERVED` marker becomes permanent — a
+heading is trivially kept forever, so the marker could satisfy its gate on every run and never come
+due.
+
+**What that changes about this item: nothing except its enforcement.** The feature below is still
+specified, still wanted, and still the surviving half of M3-P5-OD-1's split. What changed is that the
+dial is no longer seeded while unread. **Whoever builds this consumer re-seeds `score_alert_threshold`
+(`{"v":30}`, integer) in the SAME migration** — additively, under ADR-0016's discipline of seeding at
+real consumption and never before — and adds its line to `config-manifest.txt`,
+`config-consumers.txt` (with a real consumer pattern, not a marker), and `config-reference.md`'s table
+in that same change, or `config_drift`/`config_consumption` will fail. `send_byo_0051`'s down file has
+the row's verbatim text to copy.
 
 **What it is.** A notification event raised when an account's `account_status_score` falls below
 `score_alert_threshold` (`{"v":30}`, seeded `send_byo_0046`) — an ALERT-only signal, never an

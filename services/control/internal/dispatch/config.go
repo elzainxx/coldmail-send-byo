@@ -139,7 +139,10 @@ type Config struct {
 	NotificationDigestWindowSec     int      // notification_digest_window_sec — §3.2 batching window (opens on the FIRST pending event)
 	NotificationDedupWindowSec      int      // notification_dedup_window_sec — §3.3 re-notify interval for an ongoing condition
 	NotificationImmediateSeverities []string // notification_immediate_severities — §3.1/§3.2 severities that bypass the digest window
-	ScoreAlertThreshold             int      // score_alert_threshold — §3.1's score-warning digest event; replaces quarantine_threshold (M3-P5-OD-1)
+	// No ScoreAlertThreshold field. The key was DROPPED at send_byo_0051 (ruled 2026-08-05): it was
+	// loaded here and read by nothing, and its RESERVED marker had been re-pointed at an open-ended
+	// future-work item, which is how a time-boxed hatch becomes permanent. FW-M3-12 still holds the
+	// feature; the field and the read return together with the consumer, never before it.
 }
 
 // IntensityRates is the §2.4 S11 inner shape of variation_comment_intensity_rates: percent (0-100)
@@ -435,9 +438,11 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 	if c.NotificationImmediateSeverities, err = readStringArrayKey(ctx, db, "notification_immediate_severities"); err != nil {
 		return c, err
 	}
-	if c.ScoreAlertThreshold, err = readIntKey(ctx, db, "score_alert_threshold"); err != nil {
-		return c, err
-	}
+	// score_alert_threshold is deliberately NOT read here. It was dropped at send_byo_0051, and this
+	// read is why that migration could not be a row delete on its own: readIntKey errors when the row
+	// is absent, so leaving this line in place with the row gone would fail LoadConfig outright — at
+	// Control boot (cmd/control/main.go), on the reload path, and on the admin surface. The row and
+	// the read are one change or neither.
 
 	// Config-ordering INVARIANT (CLAUDE.md Rule 1, Phase 6 P6-11): the worker's per-operation SMTP
 	// timeout MUST be strictly shorter than the job lease, so a genuinely account-caused hang

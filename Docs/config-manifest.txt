@@ -18,7 +18,13 @@
 # 2026-08-04, discharging two expired RESERVED markers under ADR-0016's two-condition test; neither
 # key ever had a genuine module-3 consumer. This is the first NET DECREASE in this manifest that is
 # not offset by a same-migration re-seed, so the "grows monotonically" claim above holds for keys
-# added, not for the total.)
+# added, not for the total.), then 84 after send_byo_0051 (-1: score_alert_threshold DROPPED — ruled
+# 2026-08-05, superseding M3-P8-OD-8's option (c) for that one key. 0049 kept it and retargeted its
+# RESERVED expiry from `Phase 8` to the future-work item `FW-M3-12`; the ruling is that re-pointing an
+# expiry at an OPEN-ENDED item is precisely how a RESERVED marker becomes permanent, since the FW form
+# checks only that a heading still exists and a heading is trivially kept forever. There is now NO
+# RESERVED key in this manifest at all. The FEATURE is not cancelled — FW-M3-12 stands; the key
+# returns additively in the change that lands its consumer.)
 #
 # Phase 1 — send_byo_0010 (14 keys, the foundation; Phase 9 §4.1). quarantine_threshold DELETED at
 # Module 3 Phase 5's send_byo_0042 (M3-P5-OD-1: its consumer branch was removed by this same
@@ -147,7 +153,10 @@ test_button_rate_limit_per_user_per_day
 # Module 3 Phase 7 — send_byo_0046 (+10 keys: notification delivery loop + dedup/digest windows,
 # the operator health per-destination throttle aggregation, the quote capacity-projection dials,
 # and score_alert_threshold — REPLACING quarantine_threshold under a new name, M3-P5-OD-1's split).
-# Docs/history/phase-7-visibility-notifications-contract.md §8.
+# Docs/history/phase-7-visibility-notifications-contract.md §8. NINE of the ten remain:
+# score_alert_threshold was DROPPED at send_byo_0051 (ruled 2026-08-05) — it was the one key of the
+# ten whose consumer was never built, and an expiry re-pointed at an open-ended future-work item is
+# not a time box. FW-M3-12 keeps the feature.
 notification_digest_window_sec
 notification_dedup_window_sec
 notification_immediate_severities
@@ -157,4 +166,3 @@ destination_throttle_window_sec
 destination_throttle_user_threshold
 quote_capacity_projection_enabled
 quote_long_duration_warn_sec
-score_alert_threshold

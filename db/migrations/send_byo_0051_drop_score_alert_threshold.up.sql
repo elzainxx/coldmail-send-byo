@@ -1,0 +1,65 @@
+-- send_byo_0051_drop_score_alert_threshold.up.sql — RULED 2026-08-05, superseding M3-P8-OD-8's
+-- option (c) for this one key.
+--
+-- WHAT CHANGED IN THE RULING, AND WHY. send_byo_0049 kept score_alert_threshold and RETARGETED its
+-- RESERVED expiry from the phase label `Phase 8` to the future-work item `FW-M3-12`. The FW-expiry
+-- form was added to config_consumption.sh in that same change specifically to make that retarget
+-- possible. The ruling now reverses that disposition on a general ground that overrides the
+-- key-specific reasoning:
+--
+--   Re-pointing a RESERVED expiry at an OPEN-ENDED future-work item is the "RESERVED becomes
+--   permanent" failure the time-boxing rule exists to prevent.
+--
+-- That is correct, and 0049's own header text is the evidence. It argued the FW form "keeps the teeth
+-- without lying about a date." But teeth means a DEADLINE, and FW-M3-12 has none — its stated trigger
+-- is "the next phase that adds any notification kind, or the first user complaint," which is a
+-- condition that may never occur. The check the FW form actually performs is that a heading still
+-- exists in future-work.md. A heading is trivially kept forever, so the marker could survive
+-- indefinitely while satisfying its own gate on every run. Compare the mechanism it replaced: a phase
+-- label fires when the tree reaches that phase, whether or not anyone remembers. One expires by
+-- itself; the other expires only if someone deletes a heading, which nobody is ever motivated to do.
+-- The FW form did not keep the teeth, it removed them and kept the jaw.
+--
+-- WHAT THIS DOES NOT DECIDE. The FEATURE is not cancelled. FW-M3-12 stays in Docs/future-work.md
+-- exactly as written — the score-warning digest event is still specified, still wanted, and still the
+-- surviving half of M3-P5-OD-1's split. What goes away is the SEEDED ROW that promises an operator a
+-- dial which nothing reads. The key returns ADDITIVELY, in the same change that lands its consumer,
+-- under ADR-0016's own discipline: seed at real consumption, never before. That is strictly better
+-- than keeping it seeded now, because a re-seed at consumption time can never be a Rule 1 violation
+-- in the gap, whereas today's row is one continuously.
+--
+-- WHY A ROW DROP IS PERMITTED HERE (ADR-0016's two-condition test, applied literally):
+--
+--   (1) The key never had a genuine module-3 consumer at ANY point in module 3's own build history.
+--       This is the condition 0049 argued FAILED "differently" — its words: "the key was seeded FOR a
+--       named consumer that is still wanted, so it is not dead inheritance." Note what that argument
+--       actually concedes: it does not claim a consumer ever existed. It claims one was INTENDED.
+--       ADR-0016's condition is about consumption, not intent, and on consumption the record is
+--       unambiguous — Phase 7 §3.1 and §8 asserted in plain text that Phase 7 WAS this consumer, and
+--       re-verification against the tree found nothing: ScoreAlertThreshold was loaded in
+--       dispatch/config.go and read nowhere else, and the only notification kind ever enqueued
+--       anywhere in the codebase is `account_quarantined` (one call site, account_effect.go). Zero
+--       consumers, at every point, in module 3's entire history. Condition (1) holds.
+--
+--   (2) The replacement, if any, is a different key under a different name — never the same key
+--       reinterpreted. Vacuous here in the safest direction: there is no replacement at all. The
+--       future re-seed is this SAME key under this SAME name with this SAME meaning, which is not a
+--       reinterpretation but a restoration. Nothing is renamed and nothing changes meaning.
+--
+-- This does NOT reopen Rule 5, on the same narrow basis 0049 and ADR-0016 both state: no client codes
+-- against send_byo.config, nothing references a config row by FK, and a config row is data in an
+-- inherited table rather than a contract object. A future phase citing "nobody uses this anymore" for
+-- a key that DID have a real module-3 consumer at some point is still NOT covered and still needs its
+-- own ruling.
+--
+-- THE COUPLING THAT MAKES THIS MORE THAN A DELETE. dispatch/config.go read this key with readIntKey,
+-- which returns an error when the row is absent (`SELECT value ... WHERE key = $1` scanning into no
+-- rows). Dropping the row while leaving that read in place would not have degraded gracefully — it
+-- would have made dispatch.LoadConfig fail outright, and LoadConfig is called at Control boot
+-- (cmd/control/main.go:125), on the config-reload path (:339), and by the admin surface (:465). The
+-- Control would not start. So the field and its read come out in this same change; that is not
+-- scope creep, it is the only way this migration is safe to apply.
+
+DELETE FROM send_byo.config WHERE key = 'score_alert_threshold';
+
+INSERT INTO send_byo.schema_migrations (version) VALUES ('0051');

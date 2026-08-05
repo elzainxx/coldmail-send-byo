@@ -123,7 +123,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -185,10 +185,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	// variation_zero_width_rate_pct, M3-P8-OD-8 — the first NET DECREASE in the chain that is not
 	// offset by a same-migration re-seed; both were RESERVED with a Phase 8 expiry that came due
 	// and neither ever had a genuine module-3 consumer, so ADR-0016's two-condition test permits
-	// the row drop) = 85. The absence assertions below are the anti-vacuity companions to this count:
-	// a count alone could be satisfied by dropping the WRONG two keys.
-	if n := configKeyCount(t, admin); n != 85 {
-		t.Fatalf("after Up: send_byo.config has %d keys, want 85 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049, §8)", n)
+	// the row drop) = 85. MINUS ONE at 0051 (score_alert_threshold, ruled 2026-08-05 — the third key
+	// that carried an expired RESERVED marker; 0049 kept it and re-pointed its expiry at the
+	// open-ended future-work item FW-M3-12, and that retarget is what the ruling reverses, since an
+	// expiry pointing at an item with no date can never come due. ADR-0016's two-condition test is
+	// satisfied: it never had a module-3 consumer at any point — Phase 7's spec CLAIMED to be that
+	// consumer and was not — and there is no replacement key to reinterpret) = 84. The absence
+	// assertions below are the anti-vacuity companions to this count: a count alone could be satisfied
+	// by dropping the WRONG keys.
+	if n := configKeyCount(t, admin); n != 84 {
+		t.Fatalf("after Up: send_byo.config has %d keys, want 84 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -244,12 +250,20 @@ func TestRunnerLifecycle(t *testing.T) {
 			t.Fatalf("after Up: send_byo.config still has %q (send_byo_0049 did not delete it)", key)
 		}
 	}
-	// ...and the key 0049 deliberately KEPT, so "0049 ran" can never be satisfied by a migration that
-	// over-deletes. score_alert_threshold stays RESERVED against future-work item FW-M3-12 rather than
-	// being dropped, because its consumer (Phase 7 §3.1's score-warning digest) is still wanted.
-	if !configKeyExists(t, admin, "score_alert_threshold") {
-		t.Fatal("after Up: send_byo.config is missing score_alert_threshold — send_byo_0049 must drop exactly two keys and keep this one (M3-P8-OD-8)")
+	// 0051's one drop (ruled 2026-08-05). Until 2026-08-05 this position asserted the OPPOSITE — that
+	// score_alert_threshold was still PRESENT, because 0049 deliberately kept it and re-pointed its
+	// RESERVED expiry at the future-work item FW-M3-12. That retarget is what the ruling reverses: an
+	// expiry aimed at an open-ended item can never come due, so the marker was permanent in all but
+	// name. The key is now dropped, and as with 0049 the missing row is the only observable evidence a
+	// pure-DELETE migration ran at all.
+	if configKeyExists(t, admin, "score_alert_threshold") {
+		t.Fatal("after Up: send_byo.config still has score_alert_threshold (send_byo_0051 did not delete it)")
 	}
+	// The over-delete guard 0049 used to get from the assertion above has MOVED, not evaporated — it is
+	// now in the Down loop, at the window between Down 0051 and Down 0049, where score_alert_threshold
+	// must be back while retry_count_4xx is still gone. That window is strictly stronger than a
+	// presence check after Up: it pins WHICH migration owns WHICH row, so a 0051 that deleted all three
+	// keys, or a 0049 that swept up the third, fails there rather than passing here.
 	// send_byo_0022's shared error-transition predicate — the single definition both job_events
 	// triggers gate their error context on. Anti-vacuity that the migration ran: it is a
 	// CREATE OR REPLACE of two existing function BODIES, so no column/index/config check can see
@@ -471,19 +485,21 @@ func TestRunnerLifecycle(t *testing.T) {
 	// literally present in 0046's own SQL, checked at the file level by 0046's own header comment
 	// citing 0022 as the base body — a source-level contract this test cannot verify at the SQL
 	// level without duplicating 0022's entire test. Left as documented, not re-proven.
+	// NINE of 0046's ten seeds, checked after a FULL Up. The tenth, score_alert_threshold, is asserted
+	// ABSENT instead (0051 drops it — see that block above), which is why it cannot be in this list:
+	// after the whole chain the row is gone, and requiring it here would contradict 0051. Its
+	// value/default_value shape is still pinned, at Down 0051's restore window rather than here — that
+	// is the only place in this test where the row legitimately exists.
 	for _, key := range []string{
 		"notification_digest_window_sec", "notification_dedup_window_sec",
 		"notification_immediate_severities", "notifications_enabled",
 		"notification_tick_interval_sec", "destination_throttle_window_sec",
 		"destination_throttle_user_threshold", "quote_capacity_projection_enabled",
-		"quote_long_duration_warn_sec", "score_alert_threshold",
+		"quote_long_duration_warn_sec",
 	} {
 		if !configKeyExists(t, admin, key) {
 			t.Fatalf("after Up: send_byo.config missing %q (0046 not applied)", key)
 		}
-	}
-	if v, d := configValueAndDefault(t, admin, "score_alert_threshold"); v != `{"v": 30}` || d != `{"v": 30}` {
-		t.Fatalf("after Up: score_alert_threshold value=%s default_value=%s, want both {\"v\": 30} (0046 seeded the wrong shape, or M3-P5-OD-1's inherited default was not carried)", v, d)
 	}
 	// 0047 (M3-P7-OD-10): notification_state gains 'suppressed', the digest-fold marker the delivery
 	// loop needs (§3.2's T2: folded rows must be traceable, not silently absent). The three
@@ -576,6 +592,11 @@ func TestRunnerLifecycle(t *testing.T) {
 			if indexExists(t, admin, "job_events_destination_domain_throttle_idx") {
 				t.Fatal("after Down 0046: job_events_destination_domain_throttle_idx still present (down did not drop it)")
 			}
+			// score_alert_threshold stays in this list even though 0051's up DELETEs it. The reverse chain
+			// is what makes that correct: Down 0051 re-INSERTs the row (asserted above), so by the time
+			// Down 0046 runs the row is present again and 0046 — its original seeder — is the file
+			// responsible for removing it. Dropping it from this list would leave 0046's down free to
+			// stop deleting a row it seeded, with nothing noticing.
 			for _, key := range []string{
 				"notification_digest_window_sec", "notification_dedup_window_sec",
 				"notification_immediate_severities", "notifications_enabled",
@@ -617,6 +638,26 @@ func TestRunnerLifecycle(t *testing.T) {
 		if v == "0048" {
 			if v, d := configValueAndDefault(t, admin, "unit_price_credits"); v != `{"v": 1}` || d != `{"v": 1}` {
 				t.Fatalf("after Down 0048: unit_price_credits value=%s default_value=%s, want both {\"v\": 1} (down did not restore the original send_byo_0021 row)", v, d)
+			}
+		}
+		// 0051's down re-INSERTs score_alert_threshold VERBATIM from send_byo_0046's seed site (Rule 1:
+		// default_value is never mutated), the same shape as 0049's and 0042's restores. Asserting the
+		// exact value AND default_value rather than mere presence is what catches a "restore" that
+		// approximates: a re-seed at a guessed default leaves a later re-Up() operating on a chain state
+		// the forward path never produced.
+		//
+		// This block also carries the OVER-DELETE GUARD that used to live after Up as "0049 kept this
+		// key." The Down loop runs in strict reverse, so at this point 0051 has been reversed and 0049
+		// has NOT: score_alert_threshold must be BACK and retry_count_4xx must still be GONE. That pair
+		// of opposite states in one window is what pins ownership — a 0051 that deleted all three keys,
+		// or a 0049 that swept up the third, cannot satisfy both halves. A presence check after Up
+		// could not distinguish those cases at all.
+		if v == "0051" {
+			if val, def := configValueAndDefault(t, admin, "score_alert_threshold"); val != `{"v": 30}` || def != `{"v": 30}` {
+				t.Fatalf("after Down 0051: score_alert_threshold value=%s default_value=%s, want both {\"v\": 30} (down did not restore the original send_byo_0046 row verbatim)", val, def)
+			}
+			if configKeyExists(t, admin, "retry_count_4xx") {
+				t.Fatal("after Down 0051: retry_count_4xx is present, but 0049's down has not run yet — 0051 must own exactly its own row, and 0049 must own the other two (an over-broad down in either file lands here)")
 			}
 		}
 		// The paired half of 0050's up-assertion: an index migration reverses completely, so the down

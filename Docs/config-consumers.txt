@@ -25,13 +25,28 @@
 # current-phase.txt bump and both keys were DROPPED at send_byo_0049 (M3-P8-OD-8, ruled 2026-08-04),
 # so the mechanism is now proven end to end, from accidental marker to actual disposition.
 #
-# The third field may instead name a future-work item id (FW-M3-N). Phase 8 is the last phase, so a
-# key kept deliberately because a specified-but-unbuilt consumer is still wanted has no future phase
-# label left to name — the phase form could only ever call it expired. The FW form keeps the teeth
-# without lying about a date: config_consumption.sh requires the named item to exist as a heading in
-# Docs/future-work.md, so the marker cannot become permanent by quietly losing its roadmap entry.
-# score_alert_threshold is the one key on this form (-> FW-M3-12, the score-warning digest Phase 7
-# §3.1 specified and never built).
+# THE FW-EXPIRY FORM IS WITHDRAWN — ruled 2026-08-05. The third field accepts a gate/phase label
+# ONLY. From 2026-08-04 it also accepted a future-work item id (FW-M3-N), added by M3-P8-OD-8 so that
+# score_alert_threshold — the last phase having arrived, with its consumer still wanted — could keep a
+# marker that did not lie about a date. The ruling is that this was the wrong trade:
+#
+#   Re-pointing a RESERVED expiry at an OPEN-ENDED future-work item is the "RESERVED becomes
+#   permanent" failure the time-boxing rule exists to prevent.
+#
+# The mechanism bears that out. A phase label expires BY ITSELF when the tree reaches that phase,
+# whether or not anyone remembers it. The FW form's only check is that a heading still exists in
+# future-work.md — and a heading is trivially kept forever, so the marker satisfies its own gate on
+# every run while never coming due. It kept the jaw and removed the teeth.
+#
+# score_alert_threshold was the only key ever on that form, and it was DROPPED at send_byo_0051 rather
+# than re-marked. THERE IS NO RESERVED KEY IN THIS LEDGER NOW. The feature it was seeded for is not
+# cancelled: FW-M3-12 stands in Docs/future-work.md, and the key returns ADDITIVELY in the same change
+# that lands its consumer — ADR-0016's own discipline (seed at real consumption, never before), which
+# also means it can never be a Rule 1 violation in the gap the way the seeded row was continuously.
+#
+# The consequence for a future key is deliberate and is the point: if the tree is at the last phase
+# and a key has no consumer, there is no honest marker left to write, so the key does not get seeded
+# yet. That is the rule working, not a gap in it.
 #
 # Maintenance rule (mirrors the ADR-0008 grants-invariant discipline): every new seeded key gets a
 # line here in the SAME change that adds the migration — the gate fails a key with no line at all,
@@ -121,4 +136,3 @@ destination_throttle_window_sec|destination_throttle_window_sec
 destination_throttle_user_threshold|destination_throttle_user_threshold
 quote_capacity_projection_enabled|quote_capacity_projection_enabled
 quote_long_duration_warn_sec|quote_long_duration_warn_sec
-score_alert_threshold|RESERVED|FW-M3-12

@@ -223,13 +223,14 @@ actually seeded — CLAUDE.md Rule 11) rather than by Phase 6's own new feature 
 |-----|---------------|-----------|-------------------|-------------|
 | `test_button_rate_limit_per_user_per_day` | `{"v":20}` | integer | send_byo_0045 | Max verify-only test-button attempts across ALL of a user's accounts, per day (`429 rate_limited`, same external code as the per-account limit) — a 200-account tenant clicking each once is still bounded. Aggregate companion to `account_test_rate_limit_per_day` (send_byo_0036). **GLOBAL ONLY** (M3-P3-OD-6/M3-P6-OD-5's own posture). Consumed by `platformapi/account_test_button.go`'s `readTestButtonRateLimitPerUser`/`verifyAttemptCountTodayForUser`. |
 
-## Module 3 Phase 7 state (+10 keys, `send_byo_0046`)
+## Module 3 Phase 7 state (`send_byo_0046` seeded +10; **9 remain**, one dropped at `send_byo_0051`)
 
 The notification delivery loop's dedup/digest/severity dials, the operator health endpoint's
-per-destination throttle-aggregation dials, the quote endpoint's capacity-projection dials, and
-`score_alert_threshold` (replacing `quarantine_threshold` under a new name and a narrower purpose —
-M3-P5-OD-1's split: the score never independently quarantines, but Phase 7 gives it an independent
-ALERT-only consumer). Seeded together in Phase 7's own migration, ahead of C2 (notifications) and C3
+per-destination throttle-aggregation dials, the quote endpoint's capacity-projection dials, and —
+seeded here but **since dropped** — `score_alert_threshold` (which replaced `quarantine_threshold`
+under a new name and a narrower purpose, M3-P5-OD-1's split: the score never independently
+quarantines, and Phase 7 was to give it an independent ALERT-only consumer, which it never did — see
+the note below). Seeded together in Phase 7's own migration, ahead of C2 (notifications) and C3
 (quote/health) landing the real consumers — same shape as Phase 3's `send_byo_0036` and Module 3
 Phase 6's `send_byo_0045` before their consumers shipped. **The five notification-delivery-loop keys
 were cleared by C2** (`internal/dispatch/notify.go`'s `NotificationRunner`, wired into
@@ -237,21 +238,37 @@ were cleared by C2** (`internal/dispatch/notify.go`'s `NotificationRunner`, wire
 were cleared by C3's `quote` feasibility widening** (`internal/platformapi/quote_feasibility.go`),
 and **the two throttle-aggregation keys were cleared by C3's `GET /v1/admin/health` widening**
 (`internal/adminapi/health_throttle.go`/`health_alerts.go`) — no `RESERVED` marker remains on any
-of the three groups. Only `score_alert_threshold` stays `RESERVED`: its consumer (the score-warning
-digest event, §3.1) is not yet built.
+of the three groups. **Nine of the ten keys survive.** The tenth, `score_alert_threshold`, was
+**DROPPED at `send_byo_0051`** (ruled 2026-08-05) and no longer appears in the table below.
 
-**Its expiry is retargeted from `Phase 8` to `FW-M3-12` (M3-P8-OD-8, ruled 2026-08-04).** Phase 7's
-own spec text asserted this phase *was* the consumer ("this phase is that consumer — §3.1's score
-warning, §8's dial"), stated as fact. Re-verification against the tree found it was not built at all:
-`ScoreAlertThreshold` is loaded in `dispatch/config.go` and read nowhere else, and the only
-notification ever enqueued anywhere in the codebase is `account_quarantined` (one call site,
-`account_effect.go`) — there is no score-warning digest event and no comparison of
+**Why it was dropped rather than kept `RESERVED` (ruled 2026-08-05, superseding M3-P8-OD-8's option
+(c) for this one key).** Phase 7's own spec text asserted this phase *was* the consumer ("this phase
+is that consumer — §3.1's score warning, §8's dial"), stated as fact. Re-verification against the tree
+found it was not built at all: `ScoreAlertThreshold` was loaded in `dispatch/config.go` and read
+nowhere else, and the only notification enqueued anywhere in the codebase is `account_quarantined`
+(one call site, `account_effect.go`) — there was no score-warning digest event and no comparison of
 `account_status_score` against this threshold. That is a Rule 11 finding in its own right: a spec
-claiming a consumer it never shipped. The key is NOT deleted, because unlike the two keys
-`send_byo_0049` drops, its consumer is still genuinely wanted — the feature is specified and buildable,
-just unbuilt, so it is registered as **FW-M3-12** and the marker now points at that tracked item.
-`config_consumption.sh` verifies the named item exists as a heading in `future-work.md`, so the marker
-cannot become permanent by quietly losing its roadmap entry.
+claiming a consumer it never shipped.
+
+`send_byo_0049` responded by KEEPING the row and retargeting its `RESERVED` expiry from the phase label
+`Phase 8` to the future-work item `FW-M3-12`. That is the part now reversed, on a ground that overrides
+the key-specific reasoning: **re-pointing a `RESERVED` expiry at an open-ended future-work item is the
+"`RESERVED` becomes permanent" failure the time-boxing rule exists to prevent.** The FW form's only
+check was that a heading still existed in `future-work.md`, and a heading is trivially kept forever —
+so the marker would have passed the gate on every run and never come due, where a phase label fires by
+itself the moment `current-phase.txt` reaches it. The form is withdrawn (`config_consumption.sh` now
+rejects it by name), and **no `RESERVED` key remains anywhere in this document.**
+
+**The feature is not cancelled.** `FW-M3-12` stands in `Docs/future-work.md`; what went away is a
+seeded row promising an operator a dial that nothing read. The key returns **additively**, under
+ADR-0016's own discipline — seeded in the same change that lands its consumer, never before — which is
+strictly better than the status quo, because a re-seed at consumption time can never be a Rule 1
+violation in the gap, whereas the row as it stood was one continuously.
+
+**Note for anyone reading a `send_byo_0051` rollback.** The down file restores the row, but it cannot
+restore `dispatch.Config.ScoreAlertThreshold` or its `readIntKey` call — those are Go source, removed
+in the same commit. That asymmetry is safe only in that direction: a restored row that nothing reads is
+inert, while the reverse (a read with no row) fails `LoadConfig` and stops the Control from booting.
 
 | key | default_value | value_type | seeding migration | description |
 |-----|---------------|-----------|-------------------|-------------|
@@ -264,7 +281,6 @@ cannot become permanent by quietly losing its roadmap entry.
 | `destination_throttle_user_threshold` | `{"v":3}` | integer | send_byo_0046 | Distinct-users-affected count inside the throttle window at or above which the health endpoint surfaces a `destination_throttles` active condition (and therefore the alert webhook) for that destination domain. Consumed by `internal/adminapi/health_alerts.go`'s `buildActiveConditions`/`destinationThrottleConditions`. Phase 7 §7.1. |
 | `quote_capacity_projection_enabled` | `{"v":true}` | boolean | send_byo_0046 | Toggles whether `/v1/quote` projects an estimated completion duration (feasibility framing: slow is feasible) rather than omitting `capacity.estimated_duration_sec`/`estimate_basis` entirely. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.2. |
 | `quote_long_duration_warn_sec` | `{"v":172800}` | integer | send_byo_0046 | Projected-duration threshold (sec, default 48h) above which `/v1/quote`'s feasibility response carries a `long_duration` entry in `warnings[]` rather than a bare projection. Consumed by `internal/platformapi/quote_feasibility.go`'s `computeQuoteFeasibility`. Phase 7 §4.3. |
-| `score_alert_threshold` | `{"v":30}` | integer | send_byo_0046 | **RESERVED / NOT-YET-CONSUMED** (expiry **FW-M3-12**, retargeted from `Phase 8` by M3-P8-OD-8 — Phase 7's spec claimed to have built this consumer and had not) — replaces module-2's `quarantine_threshold` (deleted Module 3 Phase 5, M3-P5-OD-1) under a new name and a narrower purpose: an ALERT-only signal on `status_score` for the notification loop to act on, never an independent quarantine trigger (quarantine remains solely the dual triggers in the Phase 5 section above). Phase 7 §3.1, C3 scope. |
 
 **Migration `send_byo_0047_notification_state_suppressed`** adds the `'suppressed'` value to
 `send_byo.notification_state` (M3-P7-OD-10) — a real schema/spec drift found while wiring the

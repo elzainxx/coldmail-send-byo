@@ -15,7 +15,9 @@ MANIFEST="Docs/config-manifest.txt"
 LEDGER="Docs/config-consumers.txt"
 REFDOC="Docs/config-reference.md"
 PHASEFILE="Docs/current-phase.txt"
-FUTUREWORK="Docs/future-work.md"
+# No FUTUREWORK path: this gate no longer reads Docs/future-work.md. It did between 2026-08-04 and
+# 2026-08-05, to verify an FW-M3-N expiry's heading existed — the form withdrawn above. Removed rather
+# than left set-but-unused so `set -u` cannot make a future reader think the FW branch still works.
 
 fail=0
 
@@ -31,12 +33,24 @@ fail=0
 # those keys were DROPPED at send_byo_0049 when this check fired for real at the Phase 8 bump
 # (M3-P8-OD-8) — the mechanism working end to end, from marker to disposition.
 #
-# The third field also accepts a future-work item id (`FW-M3-N`) instead of a gate/phase label
-# (M3-P8-OD-8, ruled 2026-08-04). Phase 8 is the last entry in PHASE_ORDER, so a key deliberately
-# kept because a SPECIFIED-BUT-UNBUILT consumer is still wanted has no future phase left to name;
-# the phase form could only ever report it as expired. The FW form keeps the teeth without lying
-# about a date: the named item must exist as a heading in Docs/future-work.md, so the marker cannot
-# become permanent by quietly losing its roadmap entry.
+# THE FW-EXPIRY FORM IS WITHDRAWN (ruled 2026-08-05). Between 2026-08-04 and 2026-08-05 the third
+# field also accepted a future-work item id (`FW-M3-N`), added by M3-P8-OD-8 so score_alert_threshold
+# could keep a marker after the last phase had arrived with its consumer still unbuilt. It claimed to
+# "keep the teeth without lying about a date." It did not, and this gate's own code was the proof: the
+# ONLY thing the FW branch checked was that a heading still existed in future-work.md. A heading is
+# trivially kept forever, so such a marker passes every run and never comes due — whereas a phase label
+# fires by itself the moment current-phase.txt reaches it, remembered or not. That is the difference
+# between a time box and a note, and re-pointing an expiry at an open-ended item is exactly the
+# "RESERVED becomes permanent" failure the expiry rule exists to prevent.
+#
+# So an FW-form expiry is now a HARD FAILURE, not an accepted alternative, and it fails with its own
+# message rather than falling into the generic "unrecognized label" branch — a maintainer who writes
+# `key|RESERVED|FW-M3-7` is following withdrawn guidance that was live in this repo's docs for a day,
+# and deserves to be told that specifically. score_alert_threshold, the only key ever on the form, was
+# DROPPED at send_byo_0051 rather than re-marked; there is no RESERVED key in the ledger now.
+#
+# The consequence is deliberate: at the last phase, a key with no consumer has no honest marker
+# available, so it does not get seeded yet. That is the rule working.
 #
 # Ordered sequence for "at or past" comparison. G1-G4 are Phase 1+2's own internal gates
 # (Docs/history/module-3-build-plan.md's merged landing); Phase 3+ are the build plan's own phase numbers.
@@ -96,19 +110,21 @@ while IFS='|' read -r key pattern expiry; do
       echo "config_consumption FAIL: '$key' is RESERVED in $LEDGER with no expiry field (want 'key|RESERVED|<gate-or-phase>') — an un-expiring RESERVED marker is exactly how retry_count_4xx and variation_zero_width_rate_pct became permanent"
       fail=1
     elif [[ "$expiry" =~ ^FW-M3-[0-9]+$ ]]; then
-      # FW-expiry form (M3-P8-OD-8, ruled 2026-08-04). Phase 8 is the LAST phase in PHASE_ORDER, so
-      # a key whose consumer is still genuinely wanted has no future phase label left to name — the
-      # phase-based form can only ever say "expired." That is the wrong answer for a key that is
-      # deliberately kept BECAUSE a specified-but-unbuilt consumer is still on the roadmap
-      # (score_alert_threshold's score-warning digest, Phase 7 §3.1, never built). The marker still
-      # needs teeth, so it points at a TRACKED, NAMED future-work item instead of a date: the item
-      # must actually exist as a heading in future-work.md. Delete the item without disposing of the
-      # key and this gate goes red — the hatch cannot become permanent by quietly losing its
-      # roadmap entry, which is the same failure mode ADR-0014 closed for phase labels.
-      if ! grep -qE "^#{2,4} $expiry( |—|$)" "$FUTUREWORK"; then
-        echo "config_consumption FAIL: '$key' is RESERVED with future-work expiry '$expiry', but $FUTUREWORK has no such item heading — the marker points at a roadmap entry that does not exist, so it has no teeth. Add the item, or dispose of the key (row+manifest+refdoc+ledger together)."
-        fail=1
-      fi
+      # WITHDRAWN FORM — a named failure, not a fallthrough (ruled 2026-08-05; see this file's header).
+      # An FW-M3-N expiry never comes due: its only condition was "a heading exists in
+      # future-work.md," and a heading is kept forever at no cost, so the marker would pass on every
+      # run in perpetuity. Naming it explicitly matters because this form was LIVE and DOCUMENTED in
+      # this repo for one day (2026-08-04 to 2026-08-05), so a maintainer can reach it by following
+      # instructions that were correct when they read them; the generic "unrecognized label" message
+      # would send them off to check their spelling.
+      echo "config_consumption FAIL: '$key' is RESERVED with a future-work expiry '$expiry'. That form"
+      echo "  is WITHDRAWN (ruled 2026-08-05): re-pointing an expiry at an open-ended future-work item is"
+      echo "  how a RESERVED marker becomes permanent — the item's heading is trivially kept forever, so"
+      echo "  the marker satisfies this gate on every run and never comes due. Only a gate/phase label"
+      echo "  from (${PHASE_ORDER[*]}) is accepted. If there is no future phase left to name, the key"
+      echo "  should not be seeded yet: dispose of it (row+manifest+refdoc+ledger together) and re-seed"
+      echo "  it in the same change that lands its consumer — the send_byo_0051 precedent."
+      fail=1
     else
       expiry_idx="$(phase_index "$expiry")"
       if [[ "$expiry_idx" == "-1" ]]; then
