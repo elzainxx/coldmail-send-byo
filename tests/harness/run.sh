@@ -125,6 +125,28 @@ go_suite tests/harness "DB isolation + Phase 1 data model (claim/events/RLS/cryp
 # executes is worse than no test: it reports coverage it does not provide.
 go_suite services/control/internal/httpapi "root-mux coded 404 + log-forgery neutralization (item 7b) + readyz uniform checks{} envelope (item 10)"
 
+# --- Four packages that were WRITTEN AND PASSING BUT RUN BY NOTHING (found 2026-08-05) --------
+# The three below need no database and no stack (verified: 6 tests, 0 skips with every TEST_*
+# variable unset), so they are listed here, before any template is built.
+#
+# This is the second time this repo has been bitten by the same thing: internal/httpapi's first
+# test file landed with item 7b and nothing ran it, which is what the comment above records. The
+# audit that followed C2 swept every package for it and found FOUR MORE — 31 real tests, 0 skips,
+# all passing, executed by nothing. Neither this script nor CI would have noticed: CI runs only
+# gofmt + `go vet ./...` + this script, and `go vet` type-checks test files without running them,
+# so an unwired package looks identical to a wired one in every signal we had. The general lesson,
+# now a standing rule: a test or gate that EXISTS is not a test that RUNS — verify the wiring, and
+# prefer breaking it once to watch the harness go red.
+go_suite services/control/internal/configordering "config key ordering/precedence (3 tests)"
+go_suite services/control/internal/workerlink     "workerlink stream in-flight accounting (2 tests)"
+go_suite services/control/internal/workerproto    "variation wire-format round-trip (1 test)"
+# fromgate is the exception: its 25 tests include a REAL-DNS file that resolves against the
+# local CoreDNS container (deploy/dns-test/), so it must run with the stack up — it is listed
+# after the DNS healthchecks have passed, which dev.sh up/reset blocks on before calling this
+# script. Its own t.Skip path names the compose command if coredns is missing, so a broken
+# substrate announces itself rather than silently reporting a smaller suite.
+go_suite services/control/internal/fromgate       "FROM-gate SPF/DNS evaluation + cache + copy (25 tests, real CoreDNS)"
+
 # --- Phase 2 admin API behavioral suite (real Server over httptest against real PG clones) -----
 # These tests live in the control module (internal/adminapi) and drive the ACTUAL admin handlers
 # against clones of a template migrated to head (up-and-set-password always applies the FULL
