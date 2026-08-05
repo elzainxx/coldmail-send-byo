@@ -59,6 +59,22 @@ func (d *Dispatcher) CampaignExpiryTick(ctx context.Context) (Config, int, error
 // processed in its OWN transaction (mirrors reclaim.go's per-job-tx rationale: bounds lock-hold
 // time, and one campaign's failure to process must not abort the others in this tick).
 func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int, error) {
+	// fix-plan item 13 / send_byo_0053: the shadow ladder. Read ONLY through the Effective* methods
+	// (mutator_mode.go), which normalize an unrecognized value to shadow.
+	//
+	//   off      the candidate SELECT is not even issued. No count, no log line.
+	//   shadow   identify the campaigns that WOULD be expired and log them with how many jobs would be
+	//            failed; change nothing. THE SEEDED DEFAULT.
+	//   enforce  the pre-0053 behaviour: expire each candidate below.
+	//
+	// WHY THIS SWEEP NEEDED A LADDER. Its job failures are TERMINAL — a job failed here is not re-queued
+	// by correcting campaign_expiry_sec afterwards — and it fires on the ABSENCE of activity, which is
+	// the hardest condition for an operator to predict in advance. An observation period is the only way
+	// to find out that the window is set wrong before it costs a user their queued sends.
+	if !cfg.CampaignExpiryDecides() {
+		return 0, nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, campaignExpiryTickTimeout)
 	defer cancel()
 
@@ -91,6 +107,36 @@ func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+
+	// shadow: report the decision, change nothing. The candidate list above is the SAME query enforce
+	// runs — including the EXISTS term that excludes a naturally-completed campaign — so the observation
+	// is of the population enforce would actually act on, not of a wider one. An observation of the wrong
+	// set would teach an operator to expect the wrong thing, which is worse than no observation.
+	//
+	// The JOB count is reported alongside the campaign count, because "2 campaigns" is not the number an
+	// operator needs: the cost of promoting this dial is measured in TERMINALLY FAILED JOBS, and one
+	// stuck campaign can hold thousands. Counted with the same predicate expireOneCampaign fails on
+	// (state='queued' AND next_attempt_at <= NOW()), so the number is what would actually be failed
+	// rather than the campaign's whole non-terminal population.
+	if !cfg.CampaignExpiryExpires() {
+		if len(candidates) == 0 {
+			return 0, nil
+		}
+		ids := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			ids = append(ids, c.id)
+		}
+		var wouldFail int
+		if err := d.db.QueryRow(ctx,
+			`SELECT count(*) FROM send_byo.jobs
+			  WHERE campaign_id = ANY($1::uuid[]) AND state='queued' AND next_attempt_at <= NOW()`,
+			ids).Scan(&wouldFail); err != nil {
+			return 0, err
+		}
+		log.Printf("campaign_expiry: campaign_expiry_shadow_would_expire — campaign_expiry_mode=%q, so NOTHING was expired this tick; %d campaign(s) past campaign_expiry_sec would be expired at campaign_expiry_mode=enforce, TERMINALLY failing %d ready queued job(s). Campaigns: %v (fix-plan item 13)",
+			cfg.EffectiveCampaignExpiryMode(), len(candidates), wouldFail, ids)
+		return 0, nil
 	}
 
 	total := 0

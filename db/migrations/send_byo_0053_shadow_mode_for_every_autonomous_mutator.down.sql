@@ -1,0 +1,57 @@
+-- send_byo_0053_shadow_mode_for_every_autonomous_mutator.down.sql — remove the four mode rows.
+--
+-- All four keys are NEW in 0053, so deleting the four rows restores the exact pre-0053 state of
+-- send_byo.config. Nothing else was added, altered or granted.
+--
+-- IT REMOVES EXACTLY FOUR ROWS, AND NONE OF THE ENABLES OR RATE CONTROLS IS ONE OF THEM. What an
+-- over-broad down would sweep up here is a longer list than in module 2, which is the reason this
+-- paragraph is longer than module 2's:
+--   * autopause_enabled — RETAINED by item 13 (it has live consumers: account_effect.go's gate, the
+--     health snapshot, the operator docs). "Remove the auto-pause switches this migration introduced" is
+--     a natural-sounding instruction that would leave a reverted system with no auto-pause kill-switch.
+--   * retention_sweep_interval_ms, retention_delete_batch_size — predate this migration, rate controls.
+--   * campaign_expiry_sec, campaign_expiry_sweep_interval_ms — predate this migration; the first is a
+--     THRESHOLD, and deleting it would take the expiry window with it.
+--   * account_retention_window_sec, account_purge_sweep_interval_ms, account_purge_delete_batch_size —
+--     predate this migration. account_retention_window_sec is the window a soft-deleted account's
+--     credential survives for; a down that removed it would be deleting the safety boundary itself.
+--   * autoquarantine_mode — on the SAME ladder as the four new dials and seeded the same way, which
+--     makes it the single most likely thing for a "delete the mode dials" revert to take by mistake. It
+--     belongs to send_byo_0051, not here, and 0053's down must not touch it.
+--   * dispatch_mode — belongs to send_byo_0052.
+-- The migration lifecycle test asserts all of that at the Down 0053 window: the four new keys gone, and
+-- autopause_enabled, autoquarantine_mode, dispatch_mode and every rate/threshold key above still
+-- present.
+--
+-- BEHAVIOUR AFTER A REVERT, which is the part worth reading. Reverting this migration RESTORES
+-- ENFORCING BEHAVIOUR in all four writers:
+--   * a throttle outcome pauses the account again, governed only by autopause_enabled
+--   * the retention sweep DELETEs send_logs again, governed only by its batch size
+--   * the campaign expiry sweep fails jobs to TERMINAL again, governed only by campaign_expiry_sec
+--   * the account purge sweep hard-DELETEs accounts and their credential ciphertext again, governed only
+--     by account_retention_window_sec
+-- That is the correct direction — the pre-0053 code had no dial to consult, so removing the dials
+-- returns the system to what it did before rather than to a halted state. But it is the LESS SAFE
+-- direction, and in this module two of the four restored writers are IRREVERSIBLE. A revert is a clean
+-- operation schema-wise and emphatically not a no-op operationally: within one sweep interval of the
+-- revert, expired send_logs and purge-eligible credentials start being destroyed for real. Anyone
+-- reverting on a deployment that has been sitting at the seeded `shadow` default should read the
+-- accumulated shadow counters FIRST — the backlog that has built up while nothing was deleted is
+-- exactly what the restored sweeps will now work through.
+--
+-- WHAT THIS DOWN CANNOT DO. The Go side READS all four keys (dispatch/config.go, via the same
+-- readStringKey path autoquarantine_mode and dispatch_mode use), and that read ERRORS when the row is
+-- absent — at Control boot, on the config-reload path, and from the admin surface. So running this down
+-- WITHOUT reverting the Go source leaves a Control that does not start.
+--
+-- That coupling is deliberate, and identical to send_byo_0052's: this down belongs to a source revert,
+-- not to a standalone `psql -f`. Whoever runs it as part of reverting the item-13 commit gets the
+-- readers removed by git in the same step. Whoever runs it standalone gets a hard, immediate, loud boot
+-- failure — the correct failure for "the code requires a dial the database does not have", and far
+-- better than what a graceful default would produce: a Control that boots and silently purges accounts
+-- an operator believed were being merely counted.
+
+DELETE FROM send_byo.config
+ WHERE key IN ('autopause_mode', 'retention_mode', 'campaign_expiry_mode', 'account_purge_mode');
+
+DELETE FROM send_byo.schema_migrations WHERE version = '0053';

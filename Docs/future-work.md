@@ -69,6 +69,7 @@ eyes on a real inworker are the only signal.
 | **Rate limiting / lockout on the API surfaces** | Throttling or locking out repeated failed auth attempts. | The external code `rate_limited` (429) exists in the vocabulary but nothing emits it — reserved deliberately so adding it later is additive. Both surfaces are meant to sit on a private network behind a proxy; the proxy is the intended enforcement point today. [`security-posture.md`](./security-posture.md) §3.7. |
 | **A metrics endpoint** | Prometheus exposition or an equivalent time series. | `GET /v1/admin/health` is a JSON snapshot, not a series. Several fields are already windowed and graph cleanly if you poll and store them — [`monitoring.md`](./monitoring.md) §5 says how, and why this was left out. |
 | **A "cleared" alert notification** | A webhook POST when a fired condition resolves. | Alerts are rising-edge only, with no all-clear. Receivers are meant to treat the health endpoint as current truth rather than pairing up/down events. Deliberate: an all-clear implies a state machine the alerting layer does not keep. |
+| **All five shadow dials in the health snapshot** | `GET /v1/admin/health`'s `shadow` block reports `autoquarantine_mode` and its `would_quarantine_count` / `recent[]`, but not `autopause_mode`, `retention_mode`, `campaign_expiry_mode` or `account_purge_mode` — since `send_byo_0053` there are five dials on one ladder and only one of them is visible here. | Deferred in fix-plan item 13 rather than built, because it is an **API-contract change** (four new response fields plus the counters behind them) and item 13's subject was the safety property, not the surface. It is not a silent gap: every new dial leaves a real trail — `shadow_would_pause:` rows in `account_events`, and per-tick `retention_shadow_would_delete` / `purge_shadow_would_purge` / `campaign_expiry_shadow_would_expire` log lines carrying the true backlog — and [`operator-runbook.md`](./operator-runbook.md) §"The four mutator mode dials" carries the queries. Whoever builds it should note two traps ADR-0018 records: `retention_mode`'s and `account_purge_mode`'s counters are deliberately **uncapped** by their per-tick batch sizes, so they must not be sourced from a sweep's batch; and `campaign_expiry_mode`'s number counts the **jobs** it would terminally fail, not the campaigns, because the jobs are the cost an operator is deciding to accept. |
 
 ---
 
@@ -531,6 +532,19 @@ account`. Zero of the 19 were real defects.
 **Why it matters beyond convenience.** A cascade whose first symptom is a *security* assertion
 (`plaintext canary found`) is exactly the kind of red that gets mis-triaged as a real leak, or worse,
 dismissed as flaky. The suites are correct on a clean slate; they are just not idempotent.
+
+**Second symptom, added 2026-08-05 (fix-plan item 13): it also distorts WALL-CLOCK, not only
+correctness.** `internal/dispatch` — a Go package, not one of the live suites — took **646s** on an
+accumulated dev database and **113s on a clean slate** minutes later, the same tree and commit: a
+~5.7x swing, because every per-test template clone drags the leftover rows with it. On the dirty
+database that crossed Go's default 600s per-package test timeout, so the harness printed
+`FAIL: Phase 3 dispatch` for a package in which every single test had PASSED. Two consequences worth
+recording here rather than only in the ADR: the blast radius of not resetting is **wider than the
+three live suites** this entry was originally about, and the timing cost scales with how long the
+stack has been up, so it grows silently. `go_suite` now sets an explicit `GO_SUITE_TIMEOUT` (40m) and
+reports a breach as a BUDGET failure distinct from a test failure, which removes the phantom red —
+but that is a guard against mis-triage, not a substitute for the reset. The nonce fix below is still
+the real answer.
 
 **Fix shape.** Either make the fixtures unique per run (suffix the usernames with a run nonce) or
 have each live suite delete its own fixtures on entry. Prefer the nonce: it also removes the hidden

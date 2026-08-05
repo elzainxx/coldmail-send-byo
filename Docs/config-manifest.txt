@@ -174,3 +174,27 @@ quote_long_duration_warn_sec
 # consumers) and is instead composed as a severity FLOOR of accept_and_defer, which is exactly what it
 # already did. Docs/config-reference.md carries the operator-facing description.
 dispatch_mode
+
+# Fix-plan item 13 / ADR-0018 — send_byo_0053 (+4 keys: a shadow rung for every autonomous mutator
+# that did not already have one). FOUR here against module 2's TWO, and the difference is not a
+# porting slip: this module runs two autonomous sweeps module 2 does not — campaign expiry (§5.3) and
+# the account purge (§6.3) — and those are its two most irreversible writers. Campaign expiry fails a
+# campaign's ready queued jobs to TERMINAL `failed`; the purge hard-DELETEs a soft-deleted account
+# together with its credential_ciphertext. The dial count is a property of THIS module's writers, not
+# of the module it is being aligned with.
+#
+# All four seed `shadow`, which is a BEHAVIOUR CHANGE on a fresh deployment, not a no-op: auto-pause,
+# the send_logs retention sweep, campaign expiry and the account purge all DECIDE and REPORT without
+# acting until an operator promotes each dial. Two of the four carry a STANDING COST while shadowed and
+# are REQUIRED promotion gates in go-live-checklist.md — retention_mode (send_logs grows without bound,
+# and security-posture.md's retention promise is unkept) and account_purge_mode (a soft-deleted
+# account's credential ciphertext OUTLIVES its promised retention window).
+#
+# No boolean is dropped: autopause_enabled is RETAINED and composed as a CEILING on autopause_mode
+# (ADR-0016's condition (1) fails for it — many live consumers), the inverse composition direction from
+# dispatch_mode's FLOOR at 0052 and the same one rule on two scales. autoquarantine_mode predates this
+# item on the SAME ladder and belongs to the Phase 9.5 seed, not here.
+autopause_mode
+retention_mode
+campaign_expiry_mode
+account_purge_mode

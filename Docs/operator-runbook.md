@@ -594,7 +594,14 @@ outcomes, but purely as an informational readout, never as what re-triggers the 
 
 `autoquarantine_mode` defaults to `shadow`, which **decides but does not act**: it logs the
 quarantine it *would* have applied and leaves the account sending. If you are seeing quarantines at
-all, someone set it to `enforce`. What shadow mode would have done is visible in the health snapshot:
+all, someone set it to `enforce`.
+
+> Since fix-plan item 13 (`send_byo_0053`) this is **one of five** dials on the same ladder, not a
+> one-off — every autonomous mutator in the module now has one, all seeded at `shadow`. The other four
+> and their shadow evidence are in
+> [The four mutator mode dials](#the-four-mutator-mode-dials-watching-a-decision-before-you-grant-it-authority);
+> two of them (`retention_mode`, `account_purge_mode`) are REQUIRED go-live promotions rather than
+> open-ended posture decisions like this one. What shadow mode would have done is visible in the health snapshot:
 
 ```bash
 ahealth | jq .shadow
@@ -610,6 +617,126 @@ Promoting `shadow` → `enforce` is a go-live decision, covered in
 [`go-live-checklist.md`](./go-live-checklist.md).
 
 ---
+
+---
+
+## The four mutator mode dials: watching a decision before you grant it authority
+
+Fix-plan item 13 (`send_byo_0053`,
+[ADR-0018](./history/decisions/0018-every-autonomous-mutator-gets-a-shadow-ladder.md)) put every
+autonomous mutator in this module behind the same three-value dial `autoquarantine_mode` already used.
+An **autonomous mutator** is a write nobody asked for — state the Control changes on its own initiative,
+as opposed to recording what a worker reported or doing what a user requested.
+
+| dial | what it gates | at `shadow`, look for |
+|---|---|---|
+| `autopause_mode` | pausing an account in response to a throttle outcome (§2.2) | an `account_events` row with `actor='system'` and `reason` starting `shadow_would_pause:` |
+| `retention_mode` | the `send_logs` retention sweep (Phase 7 §3) | the log line `retention_shadow_would_delete` |
+| `campaign_expiry_mode` | expiring a stuck campaign and failing its ready jobs (§5.3) | the log line `campaign_expiry_shadow_would_expire` |
+| `account_purge_mode` | hard-deleting a soft-deleted account and its credential (§6.3) | the log line `purge_shadow_would_delete` |
+| `autoquarantine_mode` | auto-quarantine (Phase 9.5 §2.1, predates item 13) | `ahealth \| jq .shadow` — see [The safety valve](#the-safety-valve-shadow-mode) |
+
+**All five take `off | shadow | enforce`, and all five default to `shadow`.**
+
+- `off` — the decision is not evaluated. For the three sweeps, no query runs and nothing is counted.
+- `shadow` — the decision is made and RECORDED; nothing is written. **This is the seeded default.**
+- `enforce` — the decision is made and acted on.
+
+### Promoting and demoting
+
+Both directions are a config `PUT`, re-read on the next tick. No restart, no redeploy:
+
+```bash
+# promote
+curl -fsS -X PUT $ADMIN/v1/admin/config/retention_mode \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"value":"enforce"}'
+
+# demote — same call with "shadow", and it takes effect just as fast
+curl -fsS -X PUT $ADMIN/v1/admin/config/retention_mode \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"value":"shadow"}'
+```
+
+**Promote one dial at a time, with a tick between them.** If the first enforcing tick surprises you, you
+want to know which dial did it. And read the accumulated shadow counts *before* promoting: that number
+is the entire point of the observation period.
+
+A value outside the three is **rejected at the `PUT` boundary**, so a typo is reported to you rather than
+silently changing what the system does. If one ever reaches the config table another way, the Control
+falls back to `shadow` and logs at `level=error` — never to `enforce` (a typo must not gain the power to
+act) and never to `off` (a typo must not silently disable a control you believe is running).
+
+### `autopause_enabled` is a CEILING, not a second switch
+
+`autopause_enabled=false` caps `autopause_mode` at `off` — the boolean can only ever *reduce* what the
+system does. It never raises a mode: `autopause_enabled=true` with `autopause_mode=shadow` is **shadow**,
+not enforce. If you disabled auto-pause before item 13 existed, nothing about your deployment's behaviour
+changed.
+
+Compare `dispatch_mode`, where `dispatch_enabled=false` composes as a **FLOOR** of `accept_and_defer`.
+The two read as opposites and are the same rule — `dispatch_mode`'s rungs are ordered by severity, these
+by activity, so "do less" moves up one scale and down the other. In both cases the boolean can only
+reduce what the system does.
+
+The other three dials have no boolean at all. `autopause_enabled` does not touch them.
+
+### Two of the four have a standing cost while shadowed
+
+`autopause_mode` and `campaign_expiry_mode` are safe to leave at `shadow` indefinitely: you get a logged
+decision instead of a pause, or a reported stuck campaign instead of a terminated one. Both recoverable.
+
+The other two are not, and they are REQUIRED promotions in
+[`go-live-checklist.md`](./go-live-checklist.md) item 14:
+
+- **`retention_mode=shadow` → `send_byo.send_logs` grows without bound**, and
+  [`security-posture.md`](./security-posture.md)'s retention promise is not being kept. Every tick logs
+  the pending count so this is never silent.
+- **`account_purge_mode=shadow` → a deleted account's `credential_ciphertext` outlives its promised
+  window.** A user deleted their account and their SMTP credential is still in your database. Note that
+  `account_retention_window_sec` is **not** an enable — setting it enormous does not stop the sweep, it
+  only postpones each account, so a small shadow count does not mean a small commitment.
+
+`account_purge_mode=enforce` is **irreversible per row**. There is no undo for a purged credential, so
+promote it only after you have read the count.
+
+### Reading the shadow evidence
+
+```bash
+# auto-pause: the decisions it would have made, per account
+psql -c "SELECT account_id, reason, created_at FROM send_byo.account_events
+          WHERE actor='system' AND reason LIKE 'shadow_would_pause:%'
+          ORDER BY created_at DESC LIMIT 20"
+```
+
+The observation row has `from_flags = to_flags` — that equality is how you (and an audit reader) can tell
+it apart from a real pause at a glance. It is a separate row from the quarantine marker, because one
+outcome can trip neither, either, or both, and you need to know which mutator wanted to act.
+
+```bash
+# the three sweeps: their would-do counts, on every tick
+docker compose logs control | grep -E 'retention_shadow_would_delete|purge_shadow_would_delete|campaign_expiry_shadow_would_expire'
+```
+
+Two things to know about those counts:
+
+- **They are not capped by the sweep's batch size.** A count that reported `retention_delete_batch_size`
+  every tick would be useless for sizing a retention window. The number is the true backlog.
+- **The expiry line reports JOBS as well as campaigns**, and the job count is the one that matters: the
+  cost of promoting that dial is measured in terminally failed jobs, and one stuck campaign can hold
+  thousands. `failed` is terminal — correcting `campaign_expiry_sec` afterwards does not re-queue them.
+
+### What the dials never gate
+
+- **Auto-UNPAUSE is not gated by `autopause_mode` at any value.** Gating a reversal would leave real
+  pauses in place forever, which is the stuck-account incident an observation period exists to avoid.
+  A dial gates an ACTION, never its REVERSAL.
+- **Outcome ingestion is never gated.** An outcome records mail that has already left; refusing it
+  destroys evidence rather than preventing anything.
+- **The notification delivery loop is never gated** — it is the channel these shadow reports travel
+  through. `notifications_enabled` exists if you genuinely want it off.
+- **The retention sweep never touches `jobs` or `job_events` at any mode.** Outcomes are permanent by
+  construction (Phase 7 §3.2); no promotion of any dial can reach them.
 
 ## No eligible account / waiting for capacity
 
@@ -906,6 +1033,7 @@ DMARC aggregate reports, and postmaster tools. Bounce/complaint ingestion is reg
 | **Content variation** | `variation_enabled` plus the per-feature `variation_*` keys | Reduces byte-identical repetition across messages (HTML minification, comment injection, CSS micro-variation, encoding/boundary rotation, preheaders, header style). All default to off/neutral, so the whole set at defaults is byte-identical to no variation at all. |
 | **Sender identity hygiene** | Per-account `from_address` / `from_name` | Must match what the provider has verified. A mismatch is a rejection or a spam signal, not a subtle effect. |
 | **Auto-quarantine** | `autoquarantine_mode`, `quarantine_consecutive_threshold`, `quarantine_failure_rate_pct`, `quarantine_min_sample` | Pulls failing accounts out of rotation before they do more damage. In `shadow` (the default) it only *reports* — promote to `enforce` when you trust the thresholds. |
+| **Auto-pause on throttle** | `autopause_mode`, `autopause_enabled`, `throttle_pause_seconds` | Pauses an account the provider is rate-limiting, then self-clears. In `shadow` (the default) it only *reports* — so at defaults, sending continues into a provider that is throttling you. See [the mutator mode dials](#the-four-mutator-mode-dials-watching-a-decision-before-you-grant-it-authority). |
 
 > **`one_by_one` is not currently selectable by any operator.** Routing strategy is hardcoded to
 > `round_robin` for every user (a temporary interim state — per-user strategy selection is planned

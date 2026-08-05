@@ -315,6 +315,94 @@ rung; `dispatch.dispatch_paused` is retained unchanged in meaning ("the effectiv
 boolean reported `dispatch_paused: false` to every polling UI — work visibly not moving with the
 dashboard insisting nothing was wrong.
 
+## Fix-plan item 13 state (+4 keys, `send_byo_0053`) — a shadow rung for every autonomous mutator
+
+**The risk this closes.** Before this migration, four writers in this module acted on their own initiative
+with no way to watch them first: auto-pause, the `send_logs` retention sweep, campaign expiry, and the
+account purge. An operator could turn each OFF, or leave it ON — nothing in between. So the only way to
+find out whether a threshold or a window was set correctly was to let it fire on real data, and two of
+these four writers are **irreversible**: campaign expiry fails a campaign's ready queued jobs to
+TERMINAL `failed` (correcting `campaign_expiry_sec` afterwards does not re-queue them), and the purge
+hard-`DELETE`s a soft-deleted account together with its `credential_ciphertext`.
+
+**FOUR dials here, TWO in the managed module.** This is not a porting difference to be tidied up later.
+This module runs two autonomous sweeps the managed module does not — campaign expiry (§5.3) and the
+account purge (§6.3) — and they are the two most irreversible writers in it. There is no honest exclusion
+reason for "hard-delete a user's credential on your own initiative". The dial count is a property of
+**this** module's writers, not of the module it is being aligned with. The mechanism that established the
+count is a discovery scan, not a reading:
+`TestMutatorMode_EveryAutonomousMutatorIsDialledOrExplicitlyExcluded` in
+`internal/dispatch/mutator_mode_test.go` finds every file in the dispatch package that issues an
+`UPDATE`/`DELETE FROM send_byo.*` and requires each to be either dialled or explicitly excluded with a
+reason. It currently discovers 15 such files. A new autonomous mutator therefore cannot ship enforcing on
+day one: its file appears in neither list and the test goes red naming it.
+
+**All four seed `shadow`, which is a real behaviour change on a fresh deployment — not a no-op.** Each
+dial takes `off | shadow | enforce`:
+
+- `off` — the decision is not evaluated at all. For the three sweeps, no query is issued and nothing is
+  counted.
+- `shadow` — **the seeded default.** The decision is made and RECORDED, and nothing is written. Auto-pause
+  writes an `account_events` row whose `reason` begins `shadow_would_pause:` and whose `from_flags` equals
+  its `to_flags` (so an audit reader cannot mistake it for a real pause). The three sweeps log a line
+  carrying the true, un-batched backlog: `retention_shadow_would_delete`, `purge_shadow_would_delete`,
+  `campaign_expiry_shadow_would_expire`.
+- `enforce` — the pre-`0053` behaviour, unchanged.
+
+**An unrecognized value falls back to `shadow`** at `level=error`, for all four, and is also rejected at
+the admin PUT boundary so a typo is reported to the operator rather than silently changing what the system
+does. `shadow` is the safe fallback in both directions: `enforce` would let a typo gain the power to act
+(for `account_purge_mode`, the power to destroy a credential), and `off` would silently disable a control
+the operator believes is running while taking its reporting with it.
+
+**Two of the four carry a STANDING COST while shadowed, and are REQUIRED promotion gates in
+`Docs/go-live-checklist.md`:**
+
+- `retention_mode` — `send_logs` grows **without bound** while this is `shadow`, and
+  `Docs/security-posture.md`'s retention promise is unkept.
+- `account_purge_mode` — a soft-deleted account's `credential_ciphertext` **OUTLIVES** its promised
+  retention window. `account_retention_window_sec` is not an enable: setting it enormous does not stop the
+  sweep, it only postpones each individual account.
+
+The other two are safe to leave shadowed indefinitely — `autopause_mode` shadowed means throttle responses
+are logged rather than applied, and `campaign_expiry_mode` shadowed means a stuck campaign is reported
+rather than terminated. Both are recoverable states; the two above are not.
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `autopause_mode` | `{"v":"shadow"}` | string | send_byo_0053 | Auto-pause shadow ladder: `off\|shadow\|enforce`. The throttle-response mutator (§2.2). At `shadow` a throttle outcome writes an `account_events` row with `reason` beginning `shadow_would_pause:` and `from_flags = to_flags`, and the account keeps sending. Composes with `autopause_enabled` as a **CEILING** (see below), never as a second independent lever. **Auto-UNpause is NOT gated by this dial at any mode** — gating a reversal would leave real pauses in place forever, manufacturing the stuck-account incident an observation period exists to avoid. Consumed by `internal/dispatch/account_effect.go` via `cfg.AutopauseDecides()`/`cfg.AutopauseWrites()`. |
+| `retention_mode` | `{"v":"shadow"}` | string | send_byo_0053 | `send_logs` retention sweep ladder: `off\|shadow\|enforce`. At `shadow` the sweep logs `retention_shadow_would_delete` with the TRUE count of expired rows (not capped by `retention_delete_batch_size`) and deletes nothing. **STANDING COST: `send_logs` grows without bound until this is promoted, and `Docs/security-posture.md`'s retention promise is unkept — a REQUIRED go-live promotion gate.** The sweep touches `send_logs` ONLY at every mode: §3.2's permanence guarantee means it can never reach a `jobs` or `job_events` row, asserted against the function's own source. Consumed by `internal/dispatch/retention.go` via `cfg.RetentionCounts()`/`cfg.RetentionDeletes()`. |
+| `campaign_expiry_mode` | `{"v":"shadow"}` | string | send_byo_0053 | Campaign expiry sweep ladder: `off\|shadow\|enforce` (§5.3). At `shadow` the sweep logs `campaign_expiry_shadow_would_expire` naming the campaigns and, critically, **how many ready queued jobs would be TERMINALLY failed** — the campaign count is not the cost of promoting this dial, the job count is, and one stuck campaign can hold thousands. `shadow` runs the IDENTICAL candidate query `enforce` does, including the `EXISTS` term that excludes a naturally-completed campaign, so the observation is of the population `enforce` would actually act on; `off` issues no query at all. Consumed by `internal/dispatch/campaign_expiry.go` via `cfg.CampaignExpiryDecides()`/`cfg.CampaignExpiryExpires()`. |
+| `account_purge_mode` | `{"v":"shadow"}` | string | send_byo_0053 | Account purge sweep ladder: `off\|shadow\|enforce` (§6.3). The module's most irreversible writer: `enforce` hard-`DELETE`s a soft-deleted account past its window, credential ciphertext included. At `shadow` the sweep logs `purge_shadow_would_delete` with the true candidate count and deletes nothing — a COUNT rather than a rolled-back `DELETE`, because a rolled-back account delete would fire the `send_byo_0024` `job_events ON DELETE SET NULL` carve-out for real, taking locks on the `job_events` history of every candidate and making the observation more expensive than the action it previews. **STANDING COST: a deleted account's credential ciphertext outlives its promised retention window until this is promoted — a REQUIRED go-live promotion gate.** Consumed by `internal/dispatch/purge.go` via `cfg.AccountPurgeCounts()`/`cfg.AccountPurgeDeletes()`. |
+
+**`autopause_enabled` is NOT replaced and NOT dropped**, and neither is any sweep's rate/window/batch key.
+ADR-0016's two-condition test fails its first condition for all of them — they have live consumers. So
+`autopause_enabled` composes as a **CEILING**: the boolean can only ever REDUCE what the system does, so
+`enabled=false` caps the mode at `off`, and `enabled=true` never RAISES one (a mode left at `shadow` is not
+promoted by it). Every operator who flipped that boolean before this key existed sees identical behaviour
+after it.
+
+**A CEILING here, a FLOOR at `dispatch_mode` — one rule on two scales.** `dispatch_mode`'s rungs are
+ordered by SEVERITY, so "do less" is a HIGHER rung and its boolean composes as a floor. The four mode
+dials are ordered by ACTIVITY, so "do less" is a LOWER mode and the boolean composes as a ceiling. Both
+say the same thing: **the boolean can only ever reduce what the system does.** The inverse spelling is
+what a reader should expect, not a sign one of them is backwards — the full 3×2 matrix is pinned by
+`TestMutatorMode_EnabledFalseIsACeilingNotASecondLever`, along with the assertion that autopause's boolean
+does not reach the other three ladders at all (in BOTH directions: neither their action predicate nor
+their OBSERVATION predicate, since a shadow sweep that stops reporting is invisible).
+
+**Promotion is a config PUT, never a redeploy.** Every sweep re-reads config on each tick, so a dial can be
+promoted — and walked back — without restarting the singleton Control. That matters for the workflow rather
+than for convenience: an operator who had to restart to promote would promote all four at once in a
+maintenance window instead of one at a time after reading its counts, which discards the whole point of
+the ladder. Pinned by `TestMutatorMode_ModeIsRereadEveryTickSoPromotionTakesEffectWithoutRestart`,
+including the demotion half.
+
+**`autoquarantine_mode` predates this item** on the SAME three-value ladder (Phase 9.5 §2.1, seeded by
+`send_byo_0021`) — which makes it the single most likely row for a future "delete the mode dials" edit to
+take by mistake. It is not `0053`'s, and the migrate-tool integration test's Down loop is what pins that
+ownership.
+
 ## All six config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs; Phase 5 §10.4 for the two quarantine dials)
 
 **Enforced at two independent points (Phase 9 CLOSEOUT, P9-OD-2 RULED-AND-CLOSED, 2026-07-27):**

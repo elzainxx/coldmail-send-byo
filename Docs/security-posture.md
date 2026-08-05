@@ -129,6 +129,18 @@ it; a large `debug_log_retention_days` is a privacy decision on behalf of users 
 themselves. At-rest encryption for `send_logs` is registered in [`future-work.md`](./future-work.md),
 not built.
 
+**And on a freshly migrated deployment the retention promise is not being kept at all.** Since
+`send_byo_0053` the sweep is gated by `retention_mode`, seeded **`shadow`** — at which it counts the
+expired rows and logs the count, deleting nothing. So `debug_log_retention_days` describes an
+intention, not an outcome, until an operator promotes `retention_mode` to `enforce`. Because retention
+is the *sole* privacy control on this table, that promotion is not a tuning step: it is the moment the
+privacy control starts existing, and the users whose content it protects are not the party who can
+check. It is a REQUIRED go-live gate ([`go-live-checklist.md`](./go-live-checklist.md) §14) precisely
+so it cannot be missed, and the shadow count is what tells you how much accumulated before you got
+there. The default is `shadow` rather than `enforce` on purpose (ADR-0018): a sweep that deletes on
+first boot after an upgrade is not something an operator can preview, and these deletions are
+irreversible.
+
 ### R4. A deleted account's credential persists through the retention window
 
 The self-serve `DELETE /v1/send-byo/accounts/{id}` (`services/control/internal/platformapi/
@@ -147,6 +159,18 @@ State the window, state that it lives in `account_retention_window_sec`
 ([`config-reference.md`](./config-reference.md)), and state that setting it to zero is an operator
 choice with its own cost — the retention exists so a deletion is auditable and reversible, not to
 delay a promise.
+
+**Thirty days is the floor, and on a freshly migrated deployment there is no ceiling.** Since
+`send_byo_0053` the purge loop is gated by `account_purge_mode`, seeded **`shadow`** — at which it
+COUNTS the candidates whose `purge_after` has passed and logs the number, hard-deleting nothing. So
+until an operator promotes `account_purge_mode` to `enforce`, a deleted user's
+`credential_ciphertext` does not persist for thirty days; it persists **indefinitely**, and the user
+who asked for deletion has no way to observe the difference. This is the sharper of the two unkept
+promises created by that migration, because the party bearing the cost is not the party who can read
+the log line. It is a REQUIRED go-live gate ([`go-live-checklist.md`](./go-live-checklist.md) §14).
+Note the asymmetry when you promote it: the promotion is per-config-row and reversible, but each row
+it then purges is not — the first enforcing tick hard-deletes every candidate that accumulated during
+the shadow period at once, so read the shadow count *before* you promote, not after.
 
 ### The module authenticates to servers it does not control, using mechanisms those servers choose
 
@@ -301,10 +325,18 @@ The codebase cannot check these; they are the deployment's half of the posture.
 - [ ] `debug_log_retention_days` is set to a value **the operator can defend to a user** (R3) — not a
       default nobody looked at. It governs how long a user's own message bodies and recipient lists
       sit in plaintext after that user sent them.
+- [ ] **`retention_mode` is `enforce`** (R3). Until it is, `debug_log_retention_days` is an intention
+      and nothing is ever deleted — the sole privacy control on `send_logs` is not running. Verify the
+      value, do not assume the default: `GET /v1/admin/config` and read it.
 - [ ] `account_retention_window_sec` is understood and disclosed (R4) — a self-serve delete does not
       remove the credential from the database for this many seconds.
-- [ ] `autoquarantine_mode` is understood: it defaults to **shadow** (logs what it would do, acts on
-      nothing).
+- [ ] **`account_purge_mode` is `enforce`** (R4). Until it is, that window has no end: a deleted
+      user's `credential_ciphertext` persists indefinitely, not for `account_retention_window_sec`.
+      Read the shadow count first — the first enforcing tick purges everything that accumulated.
+- [ ] All five `off`/`shadow`/`enforce` dials are understood: `autoquarantine_mode`, `autopause_mode`,
+      `retention_mode`, `campaign_expiry_mode` and `account_purge_mode` all default to **shadow** —
+      each logs the action it would take and takes none. Three of the five are safe to leave there;
+      `retention_mode` and `account_purge_mode` are not (the two rows above).
 - [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content
       besides retention).
 - [ ] No account has a **private-range or link-local `smtp_host`** — certificate verification is

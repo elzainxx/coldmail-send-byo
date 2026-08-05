@@ -90,6 +90,26 @@ hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation + P
 # post-test temp-.exe cleanup ("unlinkat ... being used by another process") makes `go test`
 # exit non-zero even when every test PASSES. That artifact does not occur on Linux CI. We run
 # the tests, strip the cleanup noise, and decide pass/fail from whether Go printed a FAIL line.
+#
+# GO_SUITE_TIMEOUT: every package here drives REAL Postgres, and several deliberately spend real
+# elapsed time (CLAUDE.md Rule 10 — a lease expiry test must actually wait). Go's DEFAULT test
+# timeout is 600s per package, and internal/dispatch walked into it on 2026-08-05: the package was
+# killed at exactly 600.007s with EVERY test PASSED and not one `--- FAIL` line, and the harness
+# duly reported "FAIL: Phase 3 dispatch" for a suite in which nothing was wrong.
+#
+# WHAT ACTUALLY CROSSED THE LINE, measured rather than assumed: the same package needed 646s
+# standalone on that dev database, and **113s on a clean slate** (`dev.sh reset`) minutes later.
+# Accumulated dev-DB state — many runs' worth of accounts, jobs and send_logs behind every
+# per-test template clone — inflated it ~5.7x. Item 13's 22 new tests are ~37s of that; they were
+# not the cause, only what made the margin visible.
+#
+# That is precisely why an IMPLICIT ceiling is the wrong thing to run on. Wall-clock here is a
+# function of environment state, not just of test count, so a fixed invisible 600s converts a
+# dirty database (or a loaded CI runner) into a phantom test failure — a claimed bug in code that
+# is fine. The ceiling is therefore explicit and generous, and a breach is reported as its own
+# kind of event below. Set per-run so CI (slower, cold caches) and a laptop share one number.
+GO_SUITE_TIMEOUT="${GO_SUITE_TIMEOUT:-40m}"
+
 go_suite() { # $1=dir  $2=label
   local out
   # The trailing `|| true` is load-bearing under `set -euo pipefail`: on Windows `go test` can
@@ -100,9 +120,15 @@ go_suite() { # $1=dir  $2=label
   # deliberately judge pass/fail from the Go verdict LINE below, never the exit code — so
   # swallowing the substitution's exit status here is correct, not a masked failure. On Linux
   # CI the artifact does not occur, so `|| true` is a no-op there.
-  out="$( { cd "$1" && GOTOOLCHAIN=local go test -count=1 -v . 2>&1 | grep -vE "unlinkat|being used by another process"; } || true )"
+  out="$( { cd "$1" && GOTOOLCHAIN=local go test -count=1 -v -timeout "$GO_SUITE_TIMEOUT" . 2>&1 | grep -vE "unlinkat|being used by another process"; } || true )"
   echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -40
-  if echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
+  # A timeout is reported SEPARATELY from a test failure, because they call for opposite responses:
+  # a `--- FAIL` means fix the code, a timeout means the package outgrew its budget and no verdict
+  # was reached at all. Conflating them is what made 2026-08-05's 600s kill read as a dispatch bug.
+  if echo "$out" | grep -qE "^panic: test timed out"; then
+    echo "  NOTE: package exceeded GO_SUITE_TIMEOUT=$GO_SUITE_TIMEOUT — no verdict was reached; this is a BUDGET failure, not a test failure. Raise the budget or split the package."
+    bad "$2 (TIMED OUT after $GO_SUITE_TIMEOUT — no verdict)"
+  elif echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
 }
 go_suite tools/send-byo-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
 # The harness package now holds BOTH the isolation-mode tests AND the Phase 1 behavioral suite

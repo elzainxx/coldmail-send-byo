@@ -67,6 +67,44 @@ func (d *Dispatcher) sweepExpiredAccounts(ctx context.Context, cfg Config) (purg
 		log.Printf("purge: account_purge_delete_batch_size is %d — skipping sweep (a zero batch must never become an unbounded DELETE) level=warn", batch)
 		return 0, 0, nil
 	}
+
+	// fix-plan item 13 / send_byo_0053: the shadow ladder on the module's MOST IRREVERSIBLE writer.
+	// Read ONLY through the Effective* methods (mutator_mode.go), which normalize an unrecognized value
+	// to shadow — a typo must never acquire the power to destroy a credential.
+	//
+	//   off      no sweep, no count, no log line.
+	//   shadow   COUNT the accounts that would be purged and log it; delete nothing. THE SEEDED DEFAULT.
+	//   enforce  the pre-0053 behaviour: the batched DELETE below.
+	//
+	// WHY THIS ONE MOST NEEDED A LADDER. A purged credential is unrecoverable by any means, and the
+	// window governing it (account_retention_window_sec) is stamped into purge_after AT DELETE TIME by
+	// platformapi — so a window that was mis-seeded LAST MONTH is already baked into rows this sweep is
+	// about to act on, and correcting the config now does not save them. The shadow count is the only
+	// way an operator can find that out before it is irreversible.
+	//
+	// A COUNT, not a rolled-back DELETE, for the same reasons as retention.go's — plus one specific to
+	// this table: a rolled-back account DELETE would fire the send_byo_0024 job_events ON DELETE SET
+	// NULL carve-out path for real, taking locks on the job_events history of every candidate. Paying
+	// that on every tick to then discard it would make the observation mode more expensive than the
+	// action it is previewing. Deliberately UNBOUNDED by account_purge_delete_batch_size for the same
+	// reason: a count capped at the batch size answers "what is the batch size", not "how many accounts
+	// are about to lose their credentials".
+	if !cfg.AccountPurgeCounts() {
+		return 0, 0, nil
+	}
+	if !cfg.AccountPurgeDeletes() {
+		ctx, cancel := context.WithTimeout(ctx, purgeTickTimeout)
+		defer cancel()
+		var would int
+		if err := d.db.QueryRow(ctx,
+			`SELECT count(*) FROM send_byo.accounts WHERE deleted_at IS NOT NULL AND purge_after < NOW()`).Scan(&would); err != nil {
+			return 0, 0, err
+		}
+		log.Printf("purge: purge_shadow_would_delete — account_purge_mode=%q, so NOTHING was purged this tick; %d soft-deleted account(s) past their retention window would be hard-DELETEd at account_purge_mode=enforce. Their credential_ciphertext OUTLIVES the promised window until this dial is promoted (fix-plan item 13, go-live-checklist.md)",
+			cfg.EffectiveAccountPurgeMode(), would)
+		return 0, 0, nil
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, purgeTickTimeout)
 	defer cancel()
 

@@ -137,3 +137,7 @@ destination_throttle_user_threshold|destination_throttle_user_threshold
 quote_capacity_projection_enabled|quote_capacity_projection_enabled
 quote_long_duration_warn_sec|quote_long_duration_warn_sec
 dispatch_mode|DispatchMode
+autopause_mode|cfg\.AutopauseWrites
+retention_mode|cfg\.RetentionDeletes
+campaign_expiry_mode|cfg\.CampaignExpiryExpires
+account_purge_mode|cfg\.AccountPurgeDeletes

@@ -123,7 +123,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -194,11 +194,19 @@ func TestRunnerLifecycle(t *testing.T) {
 	// (dispatch_mode, fix-plan item 12 — the graduated dispatch kill-switch ladder; the first key added
 	// outside a numbered phase, and notably NOT paired with a drop of dispatch_enabled: ADR-0017 records
 	// why ADR-0016's two-condition test FAILS condition (1) there, the boolean having many live
-	// consumers, so it is composed as a severity floor instead of removed) = 85. The absence
+	// consumers, so it is composed as a severity floor instead of removed) = 85. PLUS FOUR at 0053
+	// (autopause_mode, retention_mode, campaign_expiry_mode, account_purge_mode — fix-plan item 13,
+	// ADR-0018: a shadow rung for every autonomous mutator that did not already have one. FOUR here
+	// against module 2's TWO, because this module runs two autonomous sweeps it does not — campaign
+	// expiry and the account purge — and those are the two most irreversible writers in the module:
+	// campaign expiry fails jobs TERMINALLY, and the purge hard-DELETEs a credential. The dial count is
+	// a property of THIS module's writers, not of the module it is being aligned with. As with 0052 and
+	// autoquarantine_mode/autopause_enabled, none of the pre-existing booleans is dropped: they are
+	// composed as CEILINGs) = 89. The absence
 	// assertions below are the anti-vacuity companions to this count: a count alone could be satisfied
 	// by dropping the WRONG keys.
-	if n := configKeyCount(t, admin); n != 85 {
-		t.Fatalf("after Up: send_byo.config has %d keys, want 85 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051 + 1 seeded at 0052)", n)
+	if n := configKeyCount(t, admin); n != 89 {
+		t.Fatalf("after Up: send_byo.config has %d keys, want 89 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051 + 1 seeded at 0052 + 4 seeded at 0053)", n)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -283,6 +291,49 @@ func TestRunnerLifecycle(t *testing.T) {
 	// runbook step that names it; it fails here.
 	if !configKeyExists(t, admin, "dispatch_enabled") {
 		t.Fatal("after Up: send_byo.config has lost dispatch_enabled — 0052 adds the rung ladder and must RETAIN the boolean (Rule 5; ADR-0017: it is composed as a floor, not replaced, because ADR-0016's condition (1) fails for it)")
+	}
+	// send_byo_0053's FOUR seeds (fix-plan item 13, ADR-0018: a shadow rung for every autonomous
+	// mutator). Same reasoning as 0052's assertion above — a pure config INSERT leaves no schema object
+	// behind, so the row IS the evidence — with the direction of the danger REVERSED: dispatch_mode had
+	// to be checked for seeding a rung that starts the system HALTED, and these have to be checked for
+	// seeding a mode that starts the system ACTING. The whole safety claim of item 13 is that a freshly
+	// migrated deployment mutates nothing until an operator promotes the dial, so `shadow` is not a
+	// preference here, it is the property.
+	//
+	// This is the assertion that CANNOT be masked. The dispatch harness pins all four to `enforce` (the
+	// Phase-5/7-era suites assert the real enforcing mechanics), so the in-package test can only assert
+	// `default_value`. This test runs the raw migration chain with no harness anywhere in the picture, so
+	// it is the only place the seeded `value` itself is observable. Both are pinned here for the same
+	// reason 0052 pins both: an operator PUT moves `value`, a reseed reads `default_value`, and a
+	// migration that got only one right would leave the other as the lie.
+	for _, key := range []string{"autopause_mode", "retention_mode", "campaign_expiry_mode", "account_purge_mode"} {
+		val, def := configValueAndDefault(t, admin, key)
+		if val != `{"v": "shadow"}` || def != `{"v": "shadow"}` {
+			t.Fatalf("after Up: %s value=%s default_value=%s, want both {\"v\": \"shadow\"} (send_byo_0053 either did not run or seeded a mode that ACTS on a freshly migrated deployment — for account_purge_mode that means destroying credentials before any operator has looked at a single shadow count)", key, val, def)
+		}
+		if vt := configValueType(t, admin, key); vt != "string" {
+			t.Fatalf("after Up: %s value_type=%q, want \"string\" (the adminapi validator dispositions the three-way enum; a bool value_type would make the PUT path reject `shadow` outright)", key, vt)
+		}
+	}
+	// ...and the companion that 0053 dropped NONE of the booleans and NONE of the rate/threshold keys
+	// its four dials now gate. Every one of these has live consumers, so ADR-0016's condition (1) fails
+	// for all of them exactly as it did for dispatch_enabled: autopause_enabled is composed as a CEILING
+	// on autopause_mode, and the rate/window/batch keys still parameterize each sweep at `enforce`. A
+	// future edit that "tidies up" the superseded-looking boolean, or that treats the sweep's tuning keys
+	// as replaced by the mode, fails here.
+	//
+	// autoquarantine_mode is in this list even though it predates item 13: it is on the SAME ladder with
+	// the same three values, which makes it the single most likely row for a "delete the mode dials"
+	// edit to take by mistake. It belongs to send_byo_0051's predecessor, not to 0053.
+	for _, key := range []string{
+		"autopause_enabled", "autoquarantine_mode", "dispatch_mode", "dispatch_enabled",
+		"retention_sweep_interval_ms", "retention_delete_batch_size",
+		"campaign_expiry_sec", "campaign_expiry_sweep_interval_ms",
+		"account_retention_window_sec", "account_purge_sweep_interval_ms", "account_purge_delete_batch_size",
+	} {
+		if !configKeyExists(t, admin, key) {
+			t.Fatalf("after Up: send_byo.config has lost %q — 0053 adds four mode dials and must RETAIN every boolean and every tuning key they gate (Rule 5; the mode says WHETHER a sweep acts, never HOW it selects or how fast it runs)", key)
+		}
 	}
 	// The over-delete guard 0049 used to get from the assertion above has MOVED, not evaporated — it is
 	// now in the Down loop, at the window between Down 0051 and Down 0049, where score_alert_threshold
@@ -703,6 +754,43 @@ func TestRunnerLifecycle(t *testing.T) {
 				t.Fatal("after Down 0052: dispatch_enabled is GONE — 0052's down must remove exactly its own row; sweeping up the retained boolean leaves a reverted system with no dispatch kill-switch at all")
 			}
 		}
+		// The paired half of 0053's up-assertion, same shape as 0052's and the same reason: a seed
+		// migration is only observable through its rows, so a down that removed only its schema_migrations
+		// entry would pass every other check in this loop and leave four keys the post-revert manifest no
+		// longer lists.
+		//
+		// The over-delete half is LONGER here than at 0052 and deliberately so. 0053 introduces four dials
+		// that each sit next to a boolean or a set of tuning keys they gate, and an over-broad down written
+		// as "remove the mutator switches this migration introduced" would take any of them:
+		//   - autopause_enabled     — gated by autopause_mode as a CEILING; deleting it leaves a reverted
+		//                             system with no way to turn auto-pause off at all
+		//   - autoquarantine_mode   — on the SAME three-value ladder, which makes it the single most likely
+		//                             row for a "delete the mode dials" revert to take by mistake. It
+		//                             belongs to the Phase 9.5 seed, not to 0053, and this is the window
+		//                             that pins that ownership: 0053 has been reversed here and the Phase
+		//                             9.5 migration has NOT, so autoquarantine_mode must still be present.
+		//   - dispatch_mode         — belongs to 0052, which has ALSO not been reversed yet at this point
+		//                             (strict reverse order), so it must still be present too
+		//   - the sweep tuning keys — retention/expiry/purge rates, windows and batch sizes. The mode says
+		//                             WHETHER a sweep acts, never how it selects or how fast it runs, so
+		//                             none of them is 0053's to remove.
+		if v == "0053" {
+			for _, key := range []string{"autopause_mode", "retention_mode", "campaign_expiry_mode", "account_purge_mode"} {
+				if configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0053: send_byo.config still has %q (down did not delete its seeded row)", key)
+				}
+			}
+			for _, key := range []string{
+				"autopause_enabled", "autoquarantine_mode", "dispatch_mode", "dispatch_enabled",
+				"retention_sweep_interval_ms", "retention_delete_batch_size",
+				"campaign_expiry_sec", "campaign_expiry_sweep_interval_ms",
+				"account_retention_window_sec", "account_purge_sweep_interval_ms", "account_purge_delete_batch_size",
+			} {
+				if !configKeyExists(t, admin, key) {
+					t.Fatalf("after Down 0053: %q is GONE — 0053's down must remove exactly its own four rows. autoquarantine_mode and dispatch_mode belong to EARLIER migrations that have not been reversed yet at this point in the loop, and every boolean/tuning key it gates has live consumers of its own", key)
+				}
+			}
+		}
 		// The paired half of 0050's up-assertion: an index migration reverses completely, so the down
 		// must actually drop it. Without this, a down file that only DELETEd its tracking row would
 		// pass every other check in this loop.
@@ -973,6 +1061,20 @@ func configValueAndDefault(t *testing.T, c *pgx.Conn, key string) (string, strin
 		t.Fatalf("config value lookup %q: %v", key, err)
 	}
 	return value, def
+}
+
+// configValueType returns a config key's value_type. Separate from configValueAndDefault because the
+// mode dials (send_byo_0053) are the first keys where the DECLARED TYPE is itself load-bearing: the
+// adminapi validator switches on value_type before it ever sees the three-way enum, so a dial seeded as
+// `bool` would reject `shadow` on the PUT path while the migration's own seeded row read back fine.
+func configValueType(t *testing.T, c *pgx.Conn, key string) string {
+	t.Helper()
+	var vt string
+	if err := c.QueryRow(context.Background(),
+		`SELECT value_type FROM send_byo.config WHERE key=$1`, key).Scan(&vt); err != nil {
+		t.Fatalf("config value_type lookup %q: %v", key, err)
+	}
+	return vt
 }
 
 // indexExists reports whether an index of the given name exists in the send_byo schema.

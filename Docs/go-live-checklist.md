@@ -338,6 +338,55 @@ asked directly.
 
 ---
 
+## 14. Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED — two promises are not being kept until you do)
+
+**Why it blocks.** Fix-plan item 13 (`send_byo_0053`, [ADR-0018](./history/decisions/0018-every-autonomous-mutator-gets-a-shadow-ladder.md))
+put every autonomous mutator behind an `off | shadow | enforce` dial, all four **seeded at `shadow`** so a
+fresh deployment observes before it acts. That is the right default for a system nobody has calibrated
+yet, and for two of the four dials it is a state you cannot stay in:
+
+| dial | left at `shadow` | is it safe to stay? |
+|---|---|---|
+| `retention_mode` | `send_byo.send_logs` — recipient, subject, body, headers, SMTP response — **grows without bound**, and the retention promise in [`security-posture.md`](./security-posture.md) is not being kept | **NO — blocks go-live** |
+| `account_purge_mode` | a soft-deleted account's `credential_ciphertext` **outlives its promised retention window**; the user deleted their account and their SMTP credential is still in your database | **NO — blocks go-live** |
+| `autopause_mode` | throttle responses are logged instead of applied — sending continues into a provider that is rate-limiting you | yes, indefinitely; recoverable |
+| `campaign_expiry_mode` | a permanently-stuck campaign is reported instead of terminated, so its jobs sit `queued` forever | yes, indefinitely; recoverable |
+
+The two blocking ones are not tuning gaps. They are **commitments to users** that the system is silently
+not honouring while the dial is shadowed, and item 13's whole trade — accepting a behaviour change on
+upgrade in exchange for an observation period — is only honest if the observation period actually **ends**.
+Note also that `retention_mode=shadow` makes item 13 above (the retention *window* decision) moot: a
+window you have thought carefully about does not purge anything if the sweep is not deleting.
+
+Neither dial's damage is visible without looking. Both sweeps log their pending count on **every tick**
+(`retention_shadow_would_delete`, `purge_shadow_would_delete`) precisely so the cost is continuously
+visible, and those lines are what you read to decide you are ready.
+
+**A promotion is a config `PUT`, not a redeploy** — the dial is re-read on the next tick, and it can be
+walked back the same way if the first enforcing tick surprises you.
+
+**Action:**
+- [ ] Read the accumulated `retention_shadow_would_delete` counts from the Control's logs. Confirm the
+      number is what you expect for your traffic and `debug_log_retention_days` (item 13). A number far
+      larger than expected means the window, not the dial, is wrong — fix that first.
+- [ ] Read the accumulated `purge_shadow_would_delete` counts the same way, against
+      `account_retention_window_sec`. **Be aware `account_retention_window_sec` is not an enable:**
+      setting it enormous does not stop the sweep, it only postpones each individual account, so a small
+      count here does not mean a small commitment.
+- [ ] `PUT /v1/admin/config/retention_mode` with `enforce`. Watch one sweep tick and confirm the
+      deletion count matches the shadow count that preceded it.
+- [ ] `PUT /v1/admin/config/account_purge_mode` with `enforce`. **This one is irreversible per row** — a
+      purged account's credential ciphertext is gone. Promote it only after the count above is a number
+      you have actually looked at.
+- [ ] Promote these two **one at a time**, not together, and leave a tick between them. If something is
+      wrong you want to know which dial caused it.
+- [ ] Record both promotions (date, the shadow count you read first) alongside the other sign-offs.
+- [ ] Decide `autopause_mode` and `campaign_expiry_mode` separately and without deadline pressure — see
+      item 6's reasoning for auto-quarantine, which applies unchanged to both. Leaving either at `shadow`
+      is a legitimate long-term posture; leaving the two above at `shadow` is not.
+
+---
+
 ## Order of operations (recommended)
 
 1. **Before the first live migration run:** items 2 (column shapes) and 3 (advisory-lock band +
@@ -357,14 +406,24 @@ asked directly.
    these are done. Then item 11 (the real-provider smoke test) — the first live send is a
    deliberate, small, watched one, never a campaign.
 5. **After a launch-safety observation window:** item 6 (auto-quarantine promotion) — deliberately
-   NOT day-one; give the shadow ladder real time to prove itself first.
+   NOT day-one; give the shadow ladder real time to prove itself first. Item 14's two REQUIRED
+   promotions (`retention_mode`, `account_purge_mode`) belong in this same window and are subject to the
+   same "watch it first" discipline — but unlike item 6 they are not optional, and the observation window
+   has to *end*. Both promises they enact are unkept until it does. The other two dials item 14 covers
+   (`autopause_mode`, `campaign_expiry_mode`) are genuinely open-ended like item 6.
 
 ## Final pre-flight (run immediately before flipping live traffic on)
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 7 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
-      `config_consumption`, `drain_grace`, `no_secret_leak`, `user_output_scrub`.
+- [ ] All 10 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+      `config_consumption`, `config_consumption_selftest`, `test_enumeration`,
+      `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`. (Was written as
+      "7" until 2026-08-05 — the two selftests and `test_enumeration` had been added and wired into
+      `.github/workflows/real-infra.yml` without this line moving. The count is the point of the line: a
+      reader checking off "7 green" against a workflow that runs 10 would not notice which three they had
+      not looked at. The authoritative list is the `run:` steps in that workflow, which enumerates each
+      script by name rather than globbing the directory.)
 - [ ] The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
       you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
       wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev
@@ -376,6 +435,11 @@ asked directly.
       `dispatch_paused:false`.
 - [ ] Items 1–5 and 7–13 above are done; item 6 is deliberately deferred to a post-launch
       observation window, per its own section.
+- [ ] Item 14's two REQUIRED promotions are done: `retention_mode=enforce` and
+      `account_purge_mode=enforce`, each after reading its accumulated shadow count. Until both are
+      promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised
+      window — two commitments the system is silently not keeping. Item 14's other two dials
+      (`autopause_mode`, `campaign_expiry_mode`) are a deliberate, open-ended posture decision like item 6.
 - [ ] The master key backup **and drill** (item 8) are done. This is the one item on this page whose
       omission cannot be corrected after the fact.
 - [ ] The master-key-rotation risk sign-off (item 12) and the `send_logs` retention window decision

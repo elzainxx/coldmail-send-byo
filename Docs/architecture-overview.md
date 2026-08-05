@@ -82,7 +82,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (worker token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
 | Tenant isolation | `user_id` on every table; RLS on all `send_byo.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `send_byo_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
-| Every tunable is config, not code | 53 seeded `send_byo.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
+| Every tunable is config, not code | 89 seeded `send_byo.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
 
 ## Control plane
 
@@ -95,7 +95,19 @@ reported as `dispatch.dispatch_rung` on `/v1/admin/health`),
 `dispatch_enabled` (the original boolean panic switch — RETAINED and still honored, composed as a
 severity FLOOR of `accept_and_defer` rather than as an independent lever, which is exactly what it
 already did),
-`autoquarantine_mode` (`off`/`shadow`/`enforce`, seeded **shadow**), `autopause_enabled`,
+`autoquarantine_mode`, `autopause_mode`, `retention_mode`, `campaign_expiry_mode` and
+`account_purge_mode` (all five `off`/`shadow`/`enforce`, all five seeded **shadow** — every autonomous
+mutator is observable before it is allowed to act, which is the property module 1 has had from the
+start and `send_byo_0053` finished here. This module has FOUR new dials where module 2 needed two,
+because it owns two autonomous mutators module 2 does not: campaign expiry and the soft-deleted-account
+purge. **Consequence worth knowing before an upgrade:** a freshly migrated deployment neither
+auto-pauses, nor deletes expired `send_logs`, nor expires campaigns, nor purges soft-deleted accounts
+until an operator promotes each dial, so `retention_mode=enforce` and `account_purge_mode=enforce` are
+REQUIRED go-live steps — left at `shadow`, `send_logs` grows without bound and deleted users' SMTP
+credential ciphertext outlives the deletion request),
+`autopause_enabled` (RETAINED, composed as a CEILING of `autopause_mode` — the same "a boolean can only
+reduce what the system does" rule `dispatch_enabled` follows as a FLOOR, stated on the inverse scale,
+because these four ladders order by ACTIVITY while `dispatch_mode` orders by SEVERITY),
 `variation_enabled`, and `alert_webhook_url` (empty = alerting off). Their exact semantics and
 defaults are in `config-reference.md`; when and how to flip them is `operator-runbook.md`.
 

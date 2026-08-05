@@ -120,11 +120,25 @@ type Config struct {
 
 	// Phase 9.5 operability & control-plane safety dials (all eleven seeded send_byo_0021;
 	// config-not-code, §6). B1-B5 controls + the S10/S11 completeness dials.
-	DispatchEnabled                   bool           // dispatch_enabled — B1 global panic switch (§1.1); a severity FLOOR on DispatchMode, see rung.go
-	DispatchMode                      string         // dispatch_mode — the graduated ladder, serving|accept_and_defer|refuse_new|stopped (send_byo_0052, fix-plan item 12). Read via EffectiveRung(), never directly by a gate.
-	AutoquarantineMode                string         // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
-	AutopauseEnabled                  bool           // autopause_enabled — B2 kill-switch (§2.2)
-	VariationEnabled                  bool           // variation_enabled — B2 master kill-switch (§2.3)
+	DispatchEnabled    bool   // dispatch_enabled — B1 global panic switch (§1.1); a severity FLOOR on DispatchMode, see rung.go
+	DispatchMode       string // dispatch_mode — the graduated ladder, serving|accept_and_defer|refuse_new|stopped (send_byo_0052, fix-plan item 12). Read via EffectiveRung(), never directly by a gate.
+	AutoquarantineMode string // autoquarantine_mode — B2 shadow ladder off|shadow|enforce (§2.1)
+	AutopauseEnabled   bool   // autopause_enabled — B2 kill-switch (§2.2); a CEILING on AutopauseMode, see mutator_mode.go
+	VariationEnabled   bool   // variation_enabled — B2 master kill-switch (§2.3)
+
+	// Fix-plan item 13's four shadow ladders (send_byo_0053, ADR-0018). ALL FOUR are read through
+	// their Effective*Mode() accessor in mutator_mode.go, never directly by a gate: that accessor is
+	// where an unrecognized value fails safe to `shadow`, and where autopause_enabled composes as a
+	// CEILING. Reading a raw field here would honour half of a control.
+	//
+	// FOUR rather than module 2's two, because this module runs two autonomous sweeps module 2 does
+	// not — campaign expiry (Phase 5 §5.3) and the account purge (Phase 3 §6.3) — and they are the two
+	// most irreversible writers in the module (terminal job failure; hard-DELETE of a credential).
+	AutopauseMode      string // autopause_mode — off|shadow|enforce; the throttle-response mutator (§2.2), CEILINGed by AutopauseEnabled
+	RetentionMode      string // retention_mode — off|shadow|enforce; the send_logs retention sweep (§3.1). shadow => send_logs grows without bound (go-live gate)
+	CampaignExpiryMode string // campaign_expiry_mode — off|shadow|enforce; the campaign expiry sweep (§5.3), whose job failures are TERMINAL
+	AccountPurgeMode   string // account_purge_mode — off|shadow|enforce; the account purge sweep (§6.3). shadow => a deleted credential outlives its window (go-live gate)
+
 	AlertWebhookURL                   string         // alert_webhook_url — B4 optional outbound webhook (§4.3); "" = disabled
 	HealthMetricsWindowSec            int            // health_metrics_window_sec — B3 rolling window (§3.2)
 	ControlSingletonAcquireTimeoutSec int            // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
@@ -374,6 +388,25 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.AutopauseEnabled, err = readBoolKey(ctx, db, "autopause_enabled"); err != nil {
+		return c, err
+	}
+	// Fix-plan item 13's four ladders (send_byo_0053). Loaded raw and UNVALIDATED here, exactly like
+	// dispatch_mode above and for the same reason: normalizeMutatorMode (mutator_mode.go) is the ONE
+	// place an unrecognized value is dispositioned, so a garbage row must reach it rather than being
+	// normalized or rejected at load. A hard error here would mean one typo prevents the Control from
+	// booting — strictly worse than booting into shadow, where nothing is mutated and everything is
+	// reported. A MISSING row is still a hard error (readStringKey's behaviour), because the migration
+	// seeds all four: an absent row means a pre-send_byo_0053 schema, not an operator override.
+	if c.AutopauseMode, err = readStringKey(ctx, db, "autopause_mode"); err != nil {
+		return c, err
+	}
+	if c.RetentionMode, err = readStringKey(ctx, db, "retention_mode"); err != nil {
+		return c, err
+	}
+	if c.CampaignExpiryMode, err = readStringKey(ctx, db, "campaign_expiry_mode"); err != nil {
+		return c, err
+	}
+	if c.AccountPurgeMode, err = readStringKey(ctx, db, "account_purge_mode"); err != nil {
 		return c, err
 	}
 	if c.VariationEnabled, err = readBoolKey(ctx, db, "variation_enabled"); err != nil {

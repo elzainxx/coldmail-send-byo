@@ -198,6 +198,29 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		if perr := validateEnumString(key, value, "off", "shadow", "enforce"); perr != nil {
 			return perr
 		}
+	case "autopause_mode", "retention_mode", "campaign_expiry_mode", "account_purge_mode":
+		// Fix-plan item 13 (send_byo_0053): the same three-way shadow ladder, generalized to the four
+		// remaining autonomous mutators. Grouped with autoquarantine_mode's value set rather than given
+		// their own cases because they ARE the same ladder — three modes, same names, same ordering, same
+		// fail-safe target — and splitting them into per-key cases with identical bodies is how four dials
+		// drift apart one edit at a time.
+		//
+		// The Control side (dispatch/mutator_mode.go's normalizeMutatorMode) ALSO degrades an unrecognized
+		// value to "shadow"; this write-time check is the operator-feedback layer, so a typo is rejected in
+		// the response to the PUT rather than silently landing on the default.
+		//
+		// Two of these matter most on this surface, and in the OPPOSITE direction from dispatch_mode's. An
+		// operator who meant `enforce` and typed `enfroce` would, without this check, get:
+		//   * retention_mode — a Control that silently deletes NOTHING and a send_logs table that grows
+		//     until the disk fills; and
+		//   * account_purge_mode — soft-deleted accounts whose credential ciphertext quietly outlives the
+		//     retention window the product promised, which is a privacy failure discovered by audit rather
+		//     than by an alert.
+		// Both failures are slow, quiet, and found via something else entirely. Rejecting the write is
+		// what turns them into an immediate 400 on the operator's own request.
+		if perr := validateEnumString(key, value, "off", "shadow", "enforce"); perr != nil {
+			return perr
+		}
 	case "alert_webhook_url":
 		// Phase 9.5 B4 §6: empty (disabled) or an http(s):// URL. Rejecting a garbage value here,
 		// rather than at webhook-fire time, means a typo'd URL is caught by the write, not silently

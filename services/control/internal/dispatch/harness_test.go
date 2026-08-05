@@ -202,6 +202,24 @@ func newDispatchEnv(t *testing.T, suffix string) *dispatchEnv {
 	// every existing Phase-5-era test keeps exercising the real mechanism unchanged; the DEDICATED
 	// Phase 9.5 shadow-mode tests (shadowmode_test.go) explicitly set "shadow"/"off" themselves.
 	env.setConfigStr(t, "autoquarantine_mode", "enforce")
+
+	// fix-plan item 13 (send_byo_0053): all FOUR new mode dials are seeded "shadow" for the same
+	// launch-safety reason autoquarantine_mode is, and the same argument applies to the pre-existing
+	// suites — policy_test (T_ThrottlePauses), shadowmode_test's autopause_enabled kill-switch control,
+	// the whole Phase 7 retention suite, campaign_expiry_test's T5b/T5c, and purge_test's T6/T7/T10 all
+	// assert the real ENFORCING mechanics that predate the ladder. Under the seeded shadow default they
+	// would observe a logged decision instead of the flag, a sweep that counts instead of deletes, and a
+	// campaign that stays unexpired — not what they test.
+	//
+	// This override CANNOT be allowed to hide the seeded default itself, which is item 13's actual safety
+	// claim. Two mechanisms sit outside its reach: TestMutatorMode_MigrationSeedsShadowNotEnforce asserts
+	// default_value (which Rule 1 forbids any test from mutating, so this function cannot touch it), and
+	// tools/send-byo-migrate/runner_integration_test.go asserts the seeded `value` against the raw
+	// migration chain with no harness in the picture at all.
+	env.setConfigStr(t, "autopause_mode", "enforce")
+	env.setConfigStr(t, "retention_mode", "enforce")
+	env.setConfigStr(t, "campaign_expiry_mode", "enforce")
+	env.setConfigStr(t, "account_purge_mode", "enforce")
 	return env
 }
 
