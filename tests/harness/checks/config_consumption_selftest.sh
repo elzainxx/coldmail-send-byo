@@ -35,6 +35,14 @@
 #   4. missing expiry field      -> FAIL, "no expiry field".
 #   5. unrecognized label        -> FAIL, "not a recognized gate/phase".
 #   6. RESERVED with no refdoc marker -> FAIL, operator-visibility rule intact.
+#   7. a real code consumer     -> OK. Reaches the consumer-grep branch cases 1-6 never touch.
+#   8. pattern ONLY in a comment -> FAIL, "ONLY INSIDE COMMENTS". The defect found 2026-08-05: the
+#      branch grepped whole files, so a TODO naming the key satisfied it while the dial was inert.
+#   9. pattern absent entirely   -> FAIL, the OTHER message. The remedies differ (never written vs.
+#      removed with a note left behind), so the two must stay distinguishable.
+#  10. an EMPTIED ledger        -> FAIL, "MISSING from". Guards a silent crash: zero non-comment
+#      lines made grep exit 1 and pipefail killed the gate with rc=1 and NO output — a misleading
+#      failure with no reason, on one of the two worst inputs. Found via module 2 on 2026-08-05.
 #
 # Case 2 is the one that makes the others meaningful: without it, a gate that rejected EVERY expiry
 # would pass cases 1/3/4/5 and this script would call that correct.
@@ -133,7 +141,78 @@ write_fixture 'selftest_key|RESERVED|Phase 8' no
 printf 'Phase 6\n' >"$TMP/Docs/current-phase.txt"          # keep the expiry in the future so THIS is the only failure
 expect "RESERVED with no refdoc marker still fails" 1 "no matching RESERVED / NOT-YET-CONSUMED marker"
 
+# --- THE CONSUMER-GREP BRANCH (cases 7-9, added 2026-08-05) -------------------------------------
+# Cases 1-6 are all RESERVED keys, which return before the consumer grep ever runs — so until now
+# this control exercised the expiry logic and NOTHING of the branch that decides whether a key is
+# actually consumed. That branch had a real defect: it grepped whole files, so a COMMENT naming the
+# pattern satisfied it. Break-verified on the real tree — replacing reclaim.go's
+# `cfg.HeartbeatIntervalSec * cfg.HeartbeatMissedThreshold` with `90 // TODO: restore
+# cfg.HeartbeatIntervalSec ...` left the gate GREEN and reporting "all 84 config key(s) have a
+# verified consumer." A gate satisfied by prose about the thing it guards.
+#
+# consumer_fixture <key> <pattern> <file-body>
+# A CONSUMED (non-RESERVED) ledger line, so the grep branch is reached. The refdoc row carries no
+# RESERVED marker, which is correct for a consumed key and keeps case 6's rule out of the way.
+consumer_fixture() {
+  local key="$1" pattern="$2" body="$3"
+  printf '%s\n' "$key" >"$TMP/Docs/config-manifest.txt"
+  printf '# fixture ledger\n%s|%s\n' "$key" "$pattern" >"$TMP/Docs/config-consumers.txt"
+  printf 'Phase 8\n' >"$TMP/Docs/current-phase.txt"
+  printf '| `%s` | `{"v":1}` | integer | fixture | an ordinary documented row |\n' "$key" \
+    >"$TMP/Docs/config-reference.md"
+  printf '### FW-M3-99 — a fixture roadmap item that really is present\n' >"$TMP/Docs/future-work.md"
+  # Wipe any previous case's source tree so consumers cannot leak between cases and make one case
+  # pass on another's file — the leak that broke test_enumeration_selftest's case 6 on its first run.
+  rm -rf "$TMP/services"
+  mkdir -p "$TMP/services/control/internal/dispatch"
+  printf '%s' "$body" >"$TMP/services/control/internal/dispatch/consumer.go"
+}
+
+# 7. A REAL consumer in code -> OK. Load-bearing: without it, a gate broken to reject every
+#    consumed key would pass cases 8 and 9 and this script would call that correct.
+consumer_fixture selftest_consumed FixtureDial 'package dispatch
+
+func use(cfg Config) int { return cfg.FixtureDial * 2 }
+'
+expect "a real code consumer is accepted" 0 "config_consumption OK"
+
+# 8. THE DEFECT. The pattern appears ONLY in a comment — the dial is inert, the note is not the
+#    thing. Asserts the specific message, not just the exit code, so the fix cannot regress into
+#    failing for the generic "no real consumer" reason and still look correct here.
+consumer_fixture selftest_consumed FixtureDial 'package dispatch
+
+func use(cfg Config) int {
+	return 90 // TODO: restore cfg.FixtureDial * 2 here
+}
+'
+expect "a pattern found ONLY in a comment is rejected" 1 "ONLY INSIDE COMMENTS"
+
+# 9. Absent entirely -> the OTHER message. The two remedies are opposite (never written vs. removed
+#    with a note left behind), so a gate that collapsed them into one message would misdirect the
+#    reader. This case is what keeps them distinguishable.
+consumer_fixture selftest_consumed FixtureDial 'package dispatch
+
+func use(cfg Config) int { return 90 }
+'
+expect "a pattern absent from code entirely is rejected with the OTHER message" 1 \
+  "has no real consumer matching pattern"
+
+# 10. AN EMPTIED LEDGER must fail WITH A REASON. Added 2026-08-05 after module 2's equivalent control
+#     caught this exact input dying silently: with zero non-comment ledger lines, grep exits 1 and
+#     `set -euo pipefail` killed the gate before it printed anything. rc=1 reads as "the gate failed"
+#     in CI, so the symptom was not silence but a MISLEADING failure with no reason attached — on one
+#     of the two worst possible inputs. Asserting the MESSAGE, not just the exit code, is the whole
+#     reason this was findable: the exit code was already 1 and looked correct.
+consumer_fixture selftest_consumed FixtureDial 'package dispatch
+
+func use(cfg Config) int { return cfg.FixtureDial }
+'
+printf '# a ledger with every entry removed\n' >"$TMP/Docs/config-consumers.txt"
+expect "an emptied ledger fails WITH A REASON, not silently" 1 "MISSING from"
+
 if [[ "$fail" -eq 0 ]]; then
-  echo "config_consumption_selftest OK: 6 cases (1 withdrawn-form rejection, 1 accepted phase expiry, 4 pre-existing rules)"
+  echo "config_consumption_selftest OK: 10 cases (2 accept, 8 reject) — expiry branch (1-6), the"
+  echo "  consumer-grep branch (7-9, incl. the comment-satisfied defect), and the emptied-ledger"
+  echo "  silent-crash guard (10) — the last two both found 2026-08-05"
 fi
 exit "$fail"
