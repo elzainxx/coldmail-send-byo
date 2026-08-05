@@ -778,6 +778,15 @@ Also unauthenticated, Phase 0 skeleton, and belonging to none of the three audie
 | GET | `/healthz` | Phase 0 | liveness |
 | GET | `/readyz` | Phase 0 | readiness: DB reachable AND singleton lock held (true state) |
 
+Both answer `200` with `{"status":…,"at":"<rfc3339>"}`. `/readyz` adds the platform's readiness
+envelope — `{"status":"ready"|"not_ready","checks":{"<dependency>":bool},"at":"<rfc3339>"}` — and
+answers `503` when any check is false. This module's checks are `db` and `singleton_lock`; the names
+live inside `checks{}` precisely so a cross-module consumer can walk the map without knowing which
+module it is talking to. The same two booleans are ALSO present at the top level, unchanged, because
+`monitoring.md` §2 tells a live uptime monitor to alert on them there; both copies derive from the
+same values. `/healthz` carries no `checks` — it checks nothing, and is 200 even with every
+dependency down.
+
 ## What is NOT part of the public REST contract
 
 The worker↔Control SEND-STREAM protocol (mTLS channel, `register`/`register_ack`/`heartbeat`/`push_job`/
