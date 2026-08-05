@@ -64,6 +64,20 @@ jobs:
         if: always()
         run: bash tests/harness/checks/config_consumption_selftest.sh
 
+      # The META-GATE: it checks that the other gates and the test suites are actually WIRED.
+      # Twice this repo has had work that was written, passing, and executed by nothing (httpapi's
+      # first test file; config_consumption_selftest.sh plus four more packages found in the audit
+      # after it). run.sh has warned about this in prose since the first incident and four packages
+      # accumulated behind the warning anyway — a warning comment is not a control. This step is the
+      # control. Needs no stack.
+      - name: Enumeration meta-gate — every test package and gate script is actually wired (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/test_enumeration.sh
+
+      - name: Enumeration meta-gate SELF-TEST — the paired control (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/test_enumeration_selftest.sh
+
       - name: Shutdown gate — SIGTERM grace clears shutdown_drain_timeout_sec (BLOCKING)
         if: always()
         run: bash tests/harness/checks/drain_grace.sh
