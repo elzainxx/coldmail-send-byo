@@ -697,6 +697,14 @@ func equalStrings(a, b []string) bool {
 // Source-level for the same reason as the outcome scan, plus one of its own: the diagnostics are
 // throttled to one line per interval per process, so capturing all three from behaviour would be
 // timing-dependent — a flaky test, which is a worse guard than none.
+//
+// SCOPED TO EACH FUNCTION'S OWN BODY, not to the whole file (tightened 2026-08-05, during the M2 port
+// of this same item). The first version scanned dispatch.go entire, and a mutation that pointed the
+// frozen-sweep diagnostic at the DISPATCH throttle timestamp PASSED it — because the field declaration
+// and its explanatory comment elsewhere in the file still contained the identifier the test looked for.
+// A file-wide scan for a name proves the name exists SOMEWHERE, which is not the property. That is this
+// alignment pass's recurring failure ("the check covers less than it claims to guard") occurring inside
+// a test written to guard against it; it was found by mutating M2's identical copy, not by reading.
 func TestDispatchRung_LogLineNamesTheRungNotJustThePause(t *testing.T) {
 	raw, err := os.ReadFile("dispatch.go")
 	if err != nil {
@@ -704,23 +712,61 @@ func TestDispatchRung_LogLineNamesTheRungNotJustThePause(t *testing.T) {
 	}
 	src := string(raw)
 
+	paused := funcBodySource(t, src, "logDispatchPausedByOperator")
+	frozen := funcBodySource(t, src, "logReclaimFrozenByOperator")
+
 	// The paused diagnostic must distinguish the three claim-stopped rungs.
 	for _, needle := range []string{"RungStopped", "RungRefuseNew", "rung=%s"} {
-		if !strings.Contains(src, needle) {
-			t.Errorf("dispatch.go's paused diagnostic does not reference %q — an operator reading it cannot tell WHICH rung is pulled, which is the ambiguity that made M1's D2 expensive", needle)
+		if !strings.Contains(paused, needle) {
+			t.Errorf("logDispatchPausedByOperator does not reference %q — an operator reading it cannot tell WHICH rung is pulled, which is the ambiguity that made M1's D2 expensive", needle)
 		}
 	}
 	// It must report BOTH dials, or an operator who pulled only one cannot tell why they are here.
-	if !strings.Contains(src, "dispatch_mode=%q") || !strings.Contains(src, "dispatch_enabled=%t") {
-		t.Error("the paused diagnostic must name both dials (dispatch_mode and dispatch_enabled) — with two inputs composing, reporting one is how an operator concludes the other is ignored")
+	if !strings.Contains(paused, "dispatch_mode=%q") || !strings.Contains(paused, "dispatch_enabled=%t") {
+		t.Error("logDispatchPausedByOperator must name both dials (dispatch_mode and dispatch_enabled) — with two inputs composing, reporting one is how an operator concludes the other is ignored")
 	}
 	// The frozen-sweep line is the one fact no other line carries.
-	if !strings.Contains(src, "reclaim_frozen_by_operator") {
-		t.Error("no reclaim_frozen_by_operator diagnostic — the frozen sweep is the one thing about `stopped` an operator cannot infer from any other log line")
+	if !strings.Contains(frozen, "reclaim_frozen_by_operator") {
+		t.Error("logReclaimFrozenByOperator does not emit reclaim_frozen_by_operator — the frozen sweep is the one thing about `stopped` an operator cannot infer from any other log line")
 	}
-	// And it must have its OWN throttle timestamp, or the far more frequent dispatch line suppresses it
-	// for the whole interval.
-	if !strings.Contains(src, "lastReclaimFrozenLog") {
-		t.Error("the frozen-sweep diagnostic shares the dispatch throttle — the dispatch loop ticks far more often and would swallow the reclaim line")
+	if !strings.Contains(frozen, "rung=%s") {
+		t.Error("logReclaimFrozenByOperator does not name the rung either — same D2 ambiguity, on the line that matters most")
 	}
+	// And it must throttle on its OWN timestamp, in BOTH the guard and the stamp, and must not touch the
+	// dispatch one: the dispatch loop ticks far more often and would swallow this line for the whole
+	// interval. Asserted as "uses its own AND does not use the other" because either half alone passes a
+	// mutation that keeps one reference and switches the other.
+	for _, needle := range []string{"time.Since(d.lastReclaimFrozenLog)", "d.lastReclaimFrozenLog = time.Now()"} {
+		if !strings.Contains(frozen, needle) {
+			t.Errorf("logReclaimFrozenByOperator does not %q — a throttle it does not own is a throttle another loop controls", needle)
+		}
+	}
+	if strings.Contains(frozen, "lastDispatchPausedLog") {
+		t.Error("logReclaimFrozenByOperator references lastDispatchPausedLog — sharing the dispatch throttle lets a chatty dispatch tick suppress the frozen-sweep line for a minute, hiding the deepest rung's most surprising consequence during the incident it matters in")
+	}
+	if strings.Contains(paused, "lastReclaimFrozenLog") {
+		t.Error("logDispatchPausedByOperator references lastReclaimFrozenLog — the same collision in the other direction")
+	}
+}
+
+// funcBodySource returns the source text of the named method's body, so a scan asserts something about
+// the function that must satisfy the property rather than about the file that happens to contain it.
+func funcBodySource(t *testing.T, src, name string) string {
+	t.Helper()
+	marker := ") " + name + "("
+	i := strings.Index(src, marker)
+	if i < 0 {
+		t.Fatalf("no func %s in dispatch.go — this test's subject moved or was renamed; fix the test, do not delete the assertion", name)
+	}
+	open := strings.Index(src[i:], "{")
+	if open < 0 {
+		t.Fatalf("func %s has no body", name)
+	}
+	rest := src[i+open:]
+	// Methods are top-level, so the body ends at the first "\n}" in column zero.
+	end := strings.Index(rest, "\n}")
+	if end < 0 {
+		t.Fatalf("cannot find the end of func %s", name)
+	}
+	return rest[:end]
 }
