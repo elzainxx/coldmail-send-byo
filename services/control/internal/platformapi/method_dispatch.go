@@ -78,8 +78,80 @@ type route struct {
 	handler http.HandlerFunc
 }
 
+// APIVersion is this module's platform contract version, DERIVED from the served route table rather
+// than written down anywhere. A breaking change means a /v2 prefix, never an in-place edit of what
+// /v1 means.
+//
+// FIX-PLAN ITEM 14, THE THIRD ADOPTION. M1 asserts its declared version against every response it
+// writes (verdict.Response.Valid(), called by both non-test writers before the write). M2 got this
+// same derivation. The property is identical in all three; the implementation is different in each,
+// which is why this was budgeted as new work rather than a copy.
+//
+// WHAT WAS WRONG HERE. handleDescribe published `"api_version": "v1"` as a bare literal, and this
+// module has 22 served paths (the core four plus 18 extension routes) each carrying its own
+// hardcoded "/v1". Measured: `grep -rn api_version --include=*.go services/` matched exactly that
+// one line, no test named the field, and contract_drift.sh — which does check describe's
+// error_codes[] against codeStatus and its vocabularies against pg_enum — never read it.
+//
+// WHY THIS MODULE IS THE RISKIEST OF THE THREE, and the reason the M2 shape is not simply reused.
+// M2's platformRoutes() is a four-entry literal that cannot realistically disagree with itself. HERE
+// the table is a FLATTENING of two declaration sites, and the larger one (extensionRoutes()) is
+// registry DATA: 18 entries of `{ID: ..., Path: "/v1/send-byo/..."}`. Adding a 19th with a typo'd or
+// deliberately different prefix is an ordinary, additive-looking edit — exactly the kind this repo
+// keeps discovering after the fact. So the disagreement case is not hypothetical here; it is the
+// most likely way this module's contract breaks.
+func (s *Server) APIVersion() string { return apiVersionOf(s.platformRoutes()) }
+
+// apiVersionOf extracts the shared version prefix from a route table, or "" if the table is empty or
+// its routes disagree. "" means UNDERIVABLE, never a version: mustAPIVersion turns it into a refusal.
+func apiVersionOf(rs []route) string {
+	version := ""
+	for _, rt := range rs {
+		seg := strings.SplitN(strings.TrimPrefix(rt.pattern, "/"), "/", 2)[0]
+		if version == "" {
+			version = seg
+			continue
+		}
+		if seg != version {
+			return "" // routes disagree: two versions served from one table
+		}
+	}
+	return version
+}
+
+// mustAPIVersion is apiVersionOf plus the refusal, and it runs at CONSTRUCTION, not per request.
+//
+// WHY CONSTRUCTION — CARRIED OVER FROM A BREAK-VERIFICATION IN M2, NOT FROM PREFERENCE. The M2
+// version of this fix first put the check inside handleDescribe (`if version == "" { 500 }`).
+// Deleting that branch left M2's entire package GREEN (break B91): the branch was unreachable from
+// any HTTP test, so it was dead code wearing a comment. Checking at construction makes the bad input
+// stageable by a test AND makes production louder — a table that cannot name one version takes the
+// process down at boot instead of serving 21 routes normally while describe 500s for whoever calls
+// it next. handleDescribe therefore has no branch of its own: no Server that can serve a request can
+// exist with an unnameable version.
+//
+// The panic message names the offending routes because whoever hits this at boot has no request and
+// no context beyond the panic line.
+func mustAPIVersion(rs []route) string {
+	v := apiVersionOf(rs)
+	if v == "" {
+		var got []string
+		for _, rt := range rs {
+			got = append(got, rt.method+" "+rt.pattern)
+		}
+		panic("platformapi: platformRoutes() does not name exactly one api_version — the table is " +
+			"empty or its routes disagree on a version prefix, so no truthful api_version can be " +
+			"published. Routes: [" + strings.Join(got, ", ") + "]")
+	}
+	return v
+}
+
 // platformRoutes is the full served set: the core four, then every extension route in registry
 // order. Additive-only; the served set must match Docs/api-contract.md (the contract_drift gate).
+//
+// The "/v1" in these patterns — the four literals here and the Path of every extensionRoute — is
+// what APIVersion() reads, so they are the single source of this module's contract version. describe
+// does not carry a second copy.
 func (s *Server) platformRoutes() []route {
 	rs := []route{
 		{"POST", "/v1/quote", s.handleQuote},

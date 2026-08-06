@@ -228,28 +228,84 @@ sleep 3
 DELJOB_STATE="$(PSQL "SELECT state FROM send_byo.jobs WHERE job_item_id='$DELJOB'" || true)"
 [[ "$DELJOB_STATE" == "failed" ]] && ok "C5 (live): a job for a deleted-account-only user FAILS promptly (M3-P4-OD-11: deletion has no auto-recovery timer), never claimed by the deleted account" || bad "C5 (live): job state=$DELJOB_STATE, want failed"
 
-# --- C5: the purge loop itself runs live, on a short account_purge_sweep_interval_ms, and hard-
-# deletes an account whose purge_after is already in the past — proving the FIFTH Control loop is
-# actually wired and ticking, not merely that sweepExpiredAccounts works when called directly
-# (the dispatch package's own Go tests already prove that half). PurgeRunner.Run only re-reads the
-# interval AFTER a tick completes (same shape as every other loop in this codebase), and it already
-# ran its one startup tick minutes ago at the DEFAULT 1h interval — so setting the config alone
-# would not be observed until that hour elapses. Restart the control container so its NEXT startup
-# tick (which every loop runs immediately, "a Control that was down past a boundary has a backlog to
-# clear") picks up the fast interval already written to config. ---
+# --- C5: the purge loop itself runs live, on a short account_purge_sweep_interval_ms, against an
+# account whose purge_after is already in the past — proving the FIFTH Control loop is actually wired
+# and ticking, not merely that sweepExpiredAccounts works when called directly (the dispatch
+# package's own Go tests already prove that half). PurgeRunner.Run only re-reads the interval AFTER a
+# tick completes (same shape as every other loop in this codebase), and it already ran its one
+# startup tick minutes ago at the DEFAULT 1h interval — so setting the config alone would not be
+# observed until that hour elapses. Restart the control container so its NEXT startup tick (which
+# every loop runs immediately, "a Control that was down past a boundary has a backlog to clear")
+# picks up the fast interval already written to config.
+#
+# THIS ASSERTION WENT STALE, and the way it did is the failure family this whole pass exists to
+# remove. It was written when the purge deleted unconditionally, and asserted only the deletion.
+# send_byo_0053 (fix-plan item 13) then put the module's MOST IRREVERSIBLE writer behind the
+# off|shadow|enforce ladder and SEEDED IT TO SHADOW, so the loop now deliberately destroys nothing.
+# The assertion kept demanding a deletion and started failing for a reason that had nothing to do
+# with the loop: the loop was ticking on the 2s interval, seeing the one eligible account, and
+# correctly refusing to touch it. Its own log said so. Neither "wait longer" nor deleting the
+# assertion would have been the fix — the first is a phantom, the second drops live proof that the
+# fifth loop exists at all.
+#
+# So it now asserts BOTH halves of the ladder against the LIVE loop, in the order the dial moves:
+#
+#   1. at the SEEDED default (shadow) the loop ticks unattended, NAMES the backlog it would destroy,
+#      and leaves the row alone. This half was never asserted live anywhere, and it is what makes a
+#      future re-shadowing of the dial impossible to mistake for a broken loop again.
+#   2. promoted to enforce — with NO second restart, because PurgeTick calls LoadConfig fresh on
+#      every tick — the very next tick hard-deletes it. That also makes config-not-code freshness on
+#      the fifth loop a live assertion rather than a claim.
+#
+# Both halves are load-bearing and neither implies the other: assertion 1 alone still passes if the
+# DELETE is removed entirely, and assertion 2 alone still passes if the ladder is removed and shadow
+# acts. `value` is what moves here, never `default_value` — Rule 1 forbids mutating that, and
+# dispatch's TestMutatorMode_* asserts on it precisely so no harness can hide a shipped-enforcing
+# dial. Both keys are restored to their seeded values at the end, as the interval already was.
+#
+# The shadow half is asserted on a log-line COUNT DELTA across the restart, not on the line's
+# presence: `$DC logs control` replays the WHOLE retained log, so a bare grep is satisfied by a line
+# this loop emitted an hour ago — the identical trap phase3_send.sh:49 records on the
+# worker-registration assertion. The delta is what proves THIS tick ran, which is in turn what makes
+# "the row still exists" an assertion about the ladder instead of a race with container startup. ---
+purge_shadow_lines() { $DC logs control 2>&1 | grep -F 'purge_shadow_would_delete' | wc -l | tr -d ' '; }
+
 PSQL "UPDATE send_byo.config SET value = jsonb_build_object('v', 2000::int) WHERE key='account_purge_sweep_interval_ms'" >/dev/null
+PSQL "UPDATE send_byo.config SET value = '{\"v\":\"shadow\"}' WHERE key='account_purge_mode'" >/dev/null
 PSQL "UPDATE send_byo.accounts SET deleted_at = NOW() - INTERVAL '2 hours', purge_after = NOW() - INTERVAL '1 hour' WHERE id='$DELACCT'" >/dev/null
+SHADOW_BEFORE="$(purge_shadow_lines || true)"
 $DC restart control >/dev/null 2>&1
 for _ in $(seq 1 30); do
   code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9080/readyz 2>/dev/null || echo 000)"
   [[ "$code" == "200" ]] && break
   sleep 1
 done
+
+# 1. shadow: the loop ticks, reports the backlog, deletes nothing.
+shadow_ticked=0
+SHADOW_LINE=""
+for _ in $(seq 1 20); do
+  SHADOW_NOW="$(purge_shadow_lines || true)"
+  if [[ "${SHADOW_NOW:-0}" -gt "${SHADOW_BEFORE:-0}" ]]; then
+    shadow_ticked=1
+    SHADOW_LINE="$($DC logs control 2>&1 | grep -F 'purge_shadow_would_delete' | tail -1 || true)"
+    break
+  fi
+  sleep 1
+done
+[[ "$shadow_ticked" == "1" ]] && ok "C5 (live): at the SEEDED account_purge_mode=shadow the purge loop (the FIFTH Control loop) ticked on its own after the restart — a NEW shadow line appeared (was $SHADOW_BEFORE), so the loop is wired and running unattended" || bad "C5 (live): no NEW purge_shadow_would_delete line within 20s of the restart (count stuck at $SHADOW_BEFORE) — the fifth Control loop is not ticking"
+grep -qE '[1-9][0-9]* soft-deleted account\(s\)' <<<"$SHADOW_LINE" && ok "C5 (live): the shadow line NAMES a real backlog, not 0 — at shadow that count is the operator's ONLY warning before credentials become unrecoverable" || bad "C5 (live): the shadow line reports no backlog even though an expired account exists: ${SHADOW_LINE:-<no line captured>}"
+STILL_SHADOW="$(PSQL "SELECT EXISTS(SELECT 1 FROM send_byo.accounts WHERE id='$DELACCT')" || true)"
+[[ "$STILL_SHADOW" == "t" ]] && ok "C5 (live): at shadow that tick deleted NOTHING, though the row was already past purge_after — the ladder holds on the module's most irreversible writer" || bad "C5 (live): the account was hard-DELETEd at account_purge_mode=shadow — shadow observes, it must never act"
+
+# 2. enforce: the NEXT tick purges, no restart — the loop re-reads config every tick.
+PSQL "UPDATE send_byo.config SET value = '{\"v\":\"enforce\"}' WHERE key='account_purge_mode'" >/dev/null
 purged=0
 for _ in $(seq 1 15); do
   still="$(PSQL "SELECT EXISTS(SELECT 1 FROM send_byo.accounts WHERE id='$DELACCT')" || true)"
   [[ "$still" == "f" ]] && { purged=1; break; }
   sleep 1
 done
-[[ "$purged" == "1" ]] && ok "C5 (live): the purge loop (the FIFTH Control loop) hard-deleted the expired account on its own startup tick after a restart, unattended" || bad "C5 (live): the account was never purged by the live loop within 15s of the restart (last check: still exists)"
+[[ "$purged" == "1" ]] && ok "C5 (live): promoted to account_purge_mode=enforce, the live loop hard-deleted the expired account on its NEXT tick with no restart (config-not-code on the fifth loop), unattended" || bad "C5 (live): the account was never purged within 15s of promoting account_purge_mode to enforce (last check: still exists)"
 PSQL "UPDATE send_byo.config SET value = jsonb_build_object('v', 3600000::int) WHERE key='account_purge_sweep_interval_ms'" >/dev/null
+PSQL "UPDATE send_byo.config SET value = '{\"v\":\"shadow\"}' WHERE key='account_purge_mode'" >/dev/null

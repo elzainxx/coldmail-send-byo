@@ -335,9 +335,17 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, verr)
 		return
 	}
+	// fix-plan item 14: DERIVED from the served route table (the strings a client's URLs must actually
+	// match), never a literal here. This module flattens 22 routes from two declaration sites, 18 of
+	// them registry data — so a literal here and the paths were two unrelated strings that agreed by
+	// luck, and the likely break is a 19th extension route added under a different prefix.
+	//
+	// No nil/empty branch, deliberately: mustAPIVersion refuses at construction, so by the time any
+	// request reaches this line the version is guaranteed derivable. M2's break B91 showed a branch
+	// HERE is unreachable and therefore untestable — see mustAPIVersion's header.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"module":      "send_byo",
-		"api_version": "v1",
+		"api_version": s.APIVersion(),
 		"capabilities": map[string]any{
 			"single_send":           true,
 			"sequences":             false,

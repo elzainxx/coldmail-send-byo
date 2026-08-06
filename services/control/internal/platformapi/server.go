@@ -154,8 +154,23 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // 405-vs-404. The extension registry remains the single DECLARATION site (§5.1: a route cannot be
 // served without a describe declaration, and a declaration cannot exist without the mux entry it
 // names); platformRoutes() only projects it into what dispatch needs.
-func (s *Server) routes() {
-	rs := s.platformRoutes()
+func (s *Server) routes() { s.wire(s.platformRoutes()) }
+
+// wire is routes() with the route table as a PARAMETER, and that is its entire reason for existing:
+// it is the only way a test can hand this code a table that disagrees with itself.
+//
+// routes() reads platformRoutes(), which always agrees on "/v1" in a healthy tree, so any guard that
+// only fires on a BAD table is unreachable through routes(). In M2 that unreachability is exactly how
+// break B91 slipped past — the api_version refusal lived in handleDescribe, deleting it kept the
+// whole package green, and no control existed that could have noticed. Taking the table as an
+// argument makes the refusal reachable (TestAPIVersion_WiringRefusesATableWithoutOneVersion), and
+// TestAPIVersion_ConstructionGoesThroughTheRefusal holds that routes() still delegates here rather
+// than registering the mux itself — a drift no behavioural test can see (M2's break B94 proved that:
+// it left every behavioural test green).
+func (s *Server) wire(rs []route) {
+	// Refuse to CONSTRUCT a server whose route table cannot name one api_version (fix-plan item 14).
+	// BEFORE any registration, so a rejected table never half-builds a server. See mustAPIVersion.
+	mustAPIVersion(rs)
 	for _, rt := range rs {
 		s.mux.HandleFunc(rt.method+" "+rt.pattern, s.requireAuth(rt.handler))
 	}
