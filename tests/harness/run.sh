@@ -110,8 +110,54 @@ hr; echo "SUITE 1+2: Go real-infra tests (migration lifecycle + DB isolation + P
 # kind of event below. Set per-run so CI (slower, cold caches) and a laptop share one number.
 GO_SUITE_TIMEOUT="${GO_SUITE_TIMEOUT:-40m}"
 
+# --- THE COUNT ASSERTION -----------------------------------------------------------------------
+#
+# A raised timeout alone would have fixed the WRONG HALF of 2026-08-05's finding. A per-package
+# cutoff fails in BOTH directions at once: it reports a phantom failure for a package in which
+# everything passed, AND it silently discards every test after the cutoff. Raising the ceiling
+# makes the loud half go quiet while the silent half survives — which is worse than before,
+# because the noisy symptom that led anyone to look is gone.
+#
+# So the ceiling is not the control. THIS is: every package must RUN AS MANY TOP-LEVEL TESTS AS
+# IT DECLARES. The expected number is not hardcoded — it is read per run from `go test -list`,
+# the compiler's own view of the roster — so it cannot drift, needs no maintenance when a test is
+# added, and cannot be quietly lowered to match a broken run the way a literal in this file could.
+#
+# One control, three failure modes, all red on a shortfall regardless of cause:
+#
+#   1. TRUNCATED RUN — a timeout, a panic, or an early `os.Exit` stops the package mid-way. The
+#      declared roster still lists everything; only the ran count drops.
+#   2. SKIPPED TESTS — the failure this script has WARNED ABOUT IN PROSE since the first incident
+#      (see the migrate-runner build comment above: a missing binary leaves TEST_TEMPLATE_DB="",
+#      141 tests across four packages t.Skip(), `go test` exits 0, and the harness prints
+#      "58 passed, 0 failed" with none of them having run). A warning comment is not a control.
+#      This is the mechanism that comment always needed: a skip does not count as a run.
+#   3. AN UNWIRED TEST FILE — partially covered by the `test_enumeration` gate at the PACKAGE
+#      level; this covers it at the TEST level, inside a package that is already wired.
+#
+# WHY `-list` AND NOT A FLOOR. A hardcoded floor is vacuous by construction: a floor of 5 on
+# internal/dispatch's 231 tests lets 226 vanish silently. To be meaningful a floor has to track
+# the real number, and a number maintained by hand drifts — which is this fix plan's own subject
+# (a doc stating a gate COUNT that had drifted below what CI ran was found in M3's checklist five
+# days ago). Deriving it removes the maintenance and the drift together.
+#
+# A SKIP IS A SHORTFALL, NOT A PASS. This is the sharpest edge of the control and it was got wrong
+# once while building it: the first version counted PASS+FAIL+SKIP as "ran" and merely PRINTED the
+# skip count. Measured against internal/platformapi with TEST_TEMPLATE_DB unset, that version
+# reported **declared=152 ran=152 skipped=143 → PASS**. 143 tests did not execute and the harness
+# called it green — the exact defect the migrate-runner comment above has warned about in prose
+# since the first incident, reproduced by the very mechanism meant to close it. A tolerated skip is
+# how "58 passed, 0 failed" gets printed over 141 tests that never ran.
+#
+# So `ran` counts PASS+FAIL ONLY. A skipped test is unaccounted-for and the package goes red, with
+# the skip count named in the failure. If a skip is ever genuinely intended, the answer is to make
+# it not-a-skip (give the package what it needs, or delete the test) — not to widen this arithmetic.
+count_ran() { # stdin: `go test -v` output. Counts EXECUTED top-level results only (PASS/FAIL).
+  grep -cE '^(--- (PASS|FAIL)): ' || true
+}
+
 go_suite() { # $1=dir  $2=label
-  local out
+  local out declared ran skipped
   # The trailing `|| true` is load-bearing under `set -euo pipefail`: on Windows `go test` can
   # exit non-zero purely from the post-test temp-.exe cleanup ("unlinkat ... being used by
   # another process") even when EVERY test PASSES, and with pipefail that non-zero would
@@ -120,15 +166,37 @@ go_suite() { # $1=dir  $2=label
   # deliberately judge pass/fail from the Go verdict LINE below, never the exit code — so
   # swallowing the substitution's exit status here is correct, not a masked failure. On Linux
   # CI the artifact does not occur, so `|| true` is a no-op there.
+  # The DECLARED roster, from the compiler rather than from a literal in this file. `-list` builds
+  # the test binary but runs nothing, so it is cheap and cannot be affected by the run's outcome.
+  # If `-list` itself fails (a compile error), declared is 0 and the mismatch check below is
+  # skipped — a package that does not build already fails on its verdict line, and a bogus 0 here
+  # must not be allowed to mask that with a second, more confusing message.
+  declared="$( { cd "$1" && GOTOOLCHAIN=local go test -list '.*' . 2>/dev/null | grep -cE '^(Test|Example|Fuzz)'; } || true )"
   out="$( { cd "$1" && GOTOOLCHAIN=local go test -count=1 -v -timeout "$GO_SUITE_TIMEOUT" . 2>&1 | grep -vE "unlinkat|being used by another process"; } || true )"
   echo "$out" | grep -E "^(ok|FAIL|--- (PASS|FAIL))" | tail -40
+  ran="$(echo "$out" | count_ran)"
+  skipped="$(echo "$out" | grep -cE '^--- SKIP: ' || true)"
+  # Report the arithmetic on EVERY package, pass or fail. The counts are the evidence that the
+  # suite ran; printing them only on failure would leave a green run unable to prove it.
+  echo "  counts: declared=$declared ran=$ran skipped=$skipped"
   # A timeout is reported SEPARATELY from a test failure, because they call for opposite responses:
   # a `--- FAIL` means fix the code, a timeout means the package outgrew its budget and no verdict
   # was reached at all. Conflating them is what made 2026-08-05's 600s kill read as a dispatch bug.
   if echo "$out" | grep -qE "^panic: test timed out"; then
     echo "  NOTE: package exceeded GO_SUITE_TIMEOUT=$GO_SUITE_TIMEOUT — no verdict was reached; this is a BUDGET failure, not a test failure. Raise the budget or split the package."
-    bad "$2 (TIMED OUT after $GO_SUITE_TIMEOUT — no verdict)"
-  elif echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"; else ok "$2"; fi
+    bad "$2 (TIMED OUT after $GO_SUITE_TIMEOUT — ran $ran of $declared declared, no verdict)"
+  elif echo "$out" | grep -qE "^--- FAIL|^FAIL\b"; then bad "$2"
+  # THE SHORTFALL CHECK. Ordered AFTER the two failure branches (a timeout or a real FAIL is the
+  # more specific diagnosis and shortfall is usually its symptom) but BEFORE ok(), so a package
+  # that exits 0 having run fewer tests than it declares can never be reported as passing. This is
+  # the branch that closes the silent half of the timeout defect, and the skip-to-green defect the
+  # header comment has warned about in prose since the first incident.
+  elif [ "$declared" -gt 0 ] && [ "$ran" -lt "$declared" ]; then
+    echo "  NOTE: $((declared - ran)) declared test(s) never EXECUTED ($skipped skipped, $((declared - ran - skipped)) with no result at all). go test exited without a FAIL line, so this would have been reported as PASSING. Causes seen here: tests gated on an env var that was empty (TEST_TEMPLATE_DB=\"\" skips 143 of platformapi's 152), or a truncated run (timeout/panic). NOT satisfied by raising GO_SUITE_TIMEOUT, and NOT satisfied by declaring the skips intended."
+    bad "$2 (EXECUTED $ran OF $declared DECLARED TESTS — $skipped skipped, $((declared - ran)) unaccounted for)"
+  else
+    ok "$2"
+  fi
 }
 go_suite tools/send-byo-migrate "migration lifecycle + contiguity guard (apply/idempotent/down/gap)"
 # The harness package now holds BOTH the isolation-mode tests AND the Phase 1 behavioral suite
