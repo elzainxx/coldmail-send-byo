@@ -17,7 +17,7 @@ Start at the [root README](../README.md) if you have not already.
 | [`monitoring.md`](./monitoring.md) | Where do I point uptime monitoring and the alert webhook? |
 | [`capacity-planning.md`](./capacity-planning.md) | How many users and accounts do I need for N sends/day, and what binds first? |
 | [`user-facing-copy.md`](./user-facing-copy.md) | Every string a user reads, and the evidence it is audited against. A user reads the sentence, not an error code — this is the contract that keeps those sentences honest. |
-| [`coldmail-send-byo-local-test-guide.md`](./coldmail-send-byo-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
+| [`send-byo-local-test-guide.md`](./send-byo-local-test-guide.md) | How do I verify the whole system on a dev machine before deploying? The 13-stage local gate, and the honest list of what local testing cannot prove. |
 | [`smoke-test-real-provider.md`](./smoke-test-real-provider.md) | The first-contact-with-a-real-provider procedure. Written, deliberately not yet run. |
 
 ## Reference (the integrator/extender tier)

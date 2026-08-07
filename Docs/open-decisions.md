@@ -147,7 +147,21 @@ each item's full context. Each points here.
 | `RULED` 2026-07-31 — decided individually (7 BLOCKS + 5 RULE) | **12** |
 | **RAISED after the pass** — new, found mid-build (M3-P7-OD-9 by the Chunk 3 sweep, M3-P7-OD-10 while wiring the delivery loop, M3-P7-OD-11 while starting the quote feasibility work, M3-P4-OD-12 during Phase 4's own build), **all four ruled the same day found** | **4** |
 | **RAISED by Phase 8** — M3-P8-OD-7 (a path collision between this phase's own spec and a Phase-6-ruled policy), M3-P8-OD-8 (three RESERVED config keys past their Phase-8 expiry, one with a falsely-claimed consumer) | **2** |
-| **STILL NEEDING A RULING — M3-P8-OD-7, M3-P8-OD-8** | **2** |
+| ~~**STILL NEEDING A RULING — M3-P8-OD-7, M3-P8-OD-8**~~ **→ both RULED 2026-08-04; queue EMPTY** | **0** |
+
+> **This table's last row was STALE and is corrected here (2026-08-07).** It read
+> `STILL NEEDING A RULING — M3-P8-OD-7, M3-P8-OD-8 | 2` while the status paragraph immediately above it
+> already said, correctly, that both were ruled on 2026-08-04 and landed. The prose was updated when the
+> rulings landed; **the summary table was not.** Found during the Chunk-4 ledger sweep by reading the
+> table against the prose instead of trusting either alone.
+>
+> **Worth naming as a pattern, because it is the failure mode this whole ledger exists to prevent:** a
+> summary that counts open items is a *derived* number, and a derived number kept by hand drifts from
+> its source silently and always in the same direction — the summary says there is work left after the
+> work is done, or (far worse) says the queue is empty when it is not. Nothing here recomputes it; the
+> honest statement is that this row is maintained by hand and must be re-read against the ruling bodies
+> whenever one lands. **Total: 97 raised, 97 ruled, 0 open — and every count in this table is a hand
+> count, so treat the individual ruling sections below as the authority, not this table.**
 
 **Three ruled against my recommendation.** M3-P5-OD-1 (I recommended repurpose; ruled: split the
 key), M3-P7-OD-8 (I put (b) to the user; ruled: both), M3-P0-OD-11 (I offered no recommendation;

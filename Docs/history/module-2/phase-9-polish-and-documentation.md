@@ -484,6 +484,33 @@ a UI team could build against this **without asking a question**. Two surfaces,
 
 ### 5.3 Platform-facing surface (per-tenant isolated; auth domain A)
 
+> **R2-5 RULED 2026-08-07 — THREE rows below are STALE for module 3. Do not implement from this table;
+> the authority is [`api-contract.md`](../../api-contract.md).** This is a quick-reference table in a
+> CLOSED spec — and note *whose*: it is **module 2's** phase-9 spec, inherited here as history. Module 3
+> then diverged from it deliberately. CLAUDE.md §8 forbids editing a locked spec as build work, so the
+> ruling is **annotate, do not rewrite**; the rows stay verbatim as the historical record of what module
+> 2 specified. What is stale for module 3, precisely — each verified against the code on 2026-08-07:
+>
+> - **`POST /v1/quote`** shows the body as `{"recipient_count": <int>}`. In module 3 **`user_id` is also
+>   REQUIRED** (`internal/platformapi/handlers.go:87` → `400 validation_failed` / `user_id_required`).
+>   **This is a genuine per-module divergence, not a doc slip:** M3-P7-OD-5 made it required because
+>   every §4.2 field `quote` returns is per-user, whereas module 2's `quote` validates `user_id` only
+>   *if present* and never requires it. The row above is right for module 2 and wrong for module 3.
+>   `quote` here is also a **feasibility** check, not a cost lookup, and the `cost`/`currency`/
+>   `unit_price_credits`/`tier` fields shown are retained-but-INERT (Rule 5) — see `api-contract.md`.
+> - **`POST /v1/run`** shows `{"job_item_id": "uuid"}`; `user_id` is also REQUIRED (`handlers.go:148`).
+> - **`GET /v1/report`** shows the selector as `?job_id=` | `?job_item_id=` | `?campaign_id=`;
+>   **`?user_id=<uuid>` is a REQUIRED tenant selector in addition** (`handlers.go:222`).
+>
+> **Why an annotation and not a gate.** `contract_drift` verifies served routes against
+> `api-contract.md`; it does not read closed phase specs, and it should not — they are frozen by design.
+> A stale example inside one is therefore invisible to every automated check in this repo, and no
+> mechanism could catch the next one without unfreezing the specs. This is the rare case where the only
+> available control is a reader-facing warning at the point of use, placed where someone about to
+> implement from the wrong table will read it. **The item as filed named `run` only;** `report` and
+> `quote` were found while ruling it, and `quote`'s is the one that matters most, because it differs
+> between the two modules rather than merely lagging the code.
+
 | Method · Route | Purpose | Request | Success response |
 |---|---|---|---|
 | `POST /v1/quote` | Cost preview (pure, no side effects, idempotent — §1) | `{ "recipient_count": <int> }` | `200 { recipient_count, cost, currency:"credits", unit_price_credits, tier }` |

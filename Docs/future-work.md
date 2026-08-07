@@ -35,7 +35,7 @@ accidental redesign. Anything here that resolves an ambiguity needs an Open Deci
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Bounce / complaint ingestion** | Consuming asynchronous provider feedback (DSN bounce mail, ARF complaint reports, or a provider webhook) and feeding it back into account health and suppression. | Out of scope for V1 by design. **This is the most consequential absence in the system** and is stated plainly wherever it matters: a provider `250` is recorded as `sent`, and nothing downstream is ever observed. There is no bounce data, so there is no suppression list, no complaint-rate signal, and no reputation feedback loop. The account scoring model was written *around* this — [`Docs/history/`](./history/) Phase 5 §3.3 carves bounce data out of scoring explicitly. Note the distinction: a **synchronous** SMTP-time bounce (a `550` during the session) *is* classified and lands the job in `bounced`; what is missing is everything the provider tells you **after** it accepted the message. |
+| **Bounce / complaint ingestion** (`FW-M3-7`) | Consuming asynchronous provider feedback (DSN bounce mail, ARF complaint reports, or a provider webhook) and feeding it back into account health and suppression. | Out of scope for V1 by design. **This is the most consequential absence in the system** and is stated plainly wherever it matters: a provider `250` is recorded as `sent`, and nothing downstream is ever observed. There is no bounce data, so there is no suppression list, no complaint-rate signal, and no reputation feedback loop. The account scoring model was written *around* this — [`Docs/history/`](./history/) Phase 5 §3.3 carves bounce data out of scoring explicitly. Note the distinction: a **synchronous** SMTP-time bounce (a `550` during the session) *is* classified and lands the job in `bounced`; what is missing is everything the provider tells you **after** it accepted the message. |
 | **Open / click tracking** | Pixel or redirect-based engagement tracking. | Deliberately excluded, and the exclusion is *enforced*: a Phase 8 behavioral test asserts there is no tracking or redirect surface in a delivered message. Adding it is a product decision with privacy consequences, not a technical gap — and it would breach the forward boundary that test protects. |
 | **Warm-up / ramp logic** | Automatically increasing an account's daily limit over its first weeks. | Needs the feedback loop above to be safe. Ramping without bounce or complaint data is ramping blind. Today the equivalent is manual: set a low `daily_limit` and raise it yourself. |
 
@@ -108,7 +108,7 @@ is registered here.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Go toolchain upgrade to clear two module vulns** | `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop in `golang.org/x/text`, fixed in v0.39.0). **Both are real and both have live call paths** — this is not a toolchain-only stdlib advisory. | **The highest-priority item on this page.** The remediation was attempted during Phase 10 and **proven to break the build**, so it was reverted rather than half-applied: both bumps rewrite `go 1.23` → `go 1.25.0` in `services/control/go.mod`, which breaks the pinned `golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual failing `docker build`). Clearing them therefore means upgrading the builder image and re-verifying the full harness on the new toolchain — build infrastructure, not polish, and not something to slip into a docs phase. Do this before a pilot carries real data. |
+| **Go toolchain upgrade to clear two module vulns** (`FW-M3-8`) | `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop in `golang.org/x/text`, fixed in v0.39.0). **Both are real and both have live call paths** — this is not a toolchain-only stdlib advisory. | **The highest-priority item on this page.** The remediation was attempted during Phase 10 and **proven to break the build**, so it was reverted rather than half-applied: both bumps rewrite `go 1.23` → `go 1.25.0` in `services/control/go.mod`, which breaks the pinned `golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual failing `docker build`). Clearing them therefore means upgrading the builder image and re-verifying the full harness on the new toolchain — build infrastructure, not polish, and not something to slip into a docs phase. Do this before a pilot carries real data. |
 | **A dependency/vulnerability scan in CI** | `govulncheck` (and an equivalent for the worker) as a blocking or reporting gate. | Scanning was done by hand in Phase 10. The five existing CI gates all catch *drift between code and docs*; a vuln gate is a different kind of check whose failure mode is "a new advisory published upstream breaks your build with no code change," which needs a policy decision (blocking vs reporting) before it is added. Note the worker needs no scanner: it ships `dependencies: {}` — `npm audit` has nothing to audit, which is the no-DB/no-KMS boundary showing up as an absence. |
 
 ---
@@ -116,7 +116,7 @@ is registered here.
 ## 6. Known defects, flagged not fixed
 
 Found during Phase 10's verification passes, plus one gap found later while walking
-[`coldmail-send-byo-local-test-guide.md`](./coldmail-send-byo-local-test-guide.md). Each is real and
+[`send-byo-local-test-guide.md`](./send-byo-local-test-guide.md). Each is real and
 reproduced; each fix is a **behavior change**, which is why none was made in a phase whose contract is
 that behavior does not change. Listed most-likely-to-be-hit first.
 
@@ -152,10 +152,10 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 
 ---
 
-## 7. One genuinely open decision
+## 7. The last open decision — RULED AND CLOSED 2026-08-07
 
-Every item in the ledger across phases 0–10 (including 9.5) is ruled and closed **except one**, which
-is left open because it is the user's call and not a build decision:
+Every item in the ledger across phases 0–10 (including 9.5) is now ruled and closed. This was the last
+one held open, because it was the user's call and not a build decision:
 
 - **R2-5** — `Docs/history/module-2/phase-9-polish-and-documentation.md` §5.3's quick-reference table shows
   `run`'s request body as `{job_item_id}`, omitting the required `user_id`. It is a **stale example in
@@ -164,6 +164,32 @@ is left open because it is the user's call and not a build decision:
   `contract_drift` actually verifies against) is correct. Fixing it means spending a deliberate,
   reviewed edit on a frozen document (CLAUDE.md §8). **Not a build blocker, not a contract gap, and
   not something an operator or UI team would hit** — they read the living contract.
+
+**RULING: annotate, do not rewrite.** The stale rows stay verbatim as the historical record; a dated
+`R2-5 RULED` warning block now sits directly above the table, naming each stale row and pointing at
+`api-contract.md` as the authority. That respects CLAUDE.md §8 (the frozen rows are unedited) while
+putting the correction where someone about to implement from the wrong table will actually read it.
+
+**Two things found while ruling it, which the item as filed did not name.**
+
+1. **Three rows are stale, not one.** All three verified against the code on 2026-08-07:
+   `quote` (`internal/platformapi/handlers.go:87`), `run` (`:148`), and `report` (`:222`) each reject a
+   missing `user_id` with `400 validation_failed` / `user_id_required`. The table omits it in all three.
+2. **`quote`'s staleness is a real per-module divergence, not doc lag.** That §5.3 table is **module
+   2's** spec, inherited into this repo as history. Module 3 then made `user_id` **required** on `quote`
+   (M3-P7-OD-5 — every §4.2 field it returns is per-user), whereas module 2 validates `user_id` only
+   *if present* and never requires it. So the row is *correct for module 2* and *wrong for module 3* —
+   which is exactly the case a "just copy the fix across both repos" reflex would have gotten wrong.
+   The two modules' annotations therefore differ on purpose: M2's names two stale rows, M3's names three.
+
+**Why the control here is a warning and not a gate.** `contract_drift` verifies served routes against
+`api-contract.md`; it does not read closed phase specs, and it must not — they are frozen by design, so
+a gate over them would either fail permanently or force an edit CLAUDE.md §8 forbids. A stale example
+inside a locked spec is thus invisible to every automated check in this repo, and no mechanism could
+catch the next one without unfreezing the specs. Standing rule elsewhere in this work is that a warning
+comment is never an acceptable substitute for a mechanism; **this is the documented exception, and the
+reason is structural, not convenience** — the subject is immutable by policy, so the only remaining
+control is a reader-facing warning placed at the point of use.
 
 Full ledger with every ruling: [`Docs/history/open-decisions.md`](./history/open-decisions.md).
 
@@ -649,3 +675,165 @@ retires the drift test. (2) Failing that, add the third copy and extend the drif
 three, which is a strictly worse version of (1). Do NOT wrap only the `t.Fatalf` call sites: the same
 reasoning that put the fix at the error's source in the shipped code applies here — a fix at the
 print protects one print.
+
+---
+
+## 9a. Three ids that were RULED into this register and never landed in it (added 2026-08-07)
+
+**Found by the Chunk-4 ledger sweep**, by enumerating the `FW-M3-N` ids used anywhere in the repo and
+diffing them against the ids this file actually defines. The sequence had a hole: **`FW-M3-6`,
+`FW-M3-7`, and `FW-M3-8` were cited elsewhere but defined nowhere.** All three are registered below,
+which is what their rulings instructed. Nothing about their *substance* was lost — the sweep found a
+bookkeeping failure, not three forgotten problems — but two of them were being *cross-referenced* to
+this file by documents that a reader would follow and find nothing.
+
+**Why this is worth recording as a class and not just fixing quietly.** These are the two distinct
+shapes of a broken deferral:
+
+- **`FW-M3-6` — a ruling whose entire disposition was "register it", and the registration never
+  happened.** M3-P8-OD-6 was RULED-ACCEPTED on 2026-07-31 with the disposition *"Register as
+  `FW-M3-6`, do not build in Phase 8"*. Both halves are recorded in
+  `Docs/open-decisions.md:383` and `Docs/history/phase-8-polish-docs-close.md:440`. The
+  do-not-build half was honoured. **The register half was not, so the item existed only inside the
+  document recording the decision to file it** — the ruling and its own execution were the same
+  sentence, and the sentence was read as done because it was written down. This is the
+  claimed-but-unwritten class applied to bookkeeping: **a ruling that says "file this" is not
+  self-executing, and nothing here checks that a disposition of that form was carried out.**
+- **`FW-M3-7` / `FW-M3-8` — subjects present, ids absent, so inbound citations dangle.**
+  `shared-code-manifest.md:184` says of `FW-M3-8`: *"Also tracked here, not only in
+  `future-work.md`"* — an explicit claim about this file that was false, because the id appeared
+  nowhere in it. Their subjects *were* here all along (bounce/complaint ingestion is §1's first row;
+  the two Go module vulns are §5's first row) so no work was lost, but a reader following the
+  citation searched for `FW-M3-8`, found nothing, and had no way to know the subject was two
+  sections up under a different name. **A cross-reference to an id is a claim that the id exists.**
+
+**No gate covers this, and the honest reason is bounded scope, not oversight.** `config_consumption`
+deliberately stopped reading this file (see its header comment, and the WITHDRAWN `FW-M3-N` expiry
+form ruled out on 2026-08-05): a marker whose only condition is *"a heading exists in
+`future-work.md`"* passes forever and never comes due, which is why that form is now a hard failure.
+That ruling was correct and is not being reopened. But note precisely what it means — **it removed the
+only mechanism that ever read an `FW-M3-N` id, so nothing now verifies that a cited id resolves.** A
+cheap and honest check would be a link-integrity gate (every `FW-M3-N` referenced anywhere in the repo
+has a defining heading in this file), which is a *different* check from the withdrawn one: it asserts
+**resolvability**, never **completion**, so it cannot become a marker that never comes due. That is
+`FW-M3-6`'s own subject generalized by one step, and it is registered as `FW-M3-18` below rather than
+built inside a closeout.
+
+### FW-M3-6 — Machine-check `Docs/README.md`'s doc↔gate table
+
+**Registered:** 2026-08-07 (**ruling date 2026-07-31** — M3-P8-OD-6, RULED-ACCEPTED; this entry is
+the late execution of that ruling's "register it" half, see §9a).
+
+**What it is.** A gate asserting that every doc named in `Docs/README.md`'s table exists, and every
+gate that table names is a real script under `tests/harness/checks/`.
+
+**Why it was flagged.** That table is the only manifest of doc↔gate coupling in the repo and nothing
+verifies it, so the artifact a future phase would consult to know which gates to repoint can go stale
+silently. The ruling noted the argument cuts both ways: Phase 8's own documentation reorganisation is
+exactly the event such a gate would have protected against.
+
+**Why it was not built.** A new gate is new work, and Phase 8's contract was polish/docs. The ruling
+required Phase 8 to at minimum update the table in the same commit as the reorganisation, which it
+did.
+
+**Fix shape.** Walk the table's markdown links; assert each doc path exists and each named check
+script exists and is executable. The control is a deliberately broken row — rename one doc, watch it
+go red — which is also the test that proves the gate is wired rather than merely present.
+
+### FW-M3-7 — Bounce / complaint ingestion
+
+**Registered:** 2026-08-07 as an id; **the subject has been in this file since it was written** — it
+is [§1](#1-deliverability-feedback--the-largest-single-gap)'s first row, and §1 calls it *"the most
+consequential absence in the system."* Inherited from module 2 §1; module 3 does not close it.
+
+**Status.** Deferred, out of scope for V1 by design. **The authority for this item is §1**, which
+carries the full reasoning (a provider `250` is recorded as `sent` and nothing downstream is ever
+observed; no bounce data means no suppression list, no complaint-rate signal, no reputation loop; the
+scoring model was written around the absence). This entry exists so the id resolves. Note the
+distinction §1 draws: a **synchronous** SMTP-time `550` *is* classified and lands the job `bounced`;
+what is missing is everything the provider says **after** accepting the message.
+
+### FW-M3-8 — The two unpatched Go module vulnerabilities with live call paths
+
+**Registered:** 2026-08-07 as an id; **the subject has been in this file since it was written** — it
+is [§5](#5-build-infrastructure)'s first row, marked there as *"the highest-priority item on this
+page."* Also tracked in [`shared-code-manifest.md`](./shared-code-manifest.md) §184, whose claim that
+this id is tracked here is what surfaced the missing anchor.
+
+**Status.** Deferred. `GO-2026-5004` (`pgx/v5`, fixed v5.9.2) and `GO-2026-5970`
+(`golang.org/x/text`, fixed v0.39.0); both have live call paths. **The authority for this item is
+§5**, which records that the remediation was attempted and *proven* to break the build (both bumps
+rewrite `go 1.23` → `go 1.25.0`, which breaks the pinned `golang:1.23-alpine` builder — confirmed by
+an actual failing `docker build`), so it was reverted rather than half-applied.
+
+**The inherited-claim discipline that came with this id.** Phase 8 registered it with an explicit
+instruction — **re-verify rather than inherit the claim** — because module 3 forks module 2's
+`go.mod` and therefore forks its advisories, but an upstream fix may have landed since the 2026-07-28
+measurement. `phase-8-polish-docs-close.md:444` names this as a class: a register can accumulate
+entries that are **facts about the world at a past date** rather than facts about this repo, and those
+decay silently. Treat both CVE fix-version claims as needing re-measurement at the time of the bump,
+not as settled.
+
+### FW-M3-19 — A markdown link-integrity gate over `Docs/`
+
+**Registered:** 2026-08-07, after MEASURING the current state rather than supposing it.
+
+**What was measured, on 2026-08-07.** A one-off walk of every relative markdown link under `Docs/` in
+all three repos: **`coldmail-send-byo` 263 local links / 2 broken · `coldmail-send-managed` 228 / 2 ·
+`coldmail-verify` 485 / 0.** The four broken ones were **rename fallout**: `Docs/README.md` and
+`Docs/future-work.md` in both senders pointed at `coldmail-send-byo-local-test-guide.md` /
+`coldmail-send-managed-local-test-guide.md` — the *prose* was updated to the new repo prefix while the
+files kept their shorter names (`send-byo-local-test-guide.md`, `send-managed-local-test-guide.md`).
+All four are **fixed now**, and a re-measurement reads 0 broken in all three repos. This item is the
+*gate*, not the fix.
+
+**Why a gate and not just the fix.** Four dangling links accumulated from a rename that also touched
+hundreds of correct ones, and nothing noticed. A separate instance was found the same day in
+`Docs/history/open-decisions.md`, which cites `Docs/pre-live-gates.md` twice after the file moved to
+`Docs/history/` — that one is in a **frozen** document and so was annotated rather than repaired,
+which makes the case sharper: a link can break in a file that policy forbids anyone from editing, and
+the only way to learn that is to check. **The failure mode is silent and one-directional** — a reader
+follows a citation, finds nothing, and cannot tell whether the subject was renamed, moved, or never
+existed. §9a's `FW-M3-6` is exactly that third case.
+
+**Why it is not built here.** New gate, new work, and this closeout adds no mechanisms. Also note the
+scoping decision it needs: whether to cover `Docs/history/` (frozen documents *will* accumulate stale
+links by design, since the tree moves under them and they may not be edited), which is a policy
+question — a permanently-red gate is worse than none. The honest shape is probably to check frozen docs
+in a **reporting** mode and live docs in a **blocking** one.
+
+**Fix shape.** Extract `](<relative path>)` from every `Docs/**/*.md`, skip `http`/`#`/`mailto`, strip
+any `#anchor`, and assert the target exists relative to the *citing* file's directory. Verified
+workable: the measurement above is that exact algorithm, run by hand. Control: point one link at a
+nonexistent file and watch it go red.
+
+### FW-M3-18 — A link-integrity gate for `FW-M3-N` ids
+
+**Registered:** 2026-08-07, by the sweep in §9a that found `FW-M3-6/7/8` cited but undefined.
+
+**What it is.** A check that every `FW-M3-N` id referenced anywhere in the repo has a defining
+heading in this file, and (the reverse direction) that the defined ids form a gapless sequence.
+
+**Why it is not the WITHDRAWN form.** The `FW-M3-N` **expiry** marker was ruled out on 2026-08-05
+because its only condition was "a heading exists," which passes forever and never comes due. This is
+a different assertion with a different failure mode: it says **a citation resolves**, never **the work
+is done**. It cannot become a stale time box because it makes no claim about time. Keeping the
+distinction explicit matters — the withdrawn form's lesson is *"do not let a heading stand in for
+completion,"* not *"never read this file from a gate."*
+
+**Why it is not built here.** A new gate is new work, and this closeout's contract is to close what is
+open, not to add mechanisms. Flagged rather than built, with the same reasoning M3-P8-OD-6 got.
+
+**Fix shape.** Grep the repo for `FW-M3-[0-9]+`, collect the ids, compare against the `### FW-M3-N`
+headings in this file; fail on any cited-but-undefined id and on any gap in the defined sequence. The
+control is exactly the state found on 2026-08-07 — delete the `FW-M3-6` heading and the gate must go
+red, which is a real historical state and not a synthetic one.
+
+**One trap, found while running that comparison by hand.** It must **exclude
+`tests/harness/checks/config_consumption_selftest.sh`**, which writes `### FW-M3-99 — a fixture
+roadmap item that really is present` into a *temp-dir* `future-work.md` (lines 88 and 163) to prove the
+withdrawn-form rejection is not merely "the heading was missing." A naive repo-wide grep reads that
+fixture id as a citation and reports a dangling `FW-M3-99` — the gate would fail on its own neighbour's
+test data. Noting it here because that is the specific mistake that turns this gate from a five-minute
+job into a confusing red, and because the alternative fix (renumbering the fixture) would weaken the
+selftest's point.
