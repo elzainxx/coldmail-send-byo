@@ -36,8 +36,86 @@ jobs:
       - name: Generate dev certs/secrets + provision dev worker (writes .env)
         run: bash scripts/dev.sh certs
 
-      - name: Bring up the stack (base + harness override; blocks on healthchecks)
-        run: bash scripts/dev.sh up
+      # `reset`, NOT `up`. THE ORDER IS LOAD-BEARING: postgres -> migrate (send_byo.boxes must EXIST)
+      # -> seed the box token rows -> everything else. `up` skips the seed, and the worker's only
+      # depends_on is `control: service_healthy`, so on a cold volume it registers before
+      # send_byo.boxes carries its token_hash, is rejected as unauthenticated, burns its retry budget
+      # and EXITS. It has no restart policy, so nothing brings it back — and `docker compose up
+      # --wait` still returns 0, because the worker has no healthcheck for --wait to block on. The
+      # stack reports success with a dead worker in it.
+      #
+      # MEASURED on this repo 2026-08-07, running exactly what this workflow said: after
+      # `certs -> up`, `dev.sh up` EXITED 0 and `docker inspect` reported the worker
+      # `running=false RestartCount=0 exit=1`, with the log naming the cause ("register rejected:
+      # unauthenticated" then "could not (re)register within the retry budget; exiting").
+      #
+      # WHAT THIS DID *NOT* DO IS TURN THE HARNESS RED, AND THAT IS WHY IT SURVIVED. run.sh SUITE 3
+      # seeds send_byo.boxes and runs `up -d --no-deps worker` itself (a fix made for that suite's own
+      # sake), so the dead worker is resurrected mid-run and the unseeded stack still scored
+      # **100 passed, 0 failed** end to end. Module 2, whose harness has no such self-heal, scored
+      # 58/4 on the same defect. So in THIS repo the defect was invisible in the verdict: every suite
+      # before SUITE 3 ran against a dead worker and happened not to need it, and nothing reported
+      # that the stack it was handed was broken. A green whose premise was never checked is the thing
+      # the step below exists to make impossible.
+      #
+      # scripts/dev.sh's `reset` case has documented this the whole time — "seeding after `up` is too
+      # late, because the worker has already burned its retry budget and exited" — and this workflow
+      # called `up` anyway. A comment in one file is not a control over another. CI now invokes the
+      # recipe that encodes the ordering instead of re-implementing a subset of it.
+      - name: Bring up the stack in the seeded order (postgres -> migrate -> seed -> rest)
+        run: bash scripts/dev.sh reset
+
+      # ANTI-VACUITY for the step above, guarding a real blind spot: `dev.sh up` returns 0 with a DEAD
+      # worker (no healthcheck on the worker service — verified: `docker inspect` reports NO HEALTHCHECK
+      # CONFIGURED, so `--wait` has nothing to block on and treats "started" as satisfied). "The stack
+      # came up" is therefore not evidence a worker exists to test.
+      #
+      # IT ASSERTS ON THE LOG, NOT ON CONTAINER STATE, AND THAT IS THE WHOLE POINT. The obvious version
+      # of this check — `running=true` and `RestartCount=0` — IS FLAKY, and flaky in the direction that
+      # matters: it passes on the broken stack. The worker connects and is rejected ~1s AFTER start
+      # (services/worker/src/index.js: register-reject calls stop() immediately; the 30-attempt budget
+      # bounds only NETWORK errors), so `up` can return while it is still alive-but-not-yet-rejected.
+      #
+      # MEASURED 2026-08-07, four consecutive unseeded runs, sampling the instant `up` returned:
+      #   attempt 1: running=true  RestartCount=0  -> the state check PASSES on a doomed worker
+      #   attempt 2: running=false RestartCount=0  -> fails
+      #   attempt 3: running=false RestartCount=0  -> fails
+      #   attempt 4: running=false RestartCount=0  -> fails
+      # One in four is a false green, and it is not a hypothetical: the first full unseeded run of this
+      # workflow scored `worker BEFORE harness: running=true exit=0` and the harness went on to report
+      # 100/0, on a stack where the worker log shows a register rejection and an exit. A one-in-four
+      # false green on the control for a defect is worse than no control, because it reads as coverage.
+      #
+      # The log lines are terminal and monotonic — once "registered over mTLS stream" or "could not
+      # (re)register within the retry budget" is emitted it stays in the log — so waiting for one of the
+      # two removes the sampling race entirely instead of papering over it with a sleep. `register
+      # rejections == 0` is what makes the seeded ORDER (not merely eventual liveness) the property
+      # under test: run.sh SUITE 3 re-seeds and restarts the worker itself, so a late-seeded worker
+      # still ends up registered, and a check that only asked "is it up now" would pass on the defect.
+      - name: Worker came up seeded on the FIRST attempt (no register-reject exit)
+        run: |
+          DC="docker compose -f docker-compose.yml -f tests/harness/compose.test.yml"
+          registered=0
+          for _ in $(seq 1 30); do
+            if $DC logs worker 2>&1 | grep -q "registered over mTLS stream"; then registered=1; break; fi
+            if $DC logs worker 2>&1 | grep -q "could not (re)register within the retry budget"; then break; fi
+            sleep 1
+          done
+          rc="$(docker inspect -f '{{.RestartCount}}' coldmail-send-byo-worker-1)"
+          running="$(docker inspect -f '{{.State.Running}}' coldmail-send-byo-worker-1)"
+          rejected="$($DC logs worker 2>&1 | grep -c 'register rejected: unauthenticated')"
+          echo "worker: running=$running RestartCount=$rc registered=$registered register_rejections=$rejected"
+          if [ "$registered" != "1" ] || [ "$rejected" != "0" ] || [ "$running" != "true" ] || [ "$rc" != "0" ]; then
+            echo "FAIL: the worker did not register cleanly on its FIRST attempt."
+            echo "register_rejections>0 means it connected before send_byo.boxes carried its"
+            echo "token_hash — the seed ran late or not at all — so it was rejected as"
+            echo "unauthenticated and exited. It has no restart policy, so it stays dead until"
+            echo "run.sh SUITE 3 re-seeds and restarts it, and every suite before that which execs"
+            echo "into it fails with EMPTY output that looks like an mTLS or a volume bug. Check the"
+            echo "ordering in scripts/dev.sh's reset case."
+            $DC logs worker | tail -20
+            exit 1
+          fi
 
       - name: Real-infra behavioral harness (10 checks, must be all-green)
         run: bash scripts/dev.sh test
