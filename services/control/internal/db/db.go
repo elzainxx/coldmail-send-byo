@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/coldmail-send-byo/control/internal/dsnscrub"
 )
 
 // DB wraps the connection pool.
@@ -17,14 +19,21 @@ type DB struct {
 
 // Connect opens a pgx pool as the app role encoded in the DSN (send_byo_app — never a
 // superuser at runtime). It pings to prove reachability before returning.
+//
+// N1/D12: every returned error goes through dsnscrub.Err. MEASURED at the pinned pgx v5.7.4 —
+// pgxpool.ParseConfig quotes the WHOLE connection string in its error, and pgx's own redaction misses
+// ?password=, ?sslpassword= and the spaced `password = SECRET`. main.go logs this error with
+// log.Fatalf at boot, so the credential landed in the process log. Scrubbing here rather than at the
+// log call is the point: a fix at the log call protects one caller, and the next log.Printf("%v", err)
+// reintroduces it. See internal/dsnscrub for the measurements and the leak paths.
 func Connect(ctx context.Context, dsn string) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse dsn: %w", err)
+		return nil, fmt.Errorf("parse dsn: %w", dsnscrub.Err(err, dsn))
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("new pool: %w", err)
+		return nil, fmt.Errorf("new pool: %w", dsnscrub.Err(err, dsn))
 	}
 
 	// SAFETY BOUND (Phase 4 closeout triage, Docs/history/open-decisions.md): a one-time startup
@@ -33,7 +42,7 @@ func Connect(ctx context.Context, dsn string) (*DB, error) {
 	defer cancel()
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping: %w", err)
+		return nil, fmt.Errorf("ping: %w", dsnscrub.Err(err, dsn))
 	}
 	return &DB{Pool: pool}, nil
 }

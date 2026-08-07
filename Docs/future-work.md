@@ -616,3 +616,36 @@ this class of drift cannot start again on the new route.
 **Fix shape.** Correct the two fragments to `items`, and add the bidirectional parity assertion
 (already written for `notifications.list`) to the account routes so the fragment and the body are
 checked against each other, not merely each against itself.
+
+### FW-M3-17 — `tests/harness/harness.go` prints its DSN into test output on a connect failure
+
+**Registered:** 2026-08-07, found while closing N1/D12 (the pgx connection-string leak). This is the
+one exposure the fix deliberately did NOT close, and `tests/harness/checks/dsn_scrub_wiring.sh`
+names it as its out-of-scope case rather than staying silent about it.
+
+**What it is.** `harness.go:39` (`Connect`) and `:87` (`mustConnect`) hand a DSN to `pgx.Connect` and
+report failure with `t.Fatalf("connect: %v", err)` / `panic(err)`. MEASURED at the pinned pgx v5.7.4:
+a rejected connection string is echoed WHOLE into that error, and pgx's own redaction misses
+`?password=`, `?sslpassword=` and the honored spaced `password = SECRET` — the same three shapes that
+made N1 real in the shipped services.
+
+**Why it is smaller than N1 was, and registered rather than fixed.** The credential it can print is
+the per-run dev password that `scripts/dev.sh certs` generates into `.env`, not a production one, and
+the sink is test output rather than a service log. But CI test output is an artifact, so "smaller" is
+not "none".
+
+**Why it is not fixed here.** `tests/harness` is a separate Go module (`module
+github.com/coldmail-send-byo/harness`) and cannot import `services/control/internal/dsnscrub`. So
+closing it means a THIRD copy of the scrub, and the second copy —
+`tools/send-byo-migrate/dsnscrub.go`, which exists because that tool's Docker context copies only its
+own directory — already needs
+`TestDSNScrub_MigrateCopyHasNotDriftedFromControl` to hold it in line. Adding a third copy to protect
+a dev credential in test output is the wrong trade to make inside a closeout, and taking it silently
+would be worse.
+
+**Fix shape, in preference order.** (1) Give the three modules a shared module (a small
+`libs/dsnscrub` with its own `go.mod`, required by all three) and delete both copies — this also
+retires the drift test. (2) Failing that, add the third copy and extend the drift test to compare all
+three, which is a strictly worse version of (1). Do NOT wrap only the `t.Fatalf` call sites: the same
+reasoning that put the fix at the error's source in the shipped code applies here — a fix at the
+print protects one print.

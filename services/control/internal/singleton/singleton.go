@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/coldmail-send-byo/control/internal/dsnscrub"
 )
 
 // LockKey is the fixed, namespaced advisory-lock key for the Control singleton. Distinct from
@@ -85,9 +87,11 @@ func (g *Guard) SetReacquireInterval(d time.Duration) {
 // => a single non-blocking attempt (fail-fast). On success it starts the keeper goroutine
 // that exclusively owns the connection and holds the lock for the process lifetime.
 func Acquire(ctx context.Context, dsn string, timeout time.Duration) (*Guard, error) {
+	// N1/D12: the DSN is scrubbed out of the error before it can be returned. main.go logs this
+	// with log.Fatalf at boot. See internal/dsnscrub for the measurement at this pgx pin.
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("singleton dedicated connect: %w", err)
+		return nil, fmt.Errorf("singleton dedicated connect: %w", dsnscrub.Err(err, dsn))
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -212,7 +216,11 @@ func (g *Guard) tryReacquire() {
 	if g.conn == nil {
 		conn, err := pgx.Connect(ctx, g.dsn)
 		if err != nil {
-			g.logReacquireFailure("dedicated reconnect failed: " + err.Error())
+			// N1/D12, AND THE WORST OF THE THREE PATHS: this one is not boot-only. err.Error() goes
+			// straight into a log line on the 1st failure and every 12th after it, for as long as the
+			// lock stays lost — so a bad DSN plus a flapping database wrote the credential to the log
+			// repeatedly, not once.
+			g.logReacquireFailure("dedicated reconnect failed: " + dsnscrub.Err(err, g.dsn).Error())
 			return
 		}
 		g.conn = conn

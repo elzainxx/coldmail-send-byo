@@ -234,6 +234,13 @@ go_suite services/control/internal/httpapi "root-mux coded 404 + log-forgery neu
 go_suite services/control/internal/configordering "config key ordering/precedence (3 tests)"
 go_suite services/control/internal/workerlink     "workerlink stream in-flight accounting (2 tests)"
 go_suite services/control/internal/workerproto    "variation wire-format round-trip (1 test)"
+# N1/D12 — the DSN scrub. Needs NO database and no stack: every DSN in it is rejected at the pgx
+# PARSE stage (before a socket opens) or points at 127.0.0.1:1, so it is listed here with the other
+# substrate-free packages. Its load-bearing test is not the leak assertion but
+# TestDSNScrub_PgxStillLeaksAtThisPin, which re-measures on every run that the pinned pgx v5.7.4
+# genuinely leaks the credential — if a pgx bump fixes redaction upstream, or changes which trigger
+# carries the DSN, the premise fails loudly instead of the whole file going quietly vacuous.
+go_suite services/control/internal/dsnscrub       "DSN credential scrub (N1/D12: pgx echoes the whole connection string; 9 tests, no DB)"
 # fromgate is the exception: its 25 tests include a REAL-DNS file that resolves against the
 # local CoreDNS container (deploy/dns-test/), so it must run with the stack up — it is listed
 # after the DNS healthchecks have passed, which dev.sh up/reset blocks on before calling this
