@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 
 # Compose invocation with explicit base + override -f flags (portable across OSes; passed
 # from scripts/dev.sh, or defaulted here so run.sh works standalone).
-DC="${COMPOSE_INVOCATION:-docker compose -f docker-compose.yml -f tests/harness/compose.test.yml}"
+DC="${COMPOSE_INVOCATION:-$(bash scripts/dev.sh compose)}"  # #131: the invocation dev.sh uses (RAM Postgres only under DEV_RAM_PG=1)
 
 PASS=0; FAIL=0
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }

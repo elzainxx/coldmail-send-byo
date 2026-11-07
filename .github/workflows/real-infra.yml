@@ -14,6 +14,12 @@ on: [push, pull_request]
 jobs:
   behavioral:
     runs-on: ubuntu-latest
+    # #131: the RAM-backed, fsync-off Postgres (tests/harness/compose.test.yml) is OPT-IN in scripts/dev.sh
+    # because it makes `docker stop postgres` destroy the database. CI stops nothing, so it opts in for
+    # speed. Every `dev.sh` call below — and every check script, which now takes its compose invocation
+    # from `dev.sh compose` — inherits this, so CI runs the same stack it always did.
+    env:
+      DEV_RAM_PG: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -119,6 +125,14 @@ jobs:
 
       - name: Real-infra behavioral harness (10 checks, must be all-green)
         run: bash scripts/dev.sh test
+
+      # #131's regression guard. Reads the RENDERED compose config in both modes (it needs no running
+      # stack, only .env from `dev.sh certs`) and fails if the DEFAULT stack's Postgres is ever RAM-backed
+      # again — with a built-in control that the RAM mode really does render a tmpfs, so the check cannot
+      # pass on an empty render.
+      - name: Durability gate — the default dev Postgres is not RAM-backed; the RAM one is opt-in (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/postgres_durability.sh
 
       - name: Drift gate — config reference vs seeded send_byo.config (BLOCKING)
         if: always()

@@ -51,7 +51,7 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 - **Host antivirus intercepts host→localhost TLS.** Known environment quirk, not a defect. Probe mTLS **in-network** (container to container). If a check fails from the Windows host, re-run it from inside a container before believing it.
 - **`dev.sh reset` means reset.** Clean-slate stages need a genuinely fresh volume — a stale one silently skips migrations. It also does **not** rebuild images: after changing Go or Node source, `dev.sh build` first, or you test the old binary and read the result as a real RED.
 - **Git Bash rewrites container-absolute paths in `docker run` arguments.** Any step that copies a `docker run … -v "$PWD/db:/db:ro"` line out of `install-and-deploy.md` (Stage 2 does — Step 5's migration runner) gets the container-side `/db` expanded to `C:/Program Files/Git/db`, and the runner dies with `read migrations dir "C:/Program Files/Git/db/migrations": no such file or directory`. That is MSYS path conversion, not a defect and not a docs bug — the install doc targets Ubuntu. Prefix the command with `MSYS_NO_PATHCONV=1`. The same applies to `-e PREFLIGHT_SQL=/db/…` and to any `docker exec … psql -c` whose SQL contains a leading-slash literal.
-- **`dev.sh` and a bare `docker compose` describe DIFFERENT containers.** `scripts/dev.sh` hardcodes `-f docker-compose.yml -f tests/harness/compose.test.yml`, and that override puts Postgres's data directory on **tmpfs** and adds `fsync=off`. A bare `docker compose …` uses the base file only, where Postgres is volume-backed. So a snapshot/restart/outage instruction copied between the two is not the same experiment — the tmpfs stack loses the entire database on any container stop. Stage 9.10 carries the precondition this matters most for. Check with `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` (`{{range .Mounts}}` does not list tmpfs mounts) and `--format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'` to see which files were actually merged.
+- **`dev.sh` is durable by default; `DEV_RAM_PG=1` is not — and mixing the two on one stack recreates Postgres.** Since #131 `scripts/dev.sh` uses `-f docker-compose.yml` alone, where Postgres is volume-backed and survives a container stop. Only with `DEV_RAM_PG=1` (CI sets it) does it also merge `tests/harness/compose.test.yml`, which puts Postgres's data directory on **tmpfs** and adds `fsync=off`; on that stack any container stop loses the entire database. A bare `docker compose …` matches the default, but a bare command against a `DEV_RAM_PG=1` stack (or the reverse) describes a *different* postgres spec, so compose recreates it — onto a tmpfs if the RAM file is in the set. Stage 9.10 carries the precondition this matters most for. Check with `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` (`{{range .Mounts}}` does not list tmpfs mounts) and `--format '{{index .Config.Labels "com.docker.compose.project.config_files"}}'` to see which files were actually merged. `scripts/dev.sh compose` prints the invocation to use.
 - **Watch for a stale test template.** A migration not applied to the local test template makes test results meaningless. This bit during Phase 6. If results look strange, reset before debugging.
 - **Timing tests need a quiet machine.** Don't run pacing tests while a build is churning.
 - **One host, one log stream.** Tail the Control and both workers together during failure injection — you'll watch a heartbeat miss, the reclaim, and the re-dispatch scroll past in one place.
@@ -71,7 +71,7 @@ Sort this before anything else — DNS propagation is the one thing you can't hu
 1. `scripts/dev.sh test` — the full harness
 2. The Go suites directly: dispatch, adminapi, platformapi, send_byo, workerproto
 3. The worker Node suite
-4. **All seven CI gates**: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `user_output_scrub`, and the one-definition-site check
+4. **All eight CI gates**: `migration_lint`, `config_drift`, `no_secret_leak`, `contract_drift`, `config_consumption`, `user_output_scrub`, `postgres_durability` (#131: the default dev Postgres is not RAM-backed), and the one-definition-site check
 5. **`config_consumption_selftest`** — the paired control for gate 5, and blocking in CI in its own right. Not a "gate" in the drift sense (it asserts nothing about this tree's state), but it must be green: since `send_byo_0051` dropped the last RESERVED key, it is the ONLY thing that executes `config_consumption.sh`'s expiry logic at all. Needs no stack.
 6. `gofmt` / `go vet` clean
 
@@ -214,23 +214,7 @@ Module 3 is multi-tenant, so this is a real test now.
 9. **Restart the Control** mid-campaign
    - **Pass:** orphans recover, nothing lost or duplicated
 10. **`docker stop` Postgres** for a few minutes, then start it
-    - **⚠ PRECONDITION — on the default stack this step DESTROYS the database instead of simulating an outage.** `scripts/dev.sh` always merges `tests/harness/compose.test.yml`, which puts Postgres's data directory on **tmpfs** (RAM). A `docker stop` frees that tmpfs, so `docker start` brings up an **empty** Postgres and the Control reports `relation "send_byo.jobs" does not exist` — a false RED that looks like a catastrophic recovery bug. Confirmed live, 2026-08-03. Bring up a **durable-volume stack** for this step only. Write `/tmp/compose.durable.yml`:
-      ```yaml
-      services:
-        postgres:
-          command: !reset null      # drop the harness's fsync=off — a durability drill needs real fsync
-          tmpfs: !reset []          # `!reset` is required; a plain override MERGES with the base list
-          volumes:
-            - ./deploy/pg-init:/docker-entrypoint-initdb.d:ro
-            - pgdata-durable:/var/lib/postgresql/data
-      volumes:
-        pgdata-durable:
-      ```
-      then run the stack **without `dev.sh`**, third file last:
-      ```
-      docker compose -f docker-compose.yml -f tests/harness/compose.test.yml -f /tmp/compose.durable.yml up -d
-      ```
-      Verify before you trust the result — `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` must print `map[]`, not `map[/var/lib/postgresql/data:]`. Note `--format '{{range .Mounts}}'` does **not** list tmpfs mounts at all, so it cannot be used for this check. Then seed accounts and a campaign on this stack (it starts empty) before injecting the outage.
+    - **⚠ PRECONDITION — know which mode your stack is in; one of them makes this step DESTROY the database instead of simulating an outage.** The harness has a RAM-backed Postgres (`tests/harness/compose.test.yml`: data directory on **tmpfs**, `fsync=off`). On a stack running it, `docker stop` frees the tmpfs, so `docker start` brings up an **empty** Postgres and the Control reports `relation "send_byo.jobs" does not exist` — a false RED that looks like a catastrophic recovery bug (confirmed live, 2026-08-03). **Since #131 that mode is OPT-IN:** `scripts/dev.sh` uses the base compose file alone unless `DEV_RAM_PG=1` is set (CI sets it, for speed), so on a default `dev.sh reset` stack Postgres lives in the image's volume and this step works exactly as written. It is still destructive on any stack brought up with `DEV_RAM_PG=1`, or one where the two modes were mixed. **Verify before you trust the result** — `docker inspect coldmail-send-byo-postgres-1 --format '{{.HostConfig.Tmpfs}}'` must print `map[]`, not `map[/var/lib/postgresql/data:]` (`--format '{{range .Mounts}}'` does **not** list tmpfs mounts at all, so it cannot be used for this check). If it shows a tmpfs, `scripts/dev.sh reset` **without** `DEV_RAM_PG` set. The default stack starts empty, so seed accounts and a campaign on it before injecting the outage. `tests/harness/checks/postgres_durability.sh` is the CI gate that keeps the default durable.
     - **Pass:** the Control halts cleanly, **invents nothing** — no job marked sent or failed during the outage — and resumes with no double-processing. *The single most important assertion in this guide.*
 11. **Quarantine every account** mid-campaign
     - **Pass:** jobs **wait**, not fail; re-enable one and the same jobs complete
