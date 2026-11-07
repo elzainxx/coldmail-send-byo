@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/coldmail-send-byo/control/internal/fromgate"
 )
 
 type accountCreateReq struct {
@@ -172,6 +174,19 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, r, s.translateAccountWrite(err))
 		return
+	}
+	// #141 (HIGH): this route ACCEPTS acknowledge_alignment_warning — it is what lets an unaligned-warned
+	// create past the unacknowledged-warn refusal above — so it must also RECORD it. It did not: the row
+	// landed unaligned_warned with no acknowledgment, i.e. permanently non-routable, behind a 201 that
+	// said otherwise, and the only rescue (a PATCH) was itself gated on the address changing. The pair is
+	// a SECOND statement (fromGateVerdictSets' own comment explains why: the fingerprint it records is a
+	// generated column), exactly as platformapi's createAccountRow does it; ALLOW/BLOCK never carry one,
+	// and the break-glass override is a different, operator-only mechanism that records its own audit event.
+	if !req.OverrideFromGate && gateRes.verdict.Outcome == fromgate.OutcomeWarn && req.AcknowledgeAlignmentWarning {
+		if err := fromGateWriteAcknowledgment(ctx, tx, accIDStr); err != nil {
+			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
+			return
+		}
 	}
 	if err := writeAuditEvent(ctx, tx, accIDStr, userID, "created", nil, ptrSnapshot(false, nil, false, false), nil, requestIDFrom(r.Context())); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "audit_write_error: "+err.Error()))

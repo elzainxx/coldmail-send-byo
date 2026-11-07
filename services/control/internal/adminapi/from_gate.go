@@ -111,6 +111,24 @@ func fromGateWriteAcknowledgment(ctx context.Context, db pgxDB, accountID string
 	return err
 }
 
+// fromGateAcknowledgeStored (#141) records the acknowledgment against the verdict ALREADY STORED on
+// the row, for a PATCH that supplies acknowledge_alignment_warning WITHOUT changing the address.
+// The contract says an unacknowledged account "stays non-routable until a later Test/PATCH supplies the
+// acknowledgment" — but the only ack write on this route was gated on the address CHANGING, so a
+// PATCH that resent the same address (or sent only the flag) was accepted, returned 200, and recorded
+// nothing. It writes only where there is something to acknowledge (an unaligned_warned row) and reports
+// whether it did; an aligned/blocked/unverified row has no outstanding warning and is left alone.
+func fromGateAcknowledgeStored(ctx context.Context, db pgxDB, accountID string) (bool, error) {
+	tag, err := db.Exec(ctx,
+		`UPDATE send_byo.accounts SET from_warning_acknowledged_at = NOW(),
+		   from_warning_acknowledged_for = from_verdict_fingerprint
+		 WHERE id = $1 AND from_verification_state = 'unaligned_warned'`, accountID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // acknowledgeAlignmentWarningField mirrors platformapi's own constant (duplicated per OD-7).
 const acknowledgeAlignmentWarningField = "acknowledge_alignment_warning"
 

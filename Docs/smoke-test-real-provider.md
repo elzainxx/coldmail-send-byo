@@ -9,7 +9,7 @@
 > every command, filter, and stated expectation was checked against a running stack rather than
 > reasoned about. That rehearsal found four wrong expectations in this document (Step 1's "nothing has
 > authenticated yet," Step 2's eligibility claim, and two ways to misread Step 6) and one real product
-> defect (#141). All are fixed or flagged inline below. **What a sink cannot rehearse** is the half this
+> defect (#141, since fixed — see Step 1). All are fixed or flagged inline below. **What a sink cannot rehearse** is the half this
 > procedure exists for: inworker-vs-spam placement, SPF/DKIM/DMARC as a real receiver evaluates them, and
 > how a real provider's `250`/`4xx`/`5xx` text classifies. Those still await first contact.
 
@@ -111,11 +111,13 @@ route that will show you the secret again ([`security-posture.md`](./security-po
 > `{"field": "acknowledge_alignment_warning", "issue": "required"}` — the From gate asking you to
 > confirm you meant it. Re-send with `"acknowledge_alignment_warning": true`. For a real provider on
 > a domain with correct SPF/DKIM this normally does not fire; it is listed because a first smoke test
-> is exactly when a domain's DNS is least likely to be finished. **On the operator admin surface,
-> defect #141: that flag is accepted and then dropped** — it suppresses the `422` but never records
-> the acknowledgment, leaving an account that reads healthy-ish and can never route. Until it is
-> fixed, create through Domain A, or apply the acknowledgment with a PATCH that genuinely *changes*
-> `from_address` (see #141 for why an unchanged one silently no-ops).
+> is exactly when a domain's DNS is least likely to be finished. **On the operator admin surface this
+> flag was accepted and then dropped (defect #141, FIXED 2026-11-07):** it suppressed the `422` but
+> never recorded the acknowledgment, leaving an account that read healthy-ish and could never route.
+> The create now records it, and a `PATCH` that supplies `acknowledge_alignment_warning: true` records
+> it against the stored verdict even when `from_address` is unchanged (or absent), so an account
+> created before the fix is rescued by `PATCH {"acknowledge_alignment_warning": true}`. Confirm either
+> way in Step 2: `accounts.healthy` must include the account. `from_alignment.state` reads `unaligned_warned` whether or not the warning is acknowledged, so it cannot tell you.
 
 ### Step 2 — Confirm eligibility before queueing anything
 

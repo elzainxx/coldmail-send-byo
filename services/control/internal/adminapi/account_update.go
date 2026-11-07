@@ -261,11 +261,25 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// The acknowledgment write is a SECOND statement (fromGateVerdictSets' own comment explains
 	// why) — only for a fresh WARN verdict that WAS acknowledged on THIS PATCH.
+	ackedStored := false
 	if !overrideApplies && fromAddressChanging && gateRes.verdict.Outcome == fromgate.OutcomeWarn && req.AcknowledgeAlignmentWarning {
 		if err := fromGateWriteAcknowledgment(ctx, tx, id); err != nil {
 			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
 			return
 		}
+	} else if !overrideApplies && !fromAddressChanging && req.AcknowledgeAlignmentWarning {
+		// #141: the acknowledgment can be SUPPLIED LATER (api-contract: the account "stays non-routable
+		// until a later Test/PATCH supplies the acknowledgment"), and this surface has no test button, so
+		// a PATCH is the only way an operator can supply it. Gating the write on the address CHANGING made
+		// that rescue inert: a PATCH resending the same from_address returned 200 and recorded nothing.
+		// A PATCH that does change the address is handled above (it re-runs the gate and acknowledges the
+		// FRESH verdict); one that does not acknowledges the verdict already stored.
+		wrote, err := fromGateAcknowledgeStored(ctx, tx, id)
+		if err != nil {
+			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
+			return
+		}
+		ackedStored = wrote
 	}
 
 	// §2.3: a From change is exactly the event an operator will later need to reconstruct —
@@ -278,6 +292,10 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 			verdictState = gateRes.verdict.State
 		}
 		reasonText := "from_address changed: " + cur.FromAddress + " -> " + *req.FromAddress + " (verdict: " + verdictState + ")"
+		auditReason = &reasonText
+	}
+	if ackedStored && auditReason == nil {
+		reasonText := "from-alignment warning acknowledged on the stored verdict (no address change)"
 		auditReason = &reasonText
 	}
 	// One audit row. action='credential_updated' (0034) replaces the generic 'updated' when a

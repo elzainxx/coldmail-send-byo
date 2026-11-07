@@ -494,6 +494,25 @@ by route: CREATE proceeds anyway with the row left `unverified` (M3-P4-OD-14 —
 PROBLEM never blocks an otherwise-valid create, mirroring the credential verify-on-add precedent);
 PATCH refuses the write outright (§2.3 — fail closed, nothing to lose by refusing).
 
+**The acknowledgment is RECORDED wherever it is accepted (#141, fixed 2026-11-07).** Accepting the flag
+and not recording it is a defect, not a no-op: the account lands `unaligned_warned` with no
+acknowledgment and never routes, behind a success response. So, on BOTH surfaces:
+- **CREATE** (`POST /v1/admin/accounts`, `POST /v1/send-byo/accounts`, bulk add): an acknowledged WARN
+  writes the acknowledgment pair in the same transaction as the row. (The operator surface used to
+  suppress the `422` and write nothing.) The break-glass override is a different mechanism and records
+  its own `from_gate_overridden` audit event instead.
+- **PATCH that changes `from_address`**: re-runs the gate; an acknowledged WARN acknowledges the FRESH
+  verdict (unchanged behavior).
+- **PATCH that does NOT change `from_address`** (the field absent, or resending the stored value) **with
+  `acknowledge_alignment_warning: true`**: acknowledges the verdict ALREADY STORED on the row, if the row
+  is `unaligned_warned` — this is the contract's "stays non-routable until a later Test/PATCH supplies the
+  acknowledgment", which the operator surface (no test button) had no working way to do. It does not
+  re-run the gate. An ack-only body (no other field) is valid. On a row with nothing outstanding
+  (`aligned`, `blocked`, `unverified`) it is a clean `200` no-op, and `from_alignment.state` in the response
+  shows why. Without the flag a PATCH never acknowledges anything. On the operator surface the write is
+  audited (an `updated` `account_events` row whose reason names the acknowledgment); on the user surface
+  it is tenant-scoped (`user_id`, not deleted) like every other write there.
+
 **Domain B (operator) break-glass override — M3-P4-OD-9, new on both `POST /v1/admin/accounts`
 and `PATCH /v1/admin/accounts/{id}`:** `override_from_gate: true` plus a REQUIRED non-empty
 `override_reason` string bypasses the gate entirely for that write — the ONLY way past it besides

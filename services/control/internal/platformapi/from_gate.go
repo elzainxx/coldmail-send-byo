@@ -154,3 +154,23 @@ func fromGateWriteAcknowledgment(ctx context.Context, db pgxDB, accountID string
 		 WHERE id = $1`, accountID)
 	return err
 }
+
+// fromGateAcknowledgeStored (#141) records the acknowledgment against the verdict ALREADY STORED on
+// the row, for a PATCH that supplies acknowledge_alignment_warning WITHOUT changing the address. The
+// contract says an unacknowledged account "stays non-routable until a later Test/PATCH supplies the
+// acknowledgment", but this route's only ack write was gated on the address CHANGING, so a PATCH that
+// resent the same address (or sent only the flag) was accepted and recorded nothing — the user-facing
+// twin of the admin-surface defect (here masked, not fixed, by the test button). Tenant-scoped like the
+// UPDATE it follows (user_id, not deleted); writes only where something is outstanding (an
+// unaligned_warned row) and reports whether it did. Mirrors adminapi's function (duplicated per OD-7).
+func fromGateAcknowledgeStored(ctx context.Context, db pgxDB, accountID, userID string) (bool, error) {
+	tag, err := db.Exec(ctx,
+		`UPDATE send_byo.accounts SET from_warning_acknowledged_at = NOW(),
+		   from_warning_acknowledged_for = from_verdict_fingerprint
+		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL AND from_verification_state = 'unaligned_warned'`,
+		accountID, userID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}

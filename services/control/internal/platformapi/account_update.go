@@ -238,11 +238,22 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	// The acknowledgment write is a SECOND statement (fromGateVerdictSets' own comment explains
 	// why: from_verdict_fingerprint is a GENERATED column and a same-statement self-reference
 	// reads the OLD value) — only for a fresh WARN verdict that WAS acknowledged on THIS PATCH.
+	ackedStored := false
 	if fromAddressChanging && gateRes.verdict.Outcome == fromgate.OutcomeWarn && req.AcknowledgeAlignmentWarning {
 		if err := fromGateWriteAcknowledgment(ctx, tx, id); err != nil {
 			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
 			return
 		}
+	} else if !fromAddressChanging && req.AcknowledgeAlignmentWarning {
+		// #141: a PATCH that supplies the acknowledgment WITHOUT changing the address (the contract's
+		// "a later Test/PATCH supplies the acknowledgment") acknowledges the verdict already stored,
+		// instead of being accepted and recording nothing.
+		wrote, err := fromGateAcknowledgeStored(ctx, tx, id, userID)
+		if err != nil {
+			s.fail(w, r, newErr(codeInternalError, "from_gate_acknowledgment_write_error: "+err.Error()))
+			return
+		}
+		ackedStored = wrote
 	}
 
 	fromSnap := ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, cur.Status.Quarantined, cur.Status.Disabled)
@@ -258,6 +269,10 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 	var auditReason *string
 	if fromAddressChanging {
 		reasonText := "from_address changed: " + cur.FromAddress + " -> " + *req.FromAddress + " (verdict: " + gateRes.verdict.State + ")"
+		auditReason = &reasonText
+	}
+	if ackedStored && auditReason == nil {
+		reasonText := "from-alignment warning acknowledged on the stored verdict (no address change)"
 		auditReason = &reasonText
 	}
 	// §3.2: "a silent auto-clear is worse than no auto-clear: the user sees the account working
