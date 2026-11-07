@@ -17,13 +17,14 @@ The following third-party components are used, and their licenses are respected.
 --------------------------------------------------------------------------------
 1. Go module dependencies (services/control, tools/send-byo-migrate, tools/provision-worker, tests/harness)
 --------------------------------------------------------------------------------
-  github.com/jackc/pgx/v5              v5.7.4   MIT           — Postgres driver
+  github.com/jackc/pgx/v5              v5.10.0  MIT           — Postgres driver
   github.com/jackc/pgpassfile          v1.0.0   MIT           — pgx indirect dependency
   github.com/jackc/pgservicefile       (pseudo) MIT           — pgx indirect dependency
   github.com/jackc/puddle/v2           v2.2.2   MIT           — pgx indirect dependency (connection pool)
-  golang.org/x/crypto                  v0.31.0  BSD-3-Clause  — bcrypt (admin/worker token hashing)
-  golang.org/x/sync                    v0.10.0  BSD-3-Clause  — golang.org/x/crypto indirect dependency
-  golang.org/x/text                    v0.21.0  BSD-3-Clause  — golang.org/x/crypto indirect dependency
+  golang.org/x/crypto                  v0.58.0  BSD-3-Clause  — bcrypt (admin/worker token hashing); v0.31.0 in tools/provision-worker
+  golang.org/x/sync                    v0.24.0  BSD-3-Clause  — golang.org/x/crypto / pgx indirect dependency
+  golang.org/x/text                    v0.43.0  BSD-3-Clause  — golang.org/x/crypto / pgx indirect dependency
+  golang.org/x/net                     v0.62.0  BSD-3-Clause  — publicsuffix (From-gate organizational-domain lookup), services/control
 
   Each is consumed as an unmodified dependency via Go modules (`go.sum` pins exact versions and
   content hashes). None is forked or patched.
