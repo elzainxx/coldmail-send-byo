@@ -2,7 +2,7 @@
 
 The build is sealed (`Docs/architecture-overview.md`'s build-status section; verdict **GO**).
 Everything below is a **going-live confirmation or operator action**, not a build blocker — the
-module is implemented and proven in the real-infra harness (`scripts/dev.sh test`, 53/53 green)
+module is implemented and proven in the real-infra harness (`scripts/dev.sh test`, 100/100 green as of 2026-11-07)
 without any of these. They become mandatory the moment this module points at a real platform
 database and starts sending real mail. Nothing here is code to write; each item is a setup step,
 a coordination point, or an operational decision an operator/ops team makes before or at launch.
@@ -11,6 +11,25 @@ Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-
 `Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the authoritative source for the reasoning
 behind each item; this document is the single ordered checklist a launch operator actually works
 through.
+
+> **Status as of 2026-11-07 (after the post-audit fixes).**
+> - **Fixed since the local test run flagged them:** #126 (break-glass From-gate override on an already-checked
+>   account), #134 (a re-quarantine after an un-quarantine was suppressed for 24 h), #140 (the `provider_message_id`
+>   collision that caused a replay loop and a duplicate send), **#141** (the operator surface accepted
+>   `acknowledge_alignment_warning` and recorded nothing — now recorded on create and supplied by PATCH on both
+>   surfaces), and **#131** (the default dev stack's Postgres is no longer RAM-backed, so `docker stop postgres`
+>   no longer destroys the database; `DEV_RAM_PG=1` opts back in and CI sets it).
+> - **§9 (module vulnerabilities): cleared** — builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0,
+>   `x/net` v0.62.0; `govulncheck` reports no vulnerabilities in any of the four Go modules. Re-run it
+>   immediately before a pilot — the advisory database moves.
+> - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
+>   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
+>   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
+>   `retention_mode` and `account_purge_mode` to `enforce`), plus §6's auto-quarantine decision. **31 boxes remain
+>   unchecked; none was ticked by the fixes.**
+> - **Not determined:** the campaign-expiry gap the local test run recorded evidence for (Stage 10.4/10.6). The
+>   evidence is not in any of the four repositories, so it could be neither confirmed nor closed. Note that
+>   `campaign_expiry_mode` defaults to `shadow`, so campaign expiry does not enforce until it is promoted (§14).
 
 ---
 
