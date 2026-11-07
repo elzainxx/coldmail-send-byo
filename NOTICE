@@ -39,7 +39,7 @@ The following third-party components are used, and their licenses are respected.
 3. Container base images and dev-stack images (docker-compose.yml)
 --------------------------------------------------------------------------------
   postgres:16-alpine        PostgreSQL License (permissive) — dev/CI database
-  golang:1.23-alpine        BSD-3-Clause (Go) + Alpine's own license — Go build stage
+  golang:1.26-alpine        BSD-3-Clause (Go) + Alpine's own license — Go build stage
   node:20-alpine            MIT (Node.js) + Alpine's own license — worker build stage
   alpine:3.20               MIT — final-stage base for Go binaries
   axllent/mailpit:latest    MIT — dev/CI SMTP sink, never used in production

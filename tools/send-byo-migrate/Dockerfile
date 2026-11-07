@@ -1,5 +1,5 @@
 # Migration runner image. Built from the repo root (context .) so it can copy the module.
-FROM golang:1.23-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY tools/send-byo-migrate/go.mod tools/send-byo-migrate/go.sum ./
 RUN go mod download

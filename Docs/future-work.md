@@ -108,7 +108,7 @@ is registered here.
 
 | Item | What it is | Why deferred |
 |---|---|---|
-| **Go toolchain upgrade to clear two module vulns** (`FW-M3-8`) | `GO-2026-5004` (SQL injection via placeholder confusion in `pgx/v5`, fixed in v5.9.2) and `GO-2026-5970` (infinite loop in `golang.org/x/text`, fixed in v0.39.0). **Both are real and both have live call paths** — this is not a toolchain-only stdlib advisory. | **The highest-priority item on this page.** The remediation was attempted during Phase 10 and **proven to break the build**, so it was reverted rather than half-applied: both bumps rewrite `go 1.23` → `go 1.25.0` in `services/control/go.mod`, which breaks the pinned `golang:1.23-alpine` builder (`RUN go mod download` exits 1, confirmed by an actual failing `docker build`). Clearing them therefore means upgrading the builder image and re-verifying the full harness on the new toolchain — build infrastructure, not polish, and not something to slip into a docs phase. Do this before a pilot carries real data. |
+| ~~**Go toolchain upgrade to clear two module vulns**~~ (`FW-M3-8`) — **RESOLVED 2026-11-07** | `GO-2026-5004` (`pgx/v5`) and `GO-2026-5970` (`golang.org/x/text`), plus the further `x/net`, `x/text` and Go-stdlib advisories `govulncheck` reports against the old toolchain. | **Done, not deferred.** Builder `golang:1.23-alpine` → `golang:1.26-alpine` (go1.26.10); `pgx` v5.7.4 → v5.10.0, `x/text` v0.21.0 → v0.43.0, `x/net` v0.21.0 → v0.62.0. `govulncheck` now reports no live call paths in any of the four Go modules (before: 41 / 27 / 27 / 0). Full detail under `FW-M3-8`. Re-run `govulncheck` at pilot time — the advisory database keeps moving. |
 | **A dependency/vulnerability scan in CI** | `govulncheck` (and an equivalent for the worker) as a blocking or reporting gate. | Scanning was done by hand in Phase 10. The five existing CI gates all catch *drift between code and docs*; a vuln gate is a different kind of check whose failure mode is "a new advisory published upstream breaks your build with no code change," which needs a policy decision (blocking vs reporting) before it is added. Note the worker needs no scanner: it ships `dependencies: {}` — `npm audit` has nothing to audit, which is the no-DB/no-KMS boundary showing up as an absence. |
 
 ---
@@ -760,11 +760,15 @@ is [§5](#5-build-infrastructure)'s first row, marked there as *"the highest-pri
 page."* Also tracked in [`shared-code-manifest.md`](./shared-code-manifest.md) §184, whose claim that
 this id is tracked here is what surfaced the missing anchor.
 
-**Status.** Deferred. `GO-2026-5004` (`pgx/v5`, fixed v5.9.2) and `GO-2026-5970`
-(`golang.org/x/text`, fixed v0.39.0); both have live call paths. **The authority for this item is
-§5**, which records that the remediation was attempted and *proven* to break the build (both bumps
-rewrite `go 1.23` → `go 1.25.0`, which breaks the pinned `golang:1.23-alpine` builder — confirmed by
-an actual failing `docker build`), so it was reverted rather than half-applied.
+**Status.** **RESOLVED 2026-11-07.** `GO-2026-5004` (`pgx/v5`, fixed v5.9.2) and `GO-2026-5970`
+(`golang.org/x/text`, fixed v0.39.0) both had live call paths. The earlier remediation attempt broke the
+pinned `golang:1.23-alpine` builder (both bumps rewrite `go 1.23` to `go 1.26.0`/`1.25.0`), so it was
+reverted; it was done properly by upgrading the builder first: `golang:1.23-alpine` →
+`golang:1.26-alpine` (go1.26.10) in both Dockerfiles and `real-infra.yml`, then `pgx` → v5.10.0,
+`x/text` → v0.43.0, `x/net` → v0.62.0 in all four Go modules, with the full harness and every gate
+re-run. `govulncheck` live-call-path findings before → after: `services/control` 41 → **0**,
+`send-byo-migrate` 27 → **0**, `tests/harness` 27 → **0**, `provision-worker` 0 → **0**. **A dated
+result, not a permanent one** — re-run `govulncheck` at pilot time (go-live checklist §9).
 
 **The inherited-claim discipline that came with this id.** Phase 8 registered it with an explicit
 instruction — **re-verify rather than inherit the claim** — because module 3 forks module 2's

@@ -186,6 +186,12 @@ with live call paths inherited from module 2's own Phase 10 R3 finding. Module 3
 `go.mod` for all four Go modules, so it forks the same two exposures — **re-verify rather than
 inherit the claim**, since an upstream fix may have landed since module 2's Phase 10 close.
 
+**RESOLVED 2026-11-07 — the two paragraphs below are history, kept as written.** The builder moved to
+`golang:1.26-alpine` (go1.26.10), and `pgx` (v5.10.0), `x/text` (v0.43.0) and `x/net` (v0.62.0) were
+bumped together in all four Go modules, exactly as the `x/net` paragraph below prescribed. `govulncheck`
+reports no live call paths in any of them (it reported 41 / 27 / 27 / 0 before). "Still live" and "not
+bumped" below describe the tree as of 2026-08-03 and are no longer true.
+
 **Re-verified 2026-08-03 (Phase 8 hygiene sweep):** both are STILL LIVE. `services/control/go.mod`
 carries `github.com/jackc/pgx/v5 v5.7.4` (fix is v5.9.2+) and `golang.org/x/text v0.21.0` (fix is
 v0.39.0+) — `go list -m all` confirms neither has moved since module 2's Phase 10 close. The claim
