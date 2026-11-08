@@ -44,6 +44,14 @@ through.
 >   too. A blocking CI fixture runs every From-gate test under an injected search domain, and a paired control proves it
 >   goes red when the fix is removed. **Not measured:** the effect end to end through a live Control on a real
 >   deployment host. The GitHub Actions result is in `coldmail-platform/verification-runs.md`.
+> - **Updated 2026-11-08 — the database-outage item has repository evidence from a real runner.** On GitHub Actions
+>   ([run 42500897743](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42500897743), the on-demand `outage-drill`
+>   workflow) the whole harness passes in the default volume-backed mode (100/0) and the **real `docker stop postgres` drill
+>   passes 22/22**: with a job in flight on a paused worker and a snapshot taken first (`jobs=8 job_events=28 send_logs=5
+>   max(seq)=28`), a 50 s outage left the Control running with 0 restarts, health and run failing closed with only
+>   `{code, message, request_id}`, `db outage RESOLVED after 54s`, and afterwards jobs 8→8, events 28→28, `max(seq)` 28→28,
+>   no job for the refused run, and the in-flight job delivered **exactly once** after recovery. Re-run it on the deployed
+>   shape before a pilot; this was a compose stack, not the production host.
 > - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
 >   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
 >   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
