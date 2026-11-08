@@ -1820,7 +1820,61 @@ than the instance: a spec asserting its own completion is not evidence of it.
 
 ---
 
+## M3-CI-OD-1 — OPEN 2026-11-08 (needs the user): the From-gate's DNS failures can be reclassified as "absence" by the host's resolver search list; T5 fails on every host that has one
+
+**Found by** the first real GitHub Actions run of the FROM-gate suite
+([run 42437413708](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42437413708); the same failure was in run
+42433763630). Harness: `99 passed, 1 failed`; the one red is `TestEvaluate_T5_TimeoutServfailVsNXDOMAIN`, assertion
+`servfail.test: got Outcome=warn Code=from_unauthenticated_warned, want indeterminate/from_dns_unavailable` (and
+`State … got "unaligned_warned"`). Every other test in the package, including the blackhole and NXDOMAIN halves of T5, passed.
+
+**Reproduced locally, and flipped by exactly one line.** The same package, same Go (go1.26.10), same CoreDNS fixture:
+15/15 passes under CPU contention, the whole 25-test package passes, on both CoreDNS 1.14.6 and 1.15.0 — with the container's
+default `/etc/resolv.conf`. Give the test container a `/etc/resolv.conf` containing
+`search ab12cd.internal.cloudapp.net` (what an Azure VM, hence a GitHub runner, has) and T5 fails with the **identical**
+message (3.33 s; the runner's was 3.04 s). The dev host and the CI replica have no search domain, which is why every earlier
+green hid this.
+
+**Mechanism (my reading of Go's documented resolver behaviour plus that reproduction; I did not instrument the resolver to
+log the intermediate queries).** Go's pure resolver tries each name in the search list — the absolute `servfail.test.` first,
+then `servfail.test.<search-domain>.` — and, unless `Resolver.StrictErrors` is set, returns the error of the LAST name tried.
+SERVFAIL for the first name is overwritten by NXDOMAIN for the second (the `.` catch-all forwards it to public resolvers). That
+NXDOMAIN is `IsNotFound`, which `evaluator.go` (≈l.111–113) and `cache.go` (l.106) treat as a **definitive absence**, so the
+verdict is the ordinary `warn`, and the cache stores it for the *negative* TTL — the one outcome the cache is designed never
+to do to ignorance.
+
+**Where.** `services/control/internal/fromgate/resolver.go:84` `newResolver`. Its comment says that with `from_dns_resolver`
+set the evaluator is "bypassing the system's /etc/resolv.conf entirely". That is not true of the search list (a custom `Dial`
+replaces the *server*, not the name list), and `StrictErrors` is not set. With `from_dns_resolver` empty it is
+`net.DefaultResolver`, the system path, with the same behaviour.
+
+**Why it matters, and what is not claimed.** The property T5 pins — *DNS timeout / SERVFAIL fail closed, retryable* — does not
+hold on a host whose resolver has a search domain, which is ordinary on cloud VMs and in Kubernetes. A DNS failure then
+yields a *more permissive* outcome (`warn`, possibly cached) in place of `indeterminate / from_dns_unavailable`. For a From
+domain that would otherwise be blocked (the gate's full-triple case), that reads as a way for a DNS failure to bypass the
+block. **Not measured:** the effect end to end through the live Control; the search list of the deployment this will run on.
+The blackhole (timeout) half passed on the runner; my inference (not measured) is that the 4 s test budget expired before
+the second name was tried, and that the default 10 s budget would not protect it.
+
+**Deliberately NOT done.** No product code was changed and T5 was not loosened or skipped; module 3's CI is therefore
+**red on this one test**, and is left red. Either "fix" would be resolving a locked gate's semantics on my own authority
+(Rule 2), and a green obtained by giving the test a resolver with no search domain would be exactly the
+environment-masked green this work exists to remove.
+
+**Options, for the owner to rule on:**
+(a) make the evaluator's lookups **absolute** (trailing dot) so the search list is never consulted — smallest change,
+independent of `resolv.conf`, covers the `net.DefaultResolver` path too; cache keys need normalising;
+(b) set `StrictErrors: true` — needs a resolver we construct in the empty-`from_dns_resolver` case as well;
+(c) declare "no search domain" a deployment precondition — leaves the gate fail-open on common hosts; not recommended.
+Whichever is chosen needs a regression test that carries a search domain **deterministically**, because the dev host has none
+(the reproduction above, run as a CI step, does it; so does a GitHub runner by accident, which is not a control).
+
+---
+
 ## Honest final position
+
+> **Update 2026-11-08 — one further item needs the user: [M3-CI-OD-1](#m3-ci-od-1--open-2026-11-08-needs-the-user-the-from-gates-dns-failures-can-be-reclassified-as-absence-by-the-hosts-resolver-search-list-t5-fails-on-every-host-that-has-one)**
+> (a real-runner CI finding, not a phase item). The paragraph below is the 2026-08-04 position, left as written.
 
 **Needs-user: two items — M3-P8-OD-7 and M3-P8-OD-8, above.** 82 of 84 items are disposed of — the
 original 79, plus **M3-P7-OD-9**, **M3-P7-OD-10**, **M3-P7-OD-11**, and **M3-P4-OD-12**, all raised

@@ -35,6 +35,13 @@ through.
 >   credential-scrub *unit* tests were first run on Linux on this date (CI was red before it reached them, and development
 >   was on Windows). The live-stack credential checks (the Stage 9 canary, `no_secret_leak`) ran in Linux containers
 >   throughout and are not implicated.
+> - **OPEN, needs a ruling before a pilot — [M3-CI-OD-1](./open-decisions.md).** This module's CI is **red on one test**
+>   (`TestEvaluate_T5…`, the From-gate's DNS fail-closed property) and is deliberately left red. The test is right and the
+>   gate is not: on a host whose resolver has a *search domain* (ordinary on cloud VMs and in Kubernetes), a DNS SERVFAIL
+>   can be rewritten by Go's resolver into an NXDOMAIN, which the gate treats as "no records" and cached — a DNS failure
+>   yields `warn` where the design says `indeterminate / from_dns_unavailable`. Reproduced by changing only the
+>   `search` line of `/etc/resolv.conf`. Not measured end to end, nor against the search list of the deployment host —
+>   **check that before the pilot regardless of the ruling.**
 > - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
 >   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
 >   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
