@@ -22,6 +22,19 @@ through.
 > - **§9 (module vulnerabilities): cleared** — builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0,
 >   `x/net` v0.62.0; `govulncheck` reports no vulnerabilities in any of the four Go modules. Re-run it
 >   immediately before a pilot — the advisory database moves.
+> - **Updated 2026-11-08 — what GitHub Actions found that every local run had hidden.** Until this date "green"
+>   for this module meant a local Docker Desktop run; the first run on a real Linux runner was red. The causes were
+>   environmental, not product defects, but each had been invisible locally: (1) the dev keys were mode 600 and owned
+>   by the host user, so the Control (uid 10001) could not read its KMS key — fixed by **ownership**, not by loosening
+>   anything (`tools/own-secrets.sh`; a blocking `secret_ownership.sh` step fails if the keys are loosened or the worker
+>   can read the KMS key); (2) the worker unit tests' SMTP sink greeted twice after STARTTLS, a race the Windows host
+>   swallowed — on Linux 10 tests failed, the S1/S3 credential-scrub tests among them, until the sink was corrected
+>   (`sink_fidelity.test.mjs` pins it); (3) the harness's header checks assumed LF but Mailpit returns CRLF; (4) a
+>   workflow step died under `bash -e` on `grep -c` returning 1. **No product code and no production behaviour changed;
+>   no checkbox below is affected.** One consequence worth stating: as far as this repository's record shows, the S1/S3
+>   credential-scrub *unit* tests were first run on Linux on this date (CI was red before it reached them, and development
+>   was on Windows). The live-stack credential checks (the Stage 9 canary, `no_secret_leak`) ran in Linux containers
+>   throughout and are not implicated.
 > - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
 >   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
 >   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote

@@ -86,6 +86,10 @@ PLATFORM_TOKEN=$plkey
 PLATFORM_TOKEN_HASHES=$plhash_esc
 EOF
   echo ".env written (gitignored). TWO worker tokens/hashes + operator admin key + platform service token provisioned."
+  # Hand each container-facing key (mode 600) to the uid its container runs as, and PROVE each can read it. On a real
+  # Linux host a 600 key owned by the CI user is unreadable by the Control (uid 10001) and the workers (uid 10002);
+  # Docker Desktop's bind mounts hide that, which is how it stayed invisible until the first CI run. See the script.
+  echo "== own-secrets =="; bash tools/own-secrets.sh
 }
 
 # seed_rows — the system user + BOTH dev worker rows. Called by `seed` and, crucially, by `reset`:

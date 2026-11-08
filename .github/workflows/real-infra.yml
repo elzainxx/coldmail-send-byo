@@ -27,6 +27,14 @@ jobs:
         with:
           go-version: "1.26"
 
+      # The host-side Node tests (the worker unit suite and the harness's mTLS/variation tests) must run on the runtime the
+      # worker SHIPS on — services/worker/Dockerfile is `node:20-alpine` — not on whatever Node the runner image happens to
+      # carry that month. An unpinned toolchain is a hidden variable: it is how `node --test "glob"` (Node >= 21 only) went
+      # unnoticed until a Node 20 environment ran it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Go lint — gofmt + vet (BLOCKING; keeps code/format from drifting)
         run: |
           test -z "$(gofmt -l services/control tools/send-byo-migrate tools/provision-worker tests/harness)" \
@@ -109,7 +117,10 @@ jobs:
           done
           rc="$(docker inspect -f '{{.RestartCount}}' coldmail-send-byo-worker-1)"
           running="$(docker inspect -f '{{.State.Running}}' coldmail-send-byo-worker-1)"
-          rejected="$($DC logs worker 2>&1 | grep -c 'register rejected: unauthenticated')"
+          # `grep -c` prints 0 but EXITS 1 when nothing matches, and a GitHub step is `bash -e` (no pipefail): without the `|| true`
+          # this assignment silently killed the step on exactly the HEALTHY path (zero rejections). Invisible locally, where this step
+          # was re-run as a function without -e. The replica (tools/ci-replica.sh) runs steps with -e and found it.
+          rejected="$($DC logs worker 2>&1 | grep -c 'register rejected: unauthenticated' || true)"
           echo "worker: running=$running RestartCount=$rc registered=$registered register_rejections=$rejected"
           if [ "$registered" != "1" ] || [ "$rejected" != "0" ] || [ "$running" != "true" ] || [ "$rc" != "0" ]; then
             echo "FAIL: the worker did not register cleanly on its FIRST attempt."
@@ -133,6 +144,14 @@ jobs:
       - name: Durability gate — the default dev Postgres is not RAM-backed; the RAM one is opt-in (BLOCKING)
         if: always()
         run: bash tests/harness/checks/postgres_durability.sh
+
+      # The first CI run on a real runner died because the Control (uid 10001) could not read a 600 key owned by the
+      # runner user — invisible on Docker Desktop, whose bind mounts ignore POSIX ownership. `dev.sh certs` now chowns
+      # each key to its container uid (mode stays 600); this gate READS each key as that uid and, as the paired
+      # control, requires that the other uids CANNOT — so it fails if someone "fixes" a permission error by chmod'ing.
+      - name: Secret ownership gate — each dev key is readable by its container uid only, mode 600 (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/secret_ownership.sh
 
       - name: Drift gate — config reference vs seeded send_byo.config (BLOCKING)
         if: always()
