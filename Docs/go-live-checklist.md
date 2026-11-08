@@ -35,13 +35,15 @@ through.
 >   credential-scrub *unit* tests were first run on Linux on this date (CI was red before it reached them, and development
 >   was on Windows). The live-stack credential checks (the Stage 9 canary, `no_secret_leak`) ran in Linux containers
 >   throughout and are not implicated.
-> - **OPEN, needs a ruling before a pilot — [M3-CI-OD-1](./open-decisions.md).** This module's CI is **red on one test**
->   (`TestEvaluate_T5…`, the From-gate's DNS fail-closed property) and is deliberately left red. The test is right and the
->   gate is not: on a host whose resolver has a *search domain* (ordinary on cloud VMs and in Kubernetes), a DNS SERVFAIL
->   can be rewritten by Go's resolver into an NXDOMAIN, which the gate treats as "no records" and cached — a DNS failure
->   yields `warn` where the design says `indeterminate / from_dns_unavailable`. Reproduced by changing only the
->   `search` line of `/etc/resolv.conf`. Not measured end to end, nor against the search list of the deployment host —
->   **check that before the pilot regardless of the ruling.**
+> - **RULED and fixed 2026-11-08 — [M3-CI-OD-1](./open-decisions.md).** The From-gate's DNS fail-closed property used to
+>   depend on the host's `resolv.conf`: on a host with a *search domain* (ordinary on cloud VMs and in Kubernetes) Go's
+>   resolver rewrote a SERVFAIL into an NXDOMAIN, which the gate read as "no records" and cached — a DNS failure produced
+>   `warn` where the design says `indeterminate / from_dns_unavailable`. Every lookup is now made for a fully-qualified
+>   name, only a genuine not-found counts as "no record", and everything else is indeterminate, retryable and never cached;
+>   two lookups that bypassed the rule (the self-hosted exception's MX check, SPF `a:`/`mx:` void targets) are under it
+>   too. A blocking CI fixture runs every From-gate test under an injected search domain, and a paired control proves it
+>   goes red when the fix is removed. **Not measured:** the effect end to end through a live Control on a real
+>   deployment host. The GitHub Actions result is in `coldmail-platform/verification-runs.md`.
 > - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
 >   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
 >   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
@@ -456,11 +458,12 @@ walked back the same way if the first enforcing tick surprises you.
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 14 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+- [ ] All 16 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
       `config_consumption`, `config_consumption_selftest`, `test_enumeration`,
       `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`, `dsn_scrub_wiring`,
-      `postgres_durability`, `secret_ownership`, `go_suite_selftest`. (Re-derived from `tests/harness/checks/` on
-      2026-11-08: this line said 10 while 14 were wired — the same drift as below, again. Was written as
+      `postgres_durability`, `secret_ownership`, `go_suite_selftest`, `dns_search_domain`, `dns_search_domain_selftest`.
+      (Re-derived from `tests/harness/checks/` on 2026-11-08: this line said 10 while 14 were wired, and 16 are now —
+      the same drift as below, again. Was written as
       "7" until 2026-08-05 — the two selftests and `test_enumeration` had been added and wired into
       `.github/workflows/real-infra.yml` without this line moving. The count is the point of the line: a
       reader checking off "7 green" against a workflow that runs 10 would not notice which three they had

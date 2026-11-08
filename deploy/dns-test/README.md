@@ -64,6 +64,9 @@ All names below are under the `test.` TLD.
 | `t2b-nospf-dkim.test` | T2b (i): `p=reject` + no SPF record + DKIM **present** at `google._domainkey` → missing "no DKIM" → WARN, not BLOCK. |
 | `t2b-spf-nodkim.test` | T2b (ii): `p=reject` + SPF record present (no matching token) + no DKIM at any common selector → missing "no SPF record" → WARN, not BLOCK. |
 | `t2b-nospf-nodkim-quarantine.test` | T2b (iii): no SPF record + no DKIM + DMARC `p=quarantine` (not `reject`) → missing "p=reject" → WARN, not BLOCK. Distinct from `misaligned-quarantine.test`, which has an SPF record present — this one has SPF absent specifically. |
+| `mxok.test` | M3-CI-OD-1: bare-`mx` SPF + an MX record equal to the test's `smtp_host` (`mail.elsewhere.test`) → the self-hosted exception allows. The control for the two below: proves the MX lookup reaches THIS server. |
+| `mxnone.test` | M3-CI-OD-1: bare-`mx` SPF, the name exists, **no MX** → a genuine NODATA on the MX query = absence = "not self-hosted" → ordinary warn, never indeterminate. |
+| `mxservfail.test` | M3-CI-OD-1: bare-`mx` SPF, but its **MX query SERVFAILs** (dedicated Corefile block: `template IN MX`; the TXT is served from `zones/db.mxservfail`). The evaluator must refuse (`indeterminate / from_dns_unavailable`), not decide "not self-hosted". |
 
 Canary tests (M3-P4-OD-6 — allowed to fail loudly against real internet state) use real public
 names directly: `smtp.gmail.com` / `_spf.google.com` (§1.1's facts). They do not need any zone

@@ -294,7 +294,15 @@ func expandSPFTerms(ctx context.Context, r resolverLike, terms []string, matchTo
 				return tokenFound, macroFound
 			}
 			state.lookups++
-			if voidTarget(ctx, r, t) {
+			void, err := voidTarget(ctx, r, t)
+			if err != nil {
+				// Ignorance (M3-CI-OD-1): the lookup could not be answered, so whether this target is void
+				// is UNKNOWN — and an unknown must not be counted as "not void" and carried on with, which
+				// is what this used to do. Same signal as an include:/redirect= sub-lookup that fails.
+				outer.permError = strPtr(spfIgnoranceSignal)
+				return tokenFound, macroFound
+			}
+			if void {
 				state.voidLookups++
 				if state.voidLookups > maxSPFVoidLookups {
 					outer.permError = strPtr(spfErrVoidLimit)
@@ -325,23 +333,25 @@ func matchesAnyToken(target string, tokens []string) bool {
 // (NXDOMAIN/NODATA) for the RFC 7208 §4.6.4 void-lookup counter — the mechanism's actual pass/fail
 // semantics (matching the connecting IP) are irrelevant to this evaluator, which never has an IP to
 // test (§1.1: the submission endpoint's IP is not the value we could obtain anyway). A lookup
-// failure that IS ignorance (timeout/SERVFAIL) is treated as non-void here (conservative — it will
-// already have been caught as an outer ignorance by the caller's own DNS calls elsewhere in the
-// evaluation, and double-reporting it as a void lookup would double-count against the limit).
-func voidTarget(ctx context.Context, r resolverLike, term string) bool {
+// failure that IS ignorance (timeout/SERVFAIL) is RETURNED as the error, and the caller turns it into
+// the evaluator-level refusal. It used to be treated as "non-void" here on the stated ground that the
+// caller's other DNS calls would already have caught it — they would not: this lookup exists only on
+// this path, so a SERVFAIL here vanished and the evaluation went on to a verdict built on an answer it
+// never got. (void is meaningful only when err is nil.)
+func voidTarget(ctx context.Context, r resolverLike, term string) (void bool, err error) {
 	target := term
 	for _, pfx := range []string{"a:", "a/", "mx:", "mx/", "ptr:", "exists:"} {
 		target = strings.TrimPrefix(target, pfx)
 	}
 	if target == "" || target == "a" || target == "mx" || target == "ptr" {
-		return false // bare mechanism targets the From domain itself; never void for THIS purpose
+		return false, nil // bare mechanism targets the From domain itself; never void for THIS purpose
 	}
 	if strings.HasPrefix(term, "mx") {
 		mx, err := r.LookupMX(ctx, target)
 		if isIgnorance(err) {
-			return false
+			return false, err
 		}
-		return len(mx) == 0
+		return len(mx) == 0, nil
 	}
 	// a:/ptr:/exists: — existence is an A/AAAA question, never an NS question (NS only exists at
 	// zone cuts; a plain hostname legitimately has A records and zero NS records, so NS would
@@ -349,9 +359,9 @@ func voidTarget(ctx context.Context, r resolverLike, term string) bool {
 	// evaluator never needs the resolved address itself, only whether the name resolves at all.
 	addrs, err := r.LookupHost(ctx, target)
 	if isIgnorance(err) {
-		return false
+		return false, err
 	}
-	return len(addrs) == 0
+	return len(addrs) == 0, nil
 }
 
 func strPtr(s string) *string { return &s }

@@ -3,7 +3,6 @@ package fromgate
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -106,6 +105,9 @@ func Evaluate(ctx context.Context, fromAddress, smtpHost, smtpUsername string, o
 	if opts.Cache != nil {
 		r = opts.Cache.wrap(r) // cache sits ABOVE the timed resolver: a cache hit costs no deadline at all
 	}
+	// OUTERMOST: root every name (trailing dot) so Go's resolver never applies the resolv.conf search
+	// list — M3-CI-OD-1. Outside the cache, so the cache is keyed on the rooted name too.
+	r = fqdnResolver{inner: r}
 
 	// M3-P4-OD-13 (ruled 2026-08-01): §3.2's original table listed a decisive NXDOMAIN-on-the-
 	// From-domain check here. Dropped — net.DNSError.IsNotFound is set identically for NXDOMAIN
@@ -134,7 +136,14 @@ func Evaluate(ctx context.Context, fromAddress, smtpHost, smtpUsername string, o
 		}
 	}
 
-	v := decide(fromAddress, domain, smtpHost, smtpUsername, prov, matched, spfRes, dmarcRes, dkimRes, opts)
+	// The self-hosted check needs DNS (the From domain's MX set), so it is handed to decide() as a lazy
+	// closure over the SAME wrapped resolver — rooted names, the per-lookup deadline, from_dns_resolver,
+	// the cache — and is only called if the decision actually reaches that branch. It used to be a direct
+	// net.DefaultResolver call inside decide(), which bypassed all of that and turned any failure into
+	// "not self-hosted", i.e. a result derived from ignorance.
+	selfHosted := func() (bool, error) { return selfHostedException(ctx, r, domain, smtpHost) }
+
+	v := decide(fromAddress, domain, smtpHost, smtpUsername, prov, matched, spfRes, dmarcRes, dkimRes, opts, selfHosted)
 
 	// §6.2's "warn_only": downgrade a definitive BLOCK to WARN. Applied AFTER decide() (never
 	// threaded into the decision table itself) so the table's own logic — including
@@ -158,10 +167,13 @@ func indeterminate(code, detail string) Verdict {
 
 // decide applies §1.6's table (as ruled by M3-P4-OD-1) plus §1.4/§1.7's provider-match and
 // alias-detection refinements. This is the ONE function that encodes the decision table — kept
-// separate from Evaluate so it can be unit-tested against synthetic spf/dmarc/dkim facts without
-// any DNS at all.
+// separate from Evaluate so it can be unit-tested against synthetic spf/dmarc/dkim facts. The ONE
+// piece of DNS it still needs — the self-hosted exception's MX check — is injected as selfHosted, so
+// decide() itself performs no lookup and the lookup goes through Evaluate's resolver, not around it.
+// selfHosted returns an error only for IGNORANCE (SERVFAIL, timeout, anything that is not a genuine
+// absence); decide() turns that into an indeterminate verdict rather than a "not self-hosted" result.
 func decide(fromAddress, domain, smtpHost, smtpUsername string, prov provider, providerMatched bool,
-	spf spfResult, dmarc dmarcResult, dkim dkimResult, opts Options) Verdict {
+	spf spfResult, dmarc dmarcResult, dkim dkimResult, opts Options, selfHosted func() (bool, error)) Verdict {
 
 	detail := map[string]any{
 		"spf_record_present": spf.recordPresent,
@@ -234,13 +246,21 @@ func decide(fromAddress, domain, smtpHost, smtpUsername string, prov provider, p
 	// infra MAY support ALLOW even without a provider-token match (self-hosted MTAs don't publish
 	// a third-party include). It must NEVER support BLOCK (stated explicitly in §1.4) — so this
 	// only ever short-circuits to allow/warn-lenient, never tightens toward block.
-	if spf.hasBareAOrMX && selfHostedLikely(domain, smtpHost) {
-		return Verdict{
-			Outcome: OutcomeAllow, State: "aligned", DMARCPolicy: dmarcPolicy,
-			SPFAligned: true, DMARCAligned: true,
-			ProviderMatched: providerMatched, ProviderName: prov.name,
-			DKIMProbeable: dkim.probeable, DKIMFound: dkim.found,
-			Detail: detail,
+	if spf.hasBareAOrMX {
+		sh, err := selfHosted()
+		if err != nil {
+			// Ignorance, not "not self-hosted": the answer to a question we could not ask must not decide
+			// anything. Same uniform refuse-and-retry as every other DNS failure in Evaluate.
+			return indeterminate("from_dns_unavailable", fmt.Sprintf("MX lookup for %q: %v", domain, err))
+		}
+		if sh {
+			return Verdict{
+				Outcome: OutcomeAllow, State: "aligned", DMARCPolicy: dmarcPolicy,
+				SPFAligned: true, DMARCAligned: true,
+				ProviderMatched: providerMatched, ProviderName: prov.name,
+				DKIMProbeable: dkim.probeable, DKIMFound: dkim.found,
+				Detail: detail,
+			}
 		}
 	}
 
@@ -327,29 +347,6 @@ func domainOf(fromAddress string) string {
 		return fromAddress[i+1:]
 	}
 	return fromAddress
-}
-
-// selfHostedLikely is §1.4's DNS-observable half of the self-hosted exception (the SPF-record-
-// content half, hasBareAOrMX, is already computed by the caller) — smtp_host equals or is a
-// subdomain of the From domain, OR resolves to an MX target for the From domain. A best-effort MX
-// check; a lookup failure here degrades to false (never escalates to block on its own — this
-// function only ever WIDENS eligibility for allow, so failing safe means failing to widen).
-func selfHostedLikely(domain, smtpHost string) bool {
-	host := strings.ToLower(strings.TrimSuffix(smtpHost, "."))
-	d := strings.ToLower(strings.TrimSuffix(domain, "."))
-	if host == d || strings.HasSuffix(host, "."+d) {
-		return true
-	}
-	mx, err := net.DefaultResolver.LookupMX(context.Background(), domain)
-	if err != nil {
-		return false
-	}
-	for _, m := range mx {
-		if strings.ToLower(strings.TrimSuffix(m.Host, ".")) == host {
-			return true
-		}
-	}
-	return false
 }
 
 // aliasViaProviderMisaligned implements §1.7's second Gmail mode: header From is the alias, but

@@ -494,6 +494,15 @@ by route: CREATE proceeds anyway with the row left `unverified` (M3-P4-OD-14 —
 PROBLEM never blocks an otherwise-valid create, mirroring the credential verify-on-add precedent);
 PATCH refuses the write outright (§2.3 — fail closed, nothing to lose by refusing).
 
+**What counts as an indeterminate DNS check (M3-CI-OD-1, ruled 2026-11-08).** Every From-gate lookup is made for a
+fully-qualified name with a trailing dot, so the host's `resolv.conf` search list is never applied and the error that
+comes back belongs to the name actually asked. Only a genuine not-found (NXDOMAIN or NODATA — Go cannot tell them apart,
+and M3-P4-OD-13 treats them identically) for that exact name means "no record". **Anything else — SERVFAIL, a timeout, a
+refused or unreachable resolver, a deadline, an unclassified error — is indeterminate**, and is never written to the DNS
+cache. That includes the lookups that feed the self-hosted exception (the From domain's MX set) and the targets of
+`a:`/`mx:`/`ptr:`/`exists:` SPF mechanisms, which previously turned a failure into "not self-hosted" / "not void". No new
+external code: these cases now reach the existing `from_dns_unavailable` instead of an ordinary `warn`.
+
 **The acknowledgment is RECORDED wherever it is accepted (#141, fixed 2026-11-07).** Accepting the flag
 and not recording it is a defect, not a no-op: the account lands `unaligned_warned` with no
 acknowledgment and never routes, behind a success response. So, on BOTH surfaces:

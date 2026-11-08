@@ -44,3 +44,6 @@ coverage/
 
 # Reference codebase (has its own nested .git; inspiration only, not part of this repo)
 Docs/history/mailflow-worker (Sender Inspiration)/
+
+# scratch dir of tests/harness/checks/dns_search_domain.sh (removed on exit; ignored in case a run is killed)
+.dns-fixture-work/

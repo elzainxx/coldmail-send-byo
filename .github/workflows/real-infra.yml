@@ -203,6 +203,20 @@ jobs:
         if: always()
         run: bash tests/harness/checks/go_suite_selftest.sh
 
+      # M3-CI-OD-1 (ruled 2026-11-08). The From-gate's DNS handling must not depend on the host's resolv.conf: Go's
+      # resolver walks a `search` list and returns the LAST name's error, so a SERVFAIL used to become an NXDOMAIN and
+      # a DNS outage read as "no records". The dev host has no search domain; a GitHub runner does, which is the only
+      # reason this was ever seen. This runs every fromgate test inside a container whose resolv.conf carries one.
+      - name: DNS search-domain fixture — the From-gate behaves the same under a resolv.conf search domain (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/dns_search_domain.sh
+
+      # Its PAIRED CONTROL: the same fixture against a build with name-rooting disabled must go RED in T5, with the
+      # collapse signature, while the canary stays green. Keeps "this fixture reds without the fix" true on every run.
+      - name: DNS search-domain fixture SELF-TEST — the fixture goes RED when name-rooting is disabled (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/dns_search_domain_selftest.sh
+
       - name: Shutdown gate — SIGTERM grace clears shutdown_drain_timeout_sec (BLOCKING)
         if: always()
         run: bash tests/harness/checks/drain_grace.sh

@@ -146,26 +146,34 @@ func matchProvider(smtpHost string) (provider, bool) {
 // "The domain's own mail infrastructure" is tested the practical way: does smtp_host resolve to
 // an IP that is ALSO an MX target for the From domain, or does smtp_host equal/share the apex with
 // the From domain itself. A DNS-only proxy for "is this genuinely self-hosted," not a proof.
-func selfHostedException(ctx context.Context, r resolverLike, fromDomain, smtpHost string, hasBareAOrMX bool) bool {
-	if !hasBareAOrMX {
-		return false
-	}
+//
+// The error return is IGNORANCE ONLY (M3-CI-OD-1): a genuine absence — the domain publishes no MX —
+// is the answer "not self-hosted" and returns (false, nil); a SERVFAIL, a timeout or anything else
+// that is not a genuine absence returns the error, because "we could not ask" is not "no". This used
+// to be a second implementation inside the evaluator that called net.DefaultResolver directly (no
+// from_dns_resolver, no deadline, no rooted name) and mapped EVERY failure to false; there is now one,
+// and it goes through the same resolver as every other lookup. The caller has already checked the
+// SPF half of the exception (a bare a/mx mechanism).
+func selfHostedException(ctx context.Context, r resolverLike, fromDomain, smtpHost string) (bool, error) {
 	host := strings.ToLower(strings.TrimSuffix(smtpHost, "."))
 	domain := strings.ToLower(strings.TrimSuffix(fromDomain, "."))
 	if host == domain || strings.HasSuffix(host, "."+domain) {
-		return true
+		return true, nil
 	}
 	mxHosts, err := r.LookupMX(ctx, fromDomain)
 	if err != nil {
-		return false
+		if isIgnorance(err) {
+			return false, err
+		}
+		return false, nil // genuine absence: no MX is published, so smtp_host is not one of them
 	}
 	for _, mx := range mxHosts {
 		mxHost := strings.ToLower(strings.TrimSuffix(mx.Host, "."))
 		if mxHost == host {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // resolverLike is the narrow subset of *net.Resolver this package calls, so tests can substitute

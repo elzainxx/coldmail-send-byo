@@ -1,0 +1,18 @@
+; DEV/TEST-ONLY FIXTURE ZONE — NOT real DNS data. See ../Corefile (the mxservfail.test block) and
+; deploy/dns-test/README.md. The name exists and publishes an SPF record with a bare `mx` mechanism, but
+; its MX query is made to SERVFAIL by the Corefile's `template IN MX` — there is deliberately NO MX
+; record here, because the answer to an MX query for this name is not "none", it is "failed".
+
+$ORIGIN mxservfail.test.
+$TTL 300
+
+@       IN SOA  ns.mxservfail.test. admin.mxservfail.test. (
+                2026110801 ; serial
+                3600       ; refresh
+                900        ; retry
+                604800     ; expire
+                60 )       ; negative-cache TTL
+@       IN NS   ns.mxservfail.test.
+ns      IN A    127.0.0.1
+
+@       IN TXT  "v=spf1 mx -all"

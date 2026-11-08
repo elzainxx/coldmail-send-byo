@@ -21,6 +21,21 @@ servfail.test:53 {
     errors
 }
 
+# mxservfail.test: a name whose MX query SERVFAILs while everything else about it answers normally
+# (M3-CI-OD-1, 2026-11-08). The `template` plugin matches ONLY `IN MX` here and manufactures a SERVFAIL;
+# every other query type falls through to the zone file, so the SPF TXT is served. That is the exact
+# shape the self-hosted exception needs to be tested against: the SPF record says "bare mx", so the
+# evaluator must ask for the MX set — and when that ask fails it must refuse (indeterminate), not decide
+# "not self-hosted". servfail.test above cannot test this, because its TXT lookup fails first.
+mxservfail.test:53 {
+    template IN MX {
+        rcode SERVFAIL
+    }
+    file /etc/coredns/zones/db.mxservfail
+    log
+    errors
+}
+
 # blackhole.test: forwarded to the dns-blackhole service, which accepts every UDP packet and
 # NEVER replies — so a query under this zone genuinely hangs on the wire rather than erroring
 # immediately. `max_fails 0` stops the forward plugin from ever marking dns-blackhole "down" and

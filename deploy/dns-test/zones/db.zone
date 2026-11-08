@@ -132,3 +132,16 @@ _dmarc.t2b-spf-nodkim.test.            IN TXT  "v=DMARC1; p=reject;"
 ;       -> missing "p=reject" -> WARN. Distinct from misaligned-quarantine.test, which has an SPF
 ;       record present -- this one has SPF absent specifically.
 _dmarc.t2b-nospf-nodkim-quarantine.test. IN TXT "v=DMARC1; p=quarantine;"
+
+; ── M3-CI-OD-1: the self-hosted exception's MX check (evaluator: selfHostedException) ─────────────
+; An SPF record with a bare `mx` makes the evaluator ask for the From domain's MX set. Three outcomes of
+; that ask, one fixture each (mxservfail.test, the third, has its own Corefile block + db.mxservfail).
+;
+; mxok.test: the MX set contains the smtp_host the tests use (mail.elsewhere.test) -> self-hosted ->
+;   aligned. The CONTROL for the two below: it proves the MX lookup actually reaches THIS server (the
+;   old code asked the system resolver instead, which is why it could not be tested at all).
+mxok.test.                             IN TXT  "v=spf1 mx -all"
+mxok.test.                             IN MX   10 mail.elsewhere.test.
+; mxnone.test: the name exists (it has the TXT) but publishes NO MX -> a genuine NODATA on the MX query
+;   = absence = "not self-hosted" -> an ordinary warn. Must NOT be read as ignorance.
+mxnone.test.                           IN TXT  "v=spf1 mx -all"

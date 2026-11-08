@@ -1820,7 +1820,7 @@ than the instance: a spec asserting its own completion is not evidence of it.
 
 ---
 
-## M3-CI-OD-1 — OPEN 2026-11-08 (needs the user): the From-gate's DNS failures can be reclassified as "absence" by the host's resolver search list; T5 fails on every host that has one
+## M3-CI-OD-1 — RULED 2026-11-08: the From-gate roots every DNS name and classifies strictly; a search-domain fixture is permanent
 
 **Found by** the first real GitHub Actions run of the FROM-gate suite
 ([run 42437413708](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42437413708); the same failure was in run
@@ -1856,25 +1856,67 @@ block. **Not measured:** the effect end to end through the live Control; the sea
 The blackhole (timeout) half passed on the runner; my inference (not measured) is that the 4 s test budget expired before
 the second name was tried, and that the default 10 s budget would not protect it.
 
-**Deliberately NOT done.** No product code was changed and T5 was not loosened or skipped; module 3's CI is therefore
-**red on this one test**, and is left red. Either "fix" would be resolving a locked gate's semantics on my own authority
-(Rule 2), and a green obtained by giving the test a resolver with no search domain would be exactly the
-environment-masked green this work exists to remove.
+**Deliberately NOT done at first.** No product code was changed and T5 was not loosened or skipped; module 3's CI was
+left **red on this one test** while the ruling was awaited. Either "fix" would have been resolving a locked gate's semantics
+on my own authority (Rule 2), and a green obtained by giving the test a resolver with no search domain would have been
+exactly the environment-masked green this work exists to remove.
 
-**Options, for the owner to rule on:**
-(a) make the evaluator's lookups **absolute** (trailing dot) so the search list is never consulted — smallest change,
-independent of `resolv.conf`, covers the `net.DefaultResolver` path too; cache keys need normalising;
-(b) set `StrictErrors: true` — needs a resolver we construct in the empty-`from_dns_resolver` case as well;
-(c) declare "no search domain" a deployment precondition — leaves the gate fail-open on common hosts; not recommended.
-Whichever is chosen needs a regression test that carries a search domain **deterministically**, because the dev host has none
-(the reproduction above, run as a CI step, does it; so does a GitHub runner by accident, which is not a control).
+**Options put to the owner:** (a) make the evaluator's lookups absolute (trailing dot); (b) `StrictErrors: true`; (c) declare
+"no search domain" a deployment precondition (not recommended). Whichever was chosen needed a regression test that carries a
+search domain **deterministically**, because the dev host has none.
+
+### RULING (2026-11-08) — (a), plus strict classification, plus a permanent search-domain fixture
+
+> Every From-gate DNS lookup uses a FULLY-QUALIFIED name with a trailing dot, so Go's resolver never applies the resolv.conf
+> search list and the returned error belongs to the actual query. Then make the classification strict: only a genuine
+> NXDOMAIN for the exact queried name means "no record"; SERVFAIL, timeout and every other error are INDETERMINATE: fail
+> closed at setup (`from_dns_unavailable`, retryable) and are NEVER written to the negative cache. Add a PERMANENT CI fixture:
+> a container with a `search` line injected into resolv.conf, and run T5 there. Prove it: the fixture reds without the fix
+> and greens with it.
+
+**Implemented 2026-11-08** (`internal/fromgate`):
+1. `fqdn()` and an OUTERMOST `fqdnResolver` roots every name before the cache and the DNS client see it — SPF, DMARC, DKIM,
+   MX and A lookups are covered by construction, and cache keys are rooted. `newResolver`'s comment, which claimed
+   `from_dns_resolver` bypassed `/etc/resolv.conf` "entirely", is corrected (a custom `Dial` replaces the SERVER only).
+2. `isAbsence`/`isIgnorance` are strict: absence is a `*net.DNSError` that is `IsNotFound` and **neither** `IsTimeout` **nor**
+   `IsTemporary`; ignorance is "an error that is not absence", so nothing unrecognised can reach the lenient side. The old form
+   checked `IsNotFound` first, so a not-found-and-temporary error counted as absence and would have been negative-cached.
+3. Two lookups were not under that rule and are now: the self-hosted exception's MX check (a second implementation inside the
+   evaluator called `net.DefaultResolver` directly — no `from_dns_resolver`, no deadline, no rooted name — and mapped every
+   failure to "not self-hosted"; it is now the one `selfHostedException`, through the wrapped resolver, and its ignorance
+   reaches the verdict as `indeterminate / from_dns_unavailable`), and the SPF `a:`/`mx:`/`ptr:`/`exists:` void-target lookup
+   (which swallowed a SERVFAIL as "not void"; it now raises the same ignorance signal as an `include:`).
+4. **Fixture (blocking, in `real-infra.yml`):** `tests/harness/checks/dns_search_domain.sh` builds the package (static, CGO off, as
+   the Control is) and runs **every** fromgate test in a digest-pinned alpine on the host network whose `resolv.conf` has
+   `search search-domain.test` — under `.test`, so the suffixed names get an authoritative NXDOMAIN from the same CoreDNS and
+   the collapse needs no internet. `TestSearchDomainCanary` makes it self-proving: where a search list exists it asserts
+   that an *unrooted* lookup of `servfail.test` really does collapse into absence and the rooted one does not, and it fails if
+   the fixture claims a search domain it does not have. Paired control `dns_search_domain_selftest.sh` runs the same fixture
+   against a MUTANT build (rooting disabled, the mutation verified to have landed) and requires T5 to fail with the collapse
+   signature while the canary passes.
+5. New CoreDNS fixtures `mxservfail.test` (MX SERVFAILs, TXT answers), `mxok.test`, `mxnone.test`, and three tests that cover
+   the self-hosted path in all three outcomes (refuse / allow / ordinary warn).
+
+**Proof that it reds without the fix and greens with it (Linux, search domain injected):** the *committed pre-fix code with its
+original tests* — T5 **passes** with no search domain (3.00 s, which is why every local green hid it) and **fails** with the
+search domain, with the message the GitHub runner printed (`got Outcome=warn Code=from_unauthenticated_warned, want
+indeterminate/from_dns_unavailable`). The fixed code passes all 34 tests under the search domain. The standing mutant control
+fails T5 and the new MX test and passes the canary.
+
+**One interpretation, recorded because it is a choice:** the ruling says "only a genuine NXDOMAIN". Go's resolver reports
+NXDOMAIN and NODATA identically (`IsNotFound`) and does not expose the rcode, and M3-P4-OD-13 (ruled 2026-08-01) already
+depends on NODATA being absence — `aligned.test` publishes SPF with no A record, so a `LookupHost` on it is NODATA. Reading the
+ruling as NXDOMAIN-only would make every such domain indeterminate and the gate unusable for them, and would need a raw DNS
+client in place of `net.Resolver`. It is therefore implemented as **genuine not-found for the exact (rooted) name** — NXDOMAIN or
+NODATA — and everything else, without exception, is ignorance. If NXDOMAIN-only was meant literally, that is a larger change
+and needs a further ruling.
 
 ---
 
 ## Honest final position
 
-> **Update 2026-11-08 — one further item needs the user: [M3-CI-OD-1](#m3-ci-od-1--open-2026-11-08-needs-the-user-the-from-gates-dns-failures-can-be-reclassified-as-absence-by-the-hosts-resolver-search-list-t5-fails-on-every-host-that-has-one)**
-> (a real-runner CI finding, not a phase item). The paragraph below is the 2026-08-04 position, left as written.
+> **Update 2026-11-08 — one further item, now ruled and implemented: M3-CI-OD-1 (above)**
+> (a real-runner CI finding, not a phase item; it is not among the items needing the user). The paragraph below is the 2026-08-04 position, left as written.
 
 **Needs-user: two items — M3-P8-OD-7 and M3-P8-OD-8, above.** 82 of 84 items are disposed of — the
 original 79, plus **M3-P7-OD-9**, **M3-P7-OD-10**, **M3-P7-OD-11**, and **M3-P4-OD-12**, all raised
