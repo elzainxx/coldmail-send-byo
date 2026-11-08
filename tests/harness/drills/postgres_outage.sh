@@ -45,11 +45,20 @@ ok "Postgres is volume-backed (no tmpfs on its data directory): a stop/start kee
 
 echo "== fixtures (admin API, as an operator would) =="
 RUNID="drill-$(date +%s)"
-# Module 3 has no pools: an account is owned by a user and base routing reaches it directly. The harness also switches the
-# From-gate off for its own fixtures (its DNS verification is not what this drill is about).
+# Module 3 has no pools: an account is owned by a user and base routing reaches it directly, and it allows ONE account per user
+# (the Control answers a second create with `conflict / duplicate_account_for_user`). The drill therefore gets a FRESH TENANT of its
+# own, exactly as the harness does for its in-flight fixture — the first version reused the system user, whose account the
+# harness had already created, and failed at fixtures before it touched Postgres. A fresh tenant also keeps a deliberately stuck
+# in-flight job from permanently occupying one of the system user's concurrency lanes.
+# The harness also switches the From-gate off for its own fixtures (its DNS verification is not what this drill is about).
+SYSUSER="$(PSQL "SELECT gen_random_uuid()" | head -1)"
+[ -n "$SYSUSER" ] || { bad "could not mint a tenant id"; exit 1; }
+PSQL "INSERT INTO public.users (id,email,is_active) VALUES ('$SYSUSER','drill-${SYSUSER}@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
+echo "   fresh tenant for this drill: $SYSUSER"
 PSQL "UPDATE send_byo.config SET value = '{\"v\":\"off\"}' WHERE key = 'from_gate_mode'" >/dev/null
-ACCT="$(curl -s -X POST "$API/v1/admin/accounts" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"drill-secret\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"Drill\"}" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
-[ -n "$ACCT" ] || { bad "could not create an account"; exit 1; }
+ACCT_RESP="$(curl -s -X POST "$API/v1/admin/accounts" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"drill-secret\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"Drill\"}" || true)"
+ACCT="$(echo "$ACCT_RESP" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
+[ -n "$ACCT" ] || { bad "could not create an account — the API answered: ${ACCT_RESP:-<nothing>}"; exit 1; }
 new_item() { PSQL "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,reply_to,status) VALUES ('$SYSUSER','$SYSUSER','$1@example.com','Drill $1','<p>drill</p>','reply@ourdomain.com','pending') RETURNING id" | grep -vE '^(INSERT|UPDATE) [0-9]' | head -1; }
 run_item() { curl -s -w '\n%{http_code}' -X POST "$API/v1/run" -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' -d "{\"job_item_id\":\"$1\",\"user_id\":\"$SYSUSER\"}"; }
 job_of() { PSQL "SELECT id FROM $SCHEMA.jobs WHERE job_item_id='$1'" | head -1; }
