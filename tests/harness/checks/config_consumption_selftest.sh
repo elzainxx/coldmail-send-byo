@@ -210,9 +210,22 @@ func use(cfg Config) int { return cfg.FixtureDial }
 printf '# a ledger with every entry removed\n' >"$TMP/Docs/config-consumers.txt"
 expect "an emptied ledger fails WITH A REASON, not silently" 1 "MISSING from"
 
+# 11. THE BROKEN-PIPE FALSE RED (found 2026-11-08, the first time this gate ran on a real GitHub runner). The consumer is
+#     real, in CODE, on the FIRST line of a LARGE file. The gate pipes the comment-stripped file into `grep`; with `grep -q`
+#     under pipefail, grep exits at the first match while sed still has far more than a pipe buffer to write, sed dies of a
+#     broken pipe, and the pipeline reports failure for a line that MATCHED — "ONLY INSIDE COMMENTS", on a key that is
+#     plainly read. On real files it is timing-dependent (it failed ~60% of the time under CPU contention and on the
+#     runner, and passed on the dev host); with the match at the top and ~190KB of code after it, it is deterministic.
+#     The filler must be CODE, not comments: the gate strips `//…` before grepping, so comment filler would shrink sed's
+#     output under the pipe buffer and defuse the case. Paired control: restoring `grep -qE` in the gate makes THIS case
+#     fail (verified, see the commit message).
+big_body="$(printf 'package dispatch\n\nfunc use(cfg Config) int { return cfg.FixtureDial * 2 }\n'; awk 'BEGIN{for(i=0;i<12000;i++) printf "var pad%d = %d\n", i, i}')"
+consumer_fixture selftest_consumed FixtureDial "$big_body"
+expect "a real consumer on line 1 of a LARGE file is accepted (broken-pipe regression)" 0 "config_consumption OK"
+
 if [[ "$fail" -eq 0 ]]; then
-  echo "config_consumption_selftest OK: 10 cases (2 accept, 8 reject) — expiry branch (1-6), the"
-  echo "  consumer-grep branch (7-9, incl. the comment-satisfied defect), and the emptied-ledger"
-  echo "  silent-crash guard (10) — the last two both found 2026-08-05"
+  echo "config_consumption_selftest OK: 11 cases (3 accept, 8 reject) — expiry branch (1-6), the"
+  echo "  consumer-grep branch (7-9, incl. the comment-satisfied defect), the emptied-ledger"
+  echo "  silent-crash guard (10) — both found 2026-08-05 — and the 2026-11-08 broken-pipe false red (11)"
 fi
 exit "$fail"

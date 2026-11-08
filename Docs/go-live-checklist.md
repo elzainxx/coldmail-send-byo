@@ -449,9 +449,11 @@ walked back the same way if the first enforcing tick surprises you.
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 10 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+- [ ] All 14 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
       `config_consumption`, `config_consumption_selftest`, `test_enumeration`,
-      `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`. (Was written as
+      `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`, `dsn_scrub_wiring`,
+      `postgres_durability`, `secret_ownership`, `go_suite_selftest`. (Re-derived from `tests/harness/checks/` on
+      2026-11-08: this line said 10 while 14 were wired — the same drift as below, again. Was written as
       "7" until 2026-08-05 — the two selftests and `test_enumeration` had been added and wired into
       `.github/workflows/real-infra.yml` without this line moving. The count is the point of the line: a
       reader checking off "7 green" against a workflow that runs 10 would not notice which three they had
