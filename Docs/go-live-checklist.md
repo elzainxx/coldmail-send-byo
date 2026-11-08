@@ -458,11 +458,12 @@ walked back the same way if the first enforcing tick surprises you.
 
 - [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 16 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
+- [ ] All 18 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
       `config_consumption`, `config_consumption_selftest`, `test_enumeration`,
       `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`, `dsn_scrub_wiring`,
-      `postgres_durability`, `secret_ownership`, `go_suite_selftest`, `dns_search_domain`, `dns_search_domain_selftest`.
-      (Re-derived from `tests/harness/checks/` on 2026-11-08: this line said 10 while 14 were wired, and 16 are now —
+      `postgres_durability`, `secret_ownership`, `go_suite_selftest`, `dns_search_domain`, `dns_search_domain_selftest`,
+      `image_pins`, `image_pins_selftest`.
+      (Re-derived from `tests/harness/checks/` on 2026-11-08: this line said 10 while 14 were wired, and 18 are now —
       the same drift as below, again. Was written as
       "7" until 2026-08-05 — the two selftests and `test_enumeration` had been added and wired into
       `.github/workflows/real-infra.yml` without this line moving. The count is the point of the line: a

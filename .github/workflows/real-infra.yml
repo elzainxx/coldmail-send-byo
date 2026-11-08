@@ -203,6 +203,18 @@ jobs:
         if: always()
         run: bash tests/harness/checks/go_suite_selftest.sh
 
+      # No floating image reference anywhere (no `:latest`, no untagged image), and the harness's own dependencies (Mailpit,
+      # CoreDNS, the DNS black-hole fixture) pinned by DIGEST. A cold pull on a runner gets whatever the registry serves that day
+      # while a developer's machine keeps an old cached copy; the CI replica held CoreDNS 1.14.6 while the runner pulled 1.15.0.
+      # Static; needs no stack.
+      - name: Image pins — no floating tag, and the harness's images are pinned by digest (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/image_pins.sh
+
+      - name: Image pins SELF-TEST — the gate rejects each way a pin can be lost (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/image_pins_selftest.sh
+
       # M3-CI-OD-1 (ruled 2026-11-08). The From-gate's DNS handling must not depend on the host's resolv.conf: Go's
       # resolver walks a `search` list and returns the LAST name's error, so a SERVFAIL used to become an NXDOMAIN and
       # a DNS outage read as "no records". The dev host has no search domain; a GitHub runner does, which is the only
