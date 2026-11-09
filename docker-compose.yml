@@ -12,7 +12,7 @@ x-pg-env: &pg-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment: *pg-env
     # Host side is .env-driven (M3-P0-OD-6): module 2 binds this same container-internal port on
     # host 5432 too, and compose project names do NOT namespace host port bindings. Default here

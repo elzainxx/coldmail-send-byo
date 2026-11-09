@@ -1991,6 +1991,34 @@ whatever `voidTarget` does — which is why this went unseen.
 
 ---
 
+## M3-CI-OD-4 — RULED 2026-11-09: every image this repository pulls is pinned by digest; the `image_pins` gate enforces all of them
+
+**Ruling (owner, C3 of the 2026-11-09 brief):** *"Digest-pin every remaining builder tag (postgres, golang, alpine, node). Extend the
+:latest gate to reject any unpinned image tag."* This reverses the earlier decision (M3-CI-OD-1's pass) to report the builders
+without failing on them; the cost is stated in the gate's header: a pinned builder stops receiving base-image security patches until
+a reviewed commit bumps the digest.
+
+**Pinned (multi-arch index digests, 2026-11-09):** `postgres:16-alpine` (compose), `golang:1.26-alpine` and `alpine:3.20`
+(`services/control/Dockerfile`, `tools/send-byo-migrate/Dockerfile`), `node:20-alpine` (`services/worker/Dockerfile`), and — found
+while widening the gate — `alpine:3` in `tools/own-secrets.sh` (twice; the key-ownership tool the CI gate runs), now
+`alpine:3.22@sha256:…`, the same pin the DNS fixtures use, and the `python` usage example in `tests/manual/webhook-receiver.py`.
+`golang:1.26-alpine`'s digest is the image that reports Go 1.26.10 (the runbook's govulncheck floor).
+
+**The gate (`tests/harness/checks/image_pins.sh`, 23-case self-test; identical in module 2):** every reference needs `@sha256:<64 hex>`
+(no `PINNED_REPOS` list, no "reported, not failed"). Its scope was widened because the old scope is how `alpine:3` sat in
+`tools/` while the gate said OK: compose files, workflow `image:` lines, `services/*/Dockerfile` **and `tools/*/Dockerfile`**, plus a
+heuristic scan of shell tooling for `docker run|pull|create` / `dock` lines naming a well-known base image. The shell scan is
+**not definitive** (an image from a repository name it does not know is invisible to it) and `${...}`-interpolated `image:` lines
+cannot be read statically; both limits are stated in the gate and the interpolated ones are counted in its output. Against the
+pre-pin tree the new gate fails on all 7 tag-only references, naming each file.
+
+**Flag, not changed — verify support status:** `node:20-alpine` and `alpine:3.20` are old releases. My recollection is that both are
+at or past upstream end-of-life, but I could not verify it from this host (the lookup failed), so it is not asserted here. Pinning
+froze them as they are; moving the worker to a supported Node, or the final stage to a newer Alpine, is a separate decision (it is
+the same shape as module 1's Ruby 3.2 question).
+
+---
+
 ## Honest final position
 
 > **Update 2026-11-09 — M3-CI-OD-2 ruled and implemented (above); M3-CI-OD-3 FLAGGED and needs the user** (a macro-bearing SPF
