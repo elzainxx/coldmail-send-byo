@@ -1,6 +1,6 @@
 # GO-LIVE CHECKLIST
 
-The build is sealed (`Docs/architecture-overview.md`'s build-status section; verdict **GO**).
+The build is sealed (`Docs/architecture.md`'s build-status section; verdict **GO**).
 Everything below is a **going-live confirmation or operator action**, not a build blocker — the
 module is implemented and proven in the real-infra harness (`scripts/dev.sh test`, 100/100 green as of 2026-11-07)
 without any of these. They become mandatory the moment this module points at a real platform
@@ -390,7 +390,7 @@ asked directly.
 
 ## 14. Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED — two promises are not being kept until you do)
 
-**Why it blocks.** Fix-plan item 13 (`send_byo_0053`, [ADR-0018](./history/decisions/0018-every-autonomous-mutator-gets-a-shadow-ladder.md))
+**Why it blocks.** Fix-plan item 13 (`send_byo_0053`, [ADR-0018](./adr/ADR-0018-every-autonomous-mutator-gets-a-shadow-ladder.md))
 put every autonomous mutator behind an `off | shadow | enforce` dial, all four **seeded at `shadow`** so a
 fresh deployment observes before it acts. That is the right default for a system nobody has calibrated
 yet, and for two of the four dials it is a state you cannot stay in:

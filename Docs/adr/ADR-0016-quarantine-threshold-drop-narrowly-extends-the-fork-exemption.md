@@ -88,6 +88,6 @@ would need its own ruling.
   and M3-P5-OD-1 (this decision's own ruling text).
 - `Docs/phase-5-autonomous-behaviour-and-limits.md` §4, §10.1, §10.3 (the drop's implementation and
   accounting).
-- `Docs/history/decisions/0014-reserved-config-marker-requires-a-mechanical-expiry.md` (ADR-0014 —
+- `Docs/adr/ADR-0014-reserved-config-marker-requires-a-mechanical-expiry.md` (ADR-0014 —
   why option (c), `RESERVED`, was not available here).
 - `db/migrations/byosmtp_0042_seed_phase5_config.{up,down}.sql`.

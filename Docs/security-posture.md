@@ -361,7 +361,7 @@ The codebase cannot check these; they are the deployment's half of the posture.
 |---|---|
 | [`disaster-recovery.md`](./disaster-recovery.md) | Key backup, the recovery drill, rotation (including why module 3 has no operator-side rotation path), compromise response. |
 | [`go-live-checklist.md`](./go-live-checklist.md) | The pre-launch gate, including the IAM-separation sign-off. |
-| [`architecture-overview.md`](./architecture-overview.md) | Boundaries and the send path in detail. |
+| [`architecture.md`](./architecture.md) | Boundaries and the send path in detail. |
 | [`../CLAUDE.md`](../CLAUDE.md) | The build rules these properties come from — canonical. |
 | [`config-reference.md`](./config-reference.md) | `debug_log_retention_days`, `account_retention_window_sec`, and every other tunable named above. |
 | [`future-work.md`](./future-work.md) | `FW-M3-5` (per-access notification), `send_logs` at-rest encryption, bounce ingestion, and the rest of what is not built. |

@@ -163,7 +163,7 @@ the composed floor would land somewhere different on each.
 
 - CLAUDE.md Rule 5 (additive-only — why `dispatch_enabled` and `dispatch_paused` both survive),
   Rule 1 (config-not-code), Rule 7 (one dispatcher or none), Rule 3 (real infra in tests).
-- `Docs/history/decisions/0016-quarantine-threshold-drop-narrowly-extends-the-fork-exemption.md` —
+- `Docs/adr/ADR-0016-quarantine-threshold-drop-narrowly-extends-the-fork-exemption.md` —
   ADR-0016, whose two-condition drop test fails condition (1) here.
 - `Docs/config-reference.md` — the "Fix-plan item 12 state" section (all four rungs, the FLOOR
   reasoning, the named consumers, which surfaces report it).

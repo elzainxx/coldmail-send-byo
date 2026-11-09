@@ -26,7 +26,7 @@ Start at the [root README](../README.md) if you have not already.
 |---|---|---|
 | [`config-reference.md`](./config-reference.md) | All 85 config keys: meaning, `value_type`, `default_value`, which subsystem consumes it. | `config_drift`, `config_consumption` |
 | [`api-contract.md`](./api-contract.md) | Every route on both auth domains: request/response shape, error envelopes, status codes. | `contract_drift` |
-| [`architecture-overview.md`](./architecture-overview.md) | The system's shape — services, boundaries, send path, where each guarantee is enforced. | — |
+| [`architecture.md`](./architecture.md) | The system's shape — services, boundaries, send path, where each guarantee is enforced. | — |
 | [`security-posture.md`](./security-posture.md) | What is protected, how, and the honest residual risks — written to two audiences (an operator's own risk, and a user trusting the operator with a third-party credential). The page to hand a security reviewer. | — |
 | [`future-work.md`](./future-work.md) | What is deliberately **not** built, and why it was deferred. | — |
 | [`advisory-locks.md`](./advisory-locks.md) | Every advisory-lock key in the repo + the reserved band. | — |
@@ -52,7 +52,7 @@ open-decisions ledger is **empty — all 97 items ruled** ([`open-decisions.md`]
 the last two, M3-P8-OD-7's docs-reorganisation path collision and M3-P8-OD-8's three expired
 `RESERVED` config keys, were ruled 2026-08-04) and deferred work is registered in
 [`future-work.md`](./future-work.md). See
-[`architecture-overview.md`](./architecture-overview.md)'s build-status section for the per-phase
+[`architecture.md`](./architecture.md)'s build-status section for the per-phase
 verdict and the known operational limits, and [`go-live-checklist.md`](./go-live-checklist.md) before
 deploying live. The build-by-build *evidence* behind each phase's verdict is provenance:
 [`history/`](./history/README.md) — module 3's own eight phase specs, its build plan, and its ADRs

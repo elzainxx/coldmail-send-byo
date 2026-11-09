@@ -92,7 +92,7 @@ verified, not assumed.
 - Contradictions, ambiguities, and locked-fact conflicts are NOT resolved by
   inventing an answer. Record them in the Open Decisions log (`Docs/open-decisions.md` — module
   3's own fresh ledger, not `Docs/history/open-decisions.md`, which is module 2's sealed
-  provenance) plus an ADR in `Docs/decisions/` when one is warranted, and await the user's ruling.
+  provenance) plus an ADR in `Docs/adr/` when one is warranted, and await the user's ruling.
 - Never resolve a locked contradiction on your own authority. "Locked" means locked.
 - An Open Decision blocks only the ambiguous slice; keep unrelated work moving.
 

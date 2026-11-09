@@ -623,7 +623,7 @@ Promoting `shadow` → `enforce` is a go-live decision, covered in
 ## The four mutator mode dials: watching a decision before you grant it authority
 
 Fix-plan item 13 (`send_byo_0053`,
-[ADR-0018](./history/decisions/0018-every-autonomous-mutator-gets-a-shadow-ladder.md)) put every
+[ADR-0018](./adr/ADR-0018-every-autonomous-mutator-gets-a-shadow-ladder.md)) put every
 autonomous mutator in this module behind the same three-value dial `autoquarantine_mode` already used.
 An **autonomous mutator** is a write nobody asked for — state the Control changes on its own initiative,
 as opposed to recording what a worker reported or doing what a user requested.
@@ -1253,5 +1253,5 @@ bug to file, not a page. Volume and pattern are what distinguish the two, and th
 | To recover from a disaster or rotate keys | [`disaster-recovery.md`](./disaster-recovery.md) |
 | To size a deployment | [`capacity-planning.md`](./capacity-planning.md) |
 | To wire up monitoring and alerting | [`monitoring.md`](./monitoring.md) |
-| To understand how the system is shaped | [`architecture-overview.md`](./architecture-overview.md) |
+| To understand how the system is shaped | [`architecture.md`](./architecture.md) |
 | To know why something is absent | [`future-work.md`](./future-work.md) |

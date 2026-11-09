@@ -108,7 +108,7 @@ not have to re-derive it.
    along with `api-contract.md`. **Present, unfixed in module 2.**
 2. **`README.md`'s "Five blocking CI gates" is stale; CI has run six since `drain_grace` landed.**
    `README.md:88` and its table both list five gates; module 2's own Stage 1 note corrected
-   `architecture-overview.md` to six but never touched the README. Found during Phase 0's own Gate
+   `architecture.md` to six but never touched the README. Found during Phase 0's own Gate
    B execution (M3-P0-OD-10, ruled 2026-07-31) — the second discovery, after entry 1's
    `contract_drift.sh` off-by-one (M3-P2-OD-2, ruled 2026-07-30, the earlier claim, per Phase 8
    §7.4's discovery-date ordering). **Fixed in module 3** as a one-line Gate-B exception to
