@@ -1965,29 +1965,30 @@ this ruling, and is **not** changed here.
 
 ---
 
-## M3-CI-OD-3 — FLAGGED 2026-11-09, NOT CHANGED, needs a ruling: macro-bearing `a:` / `mx:` / `exists:` targets are looked up as literal strings
+## M3-CI-OD-3 — RULED 2026-11-09: a macro-bearing SPF target is undecidable and can never contribute to a BLOCK
 
-**Found while fixing M3-CI-OD-2**, in the same function. `voidTarget` performs the lookup the void-lookup counter needs, but a
-target containing an SPF macro (`exists:%{ir}.%{l1r+-}._spf.example.com`) is not a name — it is an expression that expands from a
-live SMTP transaction that does not exist at setup. The evaluator looks the **literal text** up, gets NXDOMAIN, and counts a void
-lookup.
+**Found while fixing M3-CI-OD-2** (flagged then, not changed — Rule 2); **ruled** by the owner as C1 item 2 of the 2026-11-09 brief: *"a term whose
+macro the evaluator cannot expand is undecidable and must NEVER contribute to a BLOCK. Apply the recorded fix."*
 
-**Measured** (a throwaway test against a stub resolver; nothing in the repo changed): a record
-`v=spf1 exists:%{i}._a.example.test exists:%{i}._b.example.test exists:%{i}._c.example.test -all` asks for the three literal names,
-sets `macroPresent=true` **and** `permError=from_spf_lookup_limit_exceeded`. In `decide()` the lookup-limit branch runs **before**
-the macro rule, so under `from_spf_lookup_limit_posture=block` and `p=reject` the verdict is **BLOCK** — contradicting §3.2
-("macros: never block"). Under the default posture (`warn`) the outcome is only a mislabelled warn.
+**The defect.** `voidTarget` looked up the **literal text** of a macro target (`exists:%{ir}.%{l1r+-}._spf.example.com`), always got NXDOMAIN, and
+counted a void lookup. Three of them were a lookup-limit PermError that `decide()` read **before** the macro rule, so under
+`from_spf_lookup_limit_posture=block` with `p=reject` the verdict was **BLOCK** — against §3.2 ("macros: never block"). Reproduced with
+`spfmacro-void.test` (three macro terms, `p=reject`): `BLOCKED … from_spf_lookup_limit_exceeded`.
 
-**Why it is not folded into M3-CI-OD-2.** Same function, different defect and a different decision: it changes what an
-operator-visible code says for any record using macros, and it touches the ordering of `decide()`'s branches. This repo's Rule 2
-is explicit — flag it, do not resolve it on my own authority.
+**The fix, in two independent layers.**
+1. *No literal lookup.* A target containing `%{` is never looked up: `voidTarget` returns "not void" without a query, and `include:` / `redirect=` with a
+   macro target are not fetched or counted void (`redirect=` stops expansion — it cannot be followed). The lookup is still **counted** (RFC 7208 §4.6.4
+   counts the mechanism): eleven macro terms are still the lookup-limit PermError. This is the fix recorded when it was flagged, extended to
+   `include:`/`redirect=`, which had the identical defect.
+2. *The invariant, in `decide()`.* The lookup-limit BLOCK requires `!spf.macroPresent`. A record containing a macro the evaluator cannot expand never
+   BLOCKS, whatever else in it hit the limit; the warn still reports the limit. The only other BLOCK row (p=reject + no SPF record + no DKIM) cannot
+   involve a macro by construction (no record).
 
-**Recommended ruling (for the owner):** for a target containing `%{`, still consume the lookup (RFC 7208 §4.6.4 counts the
-mechanism) but **do not perform the void lookup** — the target cannot be evaluated, so it is neither void nor not void. That makes
-`macroPresent` the only thing a macro-bearing record can raise, which is what §3.2 says. A one-condition change plus a
-`macro-spf`-style fixture with three macro terms, `p=reject`, under posture `block`. No existing test combines those three: 
-`TestEvaluate_MacroNeverBlocks` runs one macro term under the default posture `warn` with no `p=reject`, so it could not block
-whatever `voidTarget` does — which is why this went unseen.
+**Proof that it reds without the fix** (`spf_macro_test.go` + `evaluate_spfmacro_test.go`, real CoreDNS): `spfmacro-void.test` now warns; its control
+`spfmacro-ctrl.test` — the identical shape **without** macros — still BLOCKS, so the BLOCK path exists and the difference is the macros alone. With both
+layers reverted in a scratch copy the verdict test fails with the original false BLOCK; with **either one alone** reverted it still passes — the layers are
+independent, which is the point of having two. Unit controls: the same target shapes *without* a macro are still looked up and counted void; a frozen
+copy of the old `voidTarget` is shown to have asked for the literal `%{…}` text.
 
 ---
 
@@ -2012,17 +2013,20 @@ heuristic scan of shell tooling for `docker run|pull|create` / `dock` lines nami
 cannot be read statically; both limits are stated in the gate and the interpolated ones are counted in its output. Against the
 pre-pin tree the new gate fails on all 7 tag-only references, naming each file.
 
-**Flag, not changed — verify support status:** `node:20-alpine` and `alpine:3.20` are old releases. My recollection is that both are
-at or past upstream end-of-life, but I could not verify it from this host (the lookup failed), so it is not asserted here. Pinning
-froze them as they are; moving the worker to a supported Node, or the final stage to a newer Alpine, is a separate decision (it is
-the same shape as module 1's Ruby 3.2 question).
+**Moved to supported releases (2026-11-09, owner ruling C1 item 3):** `node:20-alpine` → **`node:24-alpine`** (worker image; `engines.node` and both
+workflows' `setup-node` → 24 — the host-side worker unit tests must run on the runtime the worker ships on) and `alpine:3.20` → **`alpine:3.24`**
+(Go final stages, migrate tool, `own-secrets.sh`, the DNS fixtures — one Alpine pin everywhere), all digest-pinned. The previous flag ("verify support
+status") is closed by the move, not by a verification: I could not look the support dates up from the build host. Facts read from the registry instead:
+`node:26-alpine` also exists (so 24 may not be the newest line — the ruling names 24, and 24 is what is pinned) and `alpine:3.24` is the newest Alpine tag.
+The worker has no dependencies; its unit tests give identical per-file results on Node 20 and 24 in a bare container (the failures are the tests needing the
+harness's certs and sink), so nothing regresses with the move — the proof that counts is the runner's harness.
 
 ---
 
 ## Honest final position
 
-> **Update 2026-11-09 — M3-CI-OD-2 ruled and implemented (above); M3-CI-OD-3 FLAGGED and needs the user** (a macro-bearing SPF
-> target is looked up as a literal and can reach a false BLOCK under posture `block`; recommended fix stated, not applied).
+> **Update 2026-11-09 — M3-CI-OD-2, -3 and -4 ruled and implemented (above)** (SPF CIDR lengths; macro-bearing SPF targets can never contribute to a
+> BLOCK; every image pinned by digest).
 >
 > **Update 2026-11-08 — one further item, now ruled and implemented: M3-CI-OD-1 (above)**
 > (a real-runner CI finding, not a phase item; it is not among the items needing the user). The paragraph below is the 2026-08-04 position, left as written.

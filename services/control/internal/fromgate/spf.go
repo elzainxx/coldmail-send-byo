@@ -263,6 +263,9 @@ func parseAMX(t string) (spfAMX, bool) {
 	return m, false // `a:` (empty domain-spec), or junk such as `a/` / `a/abc` / `a///64` where the length did not parse
 }
 
+// hasMacro reports whether a single target contains an SPF macro (`%{...}`): such a target cannot be resolved at setup (M3-CI-OD-3).
+func hasMacro(s string) bool { return strings.Contains(s, "%{") }
+
 // containsMacro reports whether any term contains an SPF macro delimiter — §3.2: "Never block.
 // Macros expand from a live SMTP transaction that does not exist at setup."
 func containsMacro(terms []string) bool {
@@ -300,6 +303,12 @@ func expandSPFTerms(ctx context.Context, r resolverLike, terms []string, matchTo
 				return tokenFound, macroFound
 			}
 			state.lookups++
+			if hasMacro(target) {
+				// UNDECIDABLE (M3-CI-OD-3): the target is a macro expression that expands from a live SMTP transaction which does not exist
+				// at setup. The lookup is still COUNTED (RFC 7208 §4.6.4 counts the mechanism), but the literal text is not fetched, so it
+				// can neither find a record nor be miscounted as a void lookup.
+				continue
+			}
 			if state.visited[target] {
 				continue // cycle guard; RFC leaves this undefined, treat as a no-op rather than loop
 			}
@@ -338,6 +347,9 @@ func expandSPFTerms(ctx context.Context, r resolverLike, terms []string, matchTo
 				return tokenFound, macroFound
 			}
 			state.lookups++
+			if hasMacro(target) {
+				return tokenFound, macroFound // undecidable (M3-CI-OD-3): cannot be followed, and redirect= replaces evaluation, so nothing after it is read
+			}
 			if state.visited[target] {
 				continue
 			}
@@ -448,6 +460,13 @@ func voidTarget(ctx context.Context, r resolverLike, term string) (void bool, er
 	}
 	if target == "" || target == "ptr" {
 		return false, nil // bare mechanism targets the From domain itself; never void for THIS purpose
+	}
+	if hasMacro(target) {
+		// UNDECIDABLE (M3-CI-OD-3). A target with a macro is an expression, not a name: it expands from a live SMTP transaction that does
+		// not exist at setup. Looking the literal text up (`%{ir}._spf.example.com`) always answers NXDOMAIN, which was counted as a
+		// void lookup — three of them were a PermError that BLOCKED under posture `block` + p=reject, against §3.2 ("macros: never
+		// block"). Neither void nor not-void is knowable; "not void" with no lookup is the answer that cannot contribute to anything.
+		return false, nil
 	}
 	if isMX {
 		mx, err := r.LookupMX(ctx, target)

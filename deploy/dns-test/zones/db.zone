@@ -180,3 +180,15 @@ _dmarc.spfcidr-void.test.              IN TXT  "v=DMARC1; p=reject;"
 spfcidr-ghosts.test.                   IN TXT  "v=spf1 a:ghost1.test/24 a:ghost2.test/24 a:ghost3.test/24 -all"
 ; spfcidr-bad.test: a length out of range (a/33). A PermError per RFC 7208 §5.3 -> from_spf_record_invalid, never a lookup.
 spfcidr-bad.test.                      IN TXT  "v=spf1 a/33 -all"
+
+; ── M3-CI-OD-3: a macro-bearing SPF target is UNDECIDABLE and must never contribute to a BLOCK ─────────────────────────
+; spfmacro-void.test: the REPRODUCED defect. Three exists: terms whose targets carry macros (%{i}), p=reject, and the tests run it with
+;   from_spf_lookup_limit_posture=block. The old evaluator looked each literal text up (NXDOMAIN), counted three void lookups, raised the
+;   lookup-limit PermError, and decide() read that BEFORE the macro rule: a false BLOCK. Must WARN, never BLOCK.
+spfmacro-void.test.                    IN TXT  "v=spf1 exists:%{i}._a.spfmacro-void.test exists:%{i}._b.spfmacro-void.test exists:%{i}._c.spfmacro-void.test -all"
+_dmarc.spfmacro-void.test.             IN TXT  "v=DMARC1; p=reject;"
+; spfmacro-ctrl.test: the CONTROL -- the identical shape WITHOUT macros (a1/a2/a3 are deliberately absent -- do not add records for them):
+;   three genuine void lookups -> the lookup-limit PermError -> BLOCK under posture block + p=reject. Proves the BLOCK path still exists, so
+;   the zone above differs from it by the macros and nothing else.
+spfmacro-ctrl.test.                    IN TXT  "v=spf1 exists:a1.spfmacro-ctrl.test exists:a2.spfmacro-ctrl.test exists:a3.spfmacro-ctrl.test -all"
+_dmarc.spfmacro-ctrl.test.             IN TXT  "v=DMARC1; p=reject;"

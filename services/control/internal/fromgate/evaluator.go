@@ -206,7 +206,9 @@ func decide(fromAddress, domain, smtpHost, smtpUsername string, prov provider, p
 			return warnVerdict(dmarcPolicy, true, dkim, providerMatched, prov, detail,
 				"from_spf_multiple_records")
 		case spfErrLookupLimit:
-			if opts.SPFLookupLimitPosture == "block" && dmarcPolicy == "reject" {
+			// M3-CI-OD-3: a record containing a macro the evaluator cannot expand is UNDECIDABLE (§3.2: "macros: never block"), so it can
+			// never contribute to a BLOCK — whatever else in it hit the limit. The warn below still reports the limit.
+			if opts.SPFLookupLimitPosture == "block" && dmarcPolicy == "reject" && !spf.macroPresent {
 				detail["spf_lookup_limit_exceeded"] = true
 				return blockVerdict(dmarcPolicy, detail, "from_spf_lookup_limit_exceeded")
 			}

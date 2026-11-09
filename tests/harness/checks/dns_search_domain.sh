@@ -25,7 +25,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 
 MODE=real; [ "${1:-}" = "--mutant" ] && MODE=mutant
-IMG="alpine@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"   # alpine:3.22
+IMG="alpine@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"   # alpine:3.24
 PORT="$(grep -E '^HOST_PORT_COREDNS_UDP=' .env 2>/dev/null | cut -d= -f2- || true)"
 ADDR="127.0.0.1:${PORT:-9053}"
 

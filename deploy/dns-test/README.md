@@ -73,6 +73,8 @@ All names below are under the `test.` TLD.
 | `spfcidr-void.test` | M3-CI-OD-2: a **valid** record with four length-bearing `a`/`mx` terms whose targets all exist, under `p=reject` and `from_spf_lookup_limit_posture=block`. The old parse counted each as a void lookup, exceeded the limit and **blocked** it. Must **warn**, never block. |
 | `spfcidr-ghosts.test` | M3-CI-OD-2 control for the one above: three `a:ghostN.test/24` whose domains genuinely do not exist (do not add them) → the void limit **is** exceeded → `from_spf_lookup_limit_exceeded`. Proves void counting still works for length-bearing terms. |
 | `spfcidr-bad.test` | M3-CI-OD-2: `a/33` (an ip4 length over 32) → a PermError, `from_spf_record_invalid`; never looked up. |
+| `spfmacro-void.test` | M3-CI-OD-3: three `exists:%{i}…` macro terms + `p=reject`, run with `from_spf_lookup_limit_posture=block`. The old evaluator looked the literal text up, counted three void lookups and **blocked**. A macro target is undecidable → must **warn**, never block. |
+| `spfmacro-ctrl.test` | M3-CI-OD-3 control for the one above: the identical shape **without** macros (`a1`/`a2`/`a3` genuinely absent — do not add them) → three real void lookups → lookup-limit PermError → **BLOCK**. Proves the BLOCK path still exists. |
 
 Canary tests (M3-P4-OD-6 — allowed to fail loudly against real internet state) use real public
 names directly: `smtp.gmail.com` / `_spf.google.com` (§1.1's facts). They do not need any zone

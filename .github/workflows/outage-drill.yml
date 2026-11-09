@@ -22,7 +22,7 @@ jobs:
           go-version: "1.26"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Build the migrate runner (M3-P0-OD-12 — required by three template-DB steps in run.sh)
         run: (cd tools/send-byo-migrate && go build -o bin/send-byo-migrate .)
