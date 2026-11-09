@@ -67,6 +67,12 @@ All names below are under the `test.` TLD.
 | `mxok.test` | M3-CI-OD-1: bare-`mx` SPF + an MX record equal to the test's `smtp_host` (`mail.elsewhere.test`) → the self-hosted exception allows. The control for the two below: proves the MX lookup reaches THIS server. |
 | `mxnone.test` | M3-CI-OD-1: bare-`mx` SPF, the name exists, **no MX** → a genuine NODATA on the MX query = absence = "not self-hosted" → ordinary warn, never indeterminate. |
 | `mxservfail.test` | M3-CI-OD-1: bare-`mx` SPF, but its **MX query SERVFAILs** (dedicated Corefile block: `template IN MX`; the TXT is served from `zones/db.mxservfail`). The evaluator must refuse (`indeterminate / from_dns_unavailable`), not decide "not self-hosted". |
+| `spfcidr-a24.test`, `spfcidr-mx24.test`, `spfcidr-dual.test` | M3-CI-OD-2: a self-hosted domain whose SPF spells its own hosts **with a CIDR length** (`a/24`; `mx/24`; `a/24//64 mx/24//64`). A length is not a name, and a length-bearing bare `a`/`mx` is still §1.4's self-hosted exception → **allow/aligned**. The old parse looked `a/24` up as a host called "24", saw no bare `a`/`mx`, skipped the exception and warned. |
+| `spfcidr-explicit.test` | M3-CI-OD-2 control for the three above: `a:spfcidr-host.test/24` names an explicit host, which is **not** the exception shape → **warn**. Proves the fix did not turn "has a length" into "is self-hosted". |
+| `spfcidr-host.test`, `spfcidr-mxok.test` | M3-CI-OD-2: real targets (an A record; an MX record) for the explicit length-bearing forms. They exist, so they are not void. |
+| `spfcidr-void.test` | M3-CI-OD-2: a **valid** record with four length-bearing `a`/`mx` terms whose targets all exist, under `p=reject` and `from_spf_lookup_limit_posture=block`. The old parse counted each as a void lookup, exceeded the limit and **blocked** it. Must **warn**, never block. |
+| `spfcidr-ghosts.test` | M3-CI-OD-2 control for the one above: three `a:ghostN.test/24` whose domains genuinely do not exist (do not add them) → the void limit **is** exceeded → `from_spf_lookup_limit_exceeded`. Proves void counting still works for length-bearing terms. |
+| `spfcidr-bad.test` | M3-CI-OD-2: `a/33` (an ip4 length over 32) → a PermError, `from_spf_record_invalid`; never looked up. |
 
 Canary tests (M3-P4-OD-6 — allowed to fail loudly against real internet state) use real public
 names directly: `smtp.gmail.com` / `_spf.google.com` (§1.1's facts). They do not need any zone

@@ -145,3 +145,38 @@ mxok.test.                             IN MX   10 mail.elsewhere.test.
 ; mxnone.test: the name exists (it has the TXT) but publishes NO MX -> a genuine NODATA on the MX query
 ;   = absence = "not self-hosted" -> an ordinary warn. Must NOT be read as ignorance.
 mxnone.test.                           IN TXT  "v=spf1 mx -all"
+
+; ── M3-CI-OD-2: SPF a / mx mechanisms with a CIDR length (RFC 7208 §5.3, §5.4) ─────────────────────
+; `/N` is a LENGTH, not a name. Before the fix `a/24` was looked up as a host called "24", and was not "bare",
+; so §1.4's self-hosted exception never fired. Each fixture below is one verdict that flips on the fix.
+;
+; spfcidr-a24.test / spfcidr-mx24.test / spfcidr-dual.test: a self-hosted domain whose record spells its own
+;   hosts WITH a length. The tests use smtp_host = the domain itself (a24, dual) or mail.elsewhere.test, the MX
+;   target (mx24). Must be ALLOWED (aligned). The old parse did not see a bare a/mx, skipped the exception and WARNED.
+spfcidr-a24.test.                      IN A    10.20.0.1
+spfcidr-a24.test.                      IN TXT  "v=spf1 a/24 -all"
+spfcidr-mx24.test.                     IN TXT  "v=spf1 mx/24 -all"
+spfcidr-mx24.test.                     IN MX   10 mail.elsewhere.test.
+spfcidr-dual.test.                     IN A    10.20.0.2
+spfcidr-dual.test.                     IN TXT  "v=spf1 a/24//64 mx/24//64 -all"
+spfcidr-dual.test.                     IN MX   10 spfcidr-dual.test.
+; spfcidr-explicit.test: the CONTROL for the three above. `a:` with an explicit domain-spec names a host that is
+;   not (necessarily) the From domain's own, so it is NOT the §1.4 exception shape: a24-style length or not, it must
+;   WARN. Proves the fix did not turn "has a length" into "is self-hosted".
+spfcidr-explicit.test.                 IN A    10.20.0.3
+spfcidr-explicit.test.                 IN TXT  "v=spf1 a:spfcidr-host.test/24 -all"
+; spfcidr-host.test / spfcidr-mxok.test: real targets for the explicit forms below -- they EXIST, so they are not void.
+spfcidr-host.test.                     IN A    10.20.0.4
+spfcidr-mxok.test.                     IN MX   10 spfcidr-host.test.
+; spfcidr-void.test: a VALID record whose four a/mx terms all carry a length and all point at things that exist (or at
+;   the From domain itself). p=reject, and the tests run it with from_spf_lookup_limit_posture=block. The old parse
+;   counted every one as a void lookup ("24", "spfcidr-host.test/24", "spfcidr-mxok.test/24"), exceeded the limit of 2,
+;   and BLOCKED a perfectly good record. Must WARN (not self-hosted, provider unmatched), never BLOCK.
+spfcidr-void.test.                     IN TXT  "v=spf1 a/24 a:spfcidr-host.test/24 mx:spfcidr-mxok.test/24 a/24//64 -all"
+_dmarc.spfcidr-void.test.              IN TXT  "v=DMARC1; p=reject;"
+; spfcidr-ghosts.test: the CONTROL for the one above. Three a: terms with a length whose domain-specs genuinely do not
+;   exist (ghost1/2/3.test are deliberately absent -- do not add records for them): three REAL void lookups -> the
+;   void limit IS exceeded -> from_spf_lookup_limit_exceeded. Proves void counting still works for CIDR-bearing terms.
+spfcidr-ghosts.test.                   IN TXT  "v=spf1 a:ghost1.test/24 a:ghost2.test/24 a:ghost3.test/24 -all"
+; spfcidr-bad.test: a length out of range (a/33). A PermError per RFC 7208 §5.3 -> from_spf_record_invalid, never a lookup.
+spfcidr-bad.test.                      IN TXT  "v=spf1 a/33 -all"

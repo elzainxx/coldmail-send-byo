@@ -1913,8 +1913,89 @@ and needs a further ruling.
 
 ---
 
+## M3-CI-OD-2 — RULED 2026-11-09: an SPF `a` / `mx` mechanism's `/N` is a CIDR length, never part of a name
+
+**Found by** the DNS audit that followed M3-CI-OD-1 (observed in `voidTarget`, reported, deliberately not changed in that pass);
+**ruled** by the owner as chunk C2 of the 2026-11-09 brief: *"`a/24` is being looked up as the hostname "24". In SPF, `/N` is a
+CIDR length, not a name"* — fix the parser for `a`, `a/24`, `a:domain`, `a:domain/24`, `mx`, `mx/24`, `mx:domain/24` and the
+dual-CIDR form `a/24//64`, with a test per form and a control proving the old parse fails them, and check the alignment verdict
+end to end.
+
+**The defect, in two places that each did their own string-slicing.** RFC 7208 §5.3 / §5.4:
+`a|mx [":" domain-spec] [ "/" ip4-length ] [ "//" ip6-length ]`.
+1. `voidTarget` stripped prefixes with `TrimPrefix`, so `a/24` was looked up as the host **"24"**, `a/24//64` as **"24//64"**,
+   `mx/24` as an MX query for "24", and `a:example.com/24` as the name **"example.com/24"**. Every length-bearing `a`/`mx` was
+   therefore a *void lookup that is not one*. Three of them exceed the void limit (2), a PermError — and under
+   `from_spf_lookup_limit_posture=block` with `p=reject` that PermError **BLOCKS** (`decide()`, `spfErrLookupLimit`). A valid
+   record was refused.
+2. `containsBareAOrMX` compared the whole term to `"a"`/`"mx"`, so `a/24` was **not bare**, §1.4's self-hosted exception never
+   fired, and a domain authorizing its own hosts was **warned** instead of allowed.
+
+**The fix.** One parser, `parseAMX` (`services/control/internal/fromgate/spf.go`), reads the whole grammar — name, optional
+`:domain-spec`, optional `/ip4`, optional `//ip6` — and all three consumers use it: `isRecognizedSPFTerm` (grammar),
+`containsBareAOrMX` ("bare" now means *no domain-spec*, not *no characters after the name*) and `voidTarget` (looks up the
+domain-spec only). Lengths are read from the **end** of the term (so a `/` inside a macro cannot be mistaken for one) and are
+range-checked.
+
+**One consequence, recorded because it is a choice:** a malformed a/mx — an empty domain-spec (`a:`), a length that is not a
+number (`a/abc`), out of range (`a/33`, `a//129`) or with leading zeros — is now a **PermError** (`from_spf_record_invalid`, a
+warn), as RFC 7208 §5.3 requires. Previously any `a/…` or `a:…` was accepted as recognised, because only the prefix was checked.
+
+**Verdicts that change, each with a paired control that does not** (real CoreDNS fixtures, `deploy/dns-test/`):
+| zone | record | before | after | control |
+|---|---|---|---|---|
+| `spfcidr-a24.test` | `a/24` | warn | **allow / aligned** | `spfcidr-explicit.test` (`a:spfcidr-host.test/24`) stays **warn** — an explicit host is not §1.4's exception |
+| `spfcidr-mx24.test` | `mx/24` | warn | **allow / aligned** | |
+| `spfcidr-dual.test` | `a/24//64 mx/24//64` | warn | **allow / aligned** | |
+| `spfcidr-void.test` (`p=reject`, posture `block`) | four length-bearing a/mx, all targets exist | **BLOCK** `from_spf_lookup_limit_exceeded` | **warn** `from_unauthenticated_warned` | `spfcidr-ghosts.test` (three `a:ghostN.test/24` that do not exist) still `from_spf_lookup_limit_exceeded` |
+| `spfcidr-bad.test` | `a/33` | warn (unauthenticated) | warn **`from_spf_record_invalid`** | |
+
+**Proof that it reds without the fix.** (a) *Always, in the suite:* `TestSPFCIDR_LegacyLogicIsWrongOnEveryCIDRFormAndRightOnTheRest`
+runs a frozen copy of the old `voidTarget` / `containsBareAOrMX` against the same 20-row form table the production tests use, and
+requires it to be wrong on **every** CIDR-bearing form (it asks for `A 24`, `MX 24`, `A example.test/24`, …) and right on the four
+CIDR-less ones — so the table demonstrably detects the defect and is not flagging everything. (b) *One-off, end to end:* with the
+three behaviours reverted in a scratch copy of the module, the three verdict tests above fail with exactly the "before" column —
+`spfcidr-a24.test`, `-mx24.test` and `-dual.test` come back `warn`; `spfcidr-void.test` is **BLOCKED** with
+`from_spf_lookup_limit_exceeded`; `spfcidr-bad.test` comes back `from_unauthenticated_warned` — and no control fails. (That run is
+not a standing gate: the standing guards are the unit tests, which fail if production reverts, and the always-on legacy control.)
+
+**Not changed, and why.** `ptr:` and `exists:` take no CIDR length and are untouched. SPF mechanism names are matched
+case-sensitively (`MX` is rejected as unrecognised); RFC 7208 §4.6.1 says they are case-insensitive. That is pre-existing, outside
+this ruling, and is **not** changed here.
+
+---
+
+## M3-CI-OD-3 — FLAGGED 2026-11-09, NOT CHANGED, needs a ruling: macro-bearing `a:` / `mx:` / `exists:` targets are looked up as literal strings
+
+**Found while fixing M3-CI-OD-2**, in the same function. `voidTarget` performs the lookup the void-lookup counter needs, but a
+target containing an SPF macro (`exists:%{ir}.%{l1r+-}._spf.example.com`) is not a name — it is an expression that expands from a
+live SMTP transaction that does not exist at setup. The evaluator looks the **literal text** up, gets NXDOMAIN, and counts a void
+lookup.
+
+**Measured** (a throwaway test against a stub resolver; nothing in the repo changed): a record
+`v=spf1 exists:%{i}._a.example.test exists:%{i}._b.example.test exists:%{i}._c.example.test -all` asks for the three literal names,
+sets `macroPresent=true` **and** `permError=from_spf_lookup_limit_exceeded`. In `decide()` the lookup-limit branch runs **before**
+the macro rule, so under `from_spf_lookup_limit_posture=block` and `p=reject` the verdict is **BLOCK** — contradicting §3.2
+("macros: never block"). Under the default posture (`warn`) the outcome is only a mislabelled warn.
+
+**Why it is not folded into M3-CI-OD-2.** Same function, different defect and a different decision: it changes what an
+operator-visible code says for any record using macros, and it touches the ordering of `decide()`'s branches. This repo's Rule 2
+is explicit — flag it, do not resolve it on my own authority.
+
+**Recommended ruling (for the owner):** for a target containing `%{`, still consume the lookup (RFC 7208 §4.6.4 counts the
+mechanism) but **do not perform the void lookup** — the target cannot be evaluated, so it is neither void nor not void. That makes
+`macroPresent` the only thing a macro-bearing record can raise, which is what §3.2 says. A one-condition change plus a
+`macro-spf`-style fixture with three macro terms, `p=reject`, under posture `block`. No existing test combines those three: 
+`TestEvaluate_MacroNeverBlocks` runs one macro term under the default posture `warn` with no `p=reject`, so it could not block
+whatever `voidTarget` does — which is why this went unseen.
+
+---
+
 ## Honest final position
 
+> **Update 2026-11-09 — M3-CI-OD-2 ruled and implemented (above); M3-CI-OD-3 FLAGGED and needs the user** (a macro-bearing SPF
+> target is looked up as a literal and can reach a false BLOCK under posture `block`; recommended fix stated, not applied).
+>
 > **Update 2026-11-08 — one further item, now ruled and implemented: M3-CI-OD-1 (above)**
 > (a real-runner CI finding, not a phase item; it is not among the items needing the user). The paragraph below is the 2026-08-04 position, left as written.
 

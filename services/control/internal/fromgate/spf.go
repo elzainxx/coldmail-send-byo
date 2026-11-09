@@ -2,6 +2,8 @@ package fromgate
 
 import (
 	"context"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -143,11 +145,13 @@ func isRecognizedSPFTerm(term string) bool {
 	switch {
 	case t == "all":
 		return true
-	case t == "a" || t == "mx" || t == "ptr":
-		return true
-	case strings.HasPrefix(t, "a:") || strings.HasPrefix(t, "a/"):
-		return true
-	case strings.HasPrefix(t, "mx:") || strings.HasPrefix(t, "mx/"):
+	case isAMXTerm(t):
+		// a / mx are validated by the ONE parser that also reads them for the lookup (parseAMX), so what is
+		// accepted here and what is later resolved can never disagree. A malformed length (`a/abc`, `a/33`,
+		// `mx:`) is a PermError per RFC 7208 §5.3 — surfaced as from_spf_record_invalid, not looked up.
+		_, ok := parseAMX(t)
+		return ok
+	case t == "ptr":
 		return true
 	case strings.HasPrefix(t, "ptr:"):
 		return true
@@ -166,17 +170,97 @@ func isRecognizedSPFTerm(term string) bool {
 	}
 }
 
-// containsBareAOrMX reports whether the TOP-LEVEL term list has a bare (no ":"/"/" target) `a` or
-// `mx` mechanism — §1.4's self-hosted exception is defined narrowly over exactly this shape (a
-// domain authorizing its OWN A/MX records, not an explicit third-party target via `a:other.com`).
+// containsBareAOrMX reports whether the TOP-LEVEL term list has a bare `a` or `mx` mechanism — one with
+// NO domain-spec, so it names the From domain's own A / MX records. §1.4's self-hosted exception is
+// defined narrowly over exactly this shape (a domain authorizing its OWN A/MX records, not an explicit
+// third-party target via `a:other.com`).
+//
+// "Bare" means no domain-spec, NOT "no characters after the name": `a/24`, `mx/24` and `a/24//64` are
+// still the From domain's own hosts, with a CIDR length that widens which client addresses match. The
+// earlier form compared the whole term to "a"/"mx", so `a/24` was not bare, the exception never fired
+// and a self-hosted domain was warned instead of allowed (M3-CI-OD-2).
 func containsBareAOrMX(terms []string) bool {
 	for _, t := range terms {
-		bare := strings.TrimLeft(t, "+-~?")
-		if bare == "a" || bare == "mx" {
+		if m, ok := parseAMX(strings.TrimLeft(t, "+-~?")); ok && m.domain == "" {
 			return true
 		}
 	}
 	return false
+}
+
+// spfAMX is an `a` or `mx` mechanism parsed per RFC 7208 §5.3 / §5.4:
+//
+//	a   [ ":" domain-spec ] [ dual-cidr-length ]
+//	mx  [ ":" domain-spec ] [ dual-cidr-length ]
+//	dual-cidr-length = [ ip4-cidr-length ] [ "/" ip6-cidr-length ]      (each length is "/" 1*DIGIT)
+//
+// so `a`, `a/24`, `a//64`, `a/24//64`, `a:example.com`, `a:example.com/24`, `a:example.com//64`,
+// `a:example.com/24//64` and the same seven for `mx` are all one grammar. A `/N` is a CIDR LENGTH, never
+// part of a name: treating `a/24` as the hostname "24" is the defect this type exists to prevent.
+type spfAMX struct {
+	mech   string // "a" or "mx"
+	domain string // the domain-spec; "" = the current (From) domain
+	v4, v6 int    // ip4-/ip6-cidr-length, or -1 when not given
+}
+
+var (
+	// Parsed from the END of the term, as RFC 7208 §5.6 describes and the mainstream implementations do. That also makes the
+	// split indifferent to a "/" inside a macro (`%{d/}`): a macro ends in "}", never in digits. The ip6 length is "//" +
+	// 0..128 and the ip4 length is "/" + 0..32; no leading zeros (the RFC's ABNF), range-checked below.
+	spfCIDR6 = regexp.MustCompile(`//(0|[1-9][0-9]{0,2})$`)
+	spfCIDR4 = regexp.MustCompile(`/(0|[1-9][0-9]?)$`)
+)
+
+// isAMXTerm reports whether t (qualifier already stripped) is shaped like an `a` or `mx` mechanism — i.e. the
+// name is exactly `a`/`mx` followed by nothing, ":" or "/" — so `all`, `ptr` and `ip4:` are not mistaken for one.
+func isAMXTerm(t string) bool {
+	for _, name := range []string{"a", "mx"} {
+		if t == name || strings.HasPrefix(t, name+":") || strings.HasPrefix(t, name+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// parseAMX parses an `a`/`mx` term WITHOUT its qualifier. ok is false for anything that is not a well-formed
+// a/mx mechanism: an empty domain-spec (`a:`), a stray "/" in the domain (`a:x.com/y`), a length that is not a
+// number (`a/abc`) or out of range (`a/33`, `a//129`), or a doubled slash with no length (`a///64`).
+func parseAMX(t string) (spfAMX, bool) {
+	m := spfAMX{v4: -1, v6: -1}
+	switch {
+	case !isAMXTerm(t):
+		return m, false
+	case strings.HasPrefix(t, "mx"):
+		m.mech, t = "mx", t[2:]
+	default:
+		m.mech, t = "a", t[1:]
+	}
+	if loc := spfCIDR6.FindStringSubmatchIndex(t); loc != nil {
+		n, _ := strconv.Atoi(t[loc[2]:loc[3]])
+		if n > 128 {
+			return m, false
+		}
+		m.v6, t = n, t[:loc[0]]
+	}
+	if loc := spfCIDR4.FindStringSubmatchIndex(t); loc != nil {
+		n, _ := strconv.Atoi(t[loc[2]:loc[3]])
+		if n > 32 {
+			return m, false
+		}
+		m.v4, t = n, t[:loc[0]]
+	}
+	switch {
+	case t == "":
+		return m, true // bare: the From domain itself
+	case strings.HasPrefix(t, ":") && len(t) > 1:
+		m.domain = t[1:]
+		// What is left must be a name. A "/" that is not inside a macro here means a malformed length was left behind.
+		if strings.Contains(m.domain, "/") && !strings.Contains(m.domain, "%{") {
+			return m, false
+		}
+		return m, true
+	}
+	return m, false // `a:` (empty domain-spec), or junk such as `a/` / `a/abc` / `a///64` where the length did not parse
 }
 
 // containsMacro reports whether any term contains an SPF macro delimiter — §3.2: "Never block.
@@ -338,15 +422,34 @@ func matchesAnyToken(target string, tokens []string) bool {
 // caller's other DNS calls would already have caught it — they would not: this lookup exists only on
 // this path, so a SERVFAIL here vanished and the evaluation went on to a verdict built on an answer it
 // never got. (void is meaningful only when err is nil.)
+//
+// The name looked up is the mechanism's DOMAIN-SPEC, and only that. For a/mx it comes from parseAMX, which
+// separates the CIDR length (`/24`, `//64`, `/24//64`) from the name; the earlier form stripped prefixes with
+// TrimPrefix, so `a/24` was looked up as the hostname "24", `a/24//64` as "24//64", and `mx:example.com/24` as
+// the name "example.com/24" — every CIDR-bearing a/mx counted as a void lookup, three of them tripped the
+// void-lookup limit (a PermError that, under from_spf_lookup_limit_posture=block and p=reject, BLOCKS), and a
+// perfectly valid record was refused (M3-CI-OD-2).
 func voidTarget(ctx context.Context, r resolverLike, term string) (void bool, err error) {
-	target := term
-	for _, pfx := range []string{"a:", "a/", "mx:", "mx/", "ptr:", "exists:"} {
-		target = strings.TrimPrefix(target, pfx)
+	var target string
+	isMX := false
+	switch {
+	case isAMXTerm(term):
+		m, ok := parseAMX(term)
+		if !ok {
+			// Unreachable through Evaluate: isRecognizedSPFTerm rejected a malformed a/mx before expansion. If a caller ever
+			// gets here, do not guess a name — "not void" is the lenient, no-lookup answer.
+			return false, nil
+		}
+		target, isMX = m.domain, m.mech == "mx"
+	case strings.HasPrefix(term, "ptr:"):
+		target = strings.TrimPrefix(term, "ptr:")
+	case strings.HasPrefix(term, "exists:"):
+		target = strings.TrimPrefix(term, "exists:")
 	}
-	if target == "" || target == "a" || target == "mx" || target == "ptr" {
+	if target == "" || target == "ptr" {
 		return false, nil // bare mechanism targets the From domain itself; never void for THIS purpose
 	}
-	if strings.HasPrefix(term, "mx") {
+	if isMX {
 		mx, err := r.LookupMX(ctx, target)
 		if isIgnorance(err) {
 			return false, err
