@@ -14,7 +14,7 @@ CI `config_drift` gate (`tests/harness/checks/config_drift.sh`) — live `send_b
 `send_byo.config` is created in Phase 1 (`send_byo_0010`), seeding the **14 foundation keys** below
 (Phase 9 §4.1). Later phases append their keys (Phase 5 `send_byo_0017`, Phase 6 `send_byo_0018`,
 Phase 7 `send_byo_0019`, Phase 8 `send_byo_0020`, Phase 9.5 `send_byo_0021`) growing to the 53-key
-total. The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
+total (module 2's end state — module 3 has since grown it to 89; the later sections say how). The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
 live `send_byo.config` key set AND this table — all three must match, which is what makes "no
 hardcoded tuning constant" structurally checkable. `default_value` is never mutated.
 

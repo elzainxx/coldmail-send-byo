@@ -312,44 +312,49 @@ expose operational state; do not wire it into an unauthenticated uptime check. S
 
 The codebase cannot check these; they are the deployment's half of the posture.
 
-- [ ] KMS Decrypt is granted to the **Control role only**, and **no human role holds it** — not an
+*Markers: ✅ verified · ⏳ a deployment fact only the deployer can confirm.* The repository tests the code half of each line (the `Decryptor` is wired only into `internal/dispatch`;
+the worker ships no DB driver and no KMS SDK; the dials default to `shadow`), but none of these is something a repository can tick, so every line is ⏳ until a reviewer has looked
+at the real deployment. Where each is scheduled, with its own status, is [`go-live-checklist.md`](./go-live-checklist.md) (§4 KMS/IAM, §5 workers, §8 key backup, §13 retention
+window, §14 the two `enforce` promotions).
+
+- ⏳ KMS Decrypt is granted to the **Control role only**, and **no human role holds it** — not an
       operator, not a support engineer, not CI. The platform, operators, and CI have none.
-- [ ] The master key is backed up off-host, encrypted, in two locations, and the **recovery drill has
+- ⏳ The master key is backed up off-host, encrypted, in two locations, and the **recovery drill has
       been run** ([`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1).
-- [ ] No worker host has `DATABASE_URL`, any KMS variable, `ca.key`, or `control.key`. Presence is an
+- ⏳ No worker host has `DATABASE_URL`, any KMS variable, `ca.key`, or `control.key`. Presence is an
       incident, not a misconfiguration.
-- [ ] Workers have **no** public ingress; worker↔Control traffic is on a private network.
-- [ ] `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each
+- ⏳ Workers have **no** public ingress; worker↔Control traffic is on a private network.
+- ⏳ `ADMIN_API_KEY_HASHES` and `PLATFORM_TOKEN_HASHES` are **different** credentials, each
       rotatable, each held by the smallest possible set.
-- [ ] `send_byo` schema owner is `send_byo_owner` (non-login, non-superuser) and `send_byo.accounts`
+- ⏳ `send_byo` schema owner is `send_byo_owner` (non-login, non-superuser) and `send_byo.accounts`
       shows `relforcerowsecurity = t`.
-- [ ] `debug_log_retention_days` is set to a value **the operator can defend to a user** (R3) — not a
+- ⏳ `debug_log_retention_days` is set to a value **the operator can defend to a user** (R3) — not a
       default nobody looked at. It governs how long a user's own message bodies and recipient lists
       sit in plaintext after that user sent them.
-- [ ] **`retention_mode` is `enforce`** (R3). Until it is, `debug_log_retention_days` is an intention
+- ⏳ **`retention_mode` is `enforce`** (R3). Until it is, `debug_log_retention_days` is an intention
       and nothing is ever deleted — the sole privacy control on `send_logs` is not running. Verify the
       value, do not assume the default: `GET /v1/admin/config` and read it.
-- [ ] `account_retention_window_sec` is understood and disclosed (R4) — a self-serve delete does not
+- ⏳ `account_retention_window_sec` is understood and disclosed (R4) — a self-serve delete does not
       remove the credential from the database for this many seconds.
-- [ ] **`account_purge_mode` is `enforce`** (R4). Until it is, that window has no end: a deleted
+- ⏳ **`account_purge_mode` is `enforce`** (R4). Until it is, that window has no end: a deleted
       user's `credential_ciphertext` persists indefinitely, not for `account_retention_window_sec`.
       Read the shadow count first — the first enforcing tick purges everything that accumulated.
-- [ ] All five `off`/`shadow`/`enforce` dials are understood: `autoquarantine_mode`, `autopause_mode`,
+- ⏳ All five `off`/`shadow`/`enforce` dials are understood: `autoquarantine_mode`, `autopause_mode`,
       `retention_mode`, `campaign_expiry_mode` and `account_purge_mode` all default to **shadow** —
       each logs the action it would take and takes none. Three of the five are safe to leave there;
       `retention_mode` and `account_purge_mode` are not (the two rows above).
-- [ ] The database's own at-rest encryption is enabled (the only control over `send_logs` content
+- ⏳ The database's own at-rest encryption is enabled (the only control over `send_logs` content
       besides retention).
-- [ ] No account has a **private-range or link-local `smtp_host`** — certificate verification is
+- ⏳ No account has a **private-range or link-local `smtp_host`** — certificate verification is
       skipped for those, and users can set this themselves. `SELECT id, smtp_host FROM
       send_byo.accounts;` and eyeball it.
-- [ ] `alert_webhook_url` points where you think it does — the value is validated for scheme prefix
+- ⏳ `alert_webhook_url` points where you think it does — the value is validated for scheme prefix
       only, and the Control will POST to a private or link-local address just as readily as to your
       alerting service.
-- [ ] If a worker egress allow-list is in place, confirm it does **not** silently break user-named SMTP
+- ⏳ If a worker egress allow-list is in place, confirm it does **not** silently break user-named SMTP
       hosts — module 3's users choose their own `smtp_host`, so an allow-list scoped to a fixed set of
       known providers will reject legitimate accounts rather than fail loudly.
-- [ ] Your **own** log stream has been grepped for a known account's password, in plaintext and in
+- ⏳ Your **own** log stream has been grepped for a known account's password, in plaintext and in
       base64. There is no production-ready credential-leak scan shipped for a live log stream; write
       the grep yourself, or treat this as unchecked.
 

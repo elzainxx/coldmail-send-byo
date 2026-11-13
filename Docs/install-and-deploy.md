@@ -517,7 +517,7 @@ cross an unverified TLS connection. See [`security-posture.md`](./security-postu
 
 > **On the local dev stack, the account above points at the bundled sink: `"smtp_host": "smtp-sink"`,
 > `"smtp_port": 1025`** (Mailpit, reachable from the worker over the compose network; its web UI is
-> <http://localhost:8025>). `smtp_username`/`smtp_secret` can be anything — Mailpit accepts any
+> <http://localhost:9025>). `smtp_username`/`smtp_secret` can be anything — Mailpit accepts any
 > credential, but only over STARTTLS, so the worker's STARTTLS-before-AUTH path is genuinely exercised.
 > This is stated here because it is the one value in this step a local reader cannot derive from this
 > doc: every other field has a self-explanatory placeholder, but `smtp.example.com` does not resolve
@@ -1292,42 +1292,47 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 
 #### Part 5 — Pre-deploy sign-off
 
-- [ ] Full harness green from a clean slate, zero skips
-- [ ] All seven CI gates green, plus `config_consumption_selftest` (Stage 1 step 5)
-- [ ] Clean-slate reproduction completed from the docs alone
-- [ ] Empty state tells a new user what's missing
-- [ ] Verify-on-add runs and **delivers no mail** (Mailpit empty)
-- [ ] The real provider error surfaces on a bad credential
-- [ ] Test button rate-limited; bulk add paced with per-row outcomes
-- [ ] From gate: blocks only on near-certain evidence, warns otherwise, requires acknowledgment
-- [ ] A verified From survives a DNS outage; a new one fails closed
-- [ ] Admin routes go through the From gate too
-- [ ] Credential absent from every read, list, and log — **plaintext and base64**
-- [ ] AUTH PLAIN errors are scrubbed
-- [ ] Tenant A cannot read, modify, or delete tenant B's anything
-- [ ] `quote` returns feasibility with a duration, not a per-recipient charge
-- [ ] Per-account attribution correct by mapping
-- [ ] Pacing matches `lanes ÷ delay`; doubling lanes doubles throughput
-- [ ] **Mid-campaign concurrency change causes no early send and no skipped cooldown**
-- [ ] Users cannot set pacing; admins can
-- [ ] **An account failing ~50% of the time eventually quarantines**
-- [ ] Credential update auto-clears an auth quarantine
-- [ ] Un-quarantine rate-limited; test-verified bypasses
-- [ ] Hard bounce doesn't penalise the account
-- [ ] Worker death produces exactly one delivered copy
-- [ ] Control restart loses and duplicates nothing
-- [ ] **Database outage invents no outcomes**
-- [ ] Caps enforced; overrides apply per-user
-- [ ] Suspension halts losslessly and pauses the expiry clock
-- [ ] Double-reinstate is a clean no-op
-- [ ] Ten failures produce one digest; immediate events aren't held; dedup survives restart
-- [ ] Health endpoint reflects true state
-- [ ] **KMS key restore drill passed**
-- [ ] Adding a worker needs no Control reconfiguration
-- [ ] Second Control exits cleanly
-- [ ] Deleted account never selected; secret gone after the window
-- [ ] All-toggles-off byte-identical; security holds with all toggles on
-- [ ] Auto-quarantine still in **shadow**
+*Markers: ✅ verified · ⏳ not yet signed off.* This is the sign-off a **person** records after running the acceptance sequence above on their own machine, so the repository
+does not pre-fill it: every line is ⏳ until you have run the stage that proves it and replace the marker with ✅ (and the date). What CI proves on every build — the
+real-infra harness (100 passed, 0 failed on the runner build of 2026-11-09) and the 13 gates with their 5 self-tests — is the evidence behind most of these lines; it is
+not a substitute for your own record, and the last line is a *state* to confirm, not a result.
+
+- ⏳ Full harness green from a clean slate, zero skips
+- ⏳ All 13 gates and their 5 self-tests green (Stage 1 step 5)
+- ⏳ Clean-slate reproduction completed from the docs alone
+- ⏳ Empty state tells a new user what's missing
+- ⏳ Verify-on-add runs and **delivers no mail** (Mailpit empty)
+- ⏳ The real provider error surfaces on a bad credential
+- ⏳ Test button rate-limited; bulk add paced with per-row outcomes
+- ⏳ From gate: blocks only on near-certain evidence, warns otherwise, requires acknowledgment
+- ⏳ A verified From survives a DNS outage; a new one fails closed
+- ⏳ Admin routes go through the From gate too
+- ⏳ Credential absent from every read, list, and log — **plaintext and base64**
+- ⏳ AUTH PLAIN errors are scrubbed
+- ⏳ Tenant A cannot read, modify, or delete tenant B's anything
+- ⏳ `quote` returns feasibility with a duration, not a per-recipient charge
+- ⏳ Per-account attribution correct by mapping
+- ⏳ Pacing matches `lanes ÷ delay`; doubling lanes doubles throughput
+- ⏳ **Mid-campaign concurrency change causes no early send and no skipped cooldown**
+- ⏳ Users cannot set pacing; admins can
+- ⏳ **An account failing ~50% of the time eventually quarantines**
+- ⏳ Credential update auto-clears an auth quarantine
+- ⏳ Un-quarantine rate-limited; test-verified bypasses
+- ⏳ Hard bounce doesn't penalise the account
+- ⏳ Worker death produces exactly one delivered copy
+- ⏳ Control restart loses and duplicates nothing
+- ⏳ **Database outage invents no outcomes**
+- ⏳ Caps enforced; overrides apply per-user
+- ⏳ Suspension halts losslessly and pauses the expiry clock
+- ⏳ Double-reinstate is a clean no-op
+- ⏳ Ten failures produce one digest; immediate events aren't held; dedup survives restart
+- ⏳ Health endpoint reflects true state
+- ⏳ **KMS key restore drill passed**
+- ⏳ Adding a worker needs no Control reconfiguration
+- ⏳ Second Control exits cleanly
+- ⏳ Deleted account never selected; secret gone after the window
+- ⏳ All-toggles-off byte-identical; security holds with all toggles on
+- ⏳ Auto-quarantine still in **shadow**
 
 When this is green, deploy — and pick the real-send testing up at the provider smoke test.
 
@@ -1468,7 +1473,7 @@ This is the one stage where you deliberately ignore what you know.
 
 | # | Where | What a first-time local reader hits |
 |---|---|---|
-| 1 | Step 9, the account body | `smtp.example.com` does not resolve and nothing named the bundled sink. Now: `smtp-sink:1025`, Mailpit UI at `localhost:8025`, and why any credential works (STARTTLS still exercised). |
+| 1 | Step 9, the account body | `smtp.example.com` does not resolve and nothing named the bundled sink. Now: `smtp-sink:1025`, Mailpit UI at `localhost:9025`, and why any credential works (STARTTLS still exercised). |
 | 2 | Step 10, the three calls | The step said "run one real campaign through `quote` → `run` → `report`" with **no bodies** and — unlike Step 9 — **no contract link**. All three guesses were wrong: `quote` takes `recipient_count` only (`user_id` is a strict-decode `400`), `run` is singular `job_item_id` with no `campaign_id`, `report` uses query params (a path segment is a router `404`). |
 | 3 | Step 10, `UID=` | `UID` is **readonly in bash** — the assignment fails, `run` posts an empty `user_id`. Renamed to `OWNER`. Shell-dependent (zsh permits it), which is how it survived review. |
 | 4 | Step 10, `$ITEM` | `public.job_items` is **empty after a reset** and nothing in this repo seeds it (the module holds `SELECT` only), so the doc named a value the reader could not obtain. Now carries the dev-only `INSERT`, explicitly marked not-for-production. |
@@ -1787,7 +1792,7 @@ The most valuable stage.
    - **Mailpit's search is fuzzy — count per exact subject.** `?query=...message 1` also matches
      "message 10", which reads as a phantom duplicate. Group by exact `Subject` and assert 1 each:
      ```bash
-     curl -sS "http://localhost:8025/api/v1/search?query=s9dead" | python -c "
+     curl -sS "http://localhost:9025/api/v1/search?query=s9dead" | python -c "
      import json,sys,collections
      c=collections.Counter(m['Subject'] for m in json.load(sys.stdin)['messages'])
      print('dupes:', [s for s,n in c.items() if n>1] or 'NONE')"

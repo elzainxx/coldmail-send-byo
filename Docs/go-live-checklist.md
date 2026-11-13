@@ -250,13 +250,13 @@ can rescue the plaintext.
 **Action:** work through [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1 before the **first real
 credential is entered** — not before launch, before the first `smtp_secret`. Specifically:
 
-- [ ] The key is backed up **off-host**, encrypted, in at least two independent locations, with the
+- ⏳ The key is backed up **off-host**, encrypted, in at least two independent locations, with the
       passphrase held separately.
-- [ ] The `CREDENTIAL_KEY_ID` **pairing** is recorded with the backup (a restore under the wrong
+- ⏳ The `CREDENTIAL_KEY_ID` **pairing** is recorded with the backup (a restore under the wrong
       label fails AAD authentication).
-- [ ] The "where the backup lives / who can reach it" table is **filled in**. An unfilled table is
+- ⏳ The "where the backup lives / who can reach it" table is **filled in**. An unfilled table is
       the same as no backup.
-- [ ] The **recovery drill has been run** on staging and reached a completed send. A clean Control
+- ⏳ The **recovery drill has been run** on staging and reached a completed send. A clean Control
       startup proves only that the key is 32 bytes — it does **not** prove the key is right. Only a
       decrypt proves a restore.
 
@@ -285,20 +285,20 @@ This is the single most missable operational fact in the system.
 
 **Action:** [`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring).
 
-- [ ] Uptime monitor points at **`/readyz`** (not `/healthz`, which stays green while nothing is
+- ⏳ Uptime monitor points at **`/readyz`** (not `/healthz`, which stays green while nothing is
       dispatching), alerting after two consecutive failures.
-- [ ] A scheduled health poll exists (the cron entry in `operator-runbook.md#monitoring` §3). This is what makes the
+- ⏳ A scheduled health poll exists (the cron entry in `operator-runbook.md#monitoring` §3). This is what makes the
       webhook work.
-- [ ] `alert_webhook_url` is set, and a test alert has actually been **received** — not just
+- ⏳ `alert_webhook_url` is set, and a test alert has actually been **received** — not just
       configured. Note `SEND_BYO_ALERT_WEBHOOK_URL` in `.env.example` is **inert**; the config row is
       the only source.
-- [ ] Logs are shipped somewhere with retention. The internal `reason=` behind a client error
+- ⏳ Logs are shipped somewhere with retention. The internal `reason=` behind a client error
       envelope exists **only** in the Control's log; without retention, a reported error is a code and
       a request id with nothing behind them. **This is also your only record of config changes** —
       there is no `config_events` table, so a `PUT /v1/admin/config` leaves a process-log line and
       nothing else. Retention here is an audit control, not just an ops convenience
       ([`security-posture.md`](./security-posture.md) §3.6).
-- [ ] `alert_webhook_url` points where you intend. It is validated for scheme prefix only — a private
+- ⏳ `alert_webhook_url` points where you intend. It is validated for scheme prefix only — a private
       or link-local address is accepted and will be POSTed to from inside the trust boundary
       ([`security-posture.md`](./security-posture.md) §3.14).
 
@@ -333,9 +333,9 @@ item 8 protects against LOSING the key; this item is the accepted-risk sign-off 
 even a suspected-but-unconfirmed compromise cannot be cleanly rotated away.
 
 **Action:**
-- [ ] Read `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3 in full — specifically the paragraph stating rotation is not an
+- ⏳ Read `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3 in full — specifically the paragraph stating rotation is not an
       operator-side procedure — before going live, not after an incident makes it urgent.
-- [ ] Record an explicit, signed accepted-risk sign-off (who, when, against which version of
+- ⏳ Record an explicit, signed accepted-risk sign-off (who, when, against which version of
       `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3) alongside the item 8 key-backup sign-off. This is not satisfied by
       "we read future-work.md" (item 8's own final-pre-flight checkbox) — it needs its own signature,
       because the consequence (a key compromise has no clean recovery short of re-onboarding every
@@ -355,14 +355,14 @@ engineering choice, not necessarily one a specific deployment's users would cons
 asked directly.
 
 **Action:**
-- [ ] Read the current `debug_log_retention_days` value (`config-reference.md`) and decide, explicitly,
+- ⏳ Read the current `debug_log_retention_days` value (`config-reference.md`) and decide, explicitly,
       whether that window is one you could state plainly to a user whose message body and recipient
       list it holds — "we keep your sent message content in plaintext for N days after send, for
       debugging" — and would still consider fair.
-- [ ] If not, change it via `PUT /v1/admin/config/debug_log_retention_days` **before** real user
+- ⏳ If not, change it via `PUT /v1/admin/config/debug_log_retention_days` **before** real user
       content flows through the system — a shorter window going forward does not retroactively purge
       already-written rows early.
-- [ ] Record the decision (value chosen, and the reasoning) alongside the other go-live sign-offs.
+- ⏳ Record the decision (value chosen, and the reasoning) alongside the other go-live sign-offs.
       This is a product/trust decision, not a technical one, so it belongs here rather than in
       `config-reference.md`'s own neutral default documentation.
 
@@ -396,22 +396,22 @@ visible, and those lines are what you read to decide you are ready.
 walked back the same way if the first enforcing tick surprises you.
 
 **Action:**
-- [ ] Read the accumulated `retention_shadow_would_delete` counts from the Control's logs. Confirm the
+- ⏳ Read the accumulated `retention_shadow_would_delete` counts from the Control's logs. Confirm the
       number is what you expect for your traffic and `debug_log_retention_days` (item 13). A number far
       larger than expected means the window, not the dial, is wrong — fix that first.
-- [ ] Read the accumulated `purge_shadow_would_delete` counts the same way, against
+- ⏳ Read the accumulated `purge_shadow_would_delete` counts the same way, against
       `account_retention_window_sec`. **Be aware `account_retention_window_sec` is not an enable:**
       setting it enormous does not stop the sweep, it only postpones each individual account, so a small
       count here does not mean a small commitment.
-- [ ] `PUT /v1/admin/config/retention_mode` with `enforce`. Watch one sweep tick and confirm the
+- ⏳ `PUT /v1/admin/config/retention_mode` with `enforce`. Watch one sweep tick and confirm the
       deletion count matches the shadow count that preceded it.
-- [ ] `PUT /v1/admin/config/account_purge_mode` with `enforce`. **This one is irreversible per row** — a
+- ⏳ `PUT /v1/admin/config/account_purge_mode` with `enforce`. **This one is irreversible per row** — a
       purged account's credential ciphertext is gone. Promote it only after the count above is a number
       you have actually looked at.
-- [ ] Promote these two **one at a time**, not together, and leave a tick between them. If something is
+- ⏳ Promote these two **one at a time**, not together, and leave a tick between them. If something is
       wrong you want to know which dial caused it.
-- [ ] Record both promotions (date, the shadow count you read first) alongside the other sign-offs.
-- [ ] Decide `autopause_mode` and `campaign_expiry_mode` separately and without deadline pressure — see
+- ⏳ Record both promotions (date, the shadow count you read first) alongside the other sign-offs.
+- ➖ Decide `autopause_mode` and `campaign_expiry_mode` separately and without deadline pressure — see
       item 6's reasoning for auto-quarantine, which applies unchanged to both. Leaving either at `shadow`
       is a legitimate long-term posture; leaving the two above at `shadow` is not.
 
@@ -444,41 +444,38 @@ walked back the same way if the first enforcing tick surprises you.
 
 ## Final pre-flight (run immediately before flipping live traffic on)
 
-- [ ] `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
+Markers as in the table at the top: ✅ verified · ⏳ owner action, not yet done · ➖ deliberately deferred. A ⏳ here is not a defect — it is the list of things only the person
+flipping traffic on can confirm, because each is about *their* deployment.
+
+- ⏳ `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- [ ] All 18 CI gates green: `config_drift`, `contract_drift`, `migration_lint`,
-      `config_consumption`, `config_consumption_selftest`, `test_enumeration`,
-      `test_enumeration_selftest`, `drain_grace`, `no_secret_leak`, `user_output_scrub`, `dsn_scrub_wiring`,
-      `postgres_durability`, `secret_ownership`, `go_suite_selftest`, `dns_search_domain`, `dns_search_domain_selftest`,
-      `image_pins`, `image_pins_selftest`.
-      (Re-derived from `tests/harness/checks/` on 2026-11-08: this line said 10 while 14 were wired, and 18 are now —
-      the same drift as below, again. Was written as
-      "7" until 2026-08-05 — the two selftests and `test_enumeration` had been added and wired into
-      `.github/workflows/real-infra.yml` without this line moving. The count is the point of the line: a
-      reader checking off "7 green" against a workflow that runs 10 would not notice which three they had
-      not looked at. The authoritative list is the `run:` steps in that workflow, which enumerates each
-      script by name rather than globbing the directory.)
-- [ ] The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
+- ✅ All 13 gates and their 5 self-tests (18 scripts in `tests/harness/checks/`) are green. They are enumerated by name in the `run:` steps of
+      `.github/workflows/real-infra.yml`, and `test_enumeration` fails if a script exists that the workflow does not run, so this line cannot drift from the
+      directory the way earlier counts did. Green on the GitHub runner at the last push (2026-11-09); re-confirm after any change you make.
+      The 13: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `drain_grace`,
+      `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`. The 5 self-tests: `config_consumption_selftest`,
+      `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`.
+- ⏳ The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
       you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
       wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev
       file and the documented unit; it cannot see YOUR prod file, so confirm this one by hand.
       Getting it wrong is not unsafe — leave-in-place invents nothing — but it turns every clean
       shutdown into reclaim work and exits 137.
-- [ ] `GET /readyz` reports `db:true, singleton_lock:true`.
-- [ ] `GET /v1/admin/health` shows `accounts.healthy >= 1` for every tenant expected to send and
+- ⏳ `GET /readyz` reports `db:true, singleton_lock:true`.
+- ⏳ `GET /v1/admin/health` shows `accounts.healthy >= 1` for every tenant expected to send and
       `dispatch_paused:false`.
-- [ ] Items 1–5 and 7–13 above are done; item 6 is deliberately deferred to a post-launch
+- ⏳ Items 1–5 and 7–13 above are done; item 6 is deliberately deferred to a post-launch
       observation window, per its own section.
-- [ ] Item 14's two REQUIRED promotions are done: `retention_mode=enforce` and
+- ⏳ Item 14's two REQUIRED promotions are done: `retention_mode=enforce` and
       `account_purge_mode=enforce`, each after reading its accumulated shadow count. Until both are
       promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised
       window — two commitments the system is silently not keeping. Item 14's other two dials
       (`autopause_mode`, `campaign_expiry_mode`) are a deliberate, open-ended posture decision like item 6.
-- [ ] The master key backup **and drill** (item 8) are done. This is the one item on this page whose
+- ⏳ The master key backup **and drill** (item 8) are done. This is the one item on this page whose
       omission cannot be corrected after the fact.
-- [ ] The master-key-rotation risk sign-off (item 12) and the `send_logs` retention window decision
+- ⏳ The master-key-rotation risk sign-off (item 12) and the `send_logs` retention window decision
       (item 13) are both recorded — module 3's two go-live items with no module 2 counterpart.
-- [ ] You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
+- ⏳ You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
       particularly that there is **no bounce or complaint data**, so provider-side monitoring is your
       only deliverability feedback loop.
 
@@ -488,7 +485,7 @@ walked back the same way if the first enforcing tick surprises you.
 
 
 > **STATUS: NEVER RUN AGAINST A REAL PROVIDER.** Deliberately. Every test in this repo sends into
-> [Mailpit](http://localhost:8025), a local sink — nothing has ever left a machine. This procedure is
+> [Mailpit](http://localhost:9025), a local sink — nothing has ever left a machine. This procedure is
 > the system's first contact with a real SMTP provider and a real inworker, and it touches **real
 > sending reputation**. Running it is **step one of the pilot**, not part of the build.
 >
@@ -514,22 +511,22 @@ and [`api-contract.md`](./api-contract.md).
 
 Do not start until all of these are true.
 
-- [ ] The install guide has been completed end to end and a **Mailpit** send has succeeded.
+- ⏳ The install guide has been completed end to end and a **Mailpit** send has succeeded.
       [`install-and-deploy.md`](./install-and-deploy.md). If it has not sent to a sink, it is not
       ready to send to a provider.
-- [ ] The master key is **backed up off-host and the recovery drill has been run**.
+- ⏳ The master key is **backed up off-host and the recovery drill has been run**.
       [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1. You are about to enter a real credential;
       do not enter one into a system whose key you cannot restore.
-- [ ] `jq` is installed, and you can read `GET /v1/admin/health`.
+- ⏳ `jq` is installed, and you can read `GET /v1/admin/health`.
       [`operator-runbook.md`](./operator-runbook.md).
-- [ ] You have a **dedicated throwaway or low-stakes sending account** at the provider — not the
+- ⏳ You have a **dedicated throwaway or low-stakes sending account** at the provider — not the
       company's primary mailbox.
-- [ ] You have **two recipient addresses you control**, at *different* providers (e.g. one Gmail, one
+- ⏳ You have **two recipient addresses you control**, at *different* providers (e.g. one Gmail, one
       Outlook). Different providers is the point: it is how you learn whether you landed in inworker or
       spam.
-- [ ] You know the provider's real per-mailbox daily and per-hour limits, and the account's SPF/DKIM
+- ⏳ You know the provider's real per-mailbox daily and per-hour limits, and the account's SPF/DKIM
       state for the sending domain.
-- [ ] Someone other than you knows you are doing this, and when.
+- ⏳ Someone other than you knows you are doing this, and when.
 
 **Never** point a first smoke test at a purchased list, a customer list, or any address you do not
 personally control. One hard bounce from a guessed address is a worse outcome than any information
@@ -768,20 +765,20 @@ Using it costs nothing.
 
 ### 5. After the test
 
-- [ ] Restore `daily_limit` to its intended production value.
-- [ ] Confirm the account is not left paused or quarantined from step 5:
+- ⏳ Restore `daily_limit` to its intended production value.
+- ⏳ Confirm the account is not left paused or quarantined from step 5:
       `ahealth | jq '{accounts}'`.
-- [ ] Confirm the correct credential is in place (step 5.1) — re-`PATCH` if there is any doubt, and
+- ⏳ Confirm the correct credential is in place (step 5.1) — re-`PATCH` if there is any doubt, and
       prove it with one more successful send.
-- [ ] Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
+- ⏳ Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
       `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts}')` (expect only the intended
       new account).
-- [ ] Review `send_byo.account_events` for the account — every lifecycle change during the test is
+- ⏳ Review `send_byo.account_events` for the account — every lifecycle change during the test is
       recorded there, and it is the honest log of what happened.
-- [ ] Record the result: date, provider, ports used, inworker-vs-spam per receiver, anything surprising.
+- ⏳ Record the result: date, provider, ports used, inworker-vs-spam per receiver, anything surprising.
       Append it here or alongside [`operator-runbook.md#load-test-results`](./operator-runbook.md#load-test-results); a first-contact
       result that nobody wrote down has to be re-earned.
-- [ ] Work through [`go-live-checklist.md`](./go-live-checklist.md) before widening beyond addresses
+- ⏳ Work through [`go-live-checklist.md`](./go-live-checklist.md) before widening beyond addresses
       you control.
 
 ### 6. Related
