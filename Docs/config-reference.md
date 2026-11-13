@@ -1,9 +1,13 @@
 # Config reference (living mirror of Phase 9 §4)
 
-Authoritative source: **Phase 9 §4** (`history/phase-9-polish-and-documentation.md`) — the
-53-key consolidated reference (amended from 50, `Docs/history/open-decisions.md` P8-OD-1: Phase 8
-grew from 14 to 17 keys post-Chunk-5). This file is the checked-in mirror, verified by the
-CI `config_drift` gate against the live `send_byo.config` seeds.
+**89 keys** at migration `send_byo_0053`. Every key is a seeded row in `send_byo.config`, changeable at runtime with no redeploy; there are no hardcoded tuning
+constants (the deliberate exceptions are the *bounds* listed at the end of this file). The sections below are in the order the keys were added, so each one says
+which migration seeded it; the ordering invariants and the hardcoded bounds close the file.
+
+Authoritative source for the original 53-key set: **Phase 9 §4** (`history/module-2/phase-9-polish-and-documentation.md`, amended from 50 by module 2's ledger
+`history/open-decisions.md` P8-OD-1: Phase 8 grew from 14 to 17 keys post-Chunk-5). This file is the checked-in mirror for every key added since, verified by the
+CI `config_drift` gate (`tests/harness/checks/config_drift.sh`) — live `send_byo.config` seeds = `config-manifest.txt` = the tables below — and by
+`config_consumption` (every seeded key has a real consumer or an unexpired `RESERVED` marker).
 
 ## Phase 1 state (14 keys, `send_byo_0010`)
 
@@ -290,7 +294,7 @@ matching neither Phase 1's superseded draft nor Phase 7 §8's own authoritative 
 loop's design has a use for `'failed'` (a delivery error simply leaves a row `'pending'` for the
 next tick's retry, the same shape every other housekeeping loop already uses); `'cleared'` is
 unchanged and remains unused as a `state` value (clearing is tracked by the separate `cleared_at`
-column). See `Docs/open-decisions.md#m3-p7-od-10` for the full ruling.
+column). See `Docs/open-decisions.md#m3-p7-od-10--ruled-2026-08-02-add-only-suppressed-to-notification_state-failed-is-not-built` for the full ruling.
 
 ## Fix-plan item 12 state (+1 key, `send_byo_0052`) — the graduated dispatch ladder
 
@@ -416,7 +420,7 @@ what "valid" means for either pair.
 
 **Config writes are serialized against each other** (Phase 10 R4). The read of the counterpart's
 value, the ordering check, and the write all happen in ONE transaction, holding a transaction-scoped
-advisory lock (`Docs/advisory-locks.md`, `8_300_000_001`) that every config `PUT` takes. Without
+advisory lock (`Docs/architecture.md#advisory-locks`, `8_300_000_001`) that every config `PUT` takes. Without
 that, two *concurrent* PUTs — one lowering the boundary key, one raising the dependent key — each
 read a counterpart value that was still valid at the moment it read, so both passed the check and
 both committed, landing an inverted pair anyway. Serializing costs nothing (config writes are rare

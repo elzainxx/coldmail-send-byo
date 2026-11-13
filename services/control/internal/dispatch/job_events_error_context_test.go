@@ -4,7 +4,7 @@ package dispatch
 // transitions, which is what send_byo_0008's own column comment always claimed and what send_byo_0022
 // finally made true.
 //
-// WHY THIS EXISTS. Found walking Stage 9 of Docs/coldmail-send-byo-local-test-guide.md against the live
+// WHY THIS EXISTS. Found walking Stage 9 of Docs/install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module against the live
 // docker stack. send_byo_0008 declares, verbatim, `-- Error context (nullable, only for error
 // transitions)` over job_events.error_class / error_message — then both of its triggers copied
 // `NEW.last_error_class, NEW.last_error_message` into EVERY row unconditionally. The job row's

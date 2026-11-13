@@ -138,7 +138,7 @@ func (h *HealthServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // that this module's names are db and singleton_lock and Module 1's are db and pepper.
 //
 // The two top-level booleans STAY, unchanged, un-nested. Rule 5 is additive-only, and these are not
-// hypothetical consumers: Docs/monitoring.md §2 tells an operator to alert on `db:false` or
+// hypothetical consumers: Docs/operator-runbook.md#monitoring §2 tells an operator to alert on `db:false` or
 // `singleton_lock:false` at the top level, the harness greps `"singleton_lock":true` as its
 // anti-vacuity proof that the first Control really holds the lock, and operator-runbook.md spells
 // the body out twice and hangs a whole recovery procedure off the field name. Nesting them would

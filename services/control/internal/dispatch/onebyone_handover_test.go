@@ -5,7 +5,7 @@ package dispatch
 // WHY THIS EXISTS. The operator runbook's "levers that actually exist in V1" table described account
 // rotation as "the default order prefers the highest-scoring account and exhausts it before moving
 // on; round_robin spreads instead." Two things were wrong with that sentence, and Stage 8 of
-// Docs/coldmail-send-byo-local-test-guide.md surfaced both:
+// Docs/install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module surfaced both:
 //
 //	(1) round_robin IS the default (send_byo_0004_create_pools.up.sql's column DEFAULT and
 //	    adminapi's POST /v1/admin/pools default), so "the default order" named the wrong strategy.

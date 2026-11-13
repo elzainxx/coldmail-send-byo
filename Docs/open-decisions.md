@@ -2,7 +2,13 @@
 
 > **OWNER: MODULE 3 (`coldmail-send-byo`). This is the LIVING ledger — the one that grows.** Its ids are `M3-P<phase>-OD-<n>`. Do not confuse it with [`history/open-decisions.md`](history/open-decisions.md), which has the same filename one directory down and is **module 2's** frozen ledger, carried at module 2's original path for citation stability (ruled at M3-P8-OD-7: no move, no path change). If you are recording a new module-3 decision, it goes here (added 2026-08-05).
 
-**Status (2026-08-04): ALL 97 ITEMS ARE RULED.** The queue is empty again. The two that were
+**Status (2026-11-09): ALL 113 ITEMS ARE RULED — ZERO OPEN.** Recounted mechanically on 2026-11-09 (every distinct
+`M3-P<phase>-OD-<n>` and `M3-CI-OD-<n>` id in this file: 109 phase items + 4 CI items; each is either a row in one of the
+four disposition tables below or has its own `RULED` section). Nothing is deferred in this file; items that were
+deliberately postponed live in [`future-work.md`](future-work.md), not here. The paragraphs from here to the
+disposition summary are the 2026-08-04 position, **kept as written for provenance** — their "97" was true on that date.
+
+**(2026-08-04): ALL 97 ITEMS ARE RULED.** The queue is empty again. The two that were
 AWAITING RULING as of 2026-08-03 — [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
 (the ledger path collision) and [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
 (three expired `RESERVED` config keys) — were both **ruled 2026-08-04**, and both rulings are landed
@@ -24,15 +30,15 @@ Phase 0's own exit criterion. The 82nd,
 [M3-P2-OD-10](#m3-p2-od-10--ruled-2026-07-31-pool-routes-stay-mounted-through-g1-healthalerting-pool-code-deferred-with-them),
 is another build-time finding, raised during G1's execution: a real gap in the gate assignment for
 both the pool admin routes and the health/alerting pool-coupled code, ruled the same day. The 83rd,
-[M3-P2-OD-11](#m3-p2-od-11--ruled-2026-07-31-g2-lands-migrations-0025-0028-as-one-commit-11s-drops-only-is-stale-prose-not-a-binding-sub-constraint),
+[M3-P2-OD-11](#m3-p2-od-11--ruled-2026-07-31-g2-lands-migrations-00250028-as-one-commit-11s-drops-only-is-stale-prose-not-a-binding-sub-constraint),
 is a third build-time finding, raised at the start of G2's execution: §1.1's "drops only" claim about
 G2's migration set is false against Phase 1's own table, ruled the same day. The 84th,
 [M3-P2-OD-12](#m3-p2-od-12--ruled-2026-07-31-g2-stubs-the-pool-coupled-healthalerts-queries-rather-than-deferring-them-whole-to-g3),
 extends M3-P2-OD-10's finding: the health/alerts queries M3-P2-OD-10 deferred to G3 read tables G2's
 own migrations drop, so G2 must stub them rather than leave them broken — ruled the same day. The
-85th, [M3-P2-OD-13](#m3-p2-od-13--ruled-2026-08-01-the-docs-dependents-sweep-names-four-more-docs-phase-1-2-1-missed),
-found four more docs Phase 1 §2.1's own inventory missed (capacity-planning.md, monitoring.md,
-security-posture.md, smoke-test-real-provider.md) — ruled the same day: fix all eight docs in one
+85th, [M3-P2-OD-13](#m3-p2-od-13--ruled-2026-08-01-the-docs-dependents-sweep-names-four-more-docs-phase-1-21-missed),
+found four more docs Phase 1 §2.1's own inventory missed (operator-runbook.md#capacity-planning, operator-runbook.md#monitoring,
+security-posture.md, go-live-checklist.md#real-provider-smoke-test) — ruled the same day: fix all eight docs in one
 follow-up, not just the four originally named. The 86th,
 [M3-P4-OD-11](#m3-p4-od-11--ruled-2026-08-01-a-soft-deleted-accounts-only-account-fails-not-waits),
 was raised while doing G4's predicate consolidation: `exhaustion.go`'s self-recovering classifier and
@@ -296,7 +302,7 @@ approval changed none of it.
 | M3-P0-OD-6 | Host-port collision on `5432`/`8080`/`8443`/`8444`/`8025` | `.env`-driven host side, module 3 defaults offset `+1000`. Container-internal ports and service DNS unchanged |
 | M3-P0-OD-8 | Do `CODEOWNERS`' handles exist for module 3? | Carry the structure verbatim; confirm or rename handles at Gate B. If no teams exist, record that it is inert and why. **CONFIRMED INERT 2026-08-02**: `origin` is a personal GitHub User account (no Teams concept); `@send_byo-arch` is not a real account, `@platform-db` collides with an unrelated GitHub Organization; branch protection (required for enforcement) is unavailable on this repo's plan/visibility. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-8 row |
 | M3-P0-OD-9 | How much of module 2's `Docs/history/` comes across | ADRs + phase specs for inherited subsystems only, in a marked `Docs/history/module-2/` with a README. Not the 156 KB ledger or 183 KB build record. **LANDED 2026-08-02 in Phase 6** — found genuinely unbuilt by Phase 6's phase-start mechanical landing check despite reading RULED-ACCEPTED (the directory held a byte-identical copy of module 2's ENTIRE `Docs/history/`, not this narrower admitted subset): the 12 phase specs, `phase1-drafts/`, and 13 ADRs moved to `Docs/history/module-2/` with the required README; module 2's `open-decisions.md`/`phase-build-record.md` stayed at the top level (cited by literal path from inherited code); `Docs/history/definition-of-done.md` (the path CLAUDE.md cites) is now module 3's own vocabulary-adapted DoD, with module 2's original preserved at `Docs/history/module-2/definition-of-done.md`. Full detail: `Docs/history/phase-0-fork-and-baseline.md`'s M3-P0-OD-9 row |
-| M3-P0-OD-10 | Module 2's README says five blocking gates; CI runs six | Fix at Gate B as a one-line exception to "identity only". The shared-code manifest's **second** entry (M3-P2-OD-2 is first). **The README fix landed at Gate B; the manifest entry itself did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Added as entry 2 in `Docs/shared-code-manifest.md`** |
+| M3-P0-OD-10 | Module 2's README says five blocking gates; CI runs six | Fix at Gate B as a one-line exception to "identity only". The shared-code manifest's **second** entry (M3-P2-OD-2 is first). **The README fix landed at Gate B; the manifest entry itself did not — found missing 2026-08-02 by Phase 6's mechanical landing check. Added as entry 2 in `Docs/architecture.md#relationship-to-module-2-the-shared-code-manifest`** |
 
 ### Phase 1 — schema delta
 
@@ -502,7 +508,7 @@ with the binary still absent beforehand — `run.sh` rebuilt it, and the harness
 0 failed with zero `SKIP`** against a binary that did not exist when the run started, not one left
 over from an earlier session.
 
-**Registered as a fifth finding in `Docs/shared-code-manifest.md`'s bug log**, confirmed identical in
+**Registered as a fifth finding in `Docs/architecture.md#relationship-to-module-2-the-shared-code-manifest`'s bug log**, confirmed identical in
 module 2's own `.github/workflows/real-infra.yml` (same three lines, no build step) — its own
 clean-slate claim has the same hole, present and unfixed there.
 
@@ -668,14 +674,14 @@ closed while the code contradicted it). Landed:
 ## M3-P2-OD-13 — RULED 2026-08-01: the docs-dependents sweep names four MORE docs Phase 1 §2.1 missed
 
 Found while doing G2's docs follow-up (the four docs Phase 1 §2.1 actually named —
-`operator-runbook.md`, `install-and-deploy.md`, `go-live-checklist.md`, `disaster-recovery.md` —
+`operator-runbook.md`, `install-and-deploy.md`, `go-live-checklist.md`, `operator-runbook.md#disaster-recovery-key-backup-and-rotation` —
 were already in progress). A broader grep for "pool" across all of `Docs/` found four more files
 with real, substantive pool-era content Phase 1's own dependents inventory never listed:
-`capacity-planning.md` (pool-based rotation/scaling advice — "a single-account pool has no
-rotation," "treat the pool being exhausted as the normal scaling signal"), `monitoring.md` (a
+`operator-runbook.md#capacity-planning` (pool-based rotation/scaling advice — "a single-account pool has no
+rotation," "treat the pool being exhausted as the normal scaling signal"), `operator-runbook.md#monitoring` (a
 `pool_exhausted` webhook payload example and its no-cleared-webhook asymmetry note),
 `security-posture.md` (two threat-model mentions of "pool" describing blast radius), and
-`smoke-test-real-provider.md` (a live walkthrough with `jq '{pools,...}'` calls and pool-headroom
+`go-live-checklist.md#real-provider-smoke-test` (a live walkthrough with `jq '{pools,...}'` calls and pool-headroom
 assertions at three separate checkpoints in the script).
 
 This is the same class of gap as M3-P1-OD-9/M3-P2-OD-10/M3-P2-OD-12 — an inventory built by grep
@@ -1430,6 +1436,11 @@ have it land as a side effect of building the upsert. **M3-P1-OD-4 stays open, n
 phase (or a dedicated follow-up) to pick up** — this is not a re-ruling of M3-P1-OD-4's "should the
 FK exist" question, only of "does Phase 5 C2 add it."
 
+> **Closed out of this ledger 2026-11-09.** "Stays open" was the last open item in this file. M3-P1-OD-4's *decision* (yes, `ON DELETE RESTRICT`)
+> was never in doubt; only the *build* was postponed, and a postponed build is future work, not an open decision. It is now registered as
+> [FW-M3-20](future-work.md#fw-m3-20--jobscampaign_id-has-no-foreign-key-to-send_byocampaigns-the-deferred-half-of-m3-p1-od-4) with its
+> reason, its fix shape, its control and a reopen trigger. The sentence above is kept as written for provenance.
+
 **Applied:** `platformapi/store.go`'s `createJob` upserts a `send_byo.campaigns` row (keyed on the
 campaign id `public.job_items.campaign_id` already carries, `campaign_expiry_sec` resolved
 override→global and frozen at `expires_at` on first insert) inside the SAME advisory-locked
@@ -1575,7 +1586,7 @@ note that they are retained for contract compatibility and are not meaningful un
 pricing."* But the CURRENTLY LIVE code (`platformapi/handlers.go`'s `handleQuote`/`handleDescribe`)
 charges `recipient_count × unit_price_credits` with a seeded default of `1` — real, non-zero,
 per-recipient billing — and three docs (`api-contract.md`, `operator-runbook.md`,
-`coldmail-send-byo-local-test-guide.md`) all describe this as **"finalized."** A behavioral test
+`install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module`) all describe this as **"finalized."** A behavioral test
 (`unitprice_test.go`'s `TestUnitPrice_QuoteAndDescribeReflectLiveConfig`) asserts the non-zero
 arithmetic directly. Two locked artifacts disagree, and — the same defect class as M3-P7-OD-9/-10 —
 neither side was diffed against the other before now.
@@ -1599,7 +1610,7 @@ Rule-5 contract compatibility, not meaningful pricing. `unitprice_test.go` is re
 the NEW default (`0`) and that a live config write still moves both surfaces together (the property
 the test actually exists to prove — live-config responsiveness — is unchanged; only the arithmetic
 it asserts changes). `api-contract.md`, `operator-runbook.md`, and
-`coldmail-send-byo-local-test-guide.md` are corrected in the same change to state the flat-subscription
+`install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module` are corrected in the same change to state the flat-subscription
 model rather than describe the old per-recipient arithmetic as finalized.
 
 ---
@@ -2025,28 +2036,33 @@ harness's certs and sink), so nothing regresses with the move — the proof that
 
 ## Honest final position
 
-> **Update 2026-11-09 — M3-CI-OD-2, -3 and -4 ruled and implemented (above)** (SPF CIDR lengths; macro-bearing SPF targets can never contribute to a
-> BLOCK; every image pinned by digest).
->
-> **Update 2026-11-08 — one further item, now ruled and implemented: M3-CI-OD-1 (above)**
-> (a real-runner CI finding, not a phase item; it is not among the items needing the user). The paragraph below is the 2026-08-04 position, left as written.
+**Zero open (2026-11-09).** Every one of the 113 ids in this file (109 phase items, 4 CI items) is ruled, and every ruling is either
+landed in the tree or is a ruling to *not* build something (in which case the thing it declined is named in [`future-work.md`](future-work.md)
+and cited from the ruling). This file holds no pending question; if one is raised later it is added above this section and this section is
+re-read, not edited in place.
 
-**Needs-user: two items — M3-P8-OD-7 and M3-P8-OD-8, above.** 82 of 84 items are disposed of — the
-original 79, plus **M3-P7-OD-9**, **M3-P7-OD-10**, **M3-P7-OD-11**, and **M3-P4-OD-12**, all raised
-mid-build, reported as open, and ruled the same day they were found. **M3-P8-OD-7** and **M3-P8-OD-8**
-are the two genuine exceptions, both found 2026-08-03 while executing Phase 8's own work: OD-7 is a
-real path collision between the Phase 8 spec's own §4.3(a) instruction and a Phase-6-ruled policy in
-`Docs/history/README.md`; OD-8 is three `RESERVED` config keys hitting their documented Phase-8
-expiry with no consumer, one of which (`score_alert_threshold`) Phase 7's own text claimed — falsely,
-on re-verification — to have already built a consumer for. Resolving either by picking an answer
-myself is exactly what Rule 2 forbids. Nothing else is deferred, and no other item was closed on my
-own authority.
+What that sentence does and does not claim:
 
-**One correction I had to make against my own earlier report, stated plainly:** M3-P3-OD-3's closure
-rested on a citation I had accepted, and on direct verification the citation was wrong — Phase 3
-recorded a *recommendation*, and Phase 7 §1.1 described it as *ruled*. Phase 7's text is corrected.
-The item stays closed only because M3-P7-OD-1's ruling covers the wider surface.
+- **It claims** that no `RULING NEEDED` / `AWAITING RULING` marker remains in this file, that
+  [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s) and
+  [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
+  — the last two items that waited on the owner — were ruled 2026-08-04, and that the four CI findings
+  (M3-CI-OD-1 … -4, found by real GitHub runners rather than by a phase) were ruled and implemented 2026-11-08/09.
+- **It does not claim** that nothing is left for the owner to do. What is left is *action*, not *decision*: the go-live checklist
+  ([`go-live-checklist.md`](go-live-checklist.md)) lists the steps only a person with the production host, a real SMTP provider account and
+  the vendor paperwork can take, and the parent repository's `OWNER-ACTIONS.md` orders them. None of those is a question this module is
+  waiting to have answered.
+- **The counts are hand-derived.** The 2026-11-09 recount was a mechanical extraction of every distinct id in this file; the earlier
+  "97" and "82 of 84" figures were true on their dates and are kept in the dated paragraphs above for provenance. The ruling sections are
+  the authority, not the tallies.
 
-**What remains before implementation** is application, not decision: the rulings traced into every
-document they touch, the five known brief errors fixed in the build plan as well as in the doc that
-caught them, and the cross-plan consistency sweep. Those are Part 2's four chunks.
+**The corrections this ledger records against itself, kept because they are the point of keeping a ledger:**
+
+- *M3-P3-OD-3's closure rested on a citation that turned out to be wrong* (Phase 3 recorded a recommendation; Phase 7 §1.1 described it
+  as ruled). Phase 7's text was corrected; the item stays closed only because M3-P7-OD-1's ruling covers the wider surface.
+- *The disposition summary's last row said work remained after the work was done* (found 2026-08-07 by reading the table against the prose).
+  Hence the standing rule in the summary: a tally that is kept by hand drifts silently, so the ruling bodies are the authority.
+- *M3-P0-OD-10's "manifest entry" was ruled landed and had not landed* (found 2026-08-02 by Phase 6's mechanical landing check) — the entry
+  is now in [`architecture.md`](architecture.md#relationship-to-module-2-the-shared-code-manifest).
+- *M3-CI-OD-2 and -3 were SPF defects that a green suite could not see* (every test was written against names the evaluator could expand
+  and prefixes it could parse). Each now has a fixture whose zone reproduces the false BLOCK and a control that reds without the fix.

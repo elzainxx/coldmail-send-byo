@@ -57,8 +57,8 @@ regression on the other.
 ## Links
 
 - CLAUDE.md Rule 8 (newly locked invariants are appended by reviewed decision).
-- `Docs/phase-3-user-owned-accounts.md` §9.4 and §11 (M3-P3-OD-11's ruling text).
+- `Docs/history/phase-3-user-owned-accounts.md` §9.4 and §11 (M3-P3-OD-11's ruling text).
 - `Docs/open-decisions.md` — M3-P3-OD-11.
-- `Docs/shared-code-manifest.md` entry 1 (the Phase 2 admin-route off-by-one this gate's own history
+- `Docs/architecture.md#relationship-to-module-2-the-shared-code-manifest` entry 1 (the Phase 2 admin-route off-by-one this gate's own history
   traces back to).
 - `tests/harness/checks/contract_drift.sh` (`PLATFORM_ROUTES` array, the enforcement point).

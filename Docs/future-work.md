@@ -41,7 +41,7 @@ accidental redesign. Anything here that resolves an ambiguity needs an Open Deci
 
 Until the first item exists, **provider-side monitoring is the only deliverability feedback that
 exists.** [`operator-runbook.md`](./operator-runbook.md) says so in its deliverability section, and
-[`smoke-test-real-provider.md`](./smoke-test-real-provider.md) is built around the consequence: your
+[`go-live-checklist.md#real-provider-smoke-test`](./go-live-checklist.md#real-provider-smoke-test) is built around the consequence: your
 eyes on a real inworker are the only signal.
 
 ---
@@ -52,7 +52,7 @@ eyes on a real inworker are the only signal.
 |---|---|---|
 | **Multi-shared-pool campaign binding** | Binding a campaign to a *specific* shared pool rather than to the one `default_shared_pool_id` names. | V1 has exactly **one effective shared pool**. The data model already supports many (`send_byo.pools` with `kind`), and the routing code resolves a pool per campaign — what is missing is the binding surface that lets a campaign choose. Additive when built: a new column plus a routing branch, no migration to existing behavior. |
 | **Dedicated → dedicated fallback** | Letting a dedicated pool fall back to *another dedicated* pool instead of only to the shared pool. | The fallback ladder in V1 is dedicated → shared. Dedicated-to-dedicated needs a policy answer nobody has given: whose accounts may carry whose mail, and what the billing consequence is. That is a product/pricing decision, which is why it is not a code task. |
-| **Control horizontal scaling** | More than one active dispatching Control. | **Locked out on purpose, not deferred lightly.** The singleton (a session-level Postgres advisory lock) is a CLAUDE.md Rule 7 invariant: "Never add a second dispatch path or distributed dispatch." Exceeding one Control's throughput is a redesign requiring an ADR and a ruling, not a scaling knob. See [`capacity-planning.md`](./capacity-planning.md) — at realistic V1 volumes account daily limits bind long before the Control does. |
+| **Control horizontal scaling** | More than one active dispatching Control. | **Locked out on purpose, not deferred lightly.** The singleton (a session-level Postgres advisory lock) is a CLAUDE.md Rule 7 invariant: "Never add a second dispatch path or distributed dispatch." Exceeding one Control's throughput is a redesign requiring an ADR and a ruling, not a scaling knob. See [`operator-runbook.md#capacity-planning`](./operator-runbook.md#capacity-planning) — at realistic V1 volumes account daily limits bind long before the Control does. |
 | **Sequences / multi-step campaigns** | Drip sequences, follow-ups conditioned on a previous send. | A campaign-orchestration feature that belongs above this module. This module sends what it is handed; sequencing decides *what* to hand it. |
 | **Per-pool variation scope** | Scoping content-variation toggles per pool (or per account) rather than globally. | Phase 8's variation dials are process-global config keys. Per-pool scope means a resolution order (pool overrides global overrides default) and a place to store it — a design decision, deliberately not invented mid-phase. |
 
@@ -63,11 +63,11 @@ eyes on a real inworker are the only signal.
 | Item | What it is | Why deferred |
 |---|---|---|
 | **`/v1/admin/workers` CRUD** | Registering, listing, and decommissioning workers over the admin API. | There is **no worker route on the admin surface at all** today (verified: the served route set is accounts, pools, config, health). A worker is provisioned by seeding a `send_byo.boxes` row with a bcrypt token hash — `tools/provision-worker` mints the pair — and decommissioned by clearing `token_hash`, which refuses it on next connect regardless of a still-valid cert. That works and is documented in [`install-and-deploy.md`](./install-and-deploy.md), but it is a DB operation where every other operator task is an API call. Note the security shape any implementation must preserve: the API may only ever return the token **once, at mint time** (the hash is what is stored), exactly like `smtp_secret`'s write-only posture. |
-| **Server-side bulk credential re-encryption** | Rotating the master key without re-entering every SMTP password by hand. | This is *why* master-key rotation is manual re-entry today, and it is a consequence of a load-bearing security property rather than an oversight: `adminapi` holds an **Encrypt-only** primitive with no `Decrypt` method, and the sole `Decrypt` capability is wired only into the send path (CLAUDE.md Rule 6). A bulk re-encrypt needs a Control-side path that can decrypt-under-old and encrypt-under-new — i.e. a **second** decrypt call site, in the admin surface. That is exactly what Rule 6 forbids adding casually, so building it requires a ruling on where such a path may live and how it is audited. Procedure as it stands: [`disaster-recovery.md`](./disaster-recovery.md) §3. |
+| **Server-side bulk credential re-encryption** | Rotating the master key without re-entering every SMTP password by hand. | This is *why* master-key rotation is manual re-entry today, and it is a consequence of a load-bearing security property rather than an oversight: `adminapi` holds an **Encrypt-only** primitive with no `Decrypt` method, and the sole `Decrypt` capability is wired only into the send path (CLAUDE.md Rule 6). A bulk re-encrypt needs a Control-side path that can decrypt-under-old and encrypt-under-new — i.e. a **second** decrypt call site, in the admin surface. That is exactly what Rule 6 forbids adding casually, so building it requires a ruling on where such a path may live and how it is audited. Procedure as it stands: [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3. |
 | **Multi-key credential keyring** | A Control that resolves more than one `credential_key_id` at a time. | A Control resolves exactly one label. That constraint is what forces master-key rotation to be freeze-first-then-cut-over (there is no window where rows under two labels are both sendable). A keyring would allow a rolling rotation with no send freeze, and would pair naturally with the item above. |
 | **Admin RBAC / multiple operator roles** | Distinct operator identities with distinct permissions, plus an audit trail keyed to a human. | V1 has **one omnipotent operator key** (Domain B). Any holder can do anything on the admin surface, and `account_events` records the request id, not *who*. Fine for a small trusted team; a real limitation stated in [`security-posture.md`](./security-posture.md) §3.6. |
 | **Rate limiting / lockout on the API surfaces** | Throttling or locking out repeated failed auth attempts. | The external code `rate_limited` (429) exists in the vocabulary but nothing emits it — reserved deliberately so adding it later is additive. Both surfaces are meant to sit on a private network behind a proxy; the proxy is the intended enforcement point today. [`security-posture.md`](./security-posture.md) §3.7. |
-| **A metrics endpoint** | Prometheus exposition or an equivalent time series. | `GET /v1/admin/health` is a JSON snapshot, not a series. Several fields are already windowed and graph cleanly if you poll and store them — [`monitoring.md`](./monitoring.md) §5 says how, and why this was left out. |
+| **A metrics endpoint** | Prometheus exposition or an equivalent time series. | `GET /v1/admin/health` is a JSON snapshot, not a series. Several fields are already windowed and graph cleanly if you poll and store them — [`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring) §5 says how, and why this was left out. |
 | **A "cleared" alert notification** | A webhook POST when a fired condition resolves. | Alerts are rising-edge only, with no all-clear. Receivers are meant to treat the health endpoint as current truth rather than pairing up/down events. Deliberate: an all-clear implies a state machine the alerting layer does not keep. |
 | **All five shadow dials in the health snapshot** | `GET /v1/admin/health`'s `shadow` block reports `autoquarantine_mode` and its `would_quarantine_count` / `recent[]`, but not `autopause_mode`, `retention_mode`, `campaign_expiry_mode` or `account_purge_mode` — since `send_byo_0053` there are five dials on one ladder and only one of them is visible here. | Deferred in fix-plan item 13 rather than built, because it is an **API-contract change** (four new response fields plus the counters behind them) and item 13's subject was the safety property, not the surface. It is not a silent gap: every new dial leaves a real trail — `shadow_would_pause:` rows in `account_events`, and per-tick `retention_shadow_would_delete` / `purge_shadow_would_purge` / `campaign_expiry_shadow_would_expire` log lines carrying the true backlog — and [`operator-runbook.md`](./operator-runbook.md) §"The four mutator mode dials" carries the queries. Whoever builds it should note two traps ADR-0018 records: `retention_mode`'s and `account_purge_mode`'s counters are deliberately **uncapped** by their per-tick batch sizes, so they must not be sourced from a sweep's batch; and `campaign_expiry_mode`'s number counts the **jobs** it would terminally fail, not the campaigns, because the jobs are the cost an operator is deciding to accept. |
 
@@ -93,7 +93,7 @@ is registered here.
 | Item | What it is | Why deferred |
 |---|---|---|
 | **Zero the worker's in-flight credential on shutdown and on an uncaught exception** | The worker's SIGTERM/SIGINT handler stops the stream and exits without zeroing the credential the current send holds, and no `uncaughtException`/`unhandledRejection` handler is registered at all. The three send-path exits (accept, SMTP error, thrown exception) *are* covered by a `finally` and are tested. | A memory image captured at that instant — core dump, container checkpoint, `/proc/<pid>/mem` — may hold one in-flight plaintext. The fix is small (give `stop()` a reference to the live credential; add the two process handlers) but it changes the shutdown path of the service that holds credentials, and it needs its own behavioral test per Rule 3. Consequence documented at [`security-posture.md`](./security-posture.md) §3.12, which is what stops an operator believing `systemctl stop` is a scrub. |
-| **Revoke-on-live-stream: terminate or periodically re-authorize a connected worker** | The token/status check runs **only** in the register handshake. Job pushes are served from an in-memory worker map with no re-read of `send_byo.boxes`, and the heartbeat path returns a `stale` worker to `active` without re-checking the token. | So clearing `token_hash` refuses the next connect but does not disconnect a worker that is already streaming — an attacker who keeps the (outbound, worker-initiated) stream open keeps receiving one plaintext credential per job. Closing it means either a re-authorization read on the push path (a DB read per push, on the hottest path in the system) or a Control-side stream-kill triggered by a config/DB signal — both real design decisions, not polish. The interim answer is procedural and now documented: isolate the host **first**, revoke second ([`disaster-recovery.md`](./disaster-recovery.md) §4a, [`security-posture.md`](./security-posture.md) §3.1). |
+| **Revoke-on-live-stream: terminate or periodically re-authorize a connected worker** | The token/status check runs **only** in the register handshake. Job pushes are served from an in-memory worker map with no re-read of `send_byo.boxes`, and the heartbeat path returns a `stale` worker to `active` without re-checking the token. | So clearing `token_hash` refuses the next connect but does not disconnect a worker that is already streaming — an attacker who keeps the (outbound, worker-initiated) stream open keeps receiving one plaintext credential per job. Closing it means either a re-authorization read on the push path (a DB read per push, on the hottest path in the system) or a Control-side stream-kill triggered by a config/DB signal — both real design decisions, not polish. The interim answer is procedural and now documented: isolate the host **first**, revoke second ([`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §4a, [`security-posture.md`](./security-posture.md) §3.1). |
 | **Field-level before/after diffs in `account_events`** | An `updated` audit row today carries identical before/after flag snapshots (`paused`, `pause_reason`, `quarantined`, `disabled`) and no list of what actually changed. | A `PATCH` that rewrote `smtp_host` is therefore indistinguishable in the audit trail from a no-op one, which is what makes the item below undetectable after the fact. `account_events` is append-only with enumerated grants, so widening what it stores is an additive schema change plus a write-path change — doable, but behavior. [`security-posture.md`](./security-posture.md) §3.6. |
 | **Close the `smtp_host` credential-redirect path** | Require `smtp_secret` re-entry when `smtp_host` changes, and/or an allowlist of permitted SMTP hosts. | A Domain B key holder can repoint an existing account at a host they control **without** re-entering the secret, and the next dispatch delivers the decrypted credential to that host. No DB access, no key access, no Domain A token needed. The Encrypt-only admin surface bounds the API *response*, not this. Either fix changes the semantics of a documented `PATCH` (omit-means-unchanged is deliberate), so it is a contract decision. [`security-posture.md`](./security-posture.md) §3.11. |
 | **Reject private-range `smtp_host` at write time, or gate the self-signed affordance behind an explicit dev flag** | The worker disables TLS certificate verification for loopback/RFC-1918/link-local SMTP hosts — a test affordance so the harness can reach the local sink — while the Control-side validator accepts any bare IP literal. | The two together mean a real account can be pointed at a private address and will AUTH over an unverified connection. Neither half is wrong on its own; the gap is that nothing enforces the boundary the worker-side comment assumes. Fixing it either rejects a currently-valid value (contract change) or adds a new dev-only flag (config surface). Interim: a deploy-time check in [`security-posture.md`](./security-posture.md) §5, and the residual risk at §3.13. |
@@ -116,7 +116,7 @@ is registered here.
 ## 6. Known defects, flagged not fixed
 
 Found during Phase 10's verification passes, plus one gap found later while walking
-[`send-byo-local-test-guide.md`](./send-byo-local-test-guide.md). Each is real and
+[`install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module`](./install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module). Each is real and
 reproduced; each fix is a **behavior change**, which is why none was made in a phase whose contract is
 that behavior does not change. Listed most-likely-to-be-hit first.
 
@@ -148,7 +148,7 @@ that behavior does not change. Listed most-likely-to-be-hit first.
 | **`POST /v1/run` returns HTTP 500 when `public.job_items.campaign_id` is NULL.** External code `internal_error`, internal reason `read_job_item_failed`. | `services/control/internal/platformapi/store.go:69` scans a **nullable** platform column into a non-nullable Go `string`. Reproduced live: inserted a `job_items` row with `campaign_id = NULL`, called `/v1/run`, got `500`. | A new operator's very first `/v1/run` can hit this, so it is worth fixing early — but the fix changes a response code (most likely to `validation_failed`/`400`, since a job item with no campaign is a caller-side problem, not a server fault). Choosing *which* code is a contract decision on an additive-only surface. |
 | **A worker exits permanently if `dev.sh up` runs ahead of `dev.sh seed`.** | The worker needs its `send_byo.boxes` row to register; `restart: "no"` in compose means a rejected worker stays dead. **Reproduced during Phase 10's own gate run** — the worker was found `exited 1` with `register rejected: unauthenticated`, and the fix was a manual `docker compose up -d --no-deps worker` after seeding. | Affects local dev only (a real install seeds the row before starting a worker, per the install guide). The fix is a compose/ordering change — behavior. |
 | **A register rejection short-circuits the documented ~30-attempt retry budget.** | `services/worker/src/stream.js` calls `this.stop()` on `accepted:false`, which sets `stopped = true`, so `connectOnce` returns immediately at the top of its next iteration. **Measured:** exit after attempt 1, ~1s, not ~30 attempts over ~30s. | The budget is real but covers **dial/TLS failures only**; a rejection is treated as terminal on purpose (an unauthorized worker hammering the Control is worse than a worker that exits for its supervisor to restart). What is wrong is the *documentation* of the budget's scope, plus the interaction with the item above. Changing the retry behavior is behavior; the doc side is being corrected. |
-| **Three inert variables in `.env.example`: `SEND_BYO_ALERT_WEBHOOK_URL`, `PLATFORM_SERVICE_TOKEN`, `PLATFORM_ADMIN_KEY_HASH`.** | No code reads any of the three. The webhook destination comes only from the `alert_webhook_url` config row; the live auth variables are `PLATFORM_TOKEN_HASHES` and `ADMIN_API_KEY_HASHES`, both comma-separated **bcrypt** lists — not a plaintext token, not a SHA-256. | Setting the env var and expecting alerts is a silent no-op — a config-not-code violation in an *example file*, not in the running system. Setting any of them expecting an effect is a silent no-op, and for the two auth ones the surface fails **closed** — a Domain A call returns `401` with no hint that the variable you set is not the one being read. Removing the lines is trivial but touches the example every install copies; all three are now labelled inert in `.env.example` itself, and noted in [`monitoring.md`](./monitoring.md) §3 and [`install-and-deploy.md`](./install-and-deploy.md) Step 6, so nobody is misled meanwhile. |
+| **Three inert variables in `.env.example`: `SEND_BYO_ALERT_WEBHOOK_URL`, `PLATFORM_SERVICE_TOKEN`, `PLATFORM_ADMIN_KEY_HASH`.** | No code reads any of the three. The webhook destination comes only from the `alert_webhook_url` config row; the live auth variables are `PLATFORM_TOKEN_HASHES` and `ADMIN_API_KEY_HASHES`, both comma-separated **bcrypt** lists — not a plaintext token, not a SHA-256. | Setting the env var and expecting alerts is a silent no-op — a config-not-code violation in an *example file*, not in the running system. Setting any of them expecting an effect is a silent no-op, and for the two auth ones the surface fails **closed** — a Domain A call returns `401` with no hint that the variable you set is not the one being read. Removing the lines is trivial but touches the example every install copies; all three are now labelled inert in `.env.example` itself, and noted in [`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring) §3 and [`install-and-deploy.md`](./install-and-deploy.md) Step 6, so nobody is misled meanwhile. |
 
 ---
 
@@ -345,7 +345,7 @@ to exclude these two names with a comment explaining why.
 ### FW-M3-4 — Server-side bulk credential re-encryption (master-key rotation has no operator path)
 
 **Registered:** 2026-08-03, by Phase 8 §1.3's finding — the sharpest operational gap this phase
-surfaced, stated in full at [`disaster-recovery.md`](./disaster-recovery.md) §3.
+surfaced, stated in full at [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3.
 
 **What it is.** A Control-side path that can decrypt-under-the-old-key and encrypt-under-the-new-key in
 one operation, so a master-key rotation re-encrypts every `send_byo.accounts` row without asking any
@@ -402,7 +402,7 @@ per-access transparency into break-glass reads.
 
 ### FW-M3-10 — No first-class "notification delivery loop is stuck" health signal
 
-**Registered:** 2026-08-03, by Phase 8 §1.4's monitoring.md pass.
+**Registered:** 2026-08-03, by Phase 8 §1.4's operator-runbook.md#monitoring pass.
 
 **What it is.** `GET /v1/admin/health` has no dedicated field reporting the notification delivery
 loop's own liveness — no "last successful delivery" timestamp, no pending-backlog age, nothing
@@ -418,14 +418,14 @@ the way the alert webhook does. But that only removes one failure mode. The loop
 still stop making progress (a panic loop that keeps recovering without ever delivering, the DB-outage
 gate never clearing, the ADR-0011 leadership gate never re-acquiring, or `notifications_enabled` left
 off after a maintenance window) with nothing on the health endpoint to say so — a user simply stops
-being notified, silently, exactly the failure mode `monitoring.md` §5 now documents as unmonitored.
+being notified, silently, exactly the failure mode `operator-runbook.md#monitoring` §5 now documents as unmonitored.
 
 **Why it is not built here.** A first-class health field needs a design decision (which measure —
 oldest pending row's age? a persisted last-tick timestamp? — and against which of the two windows,
 `notification_digest_window_sec` or `notification_dedup_window_sec`) that Phase 8 (docs/polish) is not
 scoped to make. The interim workaround — querying `send_byo.notifications` directly for a pending row
 older than its governing window, or watching the loop's own `notify: delivered N notification(s) this
-tick` log line go quiet — is documented in `monitoring.md` §5 as a stated gap, not a fix.
+tick` log line go quiet — is documented in `operator-runbook.md#monitoring` §5 as a stated gap, not a fix.
 
 **Trigger to revisit.** The first live incident where a stalled notification loop went unnoticed
 longer than it should have, or the next phase that adds a new autonomous loop and needs a general
@@ -700,7 +700,7 @@ shapes of a broken deferral:
   claimed-but-unwritten class applied to bookkeeping: **a ruling that says "file this" is not
   self-executing, and nothing here checks that a disposition of that form was carried out.**
 - **`FW-M3-7` / `FW-M3-8` — subjects present, ids absent, so inbound citations dangle.**
-  `shared-code-manifest.md:184` says of `FW-M3-8`: *"Also tracked here, not only in
+  `architecture.md#relationship-to-module-2-the-shared-code-manifest:184` says of `FW-M3-8`: *"Also tracked here, not only in
   `future-work.md`"* — an explicit claim about this file that was false, because the id appeared
   nowhere in it. Their subjects *were* here all along (bounce/complaint ingestion is §1's first row;
   the two Go module vulns are §5's first row) so no work was lost, but a reader following the
@@ -757,7 +757,7 @@ what is missing is everything the provider says **after** accepting the message.
 
 **Registered:** 2026-08-07 as an id; **the subject has been in this file since it was written** — it
 is [§5](#5-build-infrastructure)'s first row, marked there as *"the highest-priority item on this
-page."* Also tracked in [`shared-code-manifest.md`](./shared-code-manifest.md) §184, whose claim that
+page."* Also tracked in [`architecture.md#relationship-to-module-2-the-shared-code-manifest`](./architecture.md#relationship-to-module-2-the-shared-code-manifest) §184, whose claim that
 this id is tracked here is what surfaced the missing anchor.
 
 **Status.** **RESOLVED 2026-11-07.** `GO-2026-5004` (`pgx/v5`, fixed v5.9.2) and `GO-2026-5970`
@@ -785,15 +785,15 @@ not as settled.
 **What was measured, on 2026-08-07.** A one-off walk of every relative markdown link under `Docs/` in
 all three repos: **`coldmail-send-byo` 263 local links / 2 broken · `coldmail-send-managed` 228 / 2 ·
 `coldmail-verify` 485 / 0.** The four broken ones were **rename fallout**: `Docs/README.md` and
-`Docs/future-work.md` in both senders pointed at `coldmail-send-byo-local-test-guide.md` /
+`Docs/future-work.md` in both senders pointed at `install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module` /
 `coldmail-send-managed-local-test-guide.md` — the *prose* was updated to the new repo prefix while the
-files kept their shorter names (`send-byo-local-test-guide.md`, `send-managed-local-test-guide.md`).
+files kept their shorter names (`install-and-deploy.md#appendix-a-the-detailed-walkthrough-inherited-from-the-sender-module`, `send-managed-local-test-guide.md`).
 All four are **fixed now**, and a re-measurement reads 0 broken in all three repos. This item is the
 *gate*, not the fix.
 
 **Why a gate and not just the fix.** Four dangling links accumulated from a rename that also touched
 hundreds of correct ones, and nothing noticed. A separate instance was found the same day in
-`Docs/history/open-decisions.md`, which cites `Docs/pre-live-gates.md` twice after the file moved to
+`Docs/history/open-decisions.md`, which cites `Docs/history/module-2/pre-live-gates.md` twice after the file moved to
 `Docs/history/` — that one is in a **frozen** document and so was annotated rather than repaired,
 which makes the case sharper: a link can break in a file that policy forbids anyone from editing, and
 the only way to learn that is to check. **The failure mode is silent and one-directional** — a reader
@@ -841,3 +841,49 @@ fixture id as a citation and reports a dangling `FW-M3-99` — the gate would fa
 test data. Noting it here because that is the specific mistake that turns this gate from a five-minute
 job into a confusing red, and because the alternative fix (renumbering the fixture) would weaken the
 selftest's point.
+
+---
+
+### FW-M3-20 — `jobs.campaign_id` has no foreign key to `send_byo.campaigns` (the deferred half of M3-P1-OD-4)
+
+**Registered:** 2026-11-09, moved here from the open-decisions ledger at the C3/C4 close so that ledger could honestly say zero open.
+The *decision* was always made: M3-P1-OD-4 ruled **yes**, `jobs.campaign_id` gets `REFERENCES send_byo.campaigns(id) ON DELETE RESTRICT`.
+What is deferred is the *build*, by M3-P5-OD-6 (ruled 2026-08-02), for a reason that still holds.
+
+**What exists today.** `platformapi/store.go`'s `createJob` upserts the `send_byo.campaigns` row in the same advisory-locked transaction as
+the `jobs` INSERT, so every production path through `/v1/run` leaves a campaigns row behind and the expiry-freezing requirement of Phase 5
+§5.3 is met. `jobs.campaign_id` carries no constraint.
+
+**What the FK would add.** A guarantee against a *hypothetical future* write path that inserts a job without going through the upsert. It
+does not change any behaviour that exists now — which is why M3-P5-OD-6 judged it a hardening step, not a correctness requirement.
+
+**Why it is not built.** Adding the FK means every direct `INSERT INTO send_byo.jobs` must be preceded by a campaigns upsert or it fails
+`23503` on its next run: the production path (already does it) and four real-infra test fixtures — `adminapi/health_test.go`,
+`dispatch/harness_test.go` (two call sites), `dispatch/send_test_action.go`, `platformapi/campaign_report_test.go`. It is a
+five-file retrofit through production write paths with no behaviour to show for it.
+
+**Fix shape.** A migration `ADD CONSTRAINT … FOREIGN KEY (campaign_id) REFERENCES send_byo.campaigns(id) ON DELETE RESTRICT NOT VALID`
+followed by `VALIDATE CONSTRAINT` (so it takes no long lock), after the four fixtures learn to upsert first. The control is the one the
+risk implies: a fixture that inserts a job with an unknown `campaign_id` must be refused with `23503`, and the harness suite must stay green.
+**Reopen trigger:** a second code path that creates jobs (an import, a replay tool, a second API), at which point the missing constraint
+stops being hypothetical.
+
+---
+
+### FW-M3-21 — The user-copy ledger gate (M3-P8-OD-3 ruled "gate"; it is not built)
+
+**Registered:** 2026-11-09, found at the docs close when `Docs/README.md` listed `user-copy-strings.txt` against a "copy ledger gate" that no script implements.
+`grep` for the ledger's name in `tests/`, `scripts/` and `.github/` finds nothing: the only user-output gate that exists is `user_output_scrub.sh`, which
+reads `Docs/user-output-readers.txt`, a different file for a different property (who may read `jobs.last_smtp_response`).
+
+**What was ruled.** M3-P8-OD-3: the copy ledger is a blocking gate, scoped to what it can prove — every user-facing string enumerated, every ledger row
+naming the evidence it asserts; the honesty column (is the evidence *true*?) stays a human judgment and the gate's doc says so.
+
+**What exists.** [`user-facing-copy.md`](./user-facing-copy.md) (the audit: 21 strings across the From gate, SMTP error framing and notification templates, all PASS)
+and [`user-copy-strings.txt`](./user-copy-strings.txt) (51 lines: the `string_id|surface|evidence_it_asserts` rows). Until the gate exists the ledger is a
+**reviewed table**, not a checked one: a string added to code without a row is not caught.
+
+**Fix shape.** Enumerate the user-facing string constants/branches in the three audited packages, assert three-way set-equality with the ledger's `string_id`
+column (the shape `config-consumers.txt` already proves for config keys), fail in both directions, and ship the paired self-test that deletes a row and adds an
+unledgered string and requires red both times. It must be wired into `real-infra.yml` (the `test_enumeration` meta-gate then proves it is run).
+**Reopen trigger:** any change to one of the three audited surfaces — that change should bring the gate with it rather than another unchecked row.

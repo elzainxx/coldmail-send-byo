@@ -400,6 +400,6 @@ fi
 rm -f "$RESULTS_FILE"
 
 echo
-echo "E11: record BOTH ramps' numbers in Docs/load-test-results.md (OD-7 — committed, versioned doc artifact, not a dashboard; Phase 8 §8.3 — two ramps, two tables, one dated entry)."
+echo "E11: record BOTH ramps' numbers in Docs/operator-runbook.md#load-test-results (OD-7 — committed, versioned doc artifact, not a dashboard; Phase 8 §8.3 — two ramps, two tables, one dated entry)."
 echo "E11: this is a SCALE GATE, not a pass/fail — exiting 0 regardless of the numbers observed."
 exit 0

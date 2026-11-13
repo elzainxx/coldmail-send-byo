@@ -1,65 +1,45 @@
 # GO-LIVE CHECKLIST
 
-The build is sealed (`Docs/architecture.md`'s build-status section; verdict **GO**).
-Everything below is a **going-live confirmation or operator action**, not a build blocker — the
-module is implemented and proven in the real-infra harness (`scripts/dev.sh test`, 100/100 green as of 2026-11-07)
-without any of these. They become mandatory the moment this module points at a real platform
-database and starts sending real mail. Nothing here is code to write; each item is a setup step,
-a coordination point, or an operational decision an operator/ops team makes before or at launch.
+The module is built, closed and green on the GitHub runner (verdict **GO for a pilot**; [`architecture.md`](./architecture.md#build-status-and-the-two-ceilings)).
+Everything below is a **going-live confirmation or operator action**, not a build blocker: the module is implemented and proven in the real-infra harness
+(`scripts/dev.sh test`; 100 passed, 0 failed on the runner build of 2026-11-09) without any of it. These steps become mandatory the moment the module points at a real
+platform database and starts sending real mail. Nothing here is code to write; each item is a setup step, a coordination point, or a decision a person makes.
 
-Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-coordination half) and
-`Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the authoritative source for the reasoning
-behind each item; this document is the single ordered checklist a launch operator actually works
-through.
+Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-coordination half) and `Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the
+authoritative source for the reasoning behind each item; this document is the single ordered checklist a launch operator actually works through. The owner-level
+ordering across **all** modules is the parent repository's `OWNER-ACTIONS.md`.
 
-> **Status as of 2026-11-07 (after the post-audit fixes).**
-> - **Fixed since the local test run flagged them:** #126 (break-glass From-gate override on an already-checked
->   account), #134 (a re-quarantine after an un-quarantine was suppressed for 24 h), #140 (the `provider_message_id`
->   collision that caused a replay loop and a duplicate send), **#141** (the operator surface accepted
->   `acknowledge_alignment_warning` and recorded nothing — now recorded on create and supplied by PATCH on both
->   surfaces), and **#131** (the default dev stack's Postgres is no longer RAM-backed, so `docker stop postgres`
->   no longer destroys the database; `DEV_RAM_PG=1` opts back in and CI sets it).
-> - **§9 (module vulnerabilities): cleared** — builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0,
->   `x/net` v0.62.0; `govulncheck` reports no vulnerabilities in any of the four Go modules. Re-run it
->   immediately before a pilot — the advisory database moves.
-> - **Updated 2026-11-08 — what GitHub Actions found that every local run had hidden.** Until this date "green"
->   for this module meant a local Docker Desktop run; the first run on a real Linux runner was red. The causes were
->   environmental, not product defects, but each had been invisible locally: (1) the dev keys were mode 600 and owned
->   by the host user, so the Control (uid 10001) could not read its KMS key — fixed by **ownership**, not by loosening
->   anything (`tools/own-secrets.sh`; a blocking `secret_ownership.sh` step fails if the keys are loosened or the worker
->   can read the KMS key); (2) the worker unit tests' SMTP sink greeted twice after STARTTLS, a race the Windows host
->   swallowed — on Linux 10 tests failed, the S1/S3 credential-scrub tests among them, until the sink was corrected
->   (`sink_fidelity.test.mjs` pins it); (3) the harness's header checks assumed LF but Mailpit returns CRLF; (4) a
->   workflow step died under `bash -e` on `grep -c` returning 1. **No product code and no production behaviour changed;
->   no checkbox below is affected.** One consequence worth stating: as far as this repository's record shows, the S1/S3
->   credential-scrub *unit* tests were first run on Linux on this date (CI was red before it reached them, and development
->   was on Windows). The live-stack credential checks (the Stage 9 canary, `no_secret_leak`) ran in Linux containers
->   throughout and are not implicated.
-> - **RULED and fixed 2026-11-08 — [M3-CI-OD-1](./open-decisions.md).** The From-gate's DNS fail-closed property used to
->   depend on the host's `resolv.conf`: on a host with a *search domain* (ordinary on cloud VMs and in Kubernetes) Go's
->   resolver rewrote a SERVFAIL into an NXDOMAIN, which the gate read as "no records" and cached — a DNS failure produced
->   `warn` where the design says `indeterminate / from_dns_unavailable`. Every lookup is now made for a fully-qualified
->   name, only a genuine not-found counts as "no record", and everything else is indeterminate, retryable and never cached;
->   two lookups that bypassed the rule (the self-hosted exception's MX check, SPF `a:`/`mx:` void targets) are under it
->   too. A blocking CI fixture runs every From-gate test under an injected search domain, and a paired control proves it
->   goes red when the fix is removed. **Not measured:** the effect end to end through a live Control on a real
->   deployment host. The GitHub Actions result is in `coldmail-platform/verification-runs.md`.
-> - **Updated 2026-11-08 — the database-outage item has repository evidence from a real runner.** On GitHub Actions
->   ([run 42500897743](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42500897743), the on-demand `outage-drill`
->   workflow) the whole harness passes in the default volume-backed mode (100/0) and the **real `docker stop postgres` drill
->   passes 22/22**: with a job in flight on a paused worker and a snapshot taken first (`jobs=8 job_events=28 send_logs=5
->   max(seq)=28`), a 50 s outage left the Control running with 0 restarts, health and run failing closed with only
->   `{code, message, request_id}`, `db outage RESOLVED after 54s`, and afterwards jobs 8→8, events 28→28, `max(seq)` 28→28,
->   no job for the refused run, and the in-flight job delivered **exactly once** after recovery. Re-run it on the deployed
->   shape before a pilot; this was a compose stack, not the production host.
-> - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
->   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
->   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
->   `retention_mode` and `account_purge_mode` to `enforce`), plus §6's auto-quarantine decision. **31 boxes remain
->   unchecked; none was ticked by the fixes.**
-> - **Not determined:** the campaign-expiry gap the local test run recorded evidence for (Stage 10.4/10.6). The
->   evidence is not in any of the four repositories, so it could be neither confirmed nor closed. Note that
->   `campaign_expiry_mode` defaults to `shadow`, so campaign expiry does not enforce until it is promoted (§14).
+## Status at a glance (2026-11-09)
+
+**Legend.** ✅ verified, with the evidence named · ⏳ not done — only the owner can do it (needs the production environment, a real provider account, or a person's
+sign-off) · ➖ deliberately deferred past launch. Nothing below is "unchecked by default": each line says why it is in the state it is in.
+
+| § | Item | Status | Why, and what the repository already proves |
+|---|---|---|---|
+| 1 | Self-serve account path reaches a user | ⏳ | Rehearsed on every CI build — the harness adds an account through `POST /v1/send-byo/accounts`, passes the From gate, and drives quote → run → report to `sent` against real Postgres, worker and SMTP. Only you can repeat it against the production platform with a real user. |
+| 2 | Real `public.users` / `public.job_items` shapes | ⏳ | Needs the real platform schema. The assumed shape (ADR-0007) is exercised against `deploy/pg-init/00-platform-fixtures.sql`, not against the platform. |
+| 3 | Advisory-lock band + migration credential | ⏳ | Needs platform-side confirmation; neither is fixable retroactively. |
+| 4 | KMS/IAM separation (platform roles hold no Decrypt) | ⏳ | Not code-checkable. The structural half is tested (the `Decryptor` is wired only into `internal/dispatch`; `internal/adminapi`'s `Encryptor` has no `Decrypt` method); the cloud IAM grant is a sign-off with no automated re-check. |
+| 5 | Provision workers out of band | ⏳ | `tools/provision-worker` and the register / revoke path run on every CI build (`dev.sh certs`, `seed`, the harness). Production provisioning is yours. |
+| 6 | Promote auto-quarantine from `shadow` to `enforce` | ➖ | Deliberately **not** day one — give the shadow ladder real time first. |
+| 7 | Accounts are pre-warmed | ⏳ | V1 has no ramp logic; a person decides each account is ready. |
+| 8 | Master-key backup **and** recovery drill (REQUIRED) | ⏳ | The one unrecoverable loss. Nothing in CI can do this for you. |
+| 9 | Module vulnerabilities | ✅ → ⏳ | `govulncheck` reported none in all four Go modules on 2026-11-07 (builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0, `x/net` v0.62.0). The advisory database moves — **re-run immediately before the pilot.** |
+| 10 | Monitoring + the webhook poller | ⏳ | Pointing a monitor at your host is yours. Evidence the behaviour behind it works: the on-demand `outage-drill` workflow passed 22/22 on a runner ([run 42500897743](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42500897743)) — Control survives a 50 s `docker stop postgres`, fails closed with only `{code, message, request_id}`, and delivers the in-flight job exactly once afterwards. Re-run it on the deployed shape. |
+| 11 | Real-provider smoke test | ⏳ | **Written, deliberately not yet run** (a local sink cannot rehearse a real provider's reputation response). Needs item 8 first. |
+| 12 | Sign off that the master key has no rotation path (REQUIRED) | ⏳ | A signed accepted-risk record; the code cannot sign it for you. |
+| 13 | Decide the `send_logs` retention window (REQUIRED) | ⏳ | A decision you can defend to a user, made before real content accumulates. |
+| 14 | Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED) | ⏳ | Both ship at `shadow`; until promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised window. Promote one at a time, after reading the shadow counts. |
+| Pre-flight | Final pre-flight (below) | ✅ / ⏳ | The harness and all 13 gates + 5 self-tests are green on the runner at the last push (✅); every deployment-specific line is yours (⏳). |
+
+**Count.** Of the 14 numbered items: 0 done, 1 cleared-with-a-re-run-due (§9), 1 deliberately deferred (§6), 12 owner actions. That is the honest state of a module whose
+engineering is finished: the remaining work is yours, and none of it is a decision this module is waiting on (the decision ledger has zero open items).
+
+**Not determined.** The campaign-expiry gap the local test run recorded evidence for (Stage 10.4/10.6): the evidence is not in any of the four repositories, so it could be
+neither confirmed nor closed. `campaign_expiry_mode` defaults to `shadow`, so campaign expiry does not enforce until it is promoted (§14).
+
+The dated notes that preceded this table (what the 2026-11-07 post-audit fixes changed, what the first real GitHub runner found on 2026-11-08, the From-gate DNS ruling, the
+database-outage drill) are kept verbatim in [Appendix — dated status notes](#appendix--dated-status-notes-2026-11-0708) at the end of this file.
 
 ---
 
@@ -113,7 +93,7 @@ silently adapt the module's assumptions.
 **Why it blocks:** two distinct collision risks, both operational rather than code:
 
 - **Advisory-lock band (G2 / M3-P0-OD-5).** The module reserves the
-  `8_000_000_000–8_999_999_999` advisory-lock key band (`Docs/advisory-locks.md`) for its own
+  `8_000_000_000–8_999_999_999` advisory-lock key band (`Docs/architecture.md#advisory-locks`) for its own
   singleton guard + per-user campaign-start locks — disjoint from module 2's adjacent
   `9_000_000_000–9_999_999_999` band on the same shared platform Postgres. If the platform's own
   migrator or application code uses advisory locks in the SAME Postgres instance, confirm it does
@@ -180,7 +160,7 @@ surface (P9-A, RULED — Phase 9 §5.4a). Worker lifecycle is an out-of-band ope
    refuses the *next* connect but does not disconnect a worker that is already streaming — and until it
    disconnects the Control keeps pushing it credentialed jobs. For a planned decommission you are
    stopping it anyway; for a *suspected compromise* isolate the host **first** and revoke second
-   ([`disaster-recovery.md`](./disaster-recovery.md) §4a).
+   ([`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §4a).
 3. On its next connect attempt the worker is refused regardless of its still-valid mTLS client
    cert (**token is the authority; cert is transport only** — a decommissioned worker cannot talk
    its way back in with cert alone).
@@ -267,7 +247,7 @@ unrecoverable** — recovery is a manual password reset at each provider, for ev
 no escrow and no recovery share, and Decrypt is Control-only by design (CLAUDE.md Rule 6), so nothing
 can rescue the plaintext.
 
-**Action:** work through [`disaster-recovery.md`](./disaster-recovery.md) §1 before the **first real
+**Action:** work through [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1 before the **first real
 credential is entered** — not before launch, before the first `smtp_secret`. Specifically:
 
 - [ ] The key is backed up **off-host**, encrypted, in at least two independent locations, with the
@@ -303,11 +283,11 @@ not mean clean on the day a pilot carries real data.
 background scanner. **With nothing polling it, no webhook ever fires** — alerting is silently inert.
 This is the single most missable operational fact in the system.
 
-**Action:** [`monitoring.md`](./monitoring.md).
+**Action:** [`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring).
 
 - [ ] Uptime monitor points at **`/readyz`** (not `/healthz`, which stays green while nothing is
       dispatching), alerting after two consecutive failures.
-- [ ] A scheduled health poll exists (the cron entry in `monitoring.md` §3). This is what makes the
+- [ ] A scheduled health poll exists (the cron entry in `operator-runbook.md#monitoring` §3). This is what makes the
       webhook work.
 - [ ] `alert_webhook_url` is set, and a test alert has actually been **received** — not just
       configured. Note `SEND_BYO_ALERT_WEBHOOK_URL` in `.env.example` is **inert**; the config row is
@@ -330,7 +310,7 @@ This is the single most missable operational fact in the system.
 provider touches **real sending reputation**, and a bad first impression is not a test failure you
 re-run.
 
-**Action:** [`smoke-test-real-provider.md`](./smoke-test-real-provider.md), start to finish, in that
+**Action:** [`go-live-checklist.md#real-provider-smoke-test`](./go-live-checklist.md#real-provider-smoke-test), start to finish, in that
 order — one message to yourself, then a second provider, then the deliberate failure-handling checks,
 then a small real batch. It is written to be small, to addresses you control, and reversible. Item 8
 (key backup **and** drill) is a prerequisite of this item, not a follow-up.
@@ -347,16 +327,16 @@ Control is the sole decryptor (CLAUDE.md Rule 6), and credentials are Encrypted 
 never returned. This means master-key rotation is **not an operator action at all**; a real rotation
 need would require a coordinated re-add campaign against the whole user base, one credential
 re-entry per user, gated on the least-responsive user's response time. See
-[`disaster-recovery.md`](./disaster-recovery.md) §3 and [`future-work.md`](./future-work.md) `FW-M3-4`
+[`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3 and [`future-work.md`](./future-work.md) `FW-M3-4`
 for the full detail — this is item 8's key-backup drill's necessary complement, not a duplicate of it:
 item 8 protects against LOSING the key; this item is the accepted-risk sign-off for the fact that
 even a suspected-but-unconfirmed compromise cannot be cleanly rotated away.
 
 **Action:**
-- [ ] Read `disaster-recovery.md` §3 in full — specifically the paragraph stating rotation is not an
+- [ ] Read `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3 in full — specifically the paragraph stating rotation is not an
       operator-side procedure — before going live, not after an incident makes it urgent.
 - [ ] Record an explicit, signed accepted-risk sign-off (who, when, against which version of
-      `disaster-recovery.md` §3) alongside the item 8 key-backup sign-off. This is not satisfied by
+      `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3) alongside the item 8 key-backup sign-off. This is not satisfied by
       "we read future-work.md" (item 8's own final-pre-flight checkbox) — it needs its own signature,
       because the consequence (a key compromise has no clean recovery short of re-onboarding every
       user) is a distinct business decision from "we backed the key up."
@@ -501,3 +481,371 @@ walked back the same way if the first enforcing tick surprises you.
 - [ ] You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
       particularly that there is **no bounce or complaint data**, so provider-side monitoring is your
       only deliverability feedback loop.
+
+---
+
+## Real-provider smoke test
+
+
+> **STATUS: NEVER RUN AGAINST A REAL PROVIDER.** Deliberately. Every test in this repo sends into
+> [Mailpit](http://localhost:8025), a local sink — nothing has ever left a machine. This procedure is
+> the system's first contact with a real SMTP provider and a real inworker, and it touches **real
+> sending reputation**. Running it is **step one of the pilot**, not part of the build.
+>
+> **REHEARSED against the local sink on 2026-08-03** — Mailpit standing in for the provider, so that
+> every command, filter, and stated expectation was checked against a running stack rather than
+> reasoned about. That rehearsal found four wrong expectations in this section (Step 1's "nothing has
+> authenticated yet," Step 2's eligibility claim, and two ways to misread Step 6) and one real product
+> defect (#141, since fixed — see Step 1). All are fixed or flagged inline below. **What a sink cannot rehearse** is the half this
+> procedure exists for: inworker-vs-spam placement, SPF/DKIM/DMARC as a real receiver evaluates them, and
+> how a real provider's `250`/`4xx`/`5xx` text classifies. Those still await first contact.
+
+The reason for the care: a bad first impression with a provider is not a test failure you re-run. An
+account that authenticates wrong repeatedly, sends to an address that hard-bounces, or trips a
+volume heuristic on day one carries that history forward. This procedure is shaped to make the first
+send **small, to yourself, and reversible**.
+
+Config keys and request shapes are not restated here — [`config-reference.md`](./config-reference.md)
+and [`api-contract.md`](./api-contract.md).
+
+---
+
+### 1. Prerequisites
+
+Do not start until all of these are true.
+
+- [ ] The install guide has been completed end to end and a **Mailpit** send has succeeded.
+      [`install-and-deploy.md`](./install-and-deploy.md). If it has not sent to a sink, it is not
+      ready to send to a provider.
+- [ ] The master key is **backed up off-host and the recovery drill has been run**.
+      [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1. You are about to enter a real credential;
+      do not enter one into a system whose key you cannot restore.
+- [ ] `jq` is installed, and you can read `GET /v1/admin/health`.
+      [`operator-runbook.md`](./operator-runbook.md).
+- [ ] You have a **dedicated throwaway or low-stakes sending account** at the provider — not the
+      company's primary mailbox.
+- [ ] You have **two recipient addresses you control**, at *different* providers (e.g. one Gmail, one
+      Outlook). Different providers is the point: it is how you learn whether you landed in inworker or
+      spam.
+- [ ] You know the provider's real per-mailbox daily and per-hour limits, and the account's SPF/DKIM
+      state for the sending domain.
+- [ ] Someone other than you knows you are doing this, and when.
+
+**Never** point a first smoke test at a purchased list, a customer list, or any address you do not
+personally control. One hard bounce from a guessed address is a worse outcome than any information
+this test could give you.
+
+---
+
+### 2. Pre-flight configuration
+
+Set these before the first send. They are the difference between a controlled test and an incident.
+
+| Setting | Why, for this test |
+|---|---|
+| `daily_limit` on the test account: **set it low** (e.g. 10) | A bug that loops cannot become a hundred messages. This is the single most valuable guard here. |
+| `dispatch_enabled` | Leave `true`, but know exactly how to set it `false`. That is your stop button; keep the command in the terminal ready to paste. |
+| `autoquarantine_mode` | Leave at its **shadow** default. You want to see what it *would* do without it acting on a first-contact anomaly. |
+| Pacing (`send_delay_min_sec`/`send_delay_max_sec`) | Do not zero them. The default delay is the reputation-friendly behavior; the load test zeroes them only because it is measuring the Control. |
+| `alert_webhook_url` + a health poll | Wire [`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring) *first*. Alerts that only fire when the endpoint is polled are worth having during a first run. |
+| SMTP port | 587 (STARTTLS) or 465 (implicit TLS). AUTH never precedes TLS; on 587/25 the session **aborts before AUTH** if the server does not advertise STARTTLS, and the credential is never sent. |
+
+Record the starting state so you can tell what the test changed:
+
+```bash
+export ADMIN=http://127.0.0.1:8080
+read -rs -p 'operator admin key: ' KEY; echo; export KEY   # not an assignment: keeps it out of ~/.bash_history
+ahealth() { curl -fsS "$ADMIN/v1/admin/health" -H "Authorization: Bearer $KEY"; }
+
+# Two captures on purpose: a wide one to read now, and a narrow SORTED one to diff against in §5.
+# The diff baseline must use the SAME filter as the diff itself or it will never come back clean.
+ahealth | jq '{dispatch, accounts, workers, errors_last_window}' | tee /tmp/smoke-before-full.json
+ahealth | jq -S '{accounts}' > /tmp/smoke-before.json
+```
+
+---
+
+### 3. The procedure
+
+#### Step 1 — Create the account with the real credential
+
+`POST /v1/admin/accounts` with the provider's host, port, username, `smtp_secret`, a low
+`daily_limit`, and the `user_id` you are sending as. Exact body:
+[`api-contract.md`](./api-contract.md).
+
+Verify **only** that the response reports `has_credential: true`. That is by design the most you can
+ever read back — the admin surface encrypts on write and holds no Decrypt capability, so there is no
+route that will show you the secret again ([`security-posture.md`](./security-posture.md)).
+
+**Expected:** `201`, `has_credential: true`.
+
+> **This step DOES authenticate to the provider — verify-on-add is mandatory** (connect + STARTTLS +
+> AUTH, then disconnect; no test send). An earlier version of this line claimed "nothing has
+> authenticated yet ... a wrong password looks fine at this step." That was wrong, and wrong in the
+> direction this procedure cares about: your first AUTH against the provider happens *here*, at
+> create, not at first send. Two consequences worth having straight before you paste a credential:
+>
+> - **A wrong password is caught immediately**, which is good — but it costs one failed AUTH at the
+>   provider, so do not "try a few" credentials through this route. Get it right once.
+> - **The create returns `201` either way.** A failed verification does NOT roll back the row (the
+>   credential is already encrypted and stored) and does NOT fail the request. On the **Domain A**
+>   surface the response carries a `verification` block telling you which happened; the **operator
+>   admin** surface's account object does **not** project `credential_verification_state` at all, so
+>   a `201` there is silent about it. Confirm with `GET /v1/admin/health` (Step 2) rather than reading
+>   the create response.
+>
+> **If the From-address does not align with the sending host**, the create is refused `422` with
+> `{"field": "acknowledge_alignment_warning", "issue": "required"}` — the From gate asking you to
+> confirm you meant it. Re-send with `"acknowledge_alignment_warning": true`. For a real provider on
+> a domain with correct SPF/DKIM this normally does not fire; it is listed because a first smoke test
+> is exactly when a domain's DNS is least likely to be finished. **On the operator admin surface this
+> flag was accepted and then dropped (defect #141, FIXED 2026-11-07):** it suppressed the `422` but
+> never recorded the acknowledgment, leaving an account that read healthy-ish and could never route.
+> The create now records it, and a `PATCH` that supplies `acknowledge_alignment_warning: true` records
+> it against the stored verdict even when `from_address` is unchanged (or absent), so an account
+> created before the fix is rescued by `PATCH {"acknowledge_alignment_warning": true}`. Confirm either
+> way in Step 2: `accounts.healthy` must include the account. `from_alignment.state` reads `unaligned_warned` whether or not the warning is acknowledged, so it cannot tell you.
+
+#### Step 2 — Confirm eligibility before queueing anything
+
+```bash
+ahealth | jq '{accounts, workers}'
+```
+
+**Expected:** the account counted as eligible (`accounts.healthy` includes it), at least one worker
+connected, `dispatch_paused: false`. If any of that is wrong, stop and use the runbook — do not queue
+a job hoping it resolves.
+
+> **`accounts.healthy` is the real gate, and Step 1's `201` does not imply it.** Healthy requires,
+> among the obvious flags, BOTH `credential_verification_state = 'verified'` (so Step 1's verify-on-add
+> must have actually succeeded) AND a From-alignment verdict that is either `aligned` or an
+> `unaligned_warned` carrying a *current* acknowledgment. Miss either and the count is `0` while the
+> account looks fine in `GET /v1/admin/accounts/{id}` — the two most likely causes of a `0` here are a
+> credential the provider rejected and an unacknowledged alignment warning, in that order. This is the
+> same predicate the dispatcher itself uses, so `healthy: 0` means "will never route," not "not yet."
+> Diagnose it now; a job queued against it sits in `waiting_for_capacity` and looks like a capacity
+> problem instead of a configuration one.
+
+#### Step 3 — ONE message, to yourself
+
+Queue exactly one job (`POST /v1/run` with `{job_item_id, user_id}`) whose single recipient is the
+first address you control.
+
+Then watch it, and give it a **hard time bound**: if it has not reached a terminal state within a few
+minutes, set `dispatch_enabled=false` and diagnose before trying again. An unattended retry loop
+against a real provider is the thing to avoid.
+
+```bash
+# Domain A platform token here — NOT the operator key. The two never share a credential.
+curl -fsS "$PLATFORM/v1/report?user_id=$USER_ID&job_id=$JOB_ID" \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" | jq
+```
+
+**Expected:** `queued` → (briefly `assigned`/`sending`) → `sent`, with a `provider_message_id`
+present. Note that `provider_message_id` and `completed_at` are **omitted entirely** until set — check
+for key presence, not for `null`.
+
+> **Two id shapes are both correct here, and which one you get tells you something about your
+> provider.** A provider token (`ABC123def`, `1a2b3c4-20260803…`) means the provider's `250` line
+> carried a per-message id and the worker parsed it. A `<uuid@your-domain>` means it did not, and the
+> Control's own deterministic `Message-ID` was recorded instead (P3-3's ruled fallback). Neither is a
+> failure — but the second one means **you cannot use this field to correlate against your provider's
+> own logs** for this send, which is worth knowing before you rely on it operationally. If you see the
+> `<uuid@…>` form, grep the Control log for `does not mint a unique id per message`: that `level=warn`
+> distinguishes "nothing was parseable" from "the provider reused an id another job already owns"
+> (defect #140). Either way the provider's raw `250` text is preserved verbatim in
+> `send_logs.smtp_response`, which is where to look for the provider's own reference.
+
+**Then check the actual inworker.** This is the step the whole procedure exists for, and no field in any
+API can substitute for it:
+
+- Did it arrive at all?
+- **Inworker or spam?**
+- Are SPF/DKIM/DMARC passing in the received headers?
+- Is the From/display name what you intended?
+
+A `sent` state means the provider returned `250` and nothing more. **V1 has no bounce, complaint,
+open, or click data** — if this message later bounces, is filtered, or is silently dropped, this
+system will never know. Your eyes on the inworker are the only feedback loop that exists.
+
+#### Step 4 — The second provider
+
+Repeat step 3 with the address at the *other* provider. Different receivers apply very different
+filtering, and one inworker placement tells you much less than two.
+
+**Expected:** delivered at both, ideally both to inworker. Inworker at one and spam at the other is normal
+for a new sending domain and is a *domain reputation* signal, not a defect in this module — the levers
+that exist are in the runbook's deliverability section.
+
+#### Step 5 — Prove failure handling on purpose
+
+Reputation-safe, and worth far more than another successful send, because it exercises the paths you
+will actually need at 3am.
+
+1. **Wrong credential → quarantine.** Temporarily `PATCH` the account with an incorrect
+   `smtp_secret`, queue one job to your own address, and watch. **Expected:** the job does not send;
+   the account is **quarantined immediately** on `auth_failure` (regardless of score), with an
+   `account_events` row recording reason `auth_failure`. This costs one failed AUTH at the provider —
+   acceptable once, deliberately. Then restore the correct secret and unquarantine.
+2. **Daily limit.** Set `daily_limit` to 1, send one message, then queue a second. **Expected:** the
+   second sits in `queue.waiting_for_capacity` (the account is now at its limit for the day). Confirm
+   via `/v1/report` that it reads as clean pending `queued` — **never** `failed` — and that it resumes
+   at the next daily reset. This is the single most misread state in the system; seeing it once here
+   is worth the five minutes.
+3. **Worker death.** Stop a worker process mid-run. **Expected:** the job is reclaimed after
+   `job_max_processing_time_sec`, `attempt_count` increments (saturating), the job returns to clean
+   `queued`, and it goes out on another worker. Nothing is marked `sent` that the worker did not confirm.
+
+Do **not** test a bounce by sending to an invalid address. That is exactly the reputation damage this
+procedure is designed to avoid, and V1 would not record the bounce anyway.
+
+#### Step 6 — A small real batch
+
+Only after steps 1–5 pass. Ten to twenty messages to addresses you control, watching the rate and the
+error counts:
+
+```bash
+ahealth | jq '{rate: .dispatch, errors: .errors_last_window, accounts}'
+```
+
+**Expected:** every job terminal as `sent`, `errors_last_window` empty or benign, no unexpected pause
+or quarantine, observed rate consistent with the configured pacing (not faster). A rate *higher* than
+pacing should allow means something is misconfigured — investigate before scaling.
+
+> **Two ways to misread this output, both found by rehearsing this step.**
+>
+> **1. `dispatch.send_rate_per_min` is not the instantaneous rate** and cannot be compared against
+> pacing. It is `sends_last_window ÷ health_metrics_window_sec`, and that window defaults to **one
+> hour** — so a burst of 14 sends in 15 seconds reports `0.23`. To actually check pacing, measure the
+> gaps:
+>
+> ```sql
+> SELECT completed_at - lag(completed_at) OVER (ORDER BY completed_at) AS gap
+>   FROM send_byo.jobs WHERE state = 'sent' ORDER BY completed_at;
+> ```
+>
+> **And expect gaps far shorter than `send_delay_min_sec`** — that is correct, not a defect. The delay
+> is **per lane**, not global: with `concurrency_per_user_default = 3` and a 3–7s delay, three lanes
+> fire independently, so throughput is ≈ lanes ÷ mean-delay (~1.7s mean gap for 3 lanes at 5s) and
+> individual gaps of a few hundred milliseconds are normal when two lanes come ready together. Compare
+> against **lanes ÷ mean delay**, not against `send_delay_min_sec`, or you will "investigate" correct
+> behavior. Only a rate above *that* is a real signal.
+>
+> **2. A benign requeue shows up as `errors_last_window.unknown`.** Every dispatch-side requeue
+> (`no_worker_available`, `no_eligible_account`, `push_failed`) writes `last_error_class = 'unknown'` with
+> the real reason in `last_error_message` — the error *taxonomy* classifies SMTP outcomes, and these are
+> not SMTP outcomes. So one transient `unknown` on a job that then reached `sent` is backpressure
+> working, not the "state transition you cannot explain" that §4 tells you to halt for. Check before
+> reaching for the stop button:
+>
+> ```sql
+> SELECT to_state, error_class, error_message FROM send_byo.job_events
+>  WHERE error_class IS NOT NULL ORDER BY created_at DESC LIMIT 10;
+> ```
+>
+> An `unknown` whose message is one of those three reasons, on a job that is now `sent`, is benign. An
+> `unknown` on a job that did **not** reach a terminal state, or one you cannot trace to a requeue
+> reason, still means stop.
+
+---
+
+### 4. Stop conditions
+
+Set `dispatch_enabled=false` immediately, and do not resume until you understand why, if:
+
+- More than one account quarantines.
+- Any message reaches an address you did not intend.
+- The observed send rate exceeds what pacing should allow.
+- The provider returns throttling responses (visible as `throttle`-class errors and self-clearing
+  pauses).
+- A job reaches `sent` without a `provider_message_id`, or a state transition you cannot explain.
+- Anything at all surprises you. This is the one run where "I'll look at it after" is the wrong call.
+
+`dispatch_enabled=false` is a clean halt: zero job loss, fully resumable, queued jobs simply wait.
+Using it costs nothing.
+
+---
+
+### 5. After the test
+
+- [ ] Restore `daily_limit` to its intended production value.
+- [ ] Confirm the account is not left paused or quarantined from step 5:
+      `ahealth | jq '{accounts}'`.
+- [ ] Confirm the correct credential is in place (step 5.1) — re-`PATCH` if there is any doubt, and
+      prove it with one more successful send.
+- [ ] Diff against the recorded baseline — same filter as the capture in §2, or the diff is noise:
+      `diff /tmp/smoke-before.json <(ahealth | jq -S '{accounts}')` (expect only the intended
+      new account).
+- [ ] Review `send_byo.account_events` for the account — every lifecycle change during the test is
+      recorded there, and it is the honest log of what happened.
+- [ ] Record the result: date, provider, ports used, inworker-vs-spam per receiver, anything surprising.
+      Append it here or alongside [`operator-runbook.md#load-test-results`](./operator-runbook.md#load-test-results); a first-contact
+      result that nobody wrote down has to be re-earned.
+- [ ] Work through [`go-live-checklist.md`](./go-live-checklist.md) before widening beyond addresses
+      you control.
+
+### 6. Related
+
+| Doc | For |
+|---|---|
+| [`install-and-deploy.md`](./install-and-deploy.md) | Everything that must work before this. |
+| [`operator-runbook.md`](./operator-runbook.md) | Diagnosing anything that goes wrong here. |
+| [`operator-runbook.md#capacity-planning`](./operator-runbook.md#capacity-planning) | Sizing after the smoke test passes. |
+| [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) | Key backup — a prerequisite, not a follow-up. |
+| [`go-live-checklist.md`](./go-live-checklist.md) | The gate between this test and real volume. |
+
+---
+
+## Appendix — dated status notes (2026-11-07/08)
+
+Kept as written. They are the evidence trail for the table at the top, not the current status: where they say "31 boxes remain unchecked" the table above is the
+authority (every box in this file now carries a ✅ / ⏳ / ➖ marker).
+
+> **Status as of 2026-11-07 (after the post-audit fixes).**
+> - **Fixed since the local test run flagged them:** #126 (break-glass From-gate override on an already-checked
+>   account), #134 (a re-quarantine after an un-quarantine was suppressed for 24 h), #140 (the `provider_message_id`
+>   collision that caused a replay loop and a duplicate send), **#141** (the operator surface accepted
+>   `acknowledge_alignment_warning` and recorded nothing — now recorded on create and supplied by PATCH on both
+>   surfaces), and **#131** (the default dev stack's Postgres is no longer RAM-backed, so `docker stop postgres`
+>   no longer destroys the database; `DEV_RAM_PG=1` opts back in and CI sets it).
+> - **§9 (module vulnerabilities): cleared** — builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0,
+>   `x/net` v0.62.0; `govulncheck` reports no vulnerabilities in any of the four Go modules. Re-run it
+>   immediately before a pilot — the advisory database moves.
+> - **Updated 2026-11-08 — what GitHub Actions found that every local run had hidden.** Until this date "green"
+>   for this module meant a local Docker Desktop run; the first run on a real Linux runner was red. The causes were
+>   environmental, not product defects, but each had been invisible locally: (1) the dev keys were mode 600 and owned
+>   by the host user, so the Control (uid 10001) could not read its KMS key — fixed by **ownership**, not by loosening
+>   anything (`tools/own-secrets.sh`; a blocking `secret_ownership.sh` step fails if the keys are loosened or the worker
+>   can read the KMS key); (2) the worker unit tests' SMTP sink greeted twice after STARTTLS, a race the Windows host
+>   swallowed — on Linux 10 tests failed, the S1/S3 credential-scrub tests among them, until the sink was corrected
+>   (`sink_fidelity.test.mjs` pins it); (3) the harness's header checks assumed LF but Mailpit returns CRLF; (4) a
+>   workflow step died under `bash -e` on `grep -c` returning 1. **No product code and no production behaviour changed;
+>   no checkbox below is affected.** One consequence worth stating: as far as this repository's record shows, the S1/S3
+>   credential-scrub *unit* tests were first run on Linux on this date (CI was red before it reached them, and development
+>   was on Windows). The live-stack credential checks (the Stage 9 canary, `no_secret_leak`) ran in Linux containers
+>   throughout and are not implicated.
+> - **RULED and fixed 2026-11-08 — [M3-CI-OD-1](./open-decisions.md).** The From-gate's DNS fail-closed property used to
+>   depend on the host's `resolv.conf`: on a host with a *search domain* (ordinary on cloud VMs and in Kubernetes) Go's
+>   resolver rewrote a SERVFAIL into an NXDOMAIN, which the gate read as "no records" and cached — a DNS failure produced
+>   `warn` where the design says `indeterminate / from_dns_unavailable`. Every lookup is now made for a fully-qualified
+>   name, only a genuine not-found counts as "no record", and everything else is indeterminate, retryable and never cached;
+>   two lookups that bypassed the rule (the self-hosted exception's MX check, SPF `a:`/`mx:` void targets) are under it
+>   too. A blocking CI fixture runs every From-gate test under an injected search domain, and a paired control proves it
+>   goes red when the fix is removed. **Not measured:** the effect end to end through a live Control on a real
+>   deployment host. The GitHub Actions result is in `coldmail-platform/verification-runs.md`.
+> - **Updated 2026-11-08 — the database-outage item has repository evidence from a real runner.** On GitHub Actions
+>   ([run 42500897743](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42500897743), the on-demand `outage-drill`
+>   workflow) the whole harness passes in the default volume-backed mode (100/0) and the **real `docker stop postgres` drill
+>   passes 22/22**: with a job in flight on a paused worker and a snapshot taken first (`jobs=8 job_events=28 send_logs=5
+>   max(seq)=28`), a 50 s outage left the Control running with 0 restarts, health and run failing closed with only
+>   `{code, message, request_id}`, `db outage RESOLVED after 54s`, and afterwards jobs 8→8, events 28→28, `max(seq)` 28→28,
+>   no job for the refused run, and the in-flight job delivered **exactly once** after recovery. Re-run it on the deployed
+>   shape before a pilot; this was a compose stack, not the production host.
+> - **Still required before a pilot, unchanged:** §1 (the self-serve account path), §8 (master-key backup and
+>   recovery drill), §11 (the real-provider smoke test — the one thing a local sink cannot rehearse), §12
+>   (sign-off that the master key has no rotation path), §13 (the `send_logs` retention window) and §14 (promote
+>   `retention_mode` and `account_purge_mode` to `enforce`), plus §6's auto-quarantine decision. **31 boxes remain
+>   unchecked; none was ticked by the fixes.**
+> - **Not determined:** the campaign-expiry gap the local test run recorded evidence for (Stage 10.4/10.6). The
+>   evidence is not in any of the four repositories, so it could be neither confirmed nor closed. Note that
+>   `campaign_expiry_mode` defaults to `shadow`, so campaign expiry does not enforce until it is promoted (§14).

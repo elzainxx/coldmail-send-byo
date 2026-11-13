@@ -13,28 +13,14 @@ operator controls queue depth, per-user suspension, and **pacing** — the one d
 damage shared infrastructure, deliberately kept out of users' hands. When a new question
 arises, answer it with that line.
 
-> **Status (2026-08-01, Phase 1's G1→G4 landed):** forked from module 2 at
-> `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo).
-> Gate A (byte-identical inheritance) and Gate B (identity rename, nothing else) both passed on
-> real infra — see `Docs/history/fork-point.md`. Phase 1's build sequence (`Docs/history/phase-2-strip-shared-pool.md`
-> §1) is four internal gates, all committed and verified on real infra: **G1** (dispatch-side pool
-> logic stripped, schema untouched); **G2** (pool schema dropped + the account write-path
-> rewritten to `user_id`-owned); **G3** (migrations `0029`-`0034`: `user_settings`,
-> `user_config_overrides`, `user_suspensions`, `campaigns`, `notifications`, the `account_events`
-> action-CHECK widen; `accountConsume`/`userHasEligible` gain `deleted_at IS NULL`;
-> `userRoutingStrategy` reads `user_settings` for real; Test A renamed + Test B added per
-> `Docs/history/phase-2-strip-shared-pool.md` §5); **G4** (M3-P4-OD-3's eligibility-predicate consolidation
-> — one shared `accountBaseEligibilityFilter` constant instead of hand-copied WHERE fragments,
-> which surfaced and fixed a real drift bug, M3-P4-OD-11: a soft-deleted account's only account was
-> misclassified self-recovering instead of terminal_blocked). Phase 1's own gate sequence is
-> therefore CLOSED. Phases 2–8 are planned (`Docs/history/module-3-build-plan.md`, `Docs/phase-*.md`) but
-> not yet built. This status block will be updated as gates/phases close; it is NOT a "sealed"
-> claim like module 2's was. The locked phase specs inherited from module 2 live under
-> `Docs/history/` and MUST NOT be edited as part of any build work. Living operational + reference
-> docs are the top level of `Docs/` — see `Docs/README.md`. Deferred work is registered in
-> `Docs/future-work.md` (module 2's register, inherited, with module 3's own entries appended at §9
-> — not a second file). Rules below are unchanged from module 2 except where §4.2 below names an
-> explicit change, and outlive the build.
+> **Status (2026-11-09):** forked from module 2 at `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo; Gate A,
+> byte-identical inheritance, and Gate B, identity rename and nothing else, both passed on real infra — see `Docs/history/fork-point.md`). Phases 0–8 are
+> built and closed on real infrastructure; the decision ledger (`Docs/open-decisions.md`) has **zero open items**; deferred work is `Docs/future-work.md`
+> (module 2's register, inherited, with module 3's own entries from §9 — not a second file). This block records *state*, not rules, and was rewritten on
+> 2026-11-09 because the 2026-08-01 text it replaced ("Phases 2–8 are planned … not yet built") had been false for months; the rules begin at §0 and
+> are unchanged. The locked phase specs under `Docs/history/` MUST NOT be edited as part of any build work (add new files instead). Living operational and
+> reference docs are the top level of `Docs/` — see `Docs/README.md`. Rules below are unchanged from module 2 except where §4.2 below names an explicit
+> change, and outlive the build.
 
 ## 0. Inherited from module 2 — fork it, keep it, do not redesign it
 
@@ -48,7 +34,7 @@ the job lifecycle and append-only event log, idempotency via `provider_message_i
 the error taxonomy and requeue-only re-dispatch, the reclaim loop and dead-worker detection, the
 Control singleton guard (including the ADR-0011 pause-and-reacquire amendment), content variation (12
 toggles, all-off byte-identical), and the `docker-compose`-based dev==CI loop. Fork it, keep it, do
-not redesign it — divergence is Phase work, tracked per-area in `Docs/shared-code-manifest.md`.
+not redesign it — divergence is Phase work, tracked per-area in `Docs/architecture.md#relationship-to-module-2-the-shared-code-manifest`.
 
 ## 0a. Deleted from module 2 — in scope for Phases 1–2, not before
 

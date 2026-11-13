@@ -68,7 +68,7 @@ would need its own ruling.
 - Migration `0042` drops one key and adds ten (Phase 5's own nine dual-quarantine dials plus this
   net effect) — the repo-wide inherited count falls to 52; Phase 7 later re-adds one
   (`score_alert_threshold`), for a total both `config_drift` and `config_consumption` check
-  unchanged at 85 (`Docs/phase-5-autonomous-behaviour-and-limits.md` §10.1's own accounting).
+  unchanged at 85 (`Docs/history/phase-5-autonomous-behaviour-and-limits.md` §10.1's own accounting).
 - `config-consumers.txt`'s `quarantine_threshold` line is deleted in the same migration that drops
   the row — ledger and schema move together, never one ahead of the other.
 - `score_alert_threshold` is deliberately NOT seeded in Phase 5, even though this ADR is written
@@ -86,7 +86,7 @@ would need its own ruling.
 - CLAUDE.md Rule 1 (config-not-code, no unconsumed dial), Rule 5 (additive-only, never repurpose).
 - `Docs/open-decisions.md` — M3-P1-OD-3 (the fork-time-only exemption this ADR narrowly extends)
   and M3-P5-OD-1 (this decision's own ruling text).
-- `Docs/phase-5-autonomous-behaviour-and-limits.md` §4, §10.1, §10.3 (the drop's implementation and
+- `Docs/history/phase-5-autonomous-behaviour-and-limits.md` §4, §10.1, §10.3 (the drop's implementation and
   accounting).
 - `Docs/adr/ADR-0014-reserved-config-marker-requires-a-mechanical-expiry.md` (ADR-0014 —
   why option (c), `RESERVED`, was not available here).

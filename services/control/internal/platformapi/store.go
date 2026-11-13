@@ -38,7 +38,7 @@ const (
 // campaign-size cap (A) and the user's total-live-queue cap (B), each resolved override→global;
 // and the campaign row upsert that freezes campaign_expiry_sec at the FIRST job of a campaign
 // (M3-P5-OD-6: the upsert is built now, but jobs.campaign_id gains no FK to campaigns in this
-// commit — that half of M3-P1-OD-4 stays open).
+// commit — that half of M3-P1-OD-4 is registered as FW-M3-20 in Docs/future-work.md).
 func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID string, existing bool, e *apiError) {
 	// If a job for this job_item already exists FOR THIS TENANT, return it (idempotent, §6.2).
 	// Same-campaign reruns therefore never reach the advisory-lock gate below.
@@ -58,7 +58,7 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 
 	// Serialize concurrent campaign-start checks for THIS user (transaction-scoped: auto-released
 	// on commit/rollback, no unlock call needed). hashtext() keeps the key namespace distinct from
-	// both the Control singleton lock and the migration runner's lock (Docs/advisory-locks.md).
+	// both the Control singleton lock and the migration runner's lock (Docs/architecture.md#advisory-locks).
 	if _, err := tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock(hashtext('send_byo.campaign_start:' || $1::text))`, userID); err != nil {
 		return "", false, newErr(codeInternalError, "advisory_lock_failed")

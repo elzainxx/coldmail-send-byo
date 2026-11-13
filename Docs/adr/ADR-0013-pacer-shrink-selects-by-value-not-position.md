@@ -78,7 +78,7 @@ was already correct); only the function body changed.
 
 - CLAUDE.md Rule 10 (anti-vacuity for concurrency tests) — the paired negative control this ADR's
   test suite provides.
-- `Docs/phase-6-per-user-config-and-routing.md` §3.3 (M3-P6-OD-1's ruling text) and §9.1 (the
+- `Docs/history/phase-6-per-user-config-and-routing.md` §3.3 (M3-P6-OD-1's ruling text) and §9.1 (the
   scoped review pass that surfaced the grow-direction defect and the three-item in-memory-state
   inventory).
 - `Docs/open-decisions.md` — M3-P6-OD-1.

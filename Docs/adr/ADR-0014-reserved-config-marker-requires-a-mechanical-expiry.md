@@ -68,7 +68,7 @@ present.**
 - CLAUDE.md Rule 1 (config-not-code) and Rule 8 (newly locked invariants are appended by reviewed
   decision).
 - CLAUDE.md Rule 10 (anti-vacuity), applied here to the gate's own past-expiry positive control.
-- `Docs/phase-2-strip-shared-pool.md` §1.2.1 and §8.3 (M3-P2-OD-8's ruling text).
+- `Docs/history/phase-2-strip-shared-pool.md` §1.2.1 and §8.3 (M3-P2-OD-8's ruling text).
 - `Docs/open-decisions.md` — M3-P2-OD-8.
 - `tests/harness/checks/config_consumption.sh` (the enforcement point), `Docs/config-consumers.txt`
   (the ledger syntax).

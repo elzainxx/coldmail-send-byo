@@ -171,7 +171,7 @@ the composed floor would land somewhere different on each.
   `dispatch_paused` in the §3.2 health table, `dispatch_paused` in the campaign report shape.
 - `Docs/operator-runbook.md` §"Is dispatch switched off, and at WHICH rung?" — the rung table and
   which one to pull.
-- `Docs/disaster-recovery.md` §1 (restore), §3 (key rotation), §4 (key compromise), §4a (worker
+- `Docs/operator-runbook.md#disaster-recovery-key-backup-and-rotation` §1 (restore), §3 (key rotation), §4 (key compromise), §4a (worker
   compromise) — each names a specific rung and, where it matters, says which rung NOT to use.
 - `db/migrations/send_byo_0052_dispatch_mode_ladder.{up,down}.sql`.
 - `services/control/internal/dispatch/rung.go` (authoritative) + `rung_test.go`;

@@ -11,7 +11,7 @@ several risks below are stated from the user's side, not just the operator's.
 
 Nothing here restates config defaults or endpoint shapes; those are in
 [`config-reference.md`](./config-reference.md) and [`api-contract.md`](./api-contract.md). Procedures
-live in [`disaster-recovery.md`](./disaster-recovery.md).
+live in [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation).
 
 ---
 
@@ -95,7 +95,7 @@ it in memory. Zeroing bounds the window to accounts sending *during* the comprom
 the compromise something the affected user consented to. Zeroing does **not** cover a shutdown
 signal or an uncaught exception outside the send path — a memory image captured at that instant
 (core dump, container checkpoint, `/proc/<pid>/mem`) may still hold one in-flight plaintext. See
-[`disaster-recovery.md`](./disaster-recovery.md) for the incident procedure.
+[`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) for the incident procedure.
 
 ### R2. A break-glass operator read exists, and the user is not notified per access
 
@@ -214,7 +214,7 @@ this as a go-live checklist item: [`go-live-checklist.md`](./go-live-checklist.m
 The property that makes a stolen DB dump useless also means a lost key destroys every user's
 credential permanently, all at once. This is an accepted trade, not a defect — but it makes key
 backup a **security control in its own right**, and one whose failure mode is total. Procedure and
-the recovery drill: [`disaster-recovery.md`](./disaster-recovery.md) §1.
+the recovery drill: [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1.
 
 ### Master-key rotation has no operator-side path
 
@@ -224,7 +224,7 @@ re-encryption under a new key would require a server-side bulk re-encrypt that d
 mechanics — decrypting under the old key and re-encrypting under the new, for every affected user's
 account — are not built. The full procedure, what can and cannot be rotated concurrently, and why
 this is worse for module 3 than for module 2 is in
-[`disaster-recovery.md`](./disaster-recovery.md) §3; this page states the fact and links rather than
+[`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3; this page states the fact and links rather than
 duplicating that procedure, since another change to this docs set covers it directly.
 
 ### There is no rate limiting or lockout on the API surfaces
@@ -304,7 +304,7 @@ unchanged; a destination allowlist is registered in [`future-work.md`](./future-
 `/healthz` and `/readyz` are unauthenticated by design (they carry no operational detail). Everything
 with real content is behind a bearer key. `GET /v1/admin/health` is authenticated Domain B and does
 expose operational state; do not wire it into an unauthenticated uptime check. See
-[`monitoring.md`](./monitoring.md).
+[`operator-runbook.md#monitoring`](./operator-runbook.md#monitoring).
 
 ---
 
@@ -315,7 +315,7 @@ The codebase cannot check these; they are the deployment's half of the posture.
 - [ ] KMS Decrypt is granted to the **Control role only**, and **no human role holds it** — not an
       operator, not a support engineer, not CI. The platform, operators, and CI have none.
 - [ ] The master key is backed up off-host, encrypted, in two locations, and the **recovery drill has
-      been run** ([`disaster-recovery.md`](./disaster-recovery.md) §1).
+      been run** ([`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §1).
 - [ ] No worker host has `DATABASE_URL`, any KMS variable, `ca.key`, or `control.key`. Presence is an
       incident, not a misconfiguration.
 - [ ] Workers have **no** public ingress; worker↔Control traffic is on a private network.
@@ -359,7 +359,7 @@ The codebase cannot check these; they are the deployment's half of the posture.
 
 | Doc | For |
 |---|---|
-| [`disaster-recovery.md`](./disaster-recovery.md) | Key backup, the recovery drill, rotation (including why module 3 has no operator-side rotation path), compromise response. |
+| [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) | Key backup, the recovery drill, rotation (including why module 3 has no operator-side rotation path), compromise response. |
 | [`go-live-checklist.md`](./go-live-checklist.md) | The pre-launch gate, including the IAM-separation sign-off. |
 | [`architecture.md`](./architecture.md) | Boundaries and the send path in detail. |
 | [`../CLAUDE.md`](../CLAUDE.md) | The build rules these properties come from — canonical. |

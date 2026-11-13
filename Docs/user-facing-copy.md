@@ -127,6 +127,10 @@ a behavior change to become honest.
 
 ## 4. This is a point-in-time audit — the ledger is the enumeration gate
 
+> **Status 2026-11-09: the gate described below is ruled (M3-P8-OD-3) but not built — it is registered as
+> [FW-M3-21](./future-work.md#fw-m3-21--the-user-copy-ledger-gate-m3-p8-od-3-ruled-gate-it-is-not-built).**
+> Until it exists the ledger is a reviewed table, not a checked one.
+
 This document reflects the tree at the time of writing. What keeps it honest going forward is
 `Docs/user-copy-strings.txt`: every string audited above has a `string_id|surface|evidence_it_asserts`
 row there, in the same flat, machine-checkable shape `Docs/user-output-readers.txt` and
