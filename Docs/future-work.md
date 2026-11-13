@@ -887,3 +887,29 @@ and [`user-copy-strings.txt`](./user-copy-strings.txt) (51 lines: the `string_id
 column (the shape `config-consumers.txt` already proves for config keys), fail in both directions, and ship the paired self-test that deletes a row and adds an
 unledgered string and requires red both times. It must be wired into `real-infra.yml` (the `test_enumeration` meta-gate then proves it is run).
 **Reopen trigger:** any change to one of the three audited surfaces — that change should bring the gate with it rather than another unchecked row.
+
+---
+
+### FW-M3-22 — `TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes` can fail its own anti-vacuity guard on a fast runner
+
+**Registered:** 2026-11-13, from a red CI run that went green on a re-run of the *same commit*. Nothing about the behaviour under test was wrong; the test's
+proof-of-concurrency assertion is non-deterministic.
+
+**What happened.** Run [43445719147](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43445719147), head `ceb87c2` (a docs-only commit), attempt 1:
+harness **99 passed, 1 failed**; the failure was `eligibility_test.go:301` — *"only 1 worker(s) ever succeeded — concurrency was not genuinely exercised"*
+(test time 0.24 s). Attempt 2 of the same run, same commit, same runner image: **100 passed, 0 failed**. Every non-doc line changed since the previous green run
+(`3453080`, Go and shell alike) is a comment, an `echo` message or a test failure message, none of it in code the test executes, so this is not a regression introduced by that commit.
+The seven runs before it (`02777e3` … `3453080`, 2026-11-08 → 2026-11-09) were all green.
+
+**Why it is a test defect and not a product defect.** The test (8 workers, one account, `daily_limit=50`, `SKIP LOCKED`) asserts the *invariants* first — exactly 50
+consumes, none after the limit, `daily_sent_count` exactly 50, no `23514` — and all of those held. Only the later *anti-vacuity* assertion (Rule 10: the race must
+have been genuine) failed: it requires at least two *different* workers to have landed a success, and under `SKIP LOCKED` nothing makes the lock fair, so one worker can
+win every slot of a 50-slot budget on the RAM-backed Postgres (`DEV_RAM_PG=1`, the CI default) before the others get a turn. The test already pre-connects all eight
+workers for exactly this reason (its own comment names "the single-winner flake"); that removed the common cause, not the possibility. **This diagnosis is the
+likeliest explanation, not a proven one** — it was not reproduced locally (Docker was unavailable) and the failing attempt's per-worker counts were not logged.
+
+**Fix shape (not done — a concurrency test is not changed without its control).** Replace the statistical assertion with a deterministic one, per `CLAUDE.md` Rule 10(a):
+force the interleave, e.g. hold the first winner's transaction open until every other worker has made at least one attempt and been skipped, then release; or log the
+per-worker success counts and assert overlap through the `pg_stat_activity` sampler the test already runs. Whichever is chosen, it must keep a **paired control that goes
+red**: a mutant that serialises `accountConsume` behind one mutex (so no real overlap exists) must fail it. Do not weaken the assertion to "≥1 worker".
+**Reopen trigger:** this test red a second time on any runner, or any other test failing an anti-vacuity guard this way — promote it from deferred to a blocking fix.
