@@ -13,11 +13,11 @@ operator controls queue depth, per-user suspension, and **pacing** — the one d
 damage shared infrastructure, deliberately kept out of users' hands. When a new question
 arises, answer it with that line.
 
-> **Status (2026-11-09):** forked from module 2 at `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo; Gate A,
+> **Status (2026-11-13):** forked from module 2 at `21b65e65eba8f2cc16a84408bac6e018511ec46b` (tag `module3-fork-point` in module 2's repo; Gate A,
 > byte-identical inheritance, and Gate B, identity rename and nothing else, both passed on real infra — see `Docs/history/fork-point.md`). Phases 0–8 are
 > built and closed on real infrastructure; the decision ledger (`Docs/open-decisions.md`) has **zero open items**; deferred work is `Docs/future-work.md`
 > (module 2's register, inherited, with module 3's own entries from §9 — not a second file). This block records *state*, not rules, and was rewritten on
-> 2026-11-09 because the 2026-08-01 text it replaced ("Phases 2–8 are planned … not yet built") had been false for months; the rules begin at §0 and
+> 2026-11-13 because the 2026-08-01 text it replaced ("Phases 2–8 are planned … not yet built") had been false for months; the rules begin at §0 and
 > are unchanged. The locked phase specs under `Docs/history/` MUST NOT be edited as part of any build work (add new files instead). Living operational and
 > reference docs are the top level of `Docs/` — see `Docs/README.md`. Rules below are unchanged from module 2 except where §4.2 below names an explicit
 > change, and outlive the build.

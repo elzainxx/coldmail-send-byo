@@ -846,7 +846,7 @@ selftest's point.
 
 ### FW-M3-20 — `jobs.campaign_id` has no foreign key to `send_byo.campaigns` (the deferred half of M3-P1-OD-4)
 
-**Registered:** 2026-11-09, moved here from the open-decisions ledger at the C3/C4 close so that ledger could honestly say zero open.
+**Registered:** 2026-11-13, moved here from the open-decisions ledger at the C3/C4 close so that ledger could honestly say zero open.
 The *decision* was always made: M3-P1-OD-4 ruled **yes**, `jobs.campaign_id` gets `REFERENCES send_byo.campaigns(id) ON DELETE RESTRICT`.
 What is deferred is the *build*, by M3-P5-OD-6 (ruled 2026-08-02), for a reason that still holds.
 

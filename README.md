@@ -5,7 +5,7 @@ a self-serve account surface, and the module handles the rest — routing across
 unhealthy accounts out of rotation. Users control their own assets (limits, From address, their accounts); the operator controls the shared substrate (queue
 depth, per-user suspension, pacing).
 
-**Status (2026-11-09):** built and closed — phases 0–8 plus the fix-plan items and CI findings since; the decision ledger has **zero open items**; all gates are
+**Status (2026-11-14):** built and closed — phases 0–8 plus the fix-plan items and CI findings since; the decision ledger has **zero open items**; all gates are
 green on the GitHub runner. What stands between this and a live deployment is owner action (real-provider smoke test, vendor paperwork, host provisioning), each
 listed with its status in [`Docs/go-live-checklist.md`](./Docs/go-live-checklist.md). It is one of three module repositories (verifier, managed sender, this one)
 pinned together by the parent repository, which also holds the platform contract.
@@ -70,7 +70,7 @@ db/migrations/            centrally-owned, self-tracking SQL (send_byo_NNNN_*.up
 db/preflight/             platform-table existence checks, run before migrating
 tools/                    send-byo-migrate, gen-certs, gen-secrets, own-secrets, provision-worker (worker + admin keys)
 tests/harness/            real-infra behavioral harness (real Postgres, real worker, real SMTP)
-tests/harness/checks/     the 13 CI gates and their 5 self-tests
+tests/harness/checks/     the 15 CI gates and their 7 self-tests
 deploy/                   fixtures the dev/CI stack mounts: dns-test/ (the CoreDNS zones the From-gate tests resolve against) and pg-init/ (platform-table stand-ins)
 Docs/                     living documentation: the nine documents, adr/, and history/ (provenance)
 ```

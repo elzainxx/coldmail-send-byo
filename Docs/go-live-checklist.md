@@ -2,14 +2,14 @@
 
 The module is built, closed and green on the GitHub runner (verdict **GO for a pilot**; [`architecture.md`](./architecture.md#build-status-and-the-two-ceilings)).
 Everything below is a **going-live confirmation or operator action**, not a build blocker: the module is implemented and proven in the real-infra harness
-(`scripts/dev.sh test`; 100 passed, 0 failed on the runner build of 2026-11-09) without any of it. These steps become mandatory the moment the module points at a real
+(`scripts/dev.sh test`; 100 passed, 0 failed on the runner build of 2026-11-14) without any of it. These steps become mandatory the moment the module points at a real
 platform database and starts sending real mail. Nothing here is code to write; each item is a setup step, a coordination point, or a decision a person makes.
 
 Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-coordination half) and `Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the
 authoritative source for the reasoning behind each item; this document is the single ordered checklist a launch operator actually works through. The owner-level
 ordering across **all** modules is the parent repository's `OWNER-ACTIONS.md`.
 
-## Status at a glance (2026-11-09)
+## Status at a glance (2026-11-14)
 
 **Legend.** ✅ verified, with the evidence named · ⏳ not done — only the owner can do it (needs the production environment, a real provider account, or a person's
 sign-off) · ➖ deliberately deferred past launch. Nothing below is "unchecked by default": each line says why it is in the state it is in.
@@ -30,7 +30,7 @@ sign-off) · ➖ deliberately deferred past launch. Nothing below is "unchecked 
 | 12 | Sign off that the master key has no rotation path (REQUIRED) | ⏳ | A signed accepted-risk record; the code cannot sign it for you. |
 | 13 | Decide the `send_logs` retention window (REQUIRED) | ⏳ | A decision you can defend to a user, made before real content accumulates. |
 | 14 | Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED) | ⏳ | Both ship at `shadow`; until promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised window. Promote one at a time, after reading the shadow counts. |
-| Pre-flight | Final pre-flight (below) | ✅ / ⏳ | The harness and all 13 gates + 5 self-tests are green on the runner at the last push (✅); every deployment-specific line is yours (⏳). |
+| Pre-flight | Final pre-flight (below) | ✅ / ⏳ | The harness and all 15 gates + 7 self-tests are green on the runner at the last push (✅); every deployment-specific line is yours (⏳). |
 
 **Count.** Of the 14 numbered items: 0 done, 1 cleared-with-a-re-run-due (§9), 1 deliberately deferred (§6), 12 owner actions. That is the honest state of a module whose
 engineering is finished: the remaining work is yours, and none of it is a decision this module is waiting on (the decision ledger has zero open items).
@@ -451,7 +451,7 @@ flipping traffic on can confirm, because each is about *their* deployment.
       suite against the ACTUAL deployed images, not a stale build.
 - ✅ All 15 gates and their 7 self-tests (22 scripts in `tests/harness/checks/`) are green. They are enumerated by name in the `run:` steps of
       `.github/workflows/real-infra.yml`, and `test_enumeration` fails if a script exists that the workflow does not run, so this line cannot drift from the
-      directory the way earlier counts did. Green on the GitHub runner at the last push (2026-11-09); re-confirm after any change you make.
+      directory the way earlier counts did. Green on the GitHub runner at the last push (2026-11-14); re-confirm after any change you make.
       The 15: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `consume_contention`, `user_copy_ledger`, `drain_grace`,
       `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`. The 7 self-tests: `config_consumption_selftest`,
       `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`, `consume_contention_selftest`, `user_copy_ledger_selftest`.

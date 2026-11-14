@@ -2,7 +2,7 @@
 
 > **OWNER: MODULE 3 (`coldmail-send-byo`). This is the LIVING ledger — the one that grows.** Its ids are `M3-P<phase>-OD-<n>`. Do not confuse it with [`history/open-decisions.md`](history/open-decisions.md), which has the same filename one directory down and is **module 2's** frozen ledger, carried at module 2's original path for citation stability (ruled at M3-P8-OD-7: no move, no path change). If you are recording a new module-3 decision, it goes here (added 2026-08-05).
 
-**Status (2026-11-09): ALL 113 ITEMS ARE RULED — ZERO OPEN.** Recounted mechanically on 2026-11-09 (every distinct
+**Status (2026-11-14): ALL 113 ITEMS ARE RULED — ZERO OPEN.** Recounted mechanically on 2026-11-13 (every distinct
 `M3-P<phase>-OD-<n>` and `M3-CI-OD-<n>` id in this file: 109 phase items + 4 CI items; each is either a row in one of the
 four disposition tables below or has its own `RULED` section). Nothing is deferred in this file; items that were
 deliberately postponed live in [`future-work.md`](future-work.md), not here. The paragraphs from here to the
@@ -1436,7 +1436,7 @@ have it land as a side effect of building the upsert. **M3-P1-OD-4 stays open, n
 phase (or a dedicated follow-up) to pick up** — this is not a re-ruling of M3-P1-OD-4's "should the
 FK exist" question, only of "does Phase 5 C2 add it."
 
-> **Closed out of this ledger 2026-11-09.** "Stays open" was the last open item in this file. M3-P1-OD-4's *decision* (yes, `ON DELETE RESTRICT`)
+> **Closed out of this ledger 2026-11-13.** "Stays open" was the last open item in this file. M3-P1-OD-4's *decision* (yes, `ON DELETE RESTRICT`)
 > was never in doubt; only the *build* was postponed, and a postponed build is future work, not an open decision. It is now registered as
 > [FW-M3-20](future-work.md#fw-m3-20--jobscampaign_id-has-no-foreign-key-to-send_byocampaigns-the-deferred-half-of-m3-p1-od-4) with its
 > reason, its fix shape, its control and a reopen trigger. The sentence above is kept as written for provenance.
@@ -2036,7 +2036,7 @@ harness's certs and sink), so nothing regresses with the move — the proof that
 
 ## Honest final position
 
-**Zero open (2026-11-09).** Every one of the 113 ids in this file (109 phase items, 4 CI items) is ruled, and every ruling is either
+**Zero open (2026-11-14).** Every one of the 113 ids in this file (109 phase items, 4 CI items) is ruled, and every ruling is either
 landed in the tree or is a ruling to *not* build something (in which case the thing it declined is named in [`future-work.md`](future-work.md)
 and cited from the ruling). This file holds no pending question; if one is raised later it is added above this section and this section is
 re-read, not edited in place.
@@ -2052,7 +2052,7 @@ What that sentence does and does not claim:
   ([`go-live-checklist.md`](go-live-checklist.md)) lists the steps only a person with the production host, a real SMTP provider account and
   the vendor paperwork can take, and the parent repository's `OWNER-ACTIONS.md` orders them. None of those is a question this module is
   waiting to have answered.
-- **The counts are hand-derived.** The 2026-11-09 recount was a mechanical extraction of every distinct id in this file; the earlier
+- **The counts are hand-derived.** The 2026-11-13 recount was a mechanical extraction of every distinct id in this file; the earlier
   "97" and "82 of 84" figures were true on their dates and are kept in the dated paragraphs above for provenance. The ruling sections are
   the authority, not the tallies.
 

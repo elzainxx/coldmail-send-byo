@@ -989,7 +989,7 @@ failures**: some sends get the new treatment, some don't, until the roll complet
 
 ## Developing and testing locally
 
-Everything above is about running the service. This part is about proving it before you do. Two documents were merged here on 2026-11-09:
+Everything above is about running the service. This part is about proving it before you do. Two documents were merged here on 2026-11-13:
 the **acceptance sequence** that is specific to module 3 (below), and **Appendix A**, the long, detailed walkthrough inherited from the sender module,
 whose `Stage N` numbering is kept because code comments and drill scripts cite it by number.
 
@@ -1294,11 +1294,11 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 
 *Markers: ✅ verified · ⏳ not yet signed off.* This is the sign-off a **person** records after running the acceptance sequence above on their own machine, so the repository
 does not pre-fill it: every line is ⏳ until you have run the stage that proves it and replace the marker with ✅ (and the date). What CI proves on every build — the
-real-infra harness (100 passed, 0 failed on the runner build of 2026-11-09) and the 13 gates with their 5 self-tests — is the evidence behind most of these lines; it is
+real-infra harness (100 passed, 0 failed on the runner build of 2026-11-14) and the 15 gates with their 7 self-tests — is the evidence behind most of these lines; it is
 not a substitute for your own record, and the last line is a *state* to confirm, not a result.
 
 - ⏳ Full harness green from a clean slate, zero skips
-- ⏳ All 13 gates and their 5 self-tests green (Stage 1 step 5)
+- ⏳ All 15 gates and their 7 self-tests green (Stage 1 step 5)
 - ⏳ Clean-slate reproduction completed from the docs alone
 - ⏳ Empty state tells a new user what's missing
 - ⏳ Verify-on-add runs and **delivers no mail** (Mailpit empty)
