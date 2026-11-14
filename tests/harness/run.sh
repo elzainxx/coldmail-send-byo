@@ -286,6 +286,8 @@ go_suite services/control/internal/dsnscrub       "DSN credential scrub (N1/D12:
 # script. Its own t.Skip path names the compose command if coredns is missing, so a broken
 # substrate announces itself rather than silently reporting a smaller suite.
 go_suite services/control/internal/fromgate       "FROM-gate SPF/DNS evaluation + cache + copy (25 tests, real CoreDNS)"
+# FW-M3-21: the user-copy ledger (needs no database or DNS — it parses source and two documents). Its own CI step and paired control are user_copy_ledger*.sh.
+go_suite services/control/internal/copyledger     "User-copy ledger: code markers == ledger == audit doc, and no unledgered prose in a copy-rendering file (FW-M3-21)"
 
 # --- Phase 2 admin API behavioral suite (real Server over httptest against real PG clones) -----
 # These tests live in the control module (internal/adminapi) and drive the ACTUAL admin handlers

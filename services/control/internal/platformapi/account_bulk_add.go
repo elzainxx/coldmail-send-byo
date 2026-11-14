@@ -203,6 +203,7 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 			res.AlignmentMessage = msg
 		}
 	} else {
+		// copy-ledger: fromgate.account_bulk_add_indeterminate_refusal
 		res.AlignmentMessage = "we couldn't check From alignment right now (DNS didn't answer) — press Test on this account to retry"
 	}
 	if s.verifier == nil {

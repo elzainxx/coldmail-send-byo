@@ -118,6 +118,7 @@ func (s *Server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 	// aborts the whole call, because those genuinely prevent BOTH checks from running.
 	var verification map[string]any
 	if s.verifier == nil {
+		// copy-ledger: account_test.verification_unavailable
 		verification = map[string]any{"state": "unavailable", "code": "verification_unavailable"}
 	} else {
 		opTimeout, ok, err := s.readConfigInt(ctx, "smtp_operation_timeout_sec")

@@ -1,15 +1,19 @@
-# user-copy-strings.txt — Phase 8 §2.4's ledger of every user-facing string on the three audited
-# surfaces (From gate, SMTP error framing, notification templates). Mirrors user-output-readers.txt's
-# shape: a checked-in flat file, not prose, so a new string cannot be added silently — the eventual
-# gate (not built in this task; see user-facing-copy.md's own note) diffs this file's string_id
-# column against the code's own enumerated table, three-way set-equal, the same shape
-# config-consumers.txt already proves out for config keys.
+# user-copy-strings.txt — Phase 8 §2.4's ledger of every user-facing string on the audited surfaces
+# (From gate, SMTP error framing, notification templates, and — added by the gate's first run — the
+# reason text of account events). Mirrors user-output-readers.txt's shape: a checked-in flat file,
+# not prose, so a new string cannot be added silently. The gate is BUILT (FW-M3-21):
+# services/control/internal/copyledger diffs this file's string_id column against the code's own
+# `// copy-ledger: <id>` markers and against the id column of user-facing-copy.md, three-way
+# set-equal, failing in every direction (a code site with no row, a row with no code site, a row with
+# no audit verdict, a verdict with no row), and fails any prose literal in a file that renders copy
+# that carries no marker. Its paired control is tests/harness/checks/user_copy_ledger_selftest.sh.
+# What it cannot check, per M3-P8-OD-3: whether the evidence_it_asserts column is TRUE.
 #
 # Format: one row per line, pipe-delimited, exactly three fields:
 #   string_id|surface|evidence_it_asserts
 #
 # string_id: a stable slug for the string (function/branch name where the string has no ExternalCode
-#   of its own). surface: fromgate | smtp_error_frame | notifications. evidence_it_asserts: the
+#   of its own). surface: fromgate | smtp_error_frame | notifications | account_events. evidence_it_asserts: the
 # SPECIFIC fact the module holds at render time that the string is grounded in — not a paraphrase of
 # the string's wording, the underlying evidence. A string whose evidence column would have to say
 # "nothing" is the defect this ledger exists to surface.
@@ -49,3 +53,10 @@ account_test.verification_unavailable|smtp_error_frame|s.verifier is nil (no ver
 # value is what a future render would have to stay honest to.
 notif.account_quarantined|notifications|newQuarantine transition confirmed by quarantineDecision() against this account's OWN observed data on this outcome: reason='auth_failure' (this specific attempt's AUTH was rejected), 'consecutive_failures' (this account's own streak counter reached the configured threshold), or 'failure_rate' (this account's own windowed attempts/failures ratio crossed the configured rate) — never a claim about any other account or a system-wide condition
 notif.campaign_expired|notifications|campaign_expiry_sec elapsed with the campaign's queued jobs not drained by expires_at — an observed elapsed-time fact against this campaign's own rows, re-asserted under the row's own lock at fire time (not a stale read)
+
+# --- Surface 4: the reason text of account events (platformapi/account_update.go, adminapi/account_update.go; read back by platformapi/account_events.go) ---
+# FOUND BY THE GATE ITS FIRST RUN, not by the 2026-08 audit: the account-history route returns account_events.reason to the user verbatim, and two
+# fixed strings are written there on every credential or alignment-acknowledging PATCH. They are not a From-gate, SMTP-frame or notification string, so
+# they had no row; they are audited in user-facing-copy.md section 2.4.
+account_events.alignment_ack_reason|account_events|the user sent acknowledge_alignment_warning against a stored verdict and changed no address (ackedStored with no from_address change) — the event records exactly that, nothing about the verdict itself
+account_events.credential_clear_note|account_events|a credential PATCH was applied to an account that was quarantined for auth_failure and the new credential left it un-quarantined (cur.Status.Quarantined && !nowQuarantined) — an observed state change on this account, not a prediction that the credential works

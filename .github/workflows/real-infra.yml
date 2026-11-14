@@ -264,6 +264,19 @@ jobs:
         if: always()
         run: bash tests/harness/checks/user_output_scrub.sh
 
+      # FW-M3-21 (ruled by M3-P8-OD-3, built 2026-11-14). Every string a user reads is in Docs/user-copy-strings.txt and has a verdict in
+      # Docs/user-facing-copy.md, and every ledger row is a string some code site renders (a `// copy-ledger: <id>` marker); any prose literal
+      # in a file that renders copy without a marker fails. It does NOT check that a row's evidence is TRUE — that stays a human judgment.
+      - name: User-copy ledger — code markers, ledger and audit document are the same set; no unledgered prose (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/user_copy_ledger.sh
+
+      # Its PAIRED CONTROL: six deliberate breaks of a scratch copy (a row deleted, a sentence added, an orphan row, a verdict deleted,
+      # a marker deleted, a placeholder for evidence) must each turn the gate red with their own signature.
+      - name: User-copy ledger SELF-TEST — six breaks each go RED (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/user_copy_ledger_selftest.sh
+
       - name: Diagnostics on failure
         if: failure()
         run: |

@@ -193,6 +193,7 @@ func (h *OutcomeHandler) applyAccountEffect(ctx context.Context, tx pgx.Tx, acco
 		// re-observed on a later outcome against an already-quarantined account, since dispatch
 		// structurally excludes a quarantined account from receiving further attempts.
 		if newQuarantine {
+			// copy-ledger: notif.account_quarantined
 			if err := EnqueueNotification(ctx, tx, uid, "account_quarantined", "account", &accountID,
 				"critical", "account_quarantined:"+accountID,
 				map[string]any{"account_id": accountID, "reason": reason}, cfg.NotificationDedupWindowSec); err != nil {

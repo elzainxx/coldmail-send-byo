@@ -153,6 +153,7 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		gateRes = s.runFromGate(r.Context(), *req.FromAddress, gateHost, gateUsername, req.AcknowledgeAlignmentWarning)
 		if gateRes.verdict.Outcome == fromgate.OutcomeIndeterminate {
 			// §2.3: refuse the write; the old address and its old verdict remain intact.
+			// copy-ledger: fromgate.account_update_indeterminate_refusal
 			s.fail(w, r, newErr(codeUnprocessable, "from_dns_unavailable").
 				withMessage("We couldn't check whether this From address will authenticate right now (a DNS lookup didn't answer). Nothing changed — try again."))
 			return
@@ -295,6 +296,7 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		auditReason = &reasonText
 	}
 	if ackedStored && auditReason == nil {
+		// copy-ledger: account_events.alignment_ack_reason
 		reasonText := "from-alignment warning acknowledged on the stored verdict (no address change)"
 		auditReason = &reasonText
 	}
@@ -313,6 +315,7 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		if cur.Status.Quarantined && !nowQuarantined {
 			toSnap = ptrSnapshot(cur.Status.Paused, cur.Status.PauseReason, false, cur.Status.Disabled)
 			auditAction = "credential_updated"
+			// copy-ledger: account_events.credential_clear_note
 			clearNote := "auth_failure quarantine auto-cleared by credential update"
 			if auditReason != nil {
 				combined := *auditReason + "; " + clearNote

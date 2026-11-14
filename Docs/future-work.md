@@ -870,23 +870,25 @@ stops being hypothetical.
 
 ---
 
-### FW-M3-21 — The user-copy ledger gate (M3-P8-OD-3 ruled "gate"; it is not built)
+### FW-M3-21 — The user-copy ledger gate (M3-P8-OD-3 ruled "gate") — BUILT 2026-11-14
 
-**Registered:** 2026-11-09, found at the docs close when `Docs/README.md` listed `user-copy-strings.txt` against a "copy ledger gate" that no script implements.
-`grep` for the ledger's name in `tests/`, `scripts/` and `.github/` finds nothing: the only user-output gate that exists is `user_output_scrub.sh`, which
-reads `Docs/user-output-readers.txt`, a different file for a different property (who may read `jobs.last_smtp_response`).
+**Built 2026-11-14.** `services/control/internal/copyledger` (three Go tests, run by the harness) plus `tests/harness/checks/user_copy_ledger.sh` and its paired control
+`user_copy_ledger_selftest.sh` (both named in `real-infra.yml`). Every site that renders or passes through a string a user reads carries a `// copy-ledger: <id>` comment on or
+directly above its statement. The tests require the ids in **code**, in [`user-copy-strings.txt`](./user-copy-strings.txt) and in the tables of [`user-facing-copy.md`](./user-facing-copy.md)
+to be the same set, with each direction of each difference named (a code site with no row, a row with no code site, a row with no audit verdict, a verdict with no row); that every row has a
+real evidence claim; and — completeness — that every string literal reading as prose (four or more words, not SQL) in a file that renders copy sits in a marked statement, so a new sentence
+added to `fromgate/copy.go` fails CI until it has a row and a verdict. The self-test breaks a scratch copy six ways (row deleted, unledgered sentence added, orphan row, verdict deleted, marker
+deleted, placeholder evidence) and requires the gate to go red for each with that break's own signature. Proven on the GitHub runner (see the run recorded in
+`coldmail-platform/verification-runs.md`, sixth pass).
 
-**What was ruled.** M3-P8-OD-3: the copy ledger is a blocking gate, scoped to what it can prove — every user-facing string enumerated, every ledger row
-naming the evidence it asserts; the honesty column (is the evidence *true*?) stays a human judgment and the gate's doc says so.
+**What it found on its first run.** Two fixed strings the 2026-08 audit never covered: `platformapi/account_events.go` returns `account_events.reason` to the user verbatim, and the
+credential and alignment-acknowledging `PATCH` handlers write `"from-alignment warning acknowledged on the stored verdict (no address change)"` and `"auth_failure quarantine
+auto-cleared by credential update"` there (in `platformapi/account_update.go` and its break-glass twin `adminapi/account_update.go`). They are now a fourth surface, `account_events`, with two
+ledger rows and two PASS verdicts in `user-facing-copy.md` §2.4. **The verdicts are mine and are a human judgment the ruling reserves for the owner — read them.**
 
-**What exists.** [`user-facing-copy.md`](./user-facing-copy.md) (the audit: 21 strings across the From gate, SMTP error framing and notification templates, all PASS)
-and [`user-copy-strings.txt`](./user-copy-strings.txt) (51 lines: the `string_id|surface|evidence_it_asserts` rows). Until the gate exists the ledger is a
-**reviewed table**, not a checked one: a string added to code without a row is not caught.
-
-**Fix shape.** Enumerate the user-facing string constants/branches in the three audited packages, assert three-way set-equality with the ledger's `string_id`
-column (the shape `config-consumers.txt` already proves for config keys), fail in both directions, and ship the paired self-test that deletes a row and adds an
-unledgered string and requires red both times. It must be wired into `real-infra.yml` (the `test_enumeration` meta-gate then proves it is run).
-**Reopen trigger:** any change to one of the three audited surfaces — that change should bring the gate with it rather than another unchecked row.
+**What it cannot do, per the ruling:** check that a row's `evidence_it_asserts` is *true*. And its list of files that render copy (`copySites` in `copyledger_test.go`) is curated: a NEW file
+that renders copy has to be added to it, and nothing discovers that on its own. Operator-written free text (an admin's `reason`) is not a fixed string and cannot be enumerated.
+**Reopen trigger:** a user-visible string found that the gate did not catch (the miss is a bug in the scan, not in the string), or a new file that renders copy.
 
 ---
 

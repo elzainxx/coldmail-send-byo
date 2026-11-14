@@ -197,6 +197,7 @@ func (d *Dispatcher) expireOneCampaign(ctx context.Context, campaignID, userID s
 		// LIVE-row uniqueness to this campaign specifically (notifications_live_dedup_idx is
 		// per-(user_id, dedup_key)), so a later DIFFERENT campaign's expiry for the same user is not
 		// suppressed by this one's still-uncleared row.
+		// copy-ledger: notif.campaign_expired
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO send_byo.notifications (user_id, condition, subject_type, subject_id, severity, dedup_key, payload)
 			 VALUES ($1, 'campaign_expired', 'campaign', $2, 'warning', $3, $4::jsonb)

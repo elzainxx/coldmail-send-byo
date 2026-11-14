@@ -286,20 +286,28 @@ func verifyAttemptCountToday(ctx context.Context, db *pgxpool.Pool, accountID st
 func externalCodeFor(reason string) (code, message string) {
 	switch reason {
 	case workerproto.ReasonConnectRefused:
+		// copy-ledger: smtp_frame.verify_connect_failed
 		return "verify_connect_failed", "Could not reach the server on that host/port."
 	case workerproto.ReasonTimeout:
+		// copy-ledger: smtp_frame.verify_timeout
 		return "verify_timeout", "The server did not answer in time."
 	case workerproto.ReasonStartTLSUnavail:
+		// copy-ledger: smtp_frame.verify_tls_unavailable
 		return "verify_tls_unavailable", "The server does not offer STARTTLS — we aborted before sending your password."
 	case "starttls_failed":
+		// copy-ledger: smtp_frame.verify_tls_failed
 		return "verify_tls_failed", "TLS negotiation failed (often a certificate problem)."
 	case workerproto.ReasonAuthFailed:
+		// copy-ledger: smtp_frame.verify_auth_failed
 		return "verify_auth_failed", "The username or password was rejected."
 	case "ehlo_failed":
+		// copy-ledger: smtp_frame.verify_protocol_error
 		return "verify_protocol_error", "The server did not speak SMTP as expected."
 	case "connection_closed", "write_failed":
+		// copy-ledger: smtp_frame.verify_connection_lost
 		return "verify_connection_lost", "The connection dropped mid-handshake."
 	default:
+		// copy-ledger: smtp_frame.verify_connection_lost
 		return "verify_connection_lost", "The connection dropped mid-handshake."
 	}
 }

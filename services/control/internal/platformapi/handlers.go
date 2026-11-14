@@ -301,9 +301,11 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		out["account_username"] = *rep.accountUsername
 	}
 	if rep.failureDetail.SMTPResponse != nil {
+		// copy-ledger: report.smtp_response_passthrough
 		out["smtp_response"] = *rep.failureDetail.SMTPResponse
 	}
 	if rep.failureDetail.ErrorClass != nil {
+		// copy-ledger: report.error_class_passthrough
 		out["error_class"] = *rep.failureDetail.ErrorClass
 	}
 	if rep.failureDetail.FailedAt != nil {

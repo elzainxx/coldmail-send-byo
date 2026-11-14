@@ -113,6 +113,24 @@ signal — but building notification *rendering* is a design decision outside th
 "flag, don't build" scope, and per the brief only a *dishonest existing string* triggers a future-work
 entry here.)
 
+### 2.4 Surface 4 — the reason text of account events (found by the gate, 2026-11-14)
+
+The ledger gate (§4) scans every file that renders copy for prose that has no ledger row. Its first run
+found two. `platformapi/account_events.go` returns `account_events.reason` to the user verbatim, and the
+credential and alignment-acknowledging `PATCH` handlers (`platformapi/account_update.go` and its
+break-glass twin `adminapi/account_update.go`) write two fixed strings there. They belong to none of the
+three surfaces audited in 2026-08, so they had no row and no verdict. Audited now, against the code that
+writes them:
+
+| String (id in ledger) | Evidence claimed | Verdict |
+|---|---|---|
+| `account_events.alignment_ack_reason` | the user acknowledged an alignment warning against the stored verdict without changing the address (`!fromAddressChanging && AcknowledgeAlignmentWarning`, write confirmed) | PASS — "acknowledged … (no address change)" says what the user did, and that nothing else did |
+| `account_events.credential_clear_note` | a credential `PATCH` was applied to an account quarantined for `auth_failure`, and it ended un-quarantined (`cur.Status.Quarantined && !nowQuarantined`) | PASS — an observed state change on this account; it does not claim the new credential works |
+
+**Verdict: 2/2 PASS.** No behavior change is needed. **This surface is new scope**, added because the
+gate found it; whether an operator-written `reason` (the free text of an admin action) is also user-facing
+copy is not decided here — it is not a fixed string, so the ledger cannot enumerate it.
+
 ## 3. Summary
 
 | Surface | Strings audited | PASS | Flagged for future-work.md |
@@ -120,25 +138,31 @@ entry here.)
 | From gate | 9 | 9 | 0 |
 | SMTP error framing | 10 | 10 | 0 |
 | Notification templates | 2 (structured claims; no rendered prose exists) | 2 | 0 |
-| **Total** | **21** | **21** | **0** |
+| Account-event reason text (added 2026-11-14) | 2 | 2 | 0 |
+| **Total** | **23** | **23** | **0** |
 
 No string in the current tree asserts more than its surface's evidence supports, and no finding requires
 a behavior change to become honest.
 
 ## 4. This is a point-in-time audit — the ledger is the enumeration gate
 
-> **Status 2026-11-09: the gate described below is ruled (M3-P8-OD-3) but not built — it is registered as
-> [FW-M3-21](./future-work.md#fw-m3-21--the-user-copy-ledger-gate-m3-p8-od-3-ruled-gate-it-is-not-built).**
-> Until it exists the ledger is a reviewed table, not a checked one.
+> **Status 2026-11-14: the gate described below is BUILT** (FW-M3-21, ruled by M3-P8-OD-3):
+> `services/control/internal/copyledger` runs in the harness, and its paired control
+> `tests/harness/checks/user_copy_ledger_selftest.sh` runs in CI. The ledger is a checked table now. How it works:
+> every site that renders or passes through a user-facing string carries a `// copy-ledger: <id>` comment on or directly
+> above its statement; the test requires the ids in code, in `Docs/user-copy-strings.txt` and in the tables of this
+> document to be the same set, and requires every prose literal in a file that renders copy to carry one. **Limits:**
+> the list of files that render copy is curated (`copySites` in the test) — a NEW file that renders copy must be added
+> to it, and the gate cannot discover that on its own; and it checks that the ledger is complete and coherent, not that
+> the evidence column is true.
 
 This document reflects the tree at the time of writing. What keeps it honest going forward is
 `Docs/user-copy-strings.txt`: every string audited above has a `string_id|surface|evidence_it_asserts`
 row there, in the same flat, machine-checkable shape `Docs/user-output-readers.txt` and
-`Docs/config-consumers.txt` already use for their own enumeration gates. The intended (not yet built —
-that is a later phase step, per the brief's own "flag, don't build" instruction) gate is: enumerate every
-user-facing string constant/branch in the three audited files/packages, three-way set-equal that
-enumeration against the ledger's `string_id` column, and fail CI on either direction of mismatch — a
-string added to code without a ledger row, or a ledger row with no surviving string. What such a gate
-**cannot** check mechanically is whether the `evidence_it_asserts` column is *true* — that stays a human
-judgment, re-run at each phase that touches these three surfaces, the same way this document was produced
-this time.
+`Docs/config-consumers.txt` already use for their own enumeration gates. The gate (built 2026-11-14, see the
+status note above) enumerates every marked site and every prose literal in the files that render copy, three-way
+set-equals that enumeration against the ledger's `string_id` column and this document's tables, and fails CI on
+either direction of mismatch — a string added to code without a ledger row, or a ledger row with no surviving
+string. What such a gate **cannot** check mechanically is whether the `evidence_it_asserts` column is *true* —
+that stays a human judgment, re-run at each phase that touches these surfaces, the same way this document was
+produced.
