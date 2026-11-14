@@ -29,9 +29,9 @@ package dispatch
 //
 // Nothing in steps 1-5 depends on timing: the only waits are on observed state, and the deadlines are safety bounds
 // that a healthy run never approaches (it finishes in milliseconds). The paired controls live in
-// tests/harness/checks/consume_contention_selftest.sh, which builds three mutants of the production code and requires
-// each to turn THIS test red with its own signature: SKIP LOCKED removed, the consume serialised behind one mutex, and
-// the daily-limit predicate removed.
+// tests/harness/checks/consume_contention_selftest.sh, which builds four mutants for the test in this paragraph and
+// requires each to turn it red with its own signature: SKIP LOCKED removed, the consume serialised behind one mutex,
+// the daily-limit predicate removed, and the gate trigger disarmed.
 //
 // THE SECOND PATH, forced by its own test (ADR-0019). Everything above forces what happens while a holder keeps the row
 // LOCKED: the peers are refused by SKIP LOCKED. The other way a peer is refused is the MVCC RE-CHECK: a peer whose statement
@@ -495,6 +495,6 @@ func forceStaleSnapshotRecheck(t *testing.T, e *dispatchEnv, acct string, limit 
 			t.Fatalf("remove the MVCC gate (%s): %v", ddl, err)
 		}
 	}
-	t.Logf("MVCC RE-CHECK FORCED: the peer read the account row with capacity (daily_sent_count=%d) and parked between its snapshot and its row lock; the holder then took the last slot and COMMITTED (count=%d); on release the peer was REFUSED with no error and the count stayed %d; the peer was shown counts %v",
-		limit-1, limit, limit, peerSaw)
+	t.Logf("MVCC RE-CHECK FORCED: peer was shown counts %v (capacity at %d) and parked before its row lock; holder took the last slot and COMMITTED (count=%d); peer REFUSED, no error, count stayed %d",
+		peerSaw, limit-1, limit, limit)
 }

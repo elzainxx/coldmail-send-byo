@@ -114,7 +114,7 @@ n() { grep -c -- "$1" <<<"$out" || true; }
 p1="$(n "--- PASS: $T1")"; f1="$(n "--- FAIL: $T1")"; s1="$(n "--- SKIP: $T1")"
 p2="$(n "--- PASS: $T2")"; f2="$(n "--- FAIL: $T2")"; s2="$(n "--- SKIP: $T2")"
 ev1="$(n "FORCED CONTENTION: 1 holder parked")"
-ev2="$(n "MVCC RE-CHECK FORCED: the peer read")"
+ev2="$(n "MVCC RE-CHECK FORCED: peer was shown")"
 echo "consume_contention ($LABEL): count=$COUNT | $T1 passed=$p1 failed=$f1 skipped=$s1 evidence=$ev1 | $T2 passed=$p2 failed=$f2 skipped=$s2 evidence=$ev2 | rc=$rc"
 grep -E "_test.go:[0-9]+:|FORCED CONTENTION|MVCC|^--- (FAIL|SKIP)" <<<"$out" | cut -c1-300 | head -14 || true
 
