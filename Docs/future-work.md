@@ -903,9 +903,16 @@ the gate `tests/harness/checks/consume_contention.sh` and its four mutants (`nos
 predicates removed; `nogate` — the gate trigger disarmed) each go red with their own signature (`consume_contention_selftest.sh`; run
 [43593853877](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43593853877), harness 100/0); and the `consume-contention-repeat` workflow ran the test **50 times, 50 passed,
 0 failed, 50 forced-contention evidence lines** ([43593853940](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43593853940)). Module 2's copy of the test was fixed the same way.
-**What stays unforced, said plainly:** the MVCC re-check path (a peer whose statement snapshot predates the holder's commit but whose scan follows it) cannot be driven from outside
-the statement — under SKIP LOCKED a peer never waits between snapshot and scan — so the volume phase still exercises it by volume and asserts its invariants, but not its overlap.
-**Reopen trigger:** this test red on any runner, or a mutant surviving.
+**The MVCC re-check path — recorded here on 2026-11-14 as the one thing not forced — was forced the same day (ADR-0019, "Option A").** It is the path where a peer's statement snapshot
+predates the holder's commit but its row lock follows it: the peer saw capacity, and only Postgres's re-check of the predicate against the committed row version refuses it. From outside the statement there is no
+point at which to hold the peer; from inside there is: `TestAccountConsume_StaleSnapshotPeerIsRefused` adds a test-only *restrictive row-level-security policy* whose qualifier calls a volatile gate function. That
+runs in the peer's scan, after its snapshot and before its row lock, and parks only the backend with `application_name = 'zz_mvcc_peer'` on a test-held advisory lock. The holder then takes the last slot and
+commits; the released peer must be refused with no error and the count must stay at the limit, and the gate's own log must show the peer was shown the row with capacity (`seen_count = limit-1`, a version that
+existed only before the holder's commit). **Production code is unchanged.** Two further mutants prove the test can fail: `norecheck` (the row lock removed, and with it the re-check) and `nopolicy` (the gate can never
+be called, so the interleave is not forced and the test must say so). The gate now runs six mutants (`consume_contention_selftest.sh`); the `consume-contention-repeat` workflow ran **both tests 50 times each: 50 passed,
+0 failed, 100 evidence lines** ([43633871146](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43633871146)); `real-infra` with the six-mutant self-test: [43633823232](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43633823232).
+What the test does *not* assert: that the gate was called a second time with the committed version (the planner may order a user qualifier first); the capacity sighting and the refusal are asserted, the rest is logged.
+**Reopen trigger:** either test red on any runner, a mutant surviving, or a change to the consume statement's locking.
 
 **Registered:** 2026-11-13, from a red CI run that went green on a re-run of the *same commit*. Nothing about the behaviour under test was wrong; the test's
 proof-of-concurrency assertion was non-deterministic.

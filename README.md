@@ -92,7 +92,7 @@ Fifteen gates run on every push, each catching a specific class of drift. Six of
 | `test_enumeration` | a test package or gate script exists that nothing runs (self-tested) |
 | `image_pins` | any image the repo pulls is a floating tag or unpinned by digest (self-tested) |
 | `dns_search_domain` | the From-gate's verdicts change under a `resolv.conf` search domain (self-tested) |
-| `consume_contention` | the daily-limit ceiling test stops FORCING contention (a consume parked on the last slot, peers refused while capacity remains), or any of four mutants — SKIP LOCKED removed, consume serialised, ceiling removed, gate disarmed — stops turning it red (self-tested) |
+| `consume_contention` | the daily-limit ceiling stops being defended under FORCED contention on BOTH paths a peer can be refused by — a consume parked on the last slot with peers refused while capacity remains, and a peer whose snapshot predates the holder's commit refused by the MVCC re-check — or any of six mutants — SKIP LOCKED removed, consume serialised, ceiling removed, gate disarmed, row lock (and re-check) removed, MVCC gate disarmed — stops turning its test red (self-tested) |
 | `user_copy_ledger` | a string a user reads is not in `user-copy-strings.txt` and `user-facing-copy.md`, a ledger row has no code site, or a prose literal in a copy-rendering file carries no `// copy-ledger:` marker (self-tested; it does NOT check that a row's evidence is true) |
 | `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
 | `postgres_durability` | the default dev Postgres is RAM-backed (the RAM one is opt-in) |
