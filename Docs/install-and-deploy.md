@@ -1294,7 +1294,7 @@ Those belong to the first real-provider smoke test and the pilot. Local testing 
 
 *Markers: ✅ verified · ⏳ not yet signed off.* This is the sign-off a **person** records after running the acceptance sequence above on their own machine, so the repository
 does not pre-fill it: every line is ⏳ until you have run the stage that proves it and replace the marker with ✅ (and the date). What CI proves on every build — the
-real-infra harness (100 passed, 0 failed on the runner build of 2026-11-14) and the 15 gates with their 7 self-tests — is the evidence behind most of these lines; it is
+real-infra harness (101 passed, 0 failed on the runner build of 2026-11-14) and the 15 gates with their 7 self-tests — is the evidence behind most of these lines; it is
 not a substitute for your own record, and the last line is a *state* to confirm, not a result.
 
 - ⏳ Full harness green from a clean slate, zero skips

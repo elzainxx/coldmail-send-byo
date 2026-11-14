@@ -2,7 +2,7 @@
 
 The module is built, closed and green on the GitHub runner (verdict **GO for a pilot**; [`architecture.md`](./architecture.md#build-status-and-the-two-ceilings)).
 Everything below is a **going-live confirmation or operator action**, not a build blocker: the module is implemented and proven in the real-infra harness
-(`scripts/dev.sh test`; 100 passed, 0 failed on the runner build of 2026-11-14) without any of it. These steps become mandatory the moment the module points at a real
+(`scripts/dev.sh test`; 101 passed, 0 failed on the runner build of 2026-11-14) without any of it. These steps become mandatory the moment the module points at a real
 platform database and starts sending real mail. Nothing here is code to write; each item is a setup step, a coordination point, or a decision a person makes.
 
 Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-coordination half) and `Docs/history/open-decisions.md` (G1-G5, P9-A, S8, S15) are the
