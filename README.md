@@ -81,7 +81,7 @@ Tests run against real infrastructure — real Postgres, a real Control↔worker
 mock-the-worker tests; that is a hard rule, not a preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite (100 assertions on the last runner
 build); the workflow is `.github/workflows/real-infra.yml`.
 
-Thirteen gates run on every push, each catching a specific class of drift. Four of them (marked) have a paired self-test that proves the gate goes red when its property is broken on purpose:
+Fourteen gates run on every push, each catching a specific class of drift. Five of them (marked) have a paired self-test that proves the gate goes red when its property is broken on purpose:
 
 | Gate | Fails when |
 |---|---|
@@ -92,6 +92,7 @@ Thirteen gates run on every push, each catching a specific class of drift. Four 
 | `test_enumeration` | a test package or gate script exists that nothing runs (self-tested) |
 | `image_pins` | any image the repo pulls is a floating tag or unpinned by digest (self-tested) |
 | `dns_search_domain` | the From-gate's verdicts change under a `resolv.conf` search domain (self-tested) |
+| `consume_contention` | the daily-limit ceiling test stops FORCING contention (a consume parked on the last slot, peers refused while capacity remains), or any of four mutants — SKIP LOCKED removed, consume serialised, ceiling removed, gate disarmed — stops turning it red (self-tested) |
 | `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
 | `postgres_durability` | the default dev Postgres is RAM-backed (the RAM one is opt-in) |
 | `secret_ownership` | a dev key is readable by anyone but its container uid, or is not mode 600 |
@@ -99,4 +100,4 @@ Thirteen gates run on every push, each catching a specific class of drift. Four 
 | `dsn_scrub_wiring` | a driver call site returns an error without scrubbing the DSN out of it |
 | `user_output_scrub` | `jobs.last_smtp_response` gains a reader outside its single accessor, `jobs.last_error_message` gains a reader in `platformapi/`, or `workerproto.Report.SMTPResponse` gains an unledgered consumer |
 
-(The fifth self-test, `go_suite_selftest`, proves the harness itself records a failing Go package as FAILED.) Run any of them directly: `bash tests/harness/checks/<name>.sh`.
+(The sixth self-test, `go_suite_selftest`, proves the harness itself records a failing Go package as FAILED.) Run any of them directly: `bash tests/harness/checks/<name>.sh`.

@@ -449,12 +449,12 @@ flipping traffic on can confirm, because each is about *their* deployment.
 
 - ⏳ `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- ✅ All 13 gates and their 5 self-tests (18 scripts in `tests/harness/checks/`) are green. They are enumerated by name in the `run:` steps of
+- ✅ All 14 gates and their 6 self-tests (20 scripts in `tests/harness/checks/`) are green. They are enumerated by name in the `run:` steps of
       `.github/workflows/real-infra.yml`, and `test_enumeration` fails if a script exists that the workflow does not run, so this line cannot drift from the
       directory the way earlier counts did. Green on the GitHub runner at the last push (2026-11-09); re-confirm after any change you make.
-      The 13: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `drain_grace`,
-      `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`. The 5 self-tests: `config_consumption_selftest`,
-      `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`.
+      The 14: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `consume_contention`, `drain_grace`,
+      `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`. The 6 self-tests: `config_consumption_selftest`,
+      `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`, `consume_contention_selftest`.
 - ⏳ The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
       you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
       wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev

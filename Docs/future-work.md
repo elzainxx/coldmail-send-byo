@@ -890,10 +890,23 @@ unledgered string and requires red both times. It must be wired into `real-infra
 
 ---
 
-### FW-M3-22 — `TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes` can fail its own anti-vacuity guard on a fast runner
+### FW-M3-22 — `TestAccountConsume_NeverExceedsDailyLimit_ConcurrentLanes` failed its own anti-vacuity guard on a fast runner — **FIXED 2026-11-14**
+
+**Fixed 2026-11-14.** The test no longer *hopes* its workers contend; it builds the contention (`consume_contention_test.go`: one slot left, one consume parked on a
+test-held advisory-lock gate while it holds that slot — proven parked via a `pg_stat_activity` scoped by database, query fragment and `wait_event` — and the other seven
+workers released against it, all required to be refused while `daily_sent_count` is still `limit-1`, so a refusal can only be contention and never exhaustion; then the
+holder completes and capacity is gone for everyone). The two scheduling-dependent assertions ("more than one worker succeeded", "the sampler saw two backends active") are now
+logged observations; every invariant (exactly 50, none after the limit, no `23514`) is still asserted. **Proof, all on the GitHub runner:**
+the gate `tests/harness/checks/consume_contention.sh` and its four mutants (`noskip` — SKIP LOCKED removed; `mutex` — consume serialised; `noceiling` — limit and paused
+predicates removed; `nogate` — the gate trigger disarmed) each go red with their own signature (`consume_contention_selftest.sh`; run
+[43593853877](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43593853877), harness 100/0); and the `consume-contention-repeat` workflow ran the test **50 times, 50 passed,
+0 failed, 50 forced-contention evidence lines** ([43593853940](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43593853940)). Module 2's copy of the test was fixed the same way.
+**What stays unforced, said plainly:** the MVCC re-check path (a peer whose statement snapshot predates the holder's commit but whose scan follows it) cannot be driven from outside
+the statement — under SKIP LOCKED a peer never waits between snapshot and scan — so the volume phase still exercises it by volume and asserts its invariants, but not its overlap.
+**Reopen trigger:** this test red on any runner, or a mutant surviving.
 
 **Registered:** 2026-11-13, from a red CI run that went green on a re-run of the *same commit*. Nothing about the behaviour under test was wrong; the test's
-proof-of-concurrency assertion is non-deterministic.
+proof-of-concurrency assertion was non-deterministic.
 
 **What happened.** Run [43445719147](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43445719147), head `ceb87c2` (a docs-only commit), attempt 1:
 harness **99 passed, 1 failed**; the failure was `eligibility_test.go:301` — *"only 1 worker(s) ever succeeded — concurrency was not genuinely exercised"*
@@ -908,8 +921,8 @@ win every slot of a 50-slot budget on the RAM-backed Postgres (`DEV_RAM_PG=1`, t
 workers for exactly this reason (its own comment names "the single-winner flake"); that removed the common cause, not the possibility. **This diagnosis is the
 likeliest explanation, not a proven one** — it was not reproduced locally (Docker was unavailable) and the failing attempt's per-worker counts were not logged.
 
-**Fix shape (not done — a concurrency test is not changed without its control).** Replace the statistical assertion with a deterministic one, per `CLAUDE.md` Rule 10(a):
+**Fix shape (as it was recorded; now done, see above).** Replace the statistical assertion with a deterministic one, per `CLAUDE.md` Rule 10(a):
 force the interleave, e.g. hold the first winner's transaction open until every other worker has made at least one attempt and been skipped, then release; or log the
 per-worker success counts and assert overlap through the `pg_stat_activity` sampler the test already runs. Whichever is chosen, it must keep a **paired control that goes
 red**: a mutant that serialises `accountConsume` behind one mutex (so no real overlap exists) must fail it. Do not weaken the assertion to "≥1 worker".
-**Reopen trigger:** this test red a second time on any runner, or any other test failing an anti-vacuity guard this way — promote it from deferred to a blocking fix.
+(Reopen trigger as recorded: this test red a second time on any runner.)
