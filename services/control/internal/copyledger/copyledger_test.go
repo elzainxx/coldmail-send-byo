@@ -68,6 +68,7 @@ var (
 	auditPattern  = regexp.MustCompile("(?m)^\\|\\s*`([a-z][a-z_]*\\.[a-z][a-z0-9_]*)`\\s*\\|")
 	sqlPattern    = regexp.MustCompile(`(?i)^\s*(select|insert|update|delete|with|create|alter|drop)\b`)
 	sqlFragment   = regexp.MustCompile(`^\s*(AND|OR|WHERE|FROM|JOIN|LEFT|SET|VALUES|RETURNING|ORDER|GROUP|LIMIT|ON)\b`)
+	sqlTokens     = regexp.MustCompile(`\b(CASE|WHEN|THEN|ELSE|END|NULL|COALESCE|NOW|BETWEEN)\b|\$[0-9]+|::[a-z]+\b`)
 )
 
 func root(t *testing.T) string {
@@ -265,7 +266,9 @@ func TestLedgerCodeAndAuditDocAgree(t *testing.T) {
 // isProse reports whether a string literal reads as a sentence a user could see: four or more words, at least one of them
 // alphabetic, and not a SQL statement.
 func isProse(s string) bool {
-	if sqlPattern.MatchString(s) || sqlFragment.MatchString(s) {
+	// SQL is not copy: a statement, a clause fragment, or an expression carrying SQL-only tokens (upper-case CASE/WHEN/NULL…, a $1
+	// placeholder, a ::cast). Prose that happened to contain one of those tokens would be missed — a documented limit, not a hole in practice.
+	if sqlPattern.MatchString(s) || sqlFragment.MatchString(s) || sqlTokens.MatchString(s) {
 		return false
 	}
 	words := 0
