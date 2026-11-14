@@ -884,7 +884,7 @@ deleted, placeholder evidence) and requires the gate to go red for each with tha
 **What it found on its first run.** Two fixed strings the 2026-08 audit never covered: `platformapi/account_events.go` returns `account_events.reason` to the user verbatim, and the
 credential and alignment-acknowledging `PATCH` handlers write `"from-alignment warning acknowledged on the stored verdict (no address change)"` and `"auth_failure quarantine
 auto-cleared by credential update"` there (in `platformapi/account_update.go` and its break-glass twin `adminapi/account_update.go`). They are now a fourth surface, `account_events`, with two
-ledger rows and two PASS verdicts in `user-facing-copy.md` §2.4. **The verdicts are mine and are a human judgment the ruling reserves for the owner — read them.**
+ledger rows and two PASS verdicts in `user-facing-copy.md` §2.4. **The verdicts were first written by the agent that built the gate; the owner reviewed both and accepted them (ruling 2026-11-14, recorded in `user-facing-copy.md` §2.4).**
 
 **What it cannot do, per the ruling:** check that a row's `evidence_it_asserts` is *true*. And its list of files that render copy (`copySites` in `copyledger_test.go`) is curated: a NEW file
 that renders copy has to be added to it, and nothing discovers that on its own. Operator-written free text (an admin's `reason`) is not a fixed string and cannot be enumerated.

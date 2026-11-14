@@ -383,7 +383,7 @@ approval changed none of it.
 |---|---|---|
 | M3-P8-OD-1 | The future-work merge format | Module 2's section taxonomy + module 3's per-entry schema for new/touched entries, as `### FW-M3-N` subsections. State the mixing rule in the header |
 | M3-P8-OD-2 | The interface inventory's organising axis | Module 2's format exactly (all nine conventions); change **only** the axis to auth domain → resource, with `Phase` as a column |
-| M3-P8-OD-3 | Copy ledger as a blocking gate or a reviewed table? | Gate, scoped to what it can prove — every string enumerated, every line naming its evidence. The honesty column stays human and the gate's doc says so. **Built 2026-11-14** (FW-M3-21): `user_copy_ledger` + its self-test, in CI |
+| M3-P8-OD-3 | Copy ledger as a blocking gate or a reviewed table? | Gate, scoped to what it can prove — every string enumerated, every line naming its evidence. The honesty column stays human and the gate's doc says so. **Built 2026-11-14** (FW-M3-21): `user_copy_ledger` + its self-test, in CI. The two verdicts the gate's first run added (surface `account_events`) were accepted by the owner 2026-11-14 (`user-facing-copy.md` §2.4) |
 | M3-P8-OD-4 | Is Phase 8 blocked on the outstanding rulings? | Ship with the partition — **this document**. Now moot: the rulings landed, so §4.3's partition is a closed ledger rather than an `AWAITING RULING` list |
 | M3-P8-OD-5 | The master key cannot be rotated as an operator action | State it, do not solve it. On the go-live checklist as a signed accepted risk, not only `FW-M3-4` |
 | M3-P8-OD-6 | Machine-check `Docs/README.md`'s doc↔gate table? | Register as `FW-M3-6`, do not build in Phase 8. Phase 8 must at minimum update the table in the same commit |

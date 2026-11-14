@@ -131,6 +131,17 @@ writes them:
 gate found it; whether an operator-written `reason` (the free text of an admin action) is also user-facing
 copy is not decided here — it is not a fixed string, so the ledger cannot enumerate it.
 
+**Owner's ruling, 2026-11-14: both PASS verdicts accepted.** The verdicts above were first written by the
+agent that built the gate; the ruling that reserves honesty verdicts for a human (M3-P8-OD-3) is now
+satisfied for these two rows. The strings the owner approved, verbatim as the code writes them:
+
+- `account_events.alignment_ack_reason` — `from-alignment warning acknowledged on the stored verdict (no address change)`
+- `account_events.credential_clear_note` — `auth_failure quarantine auto-cleared by credential update`
+
+(`credential_clear_note` is appended after `"; "` when the same `PATCH` also changed the From address.)
+Nothing about this ruling is checked by the gate — the gate keeps proving the ledger is complete and
+coherent; the truth of a verdict stays a human judgment, and these two now have one on record.
+
 ## 3. Summary
 
 | Surface | Strings audited | PASS | Flagged for future-work.md |
