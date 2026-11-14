@@ -229,6 +229,20 @@ jobs:
         if: always()
         run: bash tests/harness/checks/dns_search_domain_selftest.sh
 
+      # FW-M3-22. The daily-limit ceiling is defended under FORCED contention: a consume parked on a test-held gate while it
+      # holds the last slot (observed in pg_stat_activity), seven peers that must all be refused with capacity visibly
+      # remaining. This is the real code, once, with the evidence line required. The 50-run proof is the manually-dispatched
+      # consume-contention-repeat workflow.
+      - name: Consume contention — the daily-limit ceiling under FORCED contention (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/consume_contention.sh
+
+      # Its PAIRED CONTROLS: four mutants (SKIP LOCKED removed, consume serialised, ceiling removed, gate disarmed) must each
+      # turn the same test red with their own signature. Keeps "the test reds without the property" true on every run.
+      - name: Consume contention SELF-TEST — four mutants each go RED (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/consume_contention_selftest.sh
+
       - name: Shutdown gate — SIGTERM grace clears shutdown_drain_timeout_sec (BLOCKING)
         if: always()
         run: bash tests/harness/checks/drain_grace.sh
