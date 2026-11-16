@@ -283,7 +283,7 @@ claiming "at fork" is a claim to check, not a comment to trust.
 
 | Area | Paths | Inherited state at fork | Divergence observed (module 3) | Module-2 provenance |
 |---|---|---|---|---|
-| Worker service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/worker/` | Verbatim (Gate B: identity rename only) | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below; no longer verbatim | `module-2/phase-6-pacing-and-dead-worker-detection.md`, `module-2/phase-7-runtime-hardening.md` |
+| Worker service (SMTP session, STARTTLS-before-AUTH, memory-only creds + zeroize, outcome buffering) | `services/worker/` | Verbatim (Gate B: identity rename only) | **Phase 7, in `smtp.js`** — see the two corrected forecast rows below; no longer verbatim; plus the P2 close-out's reply-queue fix (entry 9 below) | `module-2/phase-6-pacing-and-dead-worker-detection.md`, `module-2/phase-7-runtime-hardening.md` |
 | Content variation (12 toggles, all-off byte-identical) | `services/worker/src/variation*.js`, `tests/harness/phase8_variation.sh` | Verbatim | none — build plan: inherited whole; still verbatim | `module-2/phase-8-content-variation.md` |
 | Worker↔Control channel (mTLS, register/heartbeat, send stream, persist-ack) | `internal/workerlink/`, `internal/workerproto/`, `src/workerlink/` | Verbatim | none planned; still verbatim | `module-2/phase-4-dispatcher-and-routing.md`, ADR-0008 |
 | Credential encryption (AES-256-GCM, AAD-bound, key-id label check) | `internal/credential/`, `internal/kms/` | Verbatim | Phase 3 adds the break-glass read path around this code (`internal/adminapi`), the encryption primitives themselves unchanged | `module-2/phase-2-account-management.md` |
@@ -414,6 +414,23 @@ not have to re-derive it.
    in module 2's own `tests/harness/load_e11.sh` (same missing capture/restore). **Present,
    unfixed in module 2.** Module 3 fixes it: `ORIG_CONCURRENCY` is captured before the first ramp
    step and restored in `cleanup()` alongside the worker-container teardown.
+
+9. **`SmtpConn` dropped a reply that arrived before `read()` had registered its waiter.** In
+   `services/worker/src/smtp.js`, `#pushLine` handed a completed reply to `this.waiters.shift()` and
+   discarded it when there was none. Every command is `await conn.write(line)` then `conn.read()`, so a
+   server that answers before the write's continuation has run `read()` made the session sit until its
+   per-operation timeout (30 s): ~1 session in 10 against a fast server, 0 of 240 at 8 ms reply
+   latency — which is why real servers rarely hit it. Found by the E2 run during the P2 close-out
+   (confirmed by reading the code). **Present, unfixed in module 2** (the file is inherited verbatim
+   there) — a back-port candidate, and unlike entries 4 and 8 it is not closed by module 2's own threat
+   model: it is a latent stall, a timeout and a requeue, never a lost or duplicated send. Module 3 fixes
+   it: a complete reply with no waiter is queued (`replies`) and `read()` takes from the queue first,
+   FIFO, even if the socket has since closed (only an empty queue on a closed connection rejects
+   `connection_closed`); the waiter path is unchanged. `SmtpConn` is now exported solely so
+   `test/smtp_reply_queue.test.mjs` can drive it over a real socket; that file is the paired control
+   (four of its six tests are red on the old reader, the two that pin unchanged behavior are green on
+   both). The worker unit suite's only floor is "at least one test ran and none failed"
+   (`run.sh` SUITE 7); no count was raised.
 
 **Also tracked here, not only in `future-work.md`:** `FW-M3-8`, the two Go module vulnerabilities
 with live call paths inherited from module 2's own Phase 10 R3 finding. Module 3 forks the same
