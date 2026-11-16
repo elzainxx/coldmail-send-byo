@@ -265,7 +265,13 @@ from a previous response's next_cursor>&page_size=<int>`. `page_size` defaults t
 clamps to a max of **200**; a missing, zero, negative, or non-numeric `page_size` silently falls
 back to the default (never a `400`). `cursor` is opaque (base64) — pass back exactly what
 `next_cursor` returned; a malformed `cursor` returns `400 validation_failed`. `next_cursor:null`
-means the last page.
+means the last page. **The cursor anchors on the last item RETURNED** (the P2 close-out, owner ruling
+C1): the query reads `page_size + 1` rows, and the extra one only says "there is another page" — it is
+trimmed and never anchors the cursor. Until that fix the cursor was built from the extra row, so the
+next page, which starts strictly after it, skipped that item: one item lost per page boundary (M2-G5,
+found in module 2 and inherited by this fork). A walk of any `page_size` now returns every item exactly
+once, in `(created_at, id)` order — asserted for every size from 1 up by a multi-page test with exact
+set equality and a control that reproduces the old construction and must be caught.
 
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
@@ -442,6 +448,45 @@ remain, on two auth domains, over the same table (module 2 §4.5's separation, r
 | POST | `/v1/send-byo/accounts/bulk` | M3-Phase 3 | create N accounts in one request — body `{user_id, accounts: [{smtp_host, smtp_port?, smtp_username, smtp_secret, from_address, from_name?, daily_limit?}, ...]}`. Verification is **PACED, not parallel** (§4.1, M3-P3-OD-7: strictly serial across the whole batch — `bulk_add_verify_interval_ms` between rows — never per-`smtp_host` in V1): "20 simultaneous auth attempts to one provider looks like credential stuffing." A batch over `bulk_add_max_rows` (M3-P3-OD-8/19) is rejected WHOLE with `422 unprocessable` (`batch_too_large`) BEFORE any row is processed — never partially processed then cut off. Otherwise returns `200` with `{request_id, results: [{row, status: "created"\|"rejected", account_id?, verification?, code?, smtp_response?, details?}, ...]}` — `row` is the 1-based input index. **No transaction spans the batch**: an earlier row's rejection (validation, duplicate, cap) never rolls back a later row's create, and the account cap (§5) is evaluated per row as the batch proceeds, so a batch that crosses the cap mid-way adds rows up to it and rejects the rest with `account_cap_reached`. A row that is created but fails verification is `status: "created"`, `verification: "failed"` — §2.5's same two-orthogonal-facts rule the single-create route uses |
 | DELETE | `/v1/send-byo/accounts/{id}` | M3-Phase 3 | **soft delete** — scoped to `?user_id=<uuid>`, returns `204`. Stamps `deleted_at`/`deleted_by`/`purge_after` (the last computed from the live `account_retention_window_sec`, AT DELETE TIME — a later config change never retroactively moves an existing account's purge date); the row is RETAINED through the window, never removed immediately. Idempotent: a second delete on an already-deleted (or nonexistent) id returns the SAME `404 not_found` a genuinely nonexistent id would — no disclosure of which case it was. A deleted account is IMMEDIATELY unusable through every other verb on this surface (same `404`) and is excluded from dispatch selection (§6.2's consolidated eligibility predicate). The operator's `DELETE /v1/admin/accounts/{id}` remains a **hard** delete on a separate surface (§1.2's two-verbs-two-surfaces split) |
 
+**A suspended user's SMTP-touching routes are refused** (the P2 close-out, owner ruling C3). Four routes
+on this surface open an SMTP session through a worker on the caller's behalf: `POST
+/v1/send-byo/accounts` (verify-on-add), `POST /v1/send-byo/accounts/bulk` (the same, once per row),
+`POST /v1/send-byo/accounts/{id}/test` and `POST /v1/send-byo/accounts/{id}/test-send`. Until this ruling
+a suspension stopped only the dispatcher claiming queued jobs and `POST /v1/run`; these four still
+drove traffic from the operator's worker IPs. While the user is suspended each is refused **before
+anything else it does** — before the From-gate DNS lookup, before rate-limit accounting, before any
+row write, before any worker call — with `409 conflict`, the message **`This action is not available
+for your account right now.`** exactly, and no `details[]`. Like `/v1/run`'s `409` for a suspended
+user it does not say why: the body never contains the words suspend, suspended or suspension (asserted
+for every refusal), and the internal reason `user_suspended` is an `internalReason` — logged against
+the `request_id`, never serialized (the two-vocabulary rule). The same request succeeds once the user
+is reinstated, and no other tenant is affected. Two decisions are recorded here because the ruling
+asked for them: **account create while suspended is refused** (not stored `unverified`) — the existing
+code *could* store the row with no SMTP traffic, but that would hand the user, on reinstatement, an
+account that is silently unroutable until they discover they must press Test, and would let a suspended
+user keep growing their account set; refusing is the safer answer. And **bulk-add is refused whole, at
+the request level**, never as a per-row `rejected` (a row's `code` carries an internal reason string,
+which would name the mechanism). The same predicate is enforced a second time in the dispatch layer, at
+`Verifier.Verify` and `Dispatcher.SendTest` — the only two places that hand a worker an SMTP session
+outside the dispatch loop — so a suspend that lands between a handler's check and the worker call is
+still refused (and answers the same `409`), and so is the operator's break-glass `POST
+/v1/admin/accounts`: for a suspended user it creates the row but opens no SMTP connection, leaving the
+account `unverified`. Everything that opens no SMTP connection (list, read, `PATCH`, the lifecycle
+transitions, delete, settings, usage, notifications, `quote`, `report`) is NOT gated. See
+[`operator-runbook.md`](./operator-runbook.md) for what suspension does and does not stop.
+
+**Cursor precision — `accounts.list` and `accounts.events`, on both domains (FW-M3-15, closed by the P2
+close-out, owner ruling C1).** The `created_at` shown on an item is second-precision, and a cursor
+built from it is strictly earlier than the row it points at whenever the row's real `created_at` has a
+fractional part: the keyset predicate `(created_at, id) > (cursor_ts, cursor_id)` then re-matched every
+row of that second at or before the boundary — a duplicate on the next page and, with a page smaller
+than the number of rows in the second, a page made entirely of rows the caller already had, so the
+cursor never advanced and everything after that second was unreachable (FW-M3-15 recorded only "a
+duplicate, not a skip"; the non-advancing case is a skip). `next_cursor` is now built from a trailing
+**microsecond** projection of the last row returned (a bulk add writes a whole batch in one second, so
+this is not rare). The cursor stays opaque; clients are unaffected. `notifications.list` was built this
+way from the start. `GET /v1/admin/config` returns every key and is not paginated.
+
 **Verify-on-add's external code vocabulary** (§2.3 of `Docs/history/phase-3-user-owned-accounts.md`,
 `verification.code` on a `"failed"` state) — additive-only forever (Rule 5), and deliberately
 DISTINCT from the internal `error_class` enum (`classifyReport`'s six values are too coarse for a
@@ -604,7 +649,7 @@ internal reason, SQL, SQLSTATE, credential, ciphertext, key-id, or internal host
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
 | POST | `/v1/admin/accounts` | Phase 2 | create an account (encrypt-on-write credential intake) |
-| GET | `/v1/admin/accounts` | Phase 2 | list (cursor paginated; filters `paused`/`quarantined`/`disabled`/`user_id`) |
+| GET | `/v1/admin/accounts` | Phase 2 | list (cursor paginated on `(created_at, id)`; filters `paused`/`quarantined`/`disabled`/`user_id`). The cursor carries the last row returned at **microsecond** precision, never the second-precision `created_at` shown on the item — see "Cursor precision" under the platform account routes |
 | GET | `/v1/admin/accounts/{id}` | Phase 2 | read one |
 | PATCH | `/v1/admin/accounts/{id}` | Phase 2 | update (omit `smtp_secret` = unchanged, structural) |
 | DELETE | `/v1/admin/accounts/{id}` | Phase 2 | hard delete → `204`. The audit row survives: `send_byo.job_events` and `send_byo.account_events` rows for the account are KEPT, with their `account_id` set to NULL by the FK and every other column byte-unchanged (`send_byo_0024`, ADR-0012). Deleting a **worker** behaves the same way (`box_id` → NULL). *Historical note: from Phase 1 through Phase 10 this returned `500` for any account that had ever been assigned a job — `job_events`' two `ON DELETE SET NULL` FKs were blocked by its unconditional append-only trigger. Fixed 2026-07-29 by `send_byo_0024`; nothing was ever dropped or corrupted, the delete simply aborted atomically. If you see a `500` here, check that migration `0024` is applied* |
@@ -650,11 +695,72 @@ per-user concept at all). One mechanism, two triggers (`suspend_reason` = `'oper
 |---|---|---|---|
 | POST | `/v1/admin/users/{id}/suspend` | M3-Phase 5 | Halts dispatch losslessly for this user (jobs stay `queued`, nothing fails, the same rows resume on reinstate) and PAUSES the expiry clock of every one of the user's live campaigns (`clock_paused_at = NOW()`). `422 unprocessable` if already suspended |
 | POST | `/v1/admin/users/{id}/unsuspend` | M3-Phase 5 | Reinstates: pushes each paused campaign's `expires_at` FORWARD by exactly the suspended interval, accumulates `paused_total_sec`, clears `clock_paused_at`. `422 unprocessable` if not suspended |
+| GET | `/v1/admin/users/{id}/suspension` | P2 close-out (owner ruling C2) | **Read** the user's suspension state — see "Reading a user's suspension state" below. Read-only, no body, no audit row, not rate limited |
 
-Both refuse cleanly (no audit row) on their own precondition, matching the account-lifecycle
+Both POSTs refuse cleanly (no audit row) on their own precondition, matching the account-lifecycle
 transitions' discipline above. `POST /v1/run` (Domain A) refuses outright for a suspended user
 (`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not
 losslessness, it is a growing debt against the queue cap.
+
+**What suspension means — the halt semantics (owner-accepted as they are; the P2 close-out, ruling
+C4).** *Suspension means NO NEW CLAIMS.* It stops the dispatcher claiming the user's queued jobs
+(per user, across all campaigns and accounts) and `POST /v1/run` accepting new ones. It is **not** a
+recall of work already handed to a worker, and it is not instantaneous:
+
+- **At most `concurrency_per_user` in-flight sends finish after the call returns** (the seeded default
+  is 3; a per-user override applies). A job already `assigned` or `sending` — and one claimed in the
+  same dispatch tick as the suspend — is pushed and completes: an SMTP session that is underway cannot
+  be called back, and the outcome handler applies the worker's report regardless of suspension. Each
+  ends within `job_max_processing_time_sec` or is reclaimed; a reclaimed job requeues and is then NOT
+  re-claimed. So "nothing is sent after the halt" is **false** for up to that many in-flight sends.
+- **Queued items stay queued.** Nothing is marked failed, no `job_events` row is written, the lease,
+  attempt counts and `next_attempt_at` are untouched, and campaign expiry clocks are paused in the same
+  transaction (a paused campaign never expires; a user suspended and never reinstated keeps their queue
+  indefinitely).
+- **Resume latency is up to one dispatch tick** (`dispatch_tick_interval_ms`, seeded 1000). `unsuspend`
+  does not kick the dispatcher; per-user pacing still applies after it, and a job whose
+  `next_attempt_at` elapsed during the suspension is claimable at once.
+- Suspension is invisible in `/v1/report` (queued items count as `pending`), `/v1/quote` and
+  `/v1/admin/health`; observe it through this read route.
+- Every route that would open an SMTP session for the user is refused too (see the Domain A note under
+  "Accounts": test-send, the test button, account create / verify-on-add, bulk-add).
+
+**Reading a user's suspension state** (`GET /v1/admin/users/{id}/suspension`, the P2 close-out, owner
+ruling C2 — the platform's reconcile loop reads this back instead of treating a `422` as
+confirmation). Response `200`, exactly these five keys, always present:
+
+```json
+{"user_id": "<uuid>", "suspended": true, "suspended_at": "2026-11-17T09:30:00.123456Z", "reinstated_at": null, "version": 1}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `user_id` | string | the id as the caller sent it (like the sibling routes, it is echoed as sent) |
+| `suspended` | bool | whether the user is suspended right now |
+| `suspended_at` | RFC 3339 (nano, UTC) or `null` | when the most recent suspension BEGAN; kept after a reinstate (so a not-suspended user who was once suspended still carries it); `null` if never suspended |
+| `reinstated_at` | RFC 3339 (nano, UTC) or `null` | when the most recent reinstate happened; kept by a later re-suspend; `null` if never reinstated |
+| `version` | integer | the **monotonic counter of suspension-state transitions** for this user (below) |
+
+`version` counts transitions: the first suspend writes `1`, the unsuspend after it `2`, a re-suspend
+`3`, and so on. A refused call (`422` — already suspended / not suspended) changes no flag and does
+**not** move it. It is incremented by the suspend and unsuspend handlers in the **same single statement**
+that flips the flag (`send_byo_0054`), so there is no instant at which a reader can see the new flag with
+the old version or the reverse: **a read that follows a write can never show an older version**, and
+the version never decreases. Two concurrent suspend calls resolve to exactly one `200` and one `422`
+and the version moves by exactly one. **A user with no row — never suspended — reads `suspended: false`,
+both timestamps `null`, `version: 0`** (a known user in good standing is a `200`, not a `404`; a read
+creates no row). The response carries **no reason text and no operator identity**: the audit stays
+unreadable by design, and the stored reason is only ever the enum `operator`.
+
+Errors, the same envelope and codes as the sibling routes: a malformed id is `404 not_found` (an id
+that cannot name a user names none), an **unknown** user is `404 not_found`, a wrong or missing operator
+key is `401 unauthenticated`, a wrong verb is `405 method_not_allowed` (decided before auth, as for every
+admin path). The route takes no body and is not rate limited, like the surface it sits on.
+
+**What the two POST routes still do not tell you** (unchanged, and why this route exists): they answer
+`200` on a change and `422` on "already in that state", `unsuspend` cannot distinguish an unknown user
+from a not-suspended one, and an operator-placed suspension and a platform-placed one are
+indistinguishable (`unsuspend` clears any). Read the state here, then act.
 
 A refused transition is `422 unprocessable` with **no** `account_events` row written (the
 precondition is checked before the write). The refusal is diagnosable without a log dive: the

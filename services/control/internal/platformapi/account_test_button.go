@@ -3,6 +3,7 @@ package platformapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,6 +58,16 @@ func (s *Server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
+
+	// The P2 close-out (owner ruling C3): a suspended user's test button is refused BEFORE anything
+	// else this handler does — before the rate-limit accounting, before the From-gate re-check's DNS
+	// lookup and its write, and long before the worker call that opens an SMTP session. Opaque 409
+	// (suspension_gate.go). Note the §3.4 availability-while-quarantined rule is untouched: this gates
+	// on the USER's suspension, never on the account's quarantine.
+	if e := s.suspendedRefusal(ctx, userID); e != nil {
+		s.fail(w, r, e)
+		return
+	}
 
 	// §3.4's own predicate: user_id + not-deleted only. Reuses the SAME tenant-scoped existence
 	// check every other verb uses (getAccount), which already excludes soft-deleted rows and
@@ -126,6 +137,14 @@ func (s *Server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 			opTimeout = 0
 		}
 		result, err := s.verifier.Verify(ctx, id, userID, opTimeout)
+		if errors.Is(err, ErrUserSuspended) {
+			// A suspend that landed between the pre-check above and the worker call: dispatch refused
+			// at Verifier.Verify (dispatch/suspension_gate.go), so no SMTP session was opened. The
+			// same opaque 409 as the pre-check. (The From-gate verdict this request already computed
+			// stays persisted — DNS only, no SMTP — which is the narrow race window's one residue.)
+			s.fail(w, r, userSuspendedError())
+			return
+		}
 		if err != nil {
 			verification = map[string]any{"state": "unavailable", "code": "verify_error"}
 		} else {

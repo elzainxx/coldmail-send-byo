@@ -132,7 +132,7 @@ digest) are landed on top of them. The numbers, each of which is checked by some
 | Fact | Value | Checked by |
 |---|---|---|
 | Config keys seeded in `send_byo.config` | 89 | `config_drift` (manifest = live seeds = `config-reference.md`) |
-| Migrations | 54 up files, `send_byo_0001` … `send_byo_0053` | `migration_lint` |
+| Migrations | 55 up files, `send_byo_0001` … `send_byo_0054` | `migration_lint` |
 | Real-infra harness | 100 assertions, 0 failing on the last runner build | `bash scripts/dev.sh test`, step 'Real-infra behavioral harness' in `.github/workflows/real-infra.yml` |
 | Gate scripts | 15 gates + 7 self-tests (the paired controls) in `tests/harness/checks/`, all run by `real-infra.yml` | `test_enumeration` (every gate script is wired; every test package is run) |
 | Images | every image the repo pulls is pinned by digest; Node 24 / Alpine 3.24 / Postgres 16 / Mailpit 1.33.1 / CoreDNS 1.15.0 | `image_pins` |

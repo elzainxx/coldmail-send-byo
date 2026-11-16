@@ -25,6 +25,14 @@ func (s *Server) handleAccountTestSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
+	// The P2 close-out (owner ruling C3): a suspended user's test-send is refused BEFORE the account
+	// read, the worker lookup and the consume — it is a real send from the operator's worker IPs, the
+	// thing a suspension exists to stop. Opaque 409 (suspension_gate.go): no mention of why.
+	if e := s.suspendedRefusal(ctx, userID); e != nil {
+		s.fail(w, r, e)
+		return
+	}
+
 	// Tenant-scoped existence check — same predicate every other verb uses (excludes soft-deleted,
 	// enforces tenancy). We need the account's own from_address for M3-P3-OD-5's restriction.
 	acct, err := getAccount(ctx, s.db, id, userID)
@@ -44,6 +52,12 @@ func (s *Server) handleAccountTestSend(w http.ResponseWriter, r *http.Request) {
 
 	jobID, err := s.testSender.SendTest(ctx, userID, id, acct.FromAddress)
 	if err != nil {
+		// A suspend that landed between the pre-check above and the worker call: dispatch refused at
+		// SendTest (dispatch/suspension_gate.go). Same opaque answer as the pre-check.
+		if errors.Is(err, ErrUserSuspended) {
+			s.fail(w, r, userSuspendedError())
+			return
+		}
 		if errors.Is(err, ErrAccountIneligible) {
 			s.fail(w, r, newErr(codeConflict, "account_not_eligible_for_test_send"))
 			return

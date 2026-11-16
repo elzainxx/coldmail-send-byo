@@ -59,6 +59,7 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 |---|---|
 | `queue.queued` is large and `dispatch.sends_last_window` is 0 | [Everything is queued and nothing is sending](#everything-is-queued-and-nothing-is-sending) |
 | `queue.waiting_for_capacity` > 0 | [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity) |
+| One user's items are `pending` and not moving while everyone else's are, or a user cannot add an account / press Test / test-send | [A user is suspended: what that stops, what it does not](#a-user-is-suspended-what-that-stops-what-it-does-not) |
 | `accounts.quarantined` > 0 | [An account got quarantined](#an-account-got-quarantined) |
 | `workers.stale` > 0, or `boxes.active` is 0 | [A worker died](#a-worker-died) |
 | `active_conditions[]` is non-empty | [Alert conditions](#alert-conditions--triage) |
@@ -473,6 +474,58 @@ A live fault therefore means it arrived by some **other** path: a direct SQL `UP
 `send_byo.config`, a restore/seed that wrote several keys at once, or a migration that seeded a bad
 value. Look there, not at the API. Both invariants, and every key's declared `value_type`, are in
 [`config-reference.md`](./config-reference.md).
+
+---
+
+## A user is suspended: what that stops, what it does not
+
+Suspending a user is the operator's per-user halt (the sibling of the global `dispatch_mode` ladder).
+Read this before you promise anyone what it does, because it is **not instantaneous and it is not a
+recall**. The exact calls and the response shape are in [`api-contract.md`](./api-contract.md)
+("per-user suspend" under Domain B).
+
+**What the halt means — accepted semantics, stated so nobody is surprised:**
+
+- **Suspension means NO NEW CLAIMS.** The dispatcher stops claiming the user's queued jobs, and
+  `POST /v1/run` refuses new ones for them.
+- **At most `concurrency_per_user` in-flight sends finish after the call returns.** A job already
+  `assigned` or `sending` — or claimed in the same dispatch tick as your suspend — is pushed and
+  completes; an SMTP session underway cannot be called back. The default is 3 per user (a per-user
+  override applies); each ends within `job_max_processing_time_sec` or is reclaimed, and a reclaimed
+  job requeues and is then *not* re-claimed. "Nothing is sent after I suspended" is **false** for up to
+  that many sends — do not tell a customer or a provider otherwise.
+- **Queued items stay queued.** Nothing is failed, no `job_events` row is written, attempt counts and
+  `next_attempt_at` are untouched, and the user's campaign expiry clocks stop (a paused campaign never
+  expires; a user suspended and never reinstated keeps their queue forever).
+- **Resume latency is up to one dispatch tick** (`dispatch_tick_interval_ms`, 1 s by default).
+  Reinstating does not kick the dispatcher. Per-user pacing still applies after it.
+- **It also refuses everything that would open an SMTP connection for them:** test-send, the account
+  Test button, adding an account (verify-on-add) and bulk-add. They get `409 conflict`, *"This action is
+  not available for your account right now."*, which does not say why — so if a user writes in
+  "I can't add an account / the Test button says unavailable", this is the first thing to check.
+
+**How to see a user's state — read it, do not infer it from a status code:**
+
+```bash
+curl -fsS "$ADMIN/v1/admin/users/$USER_ID/suspension" -H "Authorization: Bearer $KEY" | jq
+# {"user_id":"…","suspended":true,"suspended_at":"…","reinstated_at":null,"version":1}
+```
+
+`suspended` is the state right now. `version` counts transitions (suspend 1, reinstate 2, suspend
+again 3 …), moves in the same statement as the flag, and never goes down, so a caller that wrote
+a change can read it back and know it is looking at that change or a later one, never an earlier one;
+a refused call (`422`) does not move it. A user who has **never** been suspended is a `200` with
+`suspended:false` and `version:0`; an **unknown** user is a `404`. The response carries no reason and
+no operator identity — the audit trail (`account_events` rows with a NULL `account_id`) is read by SQL
+only. The two POST routes alone cannot tell you any of this: `unsuspend` answers `422` for an unknown
+user and for a not-suspended one alike, and an operator-placed suspension looks the same as the
+platform's own.
+
+**If a suspended user's queue does not resume after you reinstated them,** wait one dispatch tick
+first; then read the route above (a `suspended:true` means the reinstate did not land, and a
+`version` that did not move means nothing changed); then walk
+[Everything is queued and nothing is sending](#everything-is-queued-and-nothing-is-sending) — a
+reinstated user is an ordinary user.
 
 ---
 

@@ -4,12 +4,22 @@ package adminapi
 // controls queue depth, per-user suspension" (CLAUDE.md's design line) — this is genuinely new
 // operator surface, since module 2 had no per-user concept at all. One mechanism
 // (send_byo.user_suspensions), two triggers (`suspend_reason` = 'operator' | 'subscription_lapsed',
-// §6.1) — this route only ever writes 'operator'; a future billing integration would write
-// 'subscription_lapsed' through the SAME store function, not a second one.
+// §6.1) — this route only ever writes 'operator'. The write is the one SQL statement named
+// suspendUpsertSQL below, issued inline by handleUserSuspend: there is NO shared "store function"
+// behind it (an earlier version of this comment said a future billing integration would write
+// 'subscription_lapsed' "through the SAME store function"; no such function exists, and that text was
+// untrue). Such an integration must either reuse that statement or be a second writer that carries the
+// same `version` bump and the same already-suspended guard — the read route (user_suspension_read.go)
+// is only as honest as every writer of this table.
 //
 // M3-P1-OD-10 (RULED): suspend/reinstate events are audited in send_byo.account_events with
 // account_id = NULL and user_id = the subject — the exact shape the ruling names ("account_id
 // already nullable, carve-out already tested").
+//
+// HALT SEMANTICS (owner-accepted, documented in Docs/api-contract.md and the runbook): suspension
+// means NO NEW CLAIMS. At most concurrency_per_user in-flight sends finish after this call returns;
+// queued items stay queued; resume latency is up to one dispatch tick (unsuspend does not kick the
+// dispatcher). It is NOT a recall of a send already handed to a worker.
 
 import (
 	"context"
@@ -19,6 +29,31 @@ import (
 type suspendReq struct {
 	Reason *string `json:"reason"` // optional operator note (internal; never echoed in an error)
 }
+
+// suspendUpsertSQL is the suspend write, verbatim — named (like reinstateCampaignsSQL) so a test can
+// drive the EXACT production statement from a second connection to force a genuine interleave, rather
+// than a copy that could silently drift from it.
+//
+// `version` is written in THIS statement, not in a follow-up one: the first suspend inserts version 1
+// (the row did not exist, so 0 -> 1) and a re-suspend after a reinstate increments the stored value.
+// One statement means one atomic row change — there is no instant at which a reader sees suspended =
+// TRUE with the previous version, and a read that follows this write can never show an older one.
+// The WHERE makes an already-suspended call a zero-row no-op, so a refused (or lost-the-race) call
+// does not move the counter either.
+const suspendUpsertSQL = `INSERT INTO send_byo.user_suspensions (user_id, suspended, reason, suspended_at, updated_by, updated_at, version)
+ VALUES ($1, TRUE, 'operator', NOW(), NULL, NOW(), 1)
+ ON CONFLICT (user_id) DO UPDATE
+   SET suspended = TRUE, reason = 'operator', suspended_at = NOW(), updated_at = NOW(),
+       version = user_suspensions.version + 1
+ WHERE user_suspensions.suspended = FALSE`
+
+// unsuspendSQL is the reinstate flag write, verbatim, named for the same reason. Its `version + 1` is
+// in the same UPDATE that clears the flag, and its `suspended = TRUE` guard makes a not-suspended
+// call a zero-row no-op that leaves the counter alone.
+const unsuspendSQL = `UPDATE send_byo.user_suspensions
+    SET suspended = FALSE, reason = NULL, reinstated_at = NOW(), updated_at = NOW(),
+        version = version + 1
+  WHERE user_id = $1 AND suspended = TRUE`
 
 // reinstateCampaignsSQL is §7's self-referential reinstate UPDATE, verbatim — named so T14
 // (user_suspend_race_test.go) can drive the EXACT production statement from a second connection to
@@ -73,17 +108,12 @@ func (s *Server) handleUserSuspend(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(context.Background())
 
 	// One row per user (PRIMARY KEY user_id) — INSERT on first suspend, UPDATE on re-suspend after
-	// a prior reinstate. The precondition (refuse if already suspended) is checked via the WHERE
-	// clause's own zero-rows-affected signal on the UPDATE path; the INSERT path has no prior row
-	// to conflict with, so ON CONFLICT DO NOTHING makes a race between two concurrent first-suspend
-	// calls resolve to "one wins, one sees 0 rows," not a raw 23505.
-	tag, err := tx.Exec(ctx,
-		`INSERT INTO send_byo.user_suspensions (user_id, suspended, reason, suspended_at, updated_by, updated_at)
-		 VALUES ($1, TRUE, 'operator', NOW(), NULL, NOW())
-		 ON CONFLICT (user_id) DO UPDATE
-		   SET suspended = TRUE, reason = 'operator', suspended_at = NOW(), updated_at = NOW()
-		 WHERE user_suspensions.suspended = FALSE`,
-		userID)
+	// a prior reinstate. The precondition (refuse if already suspended) is the DO UPDATE's own WHERE
+	// clause and its zero-rows-affected signal. Two concurrent first-suspend calls therefore resolve
+	// to "one wins, one sees 0 rows," not a raw 23505: the loser's INSERT waits on the winner's
+	// uncommitted row, then takes the conflict path, where `suspended = FALSE` is already false.
+	// The same statement bumps `version` (see suspendUpsertSQL), so the counter moves only for the winner.
+	tag, err := tx.Exec(ctx, suspendUpsertSQL, userID)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "suspend_write_error: "+err.Error()))
 		return
@@ -152,10 +182,7 @@ func (s *Server) handleUserUnsuspend(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.Background())
 
-	tag, err := tx.Exec(ctx,
-		`UPDATE send_byo.user_suspensions
-		    SET suspended = FALSE, reason = NULL, reinstated_at = NOW(), updated_at = NOW()
-		  WHERE user_id = $1 AND suspended = TRUE`, userID)
+	tag, err := tx.Exec(ctx, unsuspendSQL, userID)
 	if err != nil {
 		s.fail(w, r, newErr(codeInternalError, "unsuspend_write_error: "+err.Error()))
 		return

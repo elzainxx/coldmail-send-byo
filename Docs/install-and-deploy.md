@@ -859,6 +859,25 @@ re-dispatched to a live worker. No manual requeue.
 **Rotating** a worker's token is revoke + re-provision: revoke the old, mint and seed a new one, update
 the worker's secret, restart it.
 
+### Suspending and reinstating a user
+
+The operator's per-user halt. The calls are `POST /v1/admin/users/{id}/suspend` and `.../unsuspend`
+and the read-back is `GET /v1/admin/users/{id}/suspension` (shapes in
+[`api-contract.md`](./api-contract.md), diagnosis in
+[`operator-runbook.md`](./operator-runbook.md#a-user-is-suspended-what-that-stops-what-it-does-not)).
+Three things to know before you do it in production:
+
+1. **Suspension means no new claims — it is not a recall.** At most `concurrency_per_user` in-flight
+   sends finish after the call returns; queued items stay queued (nothing fails); **resume latency is up
+   to one dispatch tick**, because reinstating does not kick the dispatcher.
+2. **It also refuses everything that opens an SMTP connection for the user** — test-send, the Test
+   button, adding an account (verify-on-add) and bulk-add — with an answer that does not say why
+   (`409 conflict`, "This action is not available for your account right now.").
+3. **Confirm by reading, not by status code.** `GET .../suspension` returns `suspended`, both
+   timestamps and a monotonic `version` (migration `0054`); a user who was never suspended reads
+   `suspended:false`, `version:0`. A `422` from the POSTs means "already in that state" and tells you
+   nothing about which state.
+
 ### Redeploying
 
 Ordinary code change, no migration:
@@ -931,6 +950,12 @@ Practical consequences:
   the schema alone.
 - Two migrators cannot race — the runner holds an advisory lock — but two *deploy pipelines* both
   restarting the Control can fight over the singleton lock. Serialize your deploys.
+- **Migration `0054`** (the suspension `version` column) is a case of exactly this asymmetry. The new
+  Control needs the column (its suspend write names it and the read route selects it), so migrate
+  first. An OLD Control running against the migrated schema keeps working — its suspend/unsuspend
+  writes name no `version`, so the column's default applies — but **a transition an old binary makes
+  does not move the counter**, so do not rely on `version` for a user whose state was changed while an
+  old Control was still serving. The route itself only exists on the new binary.
 
 ### Old workers talking to a new Control
 
@@ -1226,9 +1251,18 @@ Module 3 is multi-tenant, so this is a real test now.
 4. **Campaign expiry** — set a short window, let a campaign run past it
    - **Pass:** remaining jobs are marked failed and reported; the user sees it ended with N unsent
 5. **Suspend tenant A** mid-campaign
-   - **Pass:** dispatch halts **losslessly** — jobs stay queued, nothing fails
+   - **Pass:** dispatch halts **losslessly** — jobs stay queued, nothing fails. *No new claims*: at most
+     `concurrency_per_user` in-flight sends finish after the call returns, then the sink count for A stops
+     moving while tenant B keeps sending (that is the control: the halt is the suspension, not a stalled stack)
+   - **Pass:** `GET /v1/admin/users/{A}/suspension` reads `suspended:true`, `suspended_at` set, `version:1`;
+     a never-suspended user reads `suspended:false`, `version:0`
+   - **Pass:** while suspended, A's test-send, Test button, add-account and bulk-add each answer `409`
+     "This action is not available for your account right now." with the sink seeing **no** connection from A,
+     and tenant B's identical calls succeed
 6. Wait through what would have been the expiry window while suspended, then reinstate
-   - **Pass:** **expiry did not advance while suspended**, and the **same job rows** resume
+   - **Pass:** **expiry did not advance while suspended**, and the **same job rows** resume — within
+     **one dispatch tick** (reinstating does not kick the dispatcher)
+   - **Pass:** the read route now says `suspended:false`, `reinstated_at` set, `version:2`; A's test-send succeeds again
 7. **Click reinstate twice quickly**
    - **Pass:** no error. The second click must be a clean no-op, not a database error
 

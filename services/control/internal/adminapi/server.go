@@ -148,6 +148,9 @@ func (s *Server) adminRoutes() []route {
 		// shared substrate" — per-user suspension is explicitly named as an operator-only control.
 		{"POST", "/v1/admin/users/{id}/suspend", s.handleUserSuspend},
 		{"POST", "/v1/admin/users/{id}/unsuspend", s.handleUserUnsuspend},
+		// The P2 close-out (owner ruling C2): the suspension READ route — the missing half of the two
+		// POSTs above. Read-only, no body, not rate limited, no audit row (user_suspension_read.go).
+		{"GET", "/v1/admin/users/{id}/suspension", s.handleUserSuspensionGet},
 
 		// Module 3 Phase 6 §4: the per-user config override write path — admin-only, per §4.2's
 		// structural boundary (a different table from the user-owned routing_strategy setting).

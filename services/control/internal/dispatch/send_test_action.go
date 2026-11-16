@@ -41,6 +41,16 @@ var ErrNoWorkerForTestSend = fmt.Errorf("no connected worker available for test-
 // §3.2's "it writes a real job row" is satisfied by returning the job id, and the caller polls
 // /v1/report exactly as it would for any other async send.
 func (d *Dispatcher) SendTest(ctx context.Context, userID, accountID, recipient string, cfg Config) (TestSendResult, error) {
+	// The P2 close-out (owner ruling C3): a suspended user's test-send is refused FIRST — before the
+	// worker lookup, the account consume, the decrypt, the job_items/jobs writes and the push — so no
+	// SMTP session is ever opened on a suspended user's behalf. Fail closed on an unreadable flag.
+	// See suspension_gate.go.
+	if suspended, serr := userSuspended(ctx, d.db, userID); serr != nil {
+		return TestSendResult{}, fmt.Errorf("suspension check: %w", serr)
+	} else if suspended {
+		return TestSendResult{}, ErrUserSuspended
+	}
+
 	workerID := d.px.AnyConnectedWorker()
 	if workerID == "" {
 		return TestSendResult{}, ErrNoWorkerForTestSend

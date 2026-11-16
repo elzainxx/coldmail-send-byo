@@ -39,6 +39,15 @@ type testEnv struct {
 // hash), and starts an httptest server. Registers cleanup.
 func newTestEnv(t *testing.T, suffix string) *testEnv {
 	t.Helper()
+	return newTestEnvSeams(t, suffix, nil, nil)
+}
+
+// newTestEnvSeams is newTestEnv with the two worker seams supplied: the AccountVerifier verify-on-add
+// and the test button call, and the TestSender test-send calls. The P2 close-out's C3 tests hand it
+// counting fakes, so "a refused request makes ZERO worker calls" is observed at the exact interface a
+// worker call crosses rather than inferred. nil/nil is the pre-existing "no worker" environment.
+func newTestEnvSeams(t *testing.T, suffix string, verifier AccountVerifier, testSender TestSender) *testEnv {
+	t.Helper()
 	adminDSN := requireAdminDSN(t)
 	template := requireTemplate(t)
 
@@ -82,7 +91,7 @@ func newTestEnv(t *testing.T, suffix string) *testEnv {
 		t.Fatalf("disable from_gate_mode for test clone: %v", err)
 	}
 
-	srv := NewServer(pool, auth, nil, enc, nil, nil) // kick=nil: run only needs to INSERT + return; verifier/testSender=nil: no worker in these tests
+	srv := NewServer(pool, auth, nil, enc, verifier, testSender) // kick=nil: run only needs to INSERT + return; verifier/testSender=nil unless a test supplies a counting fake: no worker in these tests
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

@@ -180,9 +180,12 @@ func (s *Server) handleNotificationsList(w http.ResponseWriter, r *http.Request)
 	// time at the top of the next page. Two notifications one second apart is ordinary (a paced
 	// bulk-add quarantining several accounts, a sweep expiring campaigns), so this is a live
 	// duplicate-row bug, not a theoretical one. Both sibling routes DO hand encodeAccountCursor
-	// their truncated display timestamp and therefore have exactly this defect; it is registered as
-	// FW-M3-15 rather than fixed here, because fixing it changes accountSelectCols/scanAccount and
-	// two other routes' tests, which belongs in its own change. This route does not inherit it.
+	// their truncated display timestamp and therefore have exactly this defect; it was registered as
+	// FW-M3-15 rather than fixed here, because fixing it changed the shared account scan and two other
+	// routes' tests. FW-M3-15 is now CLOSED (the P2 close-out, owner ruling C1): both sibling routes,
+	// and the two admin routes with the same shape, build their cursor from a microsecond key exactly
+	// as this one does (pagination.go: cursorKeyColAccounts / cursorKeyColEvents). This route never
+	// inherited the defect.
 	var nextCursor *string
 	if len(items) > limit {
 		last := items[limit-1]

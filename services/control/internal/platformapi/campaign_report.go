@@ -313,18 +313,27 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 	defer rows.Close()
 
 	items := []campaignItem{}
-	var lastCreatedAt time.Time
-	var lastID string
+	// keys[i] is items[i]'s own (created_at, id) keyset position. It is kept PER ROW, and the cursor is
+	// built from keys[pageSize-1] — the last row KEPT — never from "whatever row the loop scanned
+	// last". The loop scans pageSize+1 rows (the extra one is only a lookahead that says "there is
+	// another page"); a single `last` variable overwritten on every iteration ends holding the
+	// LOOKAHEAD row, so the cursor pointed at a row the caller was never given and the next page,
+	// which starts strictly after it, skipped that row: one item lost per page boundary (M2-G5, found
+	// in module 2 and inherited by this fork; the P2 close-out, owner ruling C1).
+	keys := make([]reportCursor, 0, pageSize+1)
 	for rows.Next() {
 		var it campaignItem
 		var completedAt *time.Time
 		var smtpResponse, errorClass *string
+		var rowCreatedAt time.Time
+		var rowID string
 		if err := rows.Scan(&it.JobItemID, &it.State, &it.ProviderMessageID, &completedAt, &it.AttemptCount,
 			&it.AccountID, &it.AccountUsername,
 			&smtpResponse, &errorClass,
-			&lastCreatedAt, &lastID); err != nil {
+			&rowCreatedAt, &rowID); err != nil {
 			return nil, nil, err
 		}
+		keys = append(keys, reportCursor{CreatedAt: rowCreatedAt.UTC().Format(time.RFC3339Nano), ID: rowID})
 		if completedAt != nil {
 			s := completedAt.UTC().Format("2006-01-02T15:04:05Z")
 			it.CompletedAt = &s
@@ -344,8 +353,9 @@ func (s *Server) campaignItems(ctx context.Context, campaignID, userID string, c
 
 	var nextCursor *string
 	if len(items) > pageSize {
+		anchor := keys[pageSize-1] // the last row KEPT, not the lookahead row at keys[pageSize]
 		items = items[:pageSize]
-		c := encodeReportCursor(lastCreatedAt.Format(time.RFC3339Nano), lastID)
+		c := encodeReportCursor(anchor.CreatedAt, anchor.ID)
 		nextCursor = &c
 	}
 	return items, nextCursor, nil

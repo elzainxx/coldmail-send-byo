@@ -105,6 +105,17 @@ func readAccountForVerify(ctx context.Context, db *pgxpool.Pool, accountID, user
 // verify_response). It requires a connected worker; the credential is decrypted in Control memory,
 // zeroed on every exit path, and never logged.
 func (v *Verifier) Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (VerifyResult, error) {
+	// The P2 close-out (owner ruling C3): a suspended user's verification is refused FIRST — before the
+	// account read, the worker lookup, the decrypt and the push — so no SMTP session is ever opened on
+	// a suspended user's behalf. This is the store-layer gate every caller of Verify passes through
+	// (create, bulk-add, the test button, and the operator's account-create). Fail closed on an
+	// unreadable flag. See suspension_gate.go.
+	if suspended, serr := userSuspended(ctx, v.db, userID); serr != nil {
+		return VerifyResult{}, fmt.Errorf("suspension check: %w", serr)
+	} else if suspended {
+		return VerifyResult{}, ErrUserSuspended
+	}
+
 	acct, err := readAccountForVerify(ctx, v.db, accountID, userID)
 	if err != nil {
 		return VerifyResult{}, err

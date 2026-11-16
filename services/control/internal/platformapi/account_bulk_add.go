@@ -112,6 +112,18 @@ func (s *Server) handleAccountBulkAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The P2 close-out (owner ruling C3, applied to bulk-add because it runs the SAME verify-on-add for
+	// every row): a suspended user's batch is refused whole, BEFORE any row is created or verified, with
+	// the opaque 409 (suspension_gate.go). It is a request-level refusal, never a per-row `rejected`
+	// result: a row's Code carries an internal reason string, which would name the mechanism.
+	sctx, scancel := dbCtx(r.Context())
+	serr := s.suspendedRefusal(sctx, req.UserID)
+	scancel()
+	if serr != nil {
+		s.fail(w, r, serr)
+		return
+	}
+
 	pacingMS := s.readBulkAddVerifyIntervalMS(context.Background())
 	requestID := requestIDFrom(r.Context())
 

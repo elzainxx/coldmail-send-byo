@@ -117,13 +117,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	// actions, discovered only while implementing C2's suspend feature — the fourth such migration
 	// cascade in this build, after M3-P3-OD-18/19 and M3-P4-OD-16). Then 0050 (audit D5 /
 	// alignment-fix-plan item 9: the (user_id, first_seen_at, id) index the new user-facing
-	// notifications read route pages on — neither 0033 index can serve that query). This is the
-	// executable expectation of the migration chain.
+	// notifications read route pages on — neither 0033 index can serve that query). Then 0054 (the P2
+	// close-out's suspension READ route: the monotonic `version` column on user_suspensions that
+	// GET /v1/admin/users/{id}/suspension returns). This is the executable expectation of the migration
+	// chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -340,6 +342,21 @@ func TestRunnerLifecycle(t *testing.T) {
 	// must be back while retry_count_4xx is still gone. That window is strictly stronger than a
 	// presence check after Up: it pins WHICH migration owns WHICH row, so a 0051 that deleted all three
 	// keys, or a 0049 that swept up the third, fails there rather than passing here.
+	// send_byo_0054 (the suspension READ route's version counter). A pure ADD COLUMN, so the column is
+	// the evidence the migration ran, and its DEFAULT is the property the route's "no row reads version
+	// 0" contract leans on: a row an older Control wrote (or a direct seed that names no version) must
+	// read 0, not NULL (the column is NOT NULL) and not 1. Asserted by inserting such a row and reading
+	// it back, rather than by reading information_schema's default text, which would pass for a
+	// default of `0::bigint` and fail for the equivalent `(0)` spelling.
+	if !columnExists(t, admin, "user_suspensions", "version") {
+		t.Fatal("after Up: send_byo.user_suspensions.version missing (send_byo_0054 not applied)")
+	}
+	if got := userSuspensionVersionAfterBareInsert(t, admin); got != 0 {
+		t.Fatalf("after Up: a user_suspensions row inserted without a version reads version=%d, want 0 (send_byo_0054's DEFAULT is the contract's \"no counted transition yet\")", got)
+	}
+	if userSuspensionNegativeVersionAccepted(t, admin) {
+		t.Fatal("after Up: user_suspensions accepted version = -1 (send_byo_0054's CHECK (version >= 0) is missing)")
+	}
 	// send_byo_0022's shared error-transition predicate — the single definition both job_events
 	// triggers gate their error context on. Anti-vacuity that the migration ran: it is a
 	// CREATE OR REPLACE of two existing function BODIES, so no column/index/config check can see
@@ -791,6 +808,19 @@ func TestRunnerLifecycle(t *testing.T) {
 				}
 			}
 		}
+		// The paired half of 0054's up-assertion: a column migration reverses completely, so the down
+		// must actually drop the column. Without this a down file that only DELETEd its tracking row
+		// would pass every other check in this loop, and a re-Up would then fail on a duplicate
+		// column rather than here. The user_suspensions TABLE itself must survive (it is 0031's, which
+		// has not been reversed yet at this point in the strict-reverse loop).
+		if v == "0054" {
+			if columnExists(t, admin, "user_suspensions", "version") {
+				t.Fatal("after Down 0054: send_byo.user_suspensions.version still present (down did not drop it)")
+			}
+			if !tableExists(t, admin, "user_suspensions") {
+				t.Fatal("after Down 0054: send_byo.user_suspensions is GONE — 0054's down must drop only its own column; the table belongs to 0031, which has not been reversed yet")
+			}
+		}
 		// The paired half of 0050's up-assertion: an index migration reverses completely, so the down
 		// must actually drop it. Without this, a down file that only DELETEd its tracking row would
 		// pass every other check in this loop.
@@ -1035,6 +1065,64 @@ func columnExists(t *testing.T, c *pgx.Conn, table, column string) bool {
 		t.Fatalf("column exists lookup %q.%q: %v", table, column, err)
 	}
 	return ok
+}
+
+// userSuspensionVersionAfterBareInsert seeds a user and a user_suspensions row that names NO version,
+// inside a transaction it rolls back, and returns the version that row reads. send_byo_0054's DEFAULT
+// is what the suspension read route's "a row nobody has counted a transition for reads 0" rests on, so
+// the default is driven rather than read out of information_schema.
+func userSuspensionVersionAfterBareInsert(t *testing.T, c *pgx.Conn) int64 {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin 0054 default probe: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck — nothing is committed; the probe leaves no rows
+	var userID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.users (email, is_active) VALUES ('susp0054-default-probe@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("0054 default probe: seed user: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO send_byo.user_suspensions (user_id, suspended, reason, suspended_at)
+		 VALUES ($1, TRUE, 'operator', NOW())`, userID); err != nil {
+		t.Fatalf("0054 default probe: insert a row with no version: %v", err)
+	}
+	var v int64
+	if err := tx.QueryRow(ctx,
+		`SELECT version FROM send_byo.user_suspensions WHERE user_id = $1`, userID).Scan(&v); err != nil {
+		t.Fatalf("0054 default probe: read the version back: %v", err)
+	}
+	return v
+}
+
+// userSuspensionNegativeVersionAccepted is the paired NEGATIVE half of the default probe: it reports
+// whether user_suspensions took a row at version = -1. A rejection must be send_byo_0054's own CHECK
+// and nothing else, otherwise the probe is broken and the answer means nothing.
+func userSuspensionNegativeVersionAccepted(t *testing.T, c *pgx.Conn) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin 0054 check probe: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck — nothing is committed; the probe leaves no rows
+	var userID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.users (email, is_active) VALUES ('susp0054-check-probe@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("0054 check probe: seed user: %v", err)
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO send_byo.user_suspensions (user_id, suspended, reason, suspended_at, version)
+		 VALUES ($1, TRUE, 'operator', NOW(), -1)`, userID)
+	if err == nil {
+		return true
+	}
+	if !strings.Contains(err.Error(), "user_suspensions_version_check") {
+		t.Fatalf("0054 check probe: the insert failed for an unexpected reason (the probe is broken, not the schema): %v", err)
+	}
+	return false
 }
 
 // configKeyExists reports whether a send_byo.config row with the given key is present (for the

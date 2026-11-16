@@ -61,7 +61,7 @@ func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 	}
 	args = append(args, limit+1)
 	limitParam := "$" + strconv.Itoa(len(args))
-	query := "SELECT " + accountSelectCols + " FROM send_byo.accounts a WHERE " +
+	query := "SELECT " + accountSelectCols + ", " + cursorKeyColAccounts + " FROM send_byo.accounts a WHERE " +
 		strings.Join(conds, " AND ") + " ORDER BY a.created_at ASC, a.id ASC LIMIT " + limitParam
 
 	ctx, cancel := dbCtx(r.Context())
@@ -74,24 +74,28 @@ func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	items := []accountResource{}
+	keys := []string{} // keys[i] is items[i]'s MICROSECOND cursor key (pagination.go: never the displayed CreatedAt)
 	for rows.Next() {
-		a, serr := scanAccount(rows)
+		var key string
+		a, serr := scanAccount(keyedRow{Rows: rows, key: &key})
 		if serr != nil {
 			s.fail(w, r, newErr(codeInternalError, "account_list_scan_error: "+serr.Error()))
 			return
 		}
 		items = append(items, *a)
+		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "account_list_rows_error: "+err.Error()))
 		return
 	}
 
+	// limit+1 lookahead: the extra row only says "there is another page". The cursor anchors on the
+	// LAST ROW KEPT (index limit-1) at full precision, so the next page starts strictly after it.
 	var nextCursor *string
 	if len(items) > limit {
-		last := items[limit-1]
+		c := encodeAccountCursor(keys[limit-1], items[limit-1].ID)
 		items = items[:limit]
-		c := encodeAccountCursor(last.CreatedAt, last.ID)
 		nextCursor = &c
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": nextCursor})

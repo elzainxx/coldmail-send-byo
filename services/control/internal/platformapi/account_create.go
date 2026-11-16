@@ -87,6 +87,16 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := req.UserID
 
+	// The P2 close-out (owner ruling C3): account create is verify-on-add, and verify-on-add is an SMTP
+	// session through a worker, so a suspended user's create is refused — BEFORE the From-gate DNS
+	// lookup and the row write inside createAccountRow, so a refusal leaves no account behind. The
+	// existing code could instead store the row `unverified` with no SMTP traffic (a nil verifier
+	// does); refusing is the safer choice and is documented in suspension_gate.go. Opaque 409.
+	if e := s.suspendedRefusal(ctx, userID); e != nil {
+		s.fail(w, r, e)
+		return
+	}
+
 	// createAccountRow takes r.Context() directly (its own request-scoped lifetime), not the
 	// dbCtx-bounded ctx already in scope above — see its own doc comment for why.
 	accIDStr, _, cerr := s.createAccountRow(r.Context(), userID, req.SMTPHost, port, req.SMTPUsername, req.SMTPSecret,

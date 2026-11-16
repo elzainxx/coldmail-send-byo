@@ -159,6 +159,7 @@ if [[ "$adm_probe" == "401" ]]; then
     ["GET /v1/admin/health"]=1
     ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/suspend"]=1
     ["POST /v1/admin/users/00000000-0000-0000-0000-000000000000/unsuspend"]=1
+    ["GET /v1/admin/users/00000000-0000-0000-0000-000000000000/suspension"]=1
     ["GET /v1/admin/users/00000000-0000-0000-0000-000000000000/config"]=1
     ["PUT /v1/admin/users/00000000-0000-0000-0000-000000000000/config"]=1
     ["DELETE /v1/admin/users/00000000-0000-0000-0000-000000000000/config/concurrency_per_user"]=1
@@ -439,6 +440,7 @@ for r in "/healthz" "/readyz" "/v1/worker/register" "/v1/worker/heartbeat" \
          "/v1/admin/accounts/{id}/quarantine" "/v1/admin/accounts/{id}/unpause" \
          "/v1/admin/accounts/{id}/events" "/v1/admin/health" \
          "/v1/admin/users/{id}/suspend" "/v1/admin/users/{id}/unsuspend" \
+         "/v1/admin/users/{id}/suspension" \
          "/v1/admin/users/{id}/config" \
          "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
          "/v1/send-byo/accounts" "/v1/send-byo/accounts/{id}" \

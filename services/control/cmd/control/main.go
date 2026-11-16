@@ -418,6 +418,12 @@ type verifierAdapter struct {
 func (a verifierAdapter) Verify(ctx context.Context, accountID, userID string, operationTimeoutSec int) (platformapi.VerifyResult, error) {
 	r, err := a.v.Verify(ctx, accountID, userID, operationTimeoutSec)
 	if err != nil {
+		// The P2 close-out (owner ruling C3): dispatch refused to reach a worker for a suspended user.
+		// platformapi cannot import dispatch (OD-7), so its own sentinel carries the fact to the
+		// handler, which answers the same opaque 409 it gives from its pre-check.
+		if errors.Is(err, dispatch.ErrUserSuspended) {
+			return platformapi.VerifyResult{}, platformapi.ErrUserSuspended
+		}
 		return platformapi.VerifyResult{}, err
 	}
 	return platformapi.VerifyResult{
@@ -473,6 +479,8 @@ func (a testSenderAdapter) SendTest(ctx context.Context, userID, accountID, reci
 			return "", platformapi.ErrAccountIneligible
 		case errors.Is(err, dispatch.ErrNoWorkerForTestSend):
 			return "", platformapi.ErrNoWorkerAvailable
+		case errors.Is(err, dispatch.ErrUserSuspended):
+			return "", platformapi.ErrUserSuspended
 		default:
 			return "", err
 		}

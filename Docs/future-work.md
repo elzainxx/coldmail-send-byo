@@ -578,7 +578,26 @@ ordering dependency between SUITE 9, 10 and 11, which currently share `phase3_se
 Until then, `scripts/dev.sh reset` before `scripts/dev.sh test` is mandatory, not optional — worth a
 line in the runbook either way.
 
-### FW-M3-15 — `accounts.list` and `accounts.events` can return a duplicate row across a page boundary
+### FW-M3-15 — `accounts.list` and `accounts.events` can return a duplicate row across a page boundary — **FIXED (the P2 close-out, owner ruling C1)**
+
+> **CLOSED.** The P2 close-out's pagination sweep fixed this on all four routes that had it — the
+> platform `accounts.list` and `accounts.events` AND the admin `GET /v1/admin/accounts` and
+> `GET /v1/admin/accounts/{id}/events`, which the entry below never named — by projecting a
+> microsecond-precision cursor key and anchoring the cursor on the last row returned (the "Fix shape"
+> below, applied). Each is walked page by page by a multi-page test with exact item-set equality
+> (`pagination_exact_test.go` in `internal/platformapi` and `internal/adminapi`), paired with a control
+> that reproduces the OLD construction through the same walker and checker and must be caught. **Two
+> corrections to the text below, found by writing that control:** (1) "a duplicated item, not a skipped
+> one" was true only while one page held every row of the second. With a page smaller than the number
+> of rows sharing a second, the next page is made ENTIRELY of rows the caller already has, the cursor
+> never advances, and every row after that second is unreachable — a skip, and a walk that never ends.
+> (2) The sweep also found the same class of defect in a different shape in the campaign report
+> (`GET /v1/report?campaign_id=`): its cursor was built from the lookahead row, skipping one item per
+> page boundary (M2-G5, inherited from module 2) — fixed in the same change. The contract-side
+> statement is in [`api-contract.md`](./api-contract.md) ("Cursor precision" and the campaign report's
+> pagination paragraph); the sweep checked every keyset listing in the module (six cursored: the
+> campaign report, accounts.list, accounts.events, notifications.list, and the two admin routes; the
+> rest — admin config, health — are not paginated).
 
 **Registered:** 2026-08-04, found while building the notifications read route (fix-plan item 9).
 **Pre-existing defect in two shipped routes, NOT introduced by item 9.**

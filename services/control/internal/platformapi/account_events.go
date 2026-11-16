@@ -56,7 +56,8 @@ func (s *Server) handleAccountEvents(w http.ResponseWriter, r *http.Request) {
 	limitParam := "$" + strconv.Itoa(len(args))
 	query := `SELECT e.id, e.account_id, e.user_id, e.actor, e.action, e.from_flags, e.to_flags,
 	          e.reason, e.request_id,
-	          to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
+	          to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+	          ` + cursorKeyColEvents + `
 	          FROM send_byo.account_events e WHERE ` + strings.Join(conds, " AND ") +
 		" ORDER BY e.created_at ASC, e.id ASC LIMIT " + limitParam
 
@@ -70,30 +71,34 @@ func (s *Server) handleAccountEvents(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	items := []accountEvent{}
+	keys := []string{} // keys[i] is items[i]'s MICROSECOND cursor key (pagination.go: never the displayed CreatedAt)
 	for rows.Next() {
 		var (
 			ev               accountEvent
 			fromJSON, toJSON []byte
+			key              string
 		)
 		if err := rows.Scan(&ev.ID, &ev.AccountID, &ev.UserID, &ev.Actor, &ev.Action,
-			&fromJSON, &toJSON, &ev.Reason, &ev.RequestID, &ev.CreatedAt); err != nil {
+			&fromJSON, &toJSON, &ev.Reason, &ev.RequestID, &ev.CreatedAt, &key); err != nil {
 			s.fail(w, r, newErr(codeInternalError, "events_scan_error: "+err.Error()))
 			return
 		}
 		ev.FromFlags = decodeFlags(fromJSON)
 		ev.ToFlags = decodeFlags(toJSON)
 		items = append(items, ev)
+		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
 		s.fail(w, r, newErr(codeInternalError, "events_rows_error: "+err.Error()))
 		return
 	}
 
+	// limit+1 lookahead: the extra row only says "there is another page"; the cursor anchors on the
+	// LAST ROW KEPT (index limit-1) at full precision.
 	var nextCursor *string
 	if len(items) > limit {
-		last := items[limit-1]
+		c := encodeAccountCursor(keys[limit-1], items[limit-1].ID)
 		items = items[:limit]
-		c := encodeAccountCursor(last.CreatedAt, last.ID)
 		nextCursor = &c
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": nextCursor})
