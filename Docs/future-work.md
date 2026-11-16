@@ -977,6 +977,10 @@ Added: `requireZoneAgrees` (Postgres and Go must agree on what the zone means, a
 wrong reason) and `TestDailyResetHour_BoundaryIsObservableAtEveryUTCHour` in both packages (pure, never skips: all 24 UTC hours, first and last minute of each, must read 12:xx local with
 differing dates, plus the control that plain UTC coincides at 23:30 and differs at 22:30, so the test can fail).
 
+**Proof, on the runner, inside the hour that used to be red.** `real-infra` run [43980674310](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43980674310) (head `46a00cb`, which contains
+`2fdd1b2`) ran 23:36–23:47 UTC: `adminapi` `declared=117 ran=117 skipped=0`, `dispatch` `declared=235 ran=235 skipped=0`, harness **101 passed, 0 failed** — the same hour in which run 43975110577
+had reported `skipped=1` and `skipped=2`.
+
 **The reopen trigger was checked.** Every `t.Skip` in the module (Go, Node and bash were all searched): the harness's own "env var not set" skips (which the count assertion turns red, by
 design), the DNS-fixture skips (`fromgate/evaluate_realdns_test.go`, `adminapi` and `platformapi` `from_gate_test.go`), the two `fromgate` upstream-DNS canaries, and the two `tz database unavailable` skips in
 `dispatch/rollup_timezone_test.go` (a host without zoneinfo; the runner has it, and that test already picks its zone from the clock without skipping). **No other test skips on the wall
