@@ -74,7 +74,7 @@ item is not done.
 **Why it blocks:** the module's pre-flight (`db/preflight/check_platform_tables.sql`) checks table
 **existence only**, deliberately (a column-level check would false-fail every time the platform
 legitimately adds an unrelated column). It does NOT verify the actual column set the module's
-FKs/reads assume.
+FKs, reads and test-send's one `INSERT` into `public.job_items` (`send_byo_0037`) assume.
 
 **Assumed shape** (ADR-0007; verify against the real platform schema before the first live
 migration run):

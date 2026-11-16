@@ -10,7 +10,7 @@
 -- UPDATE). The 0008/0009 REVOKEs remain as defense-in-depth / intent, even though they are
 -- no-ops against a table that was never granted UPDATE/DELETE.
 --
--- The two read-only platform-table grants (public.users, public.job_items) are owned by the
+-- The two platform-table SELECT grants (public.users, public.job_items - job_items' one later INSERT is send_byo_0037's) are owned by the
 -- bootstrap (send_byo_0000) and are deliberately NOT re-issued or revoked here — so rolling back
 -- 0012 never disturbs a grant the still-applied bootstrap owns.
 

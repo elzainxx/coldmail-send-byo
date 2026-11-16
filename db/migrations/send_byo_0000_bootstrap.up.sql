@@ -44,7 +44,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE send_byo_owner IN SCHEMA send_byo
 ALTER DEFAULT PRIVILEGES FOR ROLE send_byo_owner IN SCHEMA send_byo
     GRANT USAGE, SELECT ON SEQUENCES TO send_byo_app;
 
--- 5) The ONLY two operations permitted on platform-owned tables: read-only SELECT.
+-- 5) At bootstrap the ONLY operation granted on the two platform-owned tables is read-only SELECT (send_byo_0037 later adds ONE narrow INSERT on public.job_items for test-send - never UPDATE/DELETE, and public.users stays SELECT-only).
 --    Preflight (run before this) guarantees the tables exist.
 GRANT SELECT ON public.users     TO send_byo_app;
 GRANT SELECT ON public.job_items TO send_byo_app;

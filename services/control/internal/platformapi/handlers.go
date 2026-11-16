@@ -180,7 +180,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create one send_byo.jobs row (state=queued, genesis event via the actor='system' GUC), reading
-	// the frozen recipient/subject/body/reply_to from public.job_items (SELECT-only, Phase 1),
+	// the frozen recipient/subject/body/reply_to from public.job_items (a SELECT here; the module's one write to that table is test-send's INSERT, send_byo_0037),
 	// SCOPED to the calling tenant: the job_item must belong to req.UserID (else 404-style
 	// not-found — no cross-tenant existence disclosure). The job_item_id UNIQUE constraint makes a
 	// duplicate run idempotent (§6.2).

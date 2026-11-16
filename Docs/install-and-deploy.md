@@ -31,7 +31,7 @@ platform table shapes) that this guide assumes are settled.
 | **Outbound DNS from the Control host** | The Phase 4 From-alignment gate resolves TXT/MX records for a user's `from_address` domain directly from the Control (`internal/fromgate`) as part of every account create/update. An egress policy that permits only known SMTP/DB destinations and blocks general DNS will silently break account creation — this is new versus module 2, which never resolved third-party DNS. |
 | **Outbound SMTP from worker hosts to ARBITRARY destinations on 587/465/25** | Unlike module 2's fixed operator-chosen provider set, module 3's users each name their own SMTP server. A worker-host egress allow-list scoped to a fixed list of providers will silently fail every user whose provider isn't on it — and the failure surfaces as that user's send failing, not as an operator-visible error. Plan worker egress as "any host, those ports" from the start. |
 | **At least one test SMTP mailbox you control** | Not for operator provisioning — the operator provisions no accounts (see Step 9) — but you need one to walk the user journey in Step 10 and confirm a real send end to end. |
-| **`public.users` and `public.job_items`** | Platform-owned tables the module reads. They must exist before migrating; the preflight fails loudly if they do not. |
+| **`public.users` and `public.job_items`** | Platform-owned tables the module reads (its one write there is test-send's `INSERT` into `public.job_items`, `send_byo_0037` — never an update or a delete). They must exist before migrating; the preflight fails loudly if they do not. |
 
 ### Software on each host
 
@@ -585,7 +585,7 @@ PLAT=$(grep -E '^PLATFORM_TOKEN=' .env | cut -d= -f2)   # NOT ADMIN_API_KEY= —
 OWNER=00000000-0000-0000-0000-000000000000              # the reserved system user dev.sh seeds
 
 # public.job_items is EMPTY after a reset — the platform owns that table and the module only
-# reads it, so nothing in this repo creates a row for you. Insert one as the admin role:
+# reads it (apart from test-send's own INSERT, send_byo_0037), so nothing in this repo creates a row for you. Insert one as the admin role:
 ITEM=$(docker compose exec -T postgres psql -U postgres -d platform -tAc \
   "INSERT INTO public.job_items (campaign_id,user_id,recipient_email,rendered_subject,rendered_body,status)
    VALUES (gen_random_uuid(),'$OWNER','you@example.com','Local smoke test','<p>hello</p>','pending')
@@ -602,9 +602,9 @@ like a wrong field name and is not one. Confirm with `echo "[$ITEM]"` (expect ex
 before blaming the body. Both variants were hit while re-walking this step on 2026-07-29.
 
 > **The platform-side seeding above is dev-stack only.** In production the platform inserts
-> `public.job_items` as part of its own campaign flow and passes you the id; the module never writes
-> that table (it holds `SELECT` only — Step 4's grant check). Do not carry this `INSERT` into a
-> production runbook.
+> `public.job_items` as part of its own campaign flow and passes you the id; the module's only write
+> to that table is test-send's own `INSERT` (`send_byo_0037` — it holds `SELECT` and that one `INSERT`, never
+> `UPDATE` or `DELETE`). Do not carry this `INSERT` into a production runbook.
 
 > **Before pointing this at a real SMTP provider for the first time**, use
 > [`go-live-checklist.md#real-provider-smoke-test`](./go-live-checklist.md#real-provider-smoke-test). Everything up to this point has

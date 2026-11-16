@@ -21,7 +21,8 @@ Single repository, multiple deployable services:
   held in memory only and zeroed on every exit from the send path. Scale by adding worker containers.
 - **Shared Postgres/Supabase** — the module owns the `send_byo` schema (owned by the non-login
   `send_byo_owner` role); the platform owns `public`. The module reads exactly two platform
-  tables (`public.users`, `public.job_items`) read-only.
+  tables (`public.users`, `public.job_items`) and writes exactly one thing in them: test-send's `INSERT` into
+  `public.job_items` (six columns, `send_byo_0037`, M3-P3-OD-17). It never updates or deletes either table and holds no `DELETE`.
 
 For the physical deployment (which VPS runs what, the private network, systemd units,
 version-skew ordering), see `install-and-deploy.md`.

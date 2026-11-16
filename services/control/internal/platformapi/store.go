@@ -15,7 +15,7 @@ const (
 )
 
 // createJob creates one send_byo.jobs row in state 'queued' from the platform-owned job_item
-// (SELECT-only on public.job_items, Phase 1), with the actor='system' GUC so the genesis event
+// (read with SELECT here; the module's one write to public.job_items is test-send's INSERT, send_byo_0037), with the actor='system' GUC so the genesis event
 // is written (§6.2). Returns (jobID, existing, err): existing=true when the job_item already has
 // a sender job (the jobs_job_item_id_unique constraint) — the run is idempotent, never a raw 23505.
 //
