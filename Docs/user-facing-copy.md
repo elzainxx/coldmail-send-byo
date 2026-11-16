@@ -142,6 +142,19 @@ satisfied for these two rows. The strings the owner approved, verbatim as the co
 Nothing about this ruling is checked by the gate — the gate keeps proving the ledger is complete and
 coherent; the truth of a verdict stays a human judgment, and these two now have one on record.
 
+### 2.5 Fixed refusal sentences are outside the ledger, by design
+
+The error envelope's `message` is a curated constant per code (`fixedMessages`) plus a few route-specific refusal
+sentences (`This account is not quarantined.`, the un-quarantine rate-limit sentence, and — since the P2 close-out,
+owner ruling C3 — `This action is not available for your account right now.`). They are not ledgered because they
+assert no evidence about the user's data, only that a request was refused, and the contract
+([`api-contract.md`](./api-contract.md)) pins each one verbatim. The last is the deliberate case: for a suspended user,
+test-send, the account Test button, account create and bulk-add all answer `409 conflict` with exactly this sentence and
+nothing else. Its audit is a *negative* one — it must say less than the module knows — and the test that pins it
+(`internal/platformapi/suspension_gate_test.go`, `refusalViolations`) fails if the body contains suspend / suspended /
+suspension, a `details[]` entry or the internal reason. If a future change gives any of these sentences a claim about
+the user's state, it moves into the ledger.
+
 ## 3. Summary
 
 | Surface | Strings audited | PASS | Flagged for future-work.md |

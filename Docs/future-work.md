@@ -954,3 +954,30 @@ force the interleave, e.g. hold the first winner's transaction open until every 
 per-worker success counts and assert overlap through the `pg_stat_activity` sampler the test already runs. Whichever is chosen, it must keep a **paired control that goes
 red**: a mutant that serialises `accountConsume` behind one mutex (so no real overlap exists) must fail it. Do not weaken the assertion to "≥1 worker".
 (Reopen trigger as recorded: this test red a second time on any runner.)
+
+### FW-M3-23 — three tests skipped themselves during UTC hour 23, and the harness counts a skip as red, so a run in that hour could not be green — **FIXED 2026-11-17 (`2fdd1b2`)**
+
+**Registered and fixed 2026-11-16/17.** Found by the P2 close-out's first CI run ([43975110577](https://github.com/elzainxx/coldmail-send-byo/actions/runs/43975110577), head
+`3433144`, started 22:58 UTC and running 23:00–23:10 UTC). Nothing about that change was implicated: the only failing step was the harness and the only failing suites were two,
+each with exactly the shortfall below and no `--- FAIL` line anywhere — `adminapi` `declared=116 ran=115 skipped=1`, `dispatch` `declared=234 ran=232 skipped=2`; `platformapi` (172/172) and every
+other suite ran in full. The three skips were `TestDailyResetHour_ShiftsHealthAccountCounts` (`adminapi`) and `TestDailyResetHour_ShiftsTheEligibilityBoundary` /
+`TestDailyResetHour_ReachesAccountConsumeAndScoreRecompute` (`dispatch`), each `t.Skip("wall-clock UTC hour is 23 …")`.
+
+**Why it was red, and why the harness was right.** `run.sh`'s count assertion — "a skip is a shortfall, not a pass" — exists because 141 tests once skipped to a green and it is
+**untouched**. The defect was the tests': a test that skips itself for one hour of every day makes the whole suite unable to pass for that hour, every day, and nothing says so until a
+run lands in it. The skip reacted to a real limit of the construction — it compared `daily_reset_hour = 0` with `23` in `UTC`, and at 23:xx UTC `now − 23h` is still today, so the two
+boundaries name the same date and the property under test ("the dial moves the boundary") was unobservable — not to a defect in the product.
+
+**The fix (`2fdd1b2`, no assertion weakened, no skip anywhere).** The property was never about UTC: `daily_reset_timezone` is itself a dial and the formula takes it as a parameter.
+The tests now run in the fixed-offset zone in which it is **12:xx local right now** (`Etc/GMT-N` = UTC+N, N = 12 − the UTC hour, always within [−11, +12]; the IANA `Etc` names carry the
+inverted sign and exist in Postgres's own zone set, and the Go side is `time.FixedZone`, so neither side depends on a host tz database). In that zone hour=23 and hour=0 name two
+different dates at **every** hour, and the local clock is 11–12 hours from any midnight (which also removes the milliseconds-wide race the UTC construction had at 22:59:59). Kept: every
+assertion and the paired control (dial changed ⇒ the boundary moves; unchanged ⇒ it does not — the adminapi test now also returns to hour=23 and requires the same row counted again).
+Added: `requireZoneAgrees` (Postgres and Go must agree on what the zone means, and the two dates must differ — an inverted `Etc` sign would otherwise shift one side and could pass for the
+wrong reason) and `TestDailyResetHour_BoundaryIsObservableAtEveryUTCHour` in both packages (pure, never skips: all 24 UTC hours, first and last minute of each, must read 12:xx local with
+differing dates, plus the control that plain UTC coincides at 23:30 and differs at 22:30, so the test can fail).
+
+**The reopen trigger was checked.** Every `t.Skip` in the module (Go, Node and bash were all searched): the harness's own "env var not set" skips (which the count assertion turns red, by
+design), the DNS-fixture skips (`fromgate/evaluate_realdns_test.go`, `adminapi` and `platformapi` `from_gate_test.go`), the two `fromgate` upstream-DNS canaries, and the two `tz database unavailable` skips in
+`dispatch/rollup_timezone_test.go` (a host without zoneinfo; the runner has it, and that test already picks its zone from the clock without skipping). **No other test skips on the wall
+clock.** **Reopen trigger:** a test that skips or fails depending on the time of day.
