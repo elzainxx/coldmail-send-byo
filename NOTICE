@@ -1,4 +1,4 @@
-Source visible for transparency. All rights reserved. No license is granted to use, copy, modify or distribute.
+Copyright (c) 2026 Zain. All rights reserved. The source is visible for transparency only. No license is granted to use, copy, modify, distribute or run this software, in whole or in part.
 
 SEND_BYO Module — Third-Party Notices
 =====================================
@@ -10,8 +10,8 @@ This repository contains two services and one migration/tooling layer (see READM
   - tools/           — the migration runner (send-byo-migrate), worker provisioner, cert/secret tooling
 
 None of the above is a fork of a third-party project. This is a fork, at the repository level, of
-the sibling "sender" module (module 2), by the same owner — see `Docs/history/fork-point.md` and the top-
-level LICENSE's "Scope" section. This NOTICE covers third-party components consumed as dependencies,
+the sibling "sender" module (module 2), by the same owner, at commit `21b65e65eba8f2cc16a84408bac6e018511ec46b`
+(see `Docs/history/fork-point.md`). This NOTICE covers third-party components consumed as dependencies,
 not the fork relationship itself.
 
 The following third-party components are used, and their licenses are respected.
@@ -54,7 +54,8 @@ The following third-party components are used, and their licenses are respected.
 Project's own code
 --------------------------------------------------------------------------------
   The project's own code (services/, tools/, db/migrations/, deploy/, scripts/, tests/, and Docs/)
-  is licensed under the top-level LICENSE file — PROPRIETARY / all-rights-reserved (adopted at
-  Gate B per M3-P0-OD-11, mirroring module 1's convention). This NOTICE records ONLY the third-party
-  components the project must respect; nothing here grants rights over the owner's own code, and
-  nothing in the top-level LICENSE alters or relicenses the third-party terms recorded above.
+  is covered by the top-level LICENSE file: all rights reserved, the source visible for transparency
+  only, no license granted (a LICENSE adopted at Gate B per M3-P0-OD-11; since 2026-11-17 the same
+  wording in every repository of the project). This NOTICE records ONLY the third-party components the
+  project must respect; nothing here grants rights over the owner's own code, and nothing in the
+  top-level LICENSE alters or relicenses the third-party terms recorded above.

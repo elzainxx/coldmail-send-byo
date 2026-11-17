@@ -1128,4 +1128,4 @@ Stated so a reviewer can bound the diff:
   removes a resolution layer, not a coordination layer.
 - The two-vocabulary error rule. `pool_exhausted`'s internal reason string never crosses a client
   boundary as an internal reason; see M3-P2-OD-3 for the one client-visible field involved.
-- Module 2's tree. Nothing in `D:\Mnfi\Codmailling 2` is edited by this phase.
+- Module 2's tree. Nothing in `Codmailling 2` is edited by this phase.

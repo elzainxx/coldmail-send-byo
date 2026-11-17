@@ -3,7 +3,7 @@
 **Status:** PLAN ONLY. No implementation. Written 2026-07-30, after Phase 1 (schema delta) and
 Phase 2 (strip the shared pool) were specified and their open decisions ruled.
 
-**Module 2 repo:** `D:\Mnfi\Codmailling 2` (read-only reference; the fork source).
+**Module 2 repo:** `Codmailling 2` (read-only reference; the fork source).
 
 This phase turns module 2's **operator-only, unscoped** account surface into a **user-owned,
 tenant-scoped** one, and adds the four things module 2 never needed because the operator owned the

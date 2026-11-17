@@ -1,6 +1,6 @@
 # coldmail-send-byo — the bring-your-own-SMTP sender (module 3)
 
-Source visible for transparency; all rights reserved, no license is granted. See [`NOTICE`](./NOTICE).
+Source visible for transparency only; all rights reserved (see LICENSE and NOTICE).
 
 An email-sending service where users bring their own SMTP accounts. A platform hands it a mail list and a template; a user adds their own SMTP credential through
 a self-serve account surface, and the module handles the rest — routing across that user's own accounts, pacing, retries, error classification, and pulling

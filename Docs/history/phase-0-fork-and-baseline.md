@@ -40,7 +40,7 @@ rename begins. See **M3-P0-OD-1** for the ruling on whether this reading is adop
 
 ### 1.1 Identifying the fork point
 
-Module 2's repo (`D:/Mnfi/Codmailling 2`) as observed:
+Module 2's repo (`Codmailling 2`) as observed:
 
 | Fact | Value | Consequence |
 |---|---|---|

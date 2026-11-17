@@ -4,7 +4,7 @@ First commit after the fork, per `Docs/phase-0-fork-and-baseline.md` §1.3. Neve
 
 ## Module 2 repo identity
 
-- Path at fork time: `D:/Mnfi/Codmailling 2`
+- Path at fork time: `Codmailling 2`
 - Remotes: **none** — the repo existed on one machine only. There was no upstream to fork
   *from* in the hosted sense; the fork is a local history-preserving `git clone` of that path.
 
@@ -68,12 +68,12 @@ reasoning: `phase-0-fork-and-baseline.md` §1.1, `Docs/open-decisions.md` M3-P0-
 
 ## Gate A evidence — observed, not predicted
 
-All commands run from `D:/Mnfi/Codmailling 3` against the freshly cloned tree, HEAD reset to
+All commands run from `Codmailling 3` against the freshly cloned tree, HEAD reset to
 `21b65e6` exactly, `git status --porcelain` empty.
 
 ### Tree identity
 
-`diff -rq . "D:/Mnfi/Codmailling 2" --exclude=.git --exclude=.env --exclude=.claude` returns, in full:
+`diff -rq . "Codmailling 2" --exclude=.git --exclude=.env --exclude=.claude` returns, in full:
 
 - `Docs/future-work.md`, `Docs/install-and-deploy.md` differ — the known 2-file gap between
   `21b65e6` and module 2's current HEAD `d34e57a` (expected; see correction above)
