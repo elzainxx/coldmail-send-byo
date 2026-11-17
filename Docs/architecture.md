@@ -80,7 +80,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Exactly one active Control | session-level advisory lock, fixed key | `internal/singleton` (`Docs/architecture.md#advisory-locks`) |
 | Control is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Control role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
 | Worker holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every **send-path** exit (not on shutdown — `security-posture.md` §3.12) | `services/worker` (structural) |
-| Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (worker token) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
+| Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (worker tokens, admin key, platform token, their hashes, KMS dev key) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
 | Tenant isolation | `user_id` on every table; RLS on all `send_byo.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `send_byo_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
 | Every tunable is config, not code | 89 seeded `send_byo.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |

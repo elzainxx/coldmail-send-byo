@@ -19,15 +19,28 @@ on:
         required: false
         default: "50"
 
+# DISPATCH-ONLY, and it stays that way: a 50-run proof is started by hand, so there is no push/pull-request trigger to filter.
+
+# Least privilege: this workflow only reads the repository (checkout). It reads no secret and writes nothing back.
+permissions:
+  contents: read
+
+# Queued, never cancelled: this is an evidence run (N passes or the workflow is red). A second dispatch, for example a quick smoke run with a
+# small count, must not cancel a 50-run proof that is half way done. Nothing triggers it automatically, so there is no pile-up to economise.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   repeat:
     runs-on: ubuntu-latest
     env:
       DEV_RAM_PG: "1"
     steps:
-      - uses: actions/checkout@v4
+      # Every third-party action is pinned to a full commit SHA (the tag is a comment for the reader; the SHA is what runs).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
 
@@ -37,5 +50,9 @@ jobs:
       - name: Bring up Postgres only (the test needs a database, not the stack)
         run: $(bash scripts/dev.sh compose) up -d --wait postgres
 
+      # The dispatch input reaches the shell through an environment variable, never by being spliced into the script text: a workflow input
+      # interpolated straight into `run:` is a script-injection point (the one place in this repository where user-typed text meets a shell).
       - name: Run the test N times — zero failures, N evidence lines
-        run: bash tests/harness/checks/consume_contention.sh --repeat "${{ inputs.count || '50' }}"
+        env:
+          REPEAT_COUNT: ${{ inputs.count || '50' }}
+        run: bash tests/harness/checks/consume_contention.sh --repeat "$REPEAT_COUNT"

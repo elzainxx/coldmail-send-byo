@@ -26,6 +26,22 @@ fi
 
 cmd="${1:-help}"
 
+# mask VALUE... — on a GitHub Actions runner, register each value with the runner's log masker, so that it shows as *** if it is
+# ever printed (this repository's workflow logs are PUBLIC). Every credential `certs` MINTS goes through this, in the same breath as
+# it is minted and BEFORE it is written to .env or used anywhere. A no-op off the runner, so local output is unchanged. The values are
+# random per run (tokens) or derived from them (bcrypt hashes), so a mask cannot hide anything but the secret itself. The fixed dev
+# literals (devsuperpass, devmodulepass) are obviously fake and are NOT masked. The KMS dev master key and the mTLS keys are files
+# written by openssl and never enter a shell variable, so there is nothing to mask: they are protected by never being printed
+# (tools/gen-secrets.sh and tools/gen-certs.sh print only paths) and by tests/harness/checks/no_secret_leak.sh.
+mask() {
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+  local v
+  for v in "$@"; do
+    if [[ -n "$v" ]]; then echo "::add-mask::$v"; fi
+  done
+  return 0
+}
+
 gen_all_secrets() {
   echo "== gen-certs =="; bash tools/gen-certs.sh "${2:-}"
   echo "== gen-secrets =="; bash tools/gen-secrets.sh
@@ -35,6 +51,7 @@ gen_all_secrets() {
   prov="$(tools/provision-worker/bin/provision-worker new --id dev-worker-1)"
   token="$(echo "$prov" | grep '^WORKER_TOKEN=' | sed 's/^WORKER_TOKEN=//; s/ .*//')"
   hash="$(echo "$prov" | grep '^DEV_WORKER_TOKEN_HASH=' | sed 's/^DEV_WORKER_TOKEN_HASH=//; s/ .*//')"
+  mask "$token" "$hash"
   # SECOND dev worker (dev-worker-2): its OWN identity + its OWN token, because worker identity is the
   # authorization subject. `docker compose up --scale worker=2` does NOT work and must not be
   # suggested: both replicas inherit one WORKER_ID/WORKER_TOKEN, and workerlink's register path closes the
@@ -47,21 +64,25 @@ gen_all_secrets() {
   prov2="$(tools/provision-worker/bin/provision-worker new --id dev-worker-2)"
   token2="$(echo "$prov2" | grep '^WORKER_TOKEN=' | sed 's/^WORKER_TOKEN=//; s/ .*//')"
   hash2="$(echo "$prov2" | grep '^DEV_WORKER_TOKEN_HASH=' | sed 's/^DEV_WORKER_TOKEN_HASH=//; s/ .*//')"
+  mask "$token2" "$hash2"
   # Operator admin key (Domain B, Phase 2): mint plaintext key + bcrypt hash the same way.
   local admprov admkey admhash admhash_esc
   admprov="$(tools/provision-worker/bin/provision-worker admin-key)"
   admkey="$(echo "$admprov" | grep '^ADMIN_API_KEY=' | sed 's/^ADMIN_API_KEY=//; s/ .*//')"
   admhash="$(echo "$admprov" | grep '^ADMIN_API_KEY_HASH=' | sed 's/^ADMIN_API_KEY_HASH=//; s/ .*//')"
+  mask "$admkey" "$admhash"
   # Platform service token (Domain A, Phase 3): a DISTINCT credential from the admin key (Rule 6).
   local plprov plkey plhash plhash_esc
   plprov="$(tools/provision-worker/bin/provision-worker admin-key)"
   plkey="$(echo "$plprov" | grep '^ADMIN_API_KEY=' | sed 's/^ADMIN_API_KEY=//; s/ .*//')"
   plhash="$(echo "$plprov" | grep '^ADMIN_API_KEY_HASH=' | sed 's/^ADMIN_API_KEY_HASH=//; s/ .*//')"
+  mask "$plkey" "$plhash"
   # bcrypt hashes contain '$', which docker-compose .env interpolates — escape as '$$'.
   hash_esc="$(printf '%s' "$hash" | sed 's/\$/$$/g')"
   hash2_esc="$(printf '%s' "$hash2" | sed 's/\$/$$/g')"
   admhash_esc="$(printf '%s' "$admhash" | sed 's/\$/$$/g')"
   plhash_esc="$(printf '%s' "$plhash" | sed 's/\$/$$/g')"
+  mask "$hash_esc" "$hash2_esc" "$admhash_esc" "$plhash_esc"   # the `$$`-doubled form, as compose would print it from .env
   cat > .env <<EOF
 # Host port bindings (M3-P0-OD-6): module 2's ports +1000, so both stacks can run at once.
 HOST_PORT_POSTGRES=6432

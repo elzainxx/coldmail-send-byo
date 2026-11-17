@@ -9,18 +9,32 @@
 # database with a job genuinely in flight and check that the Control halts cleanly and INVENTS NOTHING. It runs on a runner, not on a
 # developer machine, because the result that counts is the one on the real runner — and because the local VM cannot hold it.
 name: outage-drill
+
+# DISPATCH-ONLY, and it stays that way: this is an on-demand proof, not a per-push gate (see the header), so the push/pull-request
+# trigger economy that real-infra.yml applies has nothing to filter here.
 on: workflow_dispatch
+
+# Least privilege: this workflow only reads the repository (checkout). It reads no secret and writes nothing back.
+permissions:
+  contents: read
+
+# Queued, never cancelled: a drill is started by hand on purpose and its result is the evidence. Nothing triggers it automatically, so
+# there is no pile-up for cancelling to economise, and a second dispatch must not silently destroy a run that is half way to a verdict.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   default-mode:
     runs-on: ubuntu-latest
     # NO `env: DEV_RAM_PG` on purpose — that is the whole point of this workflow.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # Every third-party action is pinned to a full commit SHA (the tag is a comment for the reader; the SHA is what runs).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
 

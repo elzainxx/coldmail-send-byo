@@ -1,5 +1,7 @@
 # coldmail-send-byo — the bring-your-own-SMTP sender (module 3)
 
+Source visible for transparency; all rights reserved, no license is granted. See [`NOTICE`](./NOTICE).
+
 An email-sending service where users bring their own SMTP accounts. A platform hands it a mail list and a template; a user adds their own SMTP credential through
 a self-serve account surface, and the module handles the rest — routing across that user's own accounts, pacing, retries, error classification, and pulling
 unhealthy accounts out of rotation. Users control their own assets (limits, From address, their accounts); the operator controls the shared substrate (queue
@@ -81,7 +83,7 @@ Tests run against real infrastructure — real Postgres, a real Control↔worker
 mock-the-worker tests; that is a hard rule, not a preference (CLAUDE.md Rule 3). `bash scripts/dev.sh test` runs the full suite (100 assertions on the last runner
 build); the workflow is `.github/workflows/real-infra.yml`.
 
-Fifteen gates run on every push, each catching a specific class of drift. Six of them (marked) have a paired self-test that proves the gate goes red when its property is broken on purpose:
+Fifteen gates run on every push to `main`, every pull request and every `v*` tag (not for a documentation-only change, which skips the heavy workflow), each catching a specific class of drift. Six of them (marked) have a paired self-test that proves the gate goes red when its property is broken on purpose:
 
 | Gate | Fails when |
 |---|---|
@@ -97,7 +99,7 @@ Fifteen gates run on every push, each catching a specific class of drift. Six of
 | `drain_grace` | the SIGTERM drain timeout is not comfortably below the container/systemd stop grace period |
 | `postgres_durability` | the default dev Postgres is RAM-backed (the RAM one is opt-in) |
 | `secret_ownership` | a dev key is readable by anyone but its container uid, or is not mode 600 |
-| `no_secret_leak` | the worker registration token or its hash appears in service logs |
+| `no_secret_leak` | a worker registration token, the operator admin key, the platform service token, any of their hashes, or the KMS dev master key (hex or base64) appears in service logs |
 | `dsn_scrub_wiring` | a driver call site returns an error without scrubbing the DSN out of it |
 | `user_output_scrub` | `jobs.last_smtp_response` gains a reader outside its single accessor, `jobs.last_error_message` gains a reader in `platformapi/`, or `workerproto.Report.SMTPResponse` gains an unledgered consumer |
 

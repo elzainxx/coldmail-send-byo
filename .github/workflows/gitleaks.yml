@@ -22,6 +22,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same ref supersedes a scan still running: every scan covers the FULL history of every ref (`--all`), so the newer scan
+# covers everything the cancelled one would have. This workflow is deliberately NOT path-filtered: it runs on every push and every pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -29,7 +35,8 @@ jobs:
       GITLEAKS_VERSION: "8.30.1"
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to a full commit SHA (the tag is a comment for the reader; the SHA is what runs).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           submodules: false
