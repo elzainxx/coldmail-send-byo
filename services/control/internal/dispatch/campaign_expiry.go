@@ -130,7 +130,8 @@ func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int
 		var wouldFail int
 		if err := d.db.QueryRow(ctx,
 			`SELECT count(*) FROM send_byo.jobs
-			  WHERE campaign_id = ANY($1::uuid[]) AND state='queued' AND next_attempt_at <= NOW()`,
+			  WHERE campaign_id = ANY($1::uuid[]) AND state='queued' AND next_attempt_at <= NOW()
+			    AND cancel_requested_at IS NULL`,
 			ids).Scan(&wouldFail); err != nil {
 			return 0, err
 		}
@@ -188,7 +189,10 @@ func (d *Dispatcher) expireOneCampaign(ctx context.Context, campaignID, userID s
 			       completed_at=NOW(),
 			       last_error_message='campaign_expired: campaign_expiry_sec elapsed with no successful drain (§5.3)',
 			       updated_at=NOW()
-			 WHERE campaign_id=$1 AND state='queued' AND next_attempt_at <= NOW()`,
+			 WHERE id IN (SELECT id FROM send_byo.jobs
+			               WHERE campaign_id=$1 AND state='queued' AND next_attempt_at <= NOW()
+			                 AND cancel_requested_at IS NULL
+			               ORDER BY id FOR UPDATE)`,
 			campaignID); err != nil {
 			return err
 		}

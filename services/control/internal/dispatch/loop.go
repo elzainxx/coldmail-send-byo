@@ -42,6 +42,7 @@ const claimForUserQuery = `
 WITH claimed AS (
     SELECT id FROM send_byo.jobs j
     WHERE j.state = 'queued' AND j.next_attempt_at <= NOW() AND j.user_id = $1
+      AND j.cancel_requested_at IS NULL
       AND ` + notSuspendedFragment + `
     ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED
@@ -322,6 +323,7 @@ func (d *Dispatcher) snapshotActiveUsers(ctx context.Context) ([]string, error) 
 	rows, err := d.db.Query(ctx,
 		`SELECT DISTINCT j.user_id FROM send_byo.jobs j
 		  WHERE j.state='queued' AND j.next_attempt_at <= NOW()
+		    AND j.cancel_requested_at IS NULL
 		    AND NOT EXISTS (SELECT 1 FROM send_byo.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)`)
 	if err != nil {
 		return nil, err

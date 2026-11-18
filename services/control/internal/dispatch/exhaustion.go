@@ -136,6 +136,14 @@ func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, c
 // the internal reason is recorded in last_error_message + job_events.metadata. The platform report
 // shows only state:"failed" (two-vocabulary). Only READY jobs are failed — a job whose
 // next_attempt_at is still in the future (mid-backoff) is not yet due, so it is left to a later tick.
+//
+// Since send_byo_0056/0057 (the Phase 3 close-out's POST /v1/cancel) the rows are locked in id order (a locking
+// sub-select) before they are updated, and a row flagged cancel_requested_at is skipped. This statement is a
+// multi-row UPDATE over a user's whole ready queue, and cancel's second step runs the same shape over a
+// campaign's queued items; two multi-row writers locking an overlapping set in different heap orders is the
+// classic 40P01, so both take their row locks in the same (id) order. A flagged row is a campaign the tenant
+// has just stopped: it is about to be `cancelled`, and failing it here would report an exhaustion nobody
+// asked about. It changes nothing about WHICH other rows are failed.
 func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -146,7 +154,10 @@ func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error
 			       completed_at=NOW(),
 			       last_error_message='accounts_exhausted: all eligible accounts terminal_blocked (§5.1)',
 			       updated_at=NOW()
-			 WHERE user_id=$1 AND state='queued' AND next_attempt_at <= NOW()`, userID)
+			 WHERE id IN (SELECT id FROM send_byo.jobs
+			               WHERE user_id=$1 AND state='queued' AND next_attempt_at <= NOW()
+			                 AND cancel_requested_at IS NULL
+			               ORDER BY id FOR UPDATE)`, userID)
 		return err
 	})
 }

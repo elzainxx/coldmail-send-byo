@@ -205,7 +205,7 @@ if [[ "$pf_probe" == "401" ]]; then
   # enumerated here too — a route no gate enumerates is a route whose auth nobody checks, the
   # same class of gap as module 2's own off-by-one (§9.4, not back-ported).
   declare -A PLATFORM_ROUTES=(
-    ["POST /v1/quote"]=1 ["POST /v1/run"]=1 ["GET /v1/report"]=1 ["GET /v1/describe"]=1
+    ["POST /v1/quote"]=1 ["POST /v1/run"]=1 ["POST /v1/cancel"]=1 ["GET /v1/report"]=1 ["GET /v1/describe"]=1
     ["GET /v1/send-byo/accounts"]=1 ["POST /v1/send-byo/accounts"]=1
     ["GET /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
     ["PATCH /v1/send-byo/accounts/00000000-0000-0000-0000-000000000000"]=1
@@ -442,7 +442,7 @@ for r in "/healthz" "/readyz" "/v1/worker/register" "/v1/worker/heartbeat" \
          "/v1/admin/users/{id}/suspend" "/v1/admin/users/{id}/unsuspend" \
          "/v1/admin/users/{id}/suspension" \
          "/v1/admin/users/{id}/config" \
-         "/v1/quote" "/v1/run" "/v1/report" "/v1/describe" \
+         "/v1/quote" "/v1/run" "/v1/cancel" "/v1/report" "/v1/describe" \
          "/v1/send-byo/accounts" "/v1/send-byo/accounts/{id}" \
          "/v1/send-byo/accounts/{id}/events" "/v1/send-byo/accounts/{id}/disable" \
          "/v1/send-byo/accounts/{id}/pause" "/v1/send-byo/accounts/{id}/unpause" \

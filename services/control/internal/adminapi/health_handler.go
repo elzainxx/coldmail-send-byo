@@ -39,6 +39,8 @@ type healthResponse struct {
 		Failed             int `json:"failed"`
 		Bounced            int `json:"bounced"`
 		WaitingForCapacity int `json:"waiting_for_capacity"`
+		// Cancelled (additive, send_byo_0056/0057, Phase 3 close-out C1): items POST /v1/cancel stopped — terminal.
+		Cancelled int `json:"cancelled"`
 	} `json:"queue"`
 
 	Workers struct {
@@ -190,6 +192,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp.Queue.Failed = snap.Queue.Failed
 	resp.Queue.Bounced = snap.Queue.Bounced
 	resp.Queue.WaitingForCapacity = snap.Queue.WaitingForCapacity
+	resp.Queue.Cancelled = snap.Queue.Cancelled
 
 	resp.Workers.Active = snap.Workers.Active
 	resp.Workers.Stale = snap.Workers.Stale

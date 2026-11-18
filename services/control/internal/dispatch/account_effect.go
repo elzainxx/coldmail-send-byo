@@ -222,19 +222,23 @@ type failureRateWindow struct {
 // and dispatcher (failExhaustedJobs' terminal fails, a CONSEQUENCE of quarantine, never a cause) —
 // and, not incidentally, `system` (a job's genesis row, `to_state='queued' AND from_state IS NULL`,
 // which would otherwise quarantine a brand-new account the instant enough recipients were
-// enqueued). `to_state IN ('sent','queued')` excludes `bounced` (bounce never penalizes) and
+// enqueued). `to_state IN ('sent','queued','cancelled')` — 'cancelled' under actor 'box' is ONLY a worker-
+// reported failed attempt whose job POST /v1/cancel had flagged, so the guard (send_byo_0057) ended it
+// `cancelled` instead of requeueing it; the attempt still failed at this account, and cancelling a campaign
+// must not hide that from the account's health (POST /v1/cancel's own `queued -> cancelled` is actor
+// 'system' and is excluded by the actor filter) — excludes `bounced` (bounce never penalizes) and
 // `failed` (a terminal fail is a consequence, not an attempt) and also excludes `assigned`/
 // `sending` (forward progress, not a verdict).
 func (h *OutcomeHandler) queryFailureRateWindow(ctx context.Context, tx pgx.Tx, accountID string, windowSec int) (failureRateWindow, error) {
 	var w failureRateWindow
 	err := tx.QueryRow(ctx,
 		`SELECT count(*) AS attempts,
-		        count(*) FILTER (WHERE to_state = 'queued') AS failures
+		        count(*) FILTER (WHERE to_state IN ('queued', 'cancelled')) AS failures
 		   FROM send_byo.job_events
 		  WHERE account_id = $1
 		    AND created_at >= NOW() - INTERVAL '1 second' * $2
 		    AND actor = 'box'
-		    AND to_state IN ('sent', 'queued')`,
+		    AND to_state IN ('sent', 'queued', 'cancelled')`,
 		accountID, windowSec).Scan(&w.attempts, &w.failures)
 	return w, err
 }

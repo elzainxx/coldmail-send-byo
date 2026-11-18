@@ -66,8 +66,10 @@ The full threat model, what each boundary actually protects, and the honest resi
    buffered and idempotently replayed across Control restarts and DB outages.
 
 The job state machine (`queued → assigned → sending → sent`, plus `sending → queued` requeue,
-`sending → bounced`, `queued → failed`) is drawn in
-`send_byo_job_lifecycle_states.svg`. Diagnosing where a job is stuck is
+`sending → bounced`, `queued → failed`, and — since the Phase 3 close-out's `POST /v1/cancel` — the terminal
+`cancelled`: `queued → cancelled`, and a flagged in-flight item's failed attempt ends `cancelled` instead of
+returning to `queued`) is drawn in `module-3-job-states.mermaid` (the older `send_byo_job_lifecycle_states.svg`
+predates `cancelled`). Diagnosing where a job is stuck is
 `operator-runbook.md`.
 
 ## Where each guarantee lives

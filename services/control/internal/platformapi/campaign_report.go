@@ -10,8 +10,9 @@ package platformapi
 // failed (terminal, true pool exhaustion — refundable, platform's policy), bounced (terminal,
 // recipient-permanent — billable). All three, plus plain pending, are surfaced as aggregate COUNTS
 // in totals — the per-item state stays exactly the send_byo.job_state enum value (queued/assigned/
-// sending/sent/failed/bounced); waiting_for_capacity is an AGGREGATE distinction, not a new
-// per-job state (§2.3).
+// sending/sent/failed/bounced/cancelled); waiting_for_capacity is an AGGREGATE distinction, not a new
+// per-job state (§2.3). `cancelled` (Phase 3 close-out C1) is a seventh, TERMINAL state and totals gain
+// `cancelled`.
 
 import (
 	"context"
@@ -32,6 +33,10 @@ type campaignTotals struct {
 	InFlight           int `json:"in_flight"`
 	Pending            int `json:"pending"`
 	WaitingForCapacity int `json:"waiting_for_capacity"`
+	// Cancelled (additive, send_byo_0056/0057, Phase 3 close-out C1): items POST /v1/cancel stopped. TERMINAL: it
+	// is part of progress.terminal and therefore of is_complete, so a cancelled campaign reads as complete once
+	// its in-flight items have finished — and it is never charged (nothing was sent).
+	Cancelled int `json:"cancelled"`
 }
 
 // campaignItem mirrors one entry of §2.2's "items.results" array — the SAME clean external
@@ -115,7 +120,9 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 		return
 	}
 
-	terminal := totals.Sent + totals.Bounced + totals.Failed
+	// cancelled is TERMINAL (send_byo_0056): an item the platform stopped is as settled as one that was sent, so
+	// it counts toward progress and is_complete.
+	terminal := totals.Sent + totals.Bounced + totals.Failed + totals.Cancelled
 	fractionComplete := 0.0
 	if totals.Total > 0 {
 		fractionComplete = float64(terminal) / float64(totals.Total)
@@ -186,6 +193,7 @@ SELECT
     COUNT(*) FILTER (WHERE state = 'sent') AS sent,
     COUNT(*) FILTER (WHERE state = 'bounced') AS bounced,
     COUNT(*) FILTER (WHERE state = 'failed') AS failed,
+    COUNT(*) FILTER (WHERE state = 'cancelled') AS cancelled,
     COUNT(*) FILTER (WHERE state IN ('assigned', 'sending')) AS in_flight,
     COUNT(*) FILTER (WHERE state = 'queued') AS pending_total,
     COUNT(*) FILTER (WHERE state = 'queued' AND NOT EXISTS (
@@ -196,7 +204,7 @@ FROM scoped`
 	var totals campaignTotals
 	var pendingTotal int
 	if err := s.db.QueryRow(ctx, q, campaignID, userID, tz, throttleSec, hour).Scan(
-		&totals.Total, &totals.Sent, &totals.Bounced, &totals.Failed, &totals.InFlight,
+		&totals.Total, &totals.Sent, &totals.Bounced, &totals.Failed, &totals.Cancelled, &totals.InFlight,
 		&pendingTotal, &totals.WaitingForCapacity); err != nil {
 		return campaignTotals{}, err
 	}

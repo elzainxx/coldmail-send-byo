@@ -50,6 +50,7 @@ type queueCounts struct {
 	Failed             int
 	Bounced            int
 	WaitingForCapacity int
+	Cancelled          int // additive (send_byo_0056/0057): items POST /v1/cancel stopped
 }
 
 type workerCounts struct {
@@ -216,6 +217,8 @@ func queryQueueCounts(ctx context.Context, db *pgxpool.Pool) (queueCounts, error
 			q.Failed = n
 		case "bounced":
 			q.Bounced = n
+		case "cancelled":
+			q.Cancelled = n
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -483,8 +486,10 @@ ORDER BY qu.user_id`
 //	    regardless of what any present or future writer stamps into the column: a success can never
 //	    be counted as an error, because `sending -> sent` is excluded by shape.
 //
-// The transition shape mirrors send_byo.fn_job_event_is_error_transition (send_byo_0022) — terminal
-// 'failed'/'bounced', plus a requeue (a non-genesis transition back to 'queued'). Kept in both
+// The transition shape mirrors send_byo.fn_job_event_is_error_transition (send_byo_0022, widened by
+// send_byo_0057) — terminal 'failed'/'bounced', plus a requeue (a non-genesis transition back to 'queued'),
+// plus an in-flight item that ended 'cancelled' instead of requeueing (POST /v1/cancel's guard: the attempt
+// still failed, so it is still an error; a 'queued' -> 'cancelled' cancel is NOT). Kept in both
 // places on purpose: the trigger governs what is WRITTEN, this governs what is COUNTED, and the
 // counter must stay right over rows written by an older trigger.
 func queryErrorsInWindow(ctx context.Context, db *pgxpool.Pool, windowSec int) (map[string]int, error) {
@@ -493,7 +498,8 @@ func queryErrorsInWindow(ctx context.Context, db *pgxpool.Pool, windowSec int) (
 		   FROM send_byo.job_events
 		  WHERE error_class IS NOT NULL
 		    AND (to_state IN ('failed','bounced')
-		         OR (to_state = 'queued' AND from_state IS NOT NULL))
+		         OR (to_state = 'queued' AND from_state IS NOT NULL)
+		         OR (to_state = 'cancelled' AND from_state IN ('assigned','sending')))
 		    AND created_at >= NOW() - INTERVAL '1 second' * $1
 		  GROUP BY error_class`, windowSec)
 	if err != nil {

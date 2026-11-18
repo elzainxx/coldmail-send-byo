@@ -216,6 +216,7 @@ WITH claimed AS (
     SELECT id FROM send_byo.jobs j
     WHERE j.state = 'queued' AND j.next_attempt_at <= NOW()
       AND j.provider_message_id IS NULL
+      AND j.cancel_requested_at IS NULL
       AND ` + notSuspendedFragment + `
     ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED

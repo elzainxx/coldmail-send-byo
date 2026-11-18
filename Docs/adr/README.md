@@ -17,9 +17,10 @@ module repositories use the same layout and file naming. The numbers, titles and
 | [ADR-0017](./ADR-0017-dispatch-kill-switch-becomes-a-graduated-rung-ladder.md) | The dispatch kill-switch becomes a graduated rung ladder; `dispatch_enabled` is composed into it | accepted |
 | [ADR-0018](./ADR-0018-every-autonomous-mutator-gets-a-shadow-ladder.md) | Every autonomous mutator gets an `off`/`shadow`/`enforce` ladder seeded at `shadow` | accepted |
 | [ADR-0019](./ADR-0019-the-mvcc-recheck-path-is-forced-by-a-test-only-rls-gate.md) | The consume's MVCC re-check path is forced by a test-only row-level-security gate, not left to volume | accepted |
+| [ADR-0020](./ADR-0020-post-v1-cancel-flags-then-cancels-and-the-guard-lives-in-the-database.md) | `POST /v1/cancel` flags, then cancels, in two transactions; "an in-flight item never returns to the queue once cancelled" is enforced by a database guard | accepted |
 
 **Decisions made after ADR-0018 that have no ADR of their own are recorded in [`../open-decisions.md`](../open-decisions.md) under their own ids** (`M3-CI-OD-1` … `M3-CI-OD-4`: rooted DNS names, SPF
 CIDR lengths, macro-bearing SPF targets, every image pinned by digest). They were ruled and implemented without an ADR of their own because each is fully
 specified, with its evidence and its controls, in its ledger entry; if one is ever superseded it gets an ADR (ADR-0020 onward) that points back at the entry.
 
-**Next number: ADR-0020.**
+**Next number: ADR-0021.**

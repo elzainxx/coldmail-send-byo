@@ -149,6 +149,8 @@ func (e *testEnv) seedHealthJob(t *testing.T, targetState string) string {
 			setClause = `state='failed', completed_at=NOW(), lease_expires_at=NULL`
 		case "bounced":
 			setClause = `state='bounced', completed_at=NOW(), lease_expires_at=NULL`
+		case "cancelled":
+			setClause = `state='cancelled', completed_at=NOW(), lease_expires_at=NULL`
 		}
 		if _, err := tx2.Exec(ctx, `UPDATE send_byo.jobs SET `+setClause+` WHERE id=$1`, jobID); err != nil {
 			t.Fatalf("update step %s: %v", st, err)
@@ -191,6 +193,8 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 	e.seedHealthJob(t, "sent")
 	e.seedHealthJob(t, "failed")
 	e.seedHealthJob(t, "bounced")
+	e.seedHealthJob(t, "cancelled") // Phase 3 close-out C1 (send_byo_0056): the seventh state is counted too
+	e.seedHealthJob(t, "cancelled")
 
 	// --- Workers: one active (fresh heartbeat), one stale (old heartbeat), one disabled. ---
 	e.seedHealthWorker(t, "active", 5)
@@ -229,7 +233,10 @@ func TestHealth_ReportsTrueStateUnderKnownMix(t *testing.T) {
 	if !ok {
 		t.Fatalf("response missing queue object: %s", resp.raw)
 	}
-	for _, st := range []string{"queued", "sending", "sent", "failed", "bounced"} {
+	if wantQueue["cancelled"] != 2 {
+		t.Fatalf("precondition: %d cancelled jobs seeded, want 2 (a count of 0 on both sides would prove nothing)", wantQueue["cancelled"])
+	}
+	for _, st := range []string{"queued", "sending", "sent", "failed", "bounced", "cancelled"} {
 		got := intField(t, queue, st)
 		if got != wantQueue[st] {
 			t.Fatalf("queue.%s=%d, want %d (direct DB COUNT) — full queue block: %+v", st, got, wantQueue[st], queue)

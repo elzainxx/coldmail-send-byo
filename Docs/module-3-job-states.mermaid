@@ -1,0 +1,32 @@
+%% Module 3 job state machine, including POST /v1/cancel (Phase 3 close-out C1).
+%% The older drawing, send_byo_job_lifecycle_states.svg, predates `cancelled`; this file is the current one.
+%% Source of truth for the states: the send_byo.job_state enum (send_byo_0003, plus 'cancelled' at send_byo_0056),
+%% published live in GET /v1/describe -> vocabularies.job_state.
+stateDiagram-v2
+    [*] --> queued: POST /v1/run (one job per job_item_id)
+
+    queued --> assigned: the dispatcher claims it (FOR UPDATE SKIP LOCKED; a job flagged cancel_requested_at is never claimed)
+    assigned --> sending: an eligible account is consumed and the job is pushed to a worker
+    sending --> sent: the worker reports SMTP accepted (provider_message_id set)
+    sending --> bounced: the worker reports a permanent recipient rejection (550)
+
+    sending --> queued: a retryable failure (4xx, timeout, throttle, auth) requeues with backoff
+    assigned --> queued: no account or no worker (requeue) / lease expired (reclaim)
+    sending --> queued: dead worker / lease expired (reclaim)
+
+    queued --> failed: every account the user has is blocked (exhaustion sweep), or campaign expiry at enforce
+
+    queued --> cancelled: POST /v1/cancel (an item not yet claimed)
+    assigned --> cancelled: a flagged item whose claim falls through (requeue becomes cancelled, never queued again)
+    sending --> cancelled: a flagged item whose attempt FAILS, or whose worker died (the guard turns the requeue into cancelled)
+
+    sent --> [*]
+    bounced --> [*]
+    failed --> [*]
+    cancelled --> [*]
+
+    note right of cancelled
+        Terminal. Never sent (a flagged item that is already
+        assigned/sending FINISHES: sent or bounced, reported once).
+        A second POST /v1/cancel changes nothing.
+    end note

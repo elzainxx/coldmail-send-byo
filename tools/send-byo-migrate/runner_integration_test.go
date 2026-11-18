@@ -119,13 +119,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	// alignment-fix-plan item 9: the (user_id, first_seen_at, id) index the new user-facing
 	// notifications read route pages on — neither 0033 index can serve that query). Then 0054 (the P2
 	// close-out's suspension READ route: the monotonic `version` column on user_suspensions that
-	// GET /v1/admin/users/{id}/suspension returns). This is the executable expectation of the migration
-	// chain.
+	// GET /v1/admin/users/{id}/suspension returns). Then the Phase 3 close-out's 0055 (C4: the SMTP host
+	// allowlist seed), 0056 (C1: the job_state enum value `cancelled`, a file of its own because Postgres
+	// refuses to use a value in the transaction that added it) and 0057 (C1: the cancel_requested_at column,
+	// the widened completed_at CHECK and the cancel guard trigger). This is the executable expectation of the
+	// migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055", "0056", "0057"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -620,6 +623,44 @@ func TestRunnerLifecycle(t *testing.T) {
 	if v, d := configValueAndDefault(t, admin, "unit_price_credits"); v != `{"v": 0}` || d != `{"v": 0}` {
 		t.Fatalf("after Up: unit_price_credits value=%s default_value=%s, want both {\"v\": 0} (0048 not applied, or seeded the wrong shape)", v, d)
 	}
+	// 0056/0057 (Phase 3 close-out C1, POST /v1/cancel). The enum value is last (the order describe publishes),
+	// the six existing values are untouched, and the schema half is driven, not just read out of the catalog.
+	if !enumValueExists(t, admin, "job_state", "cancelled") {
+		t.Fatal("after Up: send_byo.job_state is missing value 'cancelled' (0056 not applied)")
+	}
+	for _, v := range []string{"queued", "assigned", "sending", "sent", "failed", "bounced"} {
+		if !enumValueExists(t, admin, "job_state", v) {
+			t.Fatalf("after Up: send_byo.job_state is missing pre-existing value %q -- 0056's ADD VALUE must never remove one", v)
+		}
+	}
+	if got := jobStateOrder(t, admin); got != "queued,assigned,sending,sent,failed,bounced,cancelled" {
+		t.Fatalf("after Up: job_state order = %q, want the six original values in place and cancelled LAST (describe.vocabularies.job_state publishes this order)", got)
+	}
+	if !columnExists(t, admin, "jobs", "cancel_requested_at") {
+		t.Fatal("after Up: send_byo.jobs.cancel_requested_at missing (0057 not applied)")
+	}
+	cp := cancelGuardProbe(t, admin)
+	if cp.flaggedState != "cancelled" || !cp.flaggedCompleted || !cp.flaggedLeaseCleared || cp.flaggedEvents != 1 {
+		t.Fatalf("after Up: a FLAGGED job moved assigned->queued reads state=%q completed_at set=%v lease cleared=%v events to cancelled=%d, want cancelled/true/true/1 (0057's guard did not turn the requeue into a cancel)",
+			cp.flaggedState, cp.flaggedCompleted, cp.flaggedLeaseCleared, cp.flaggedEvents)
+	}
+	// The paired control: the SAME requeue on a job nobody flagged must stay queued, or the assertion above
+	// would pass for a guard that cancels every requeue.
+	if cp.unflaggedState != "queued" {
+		t.Fatalf("after Up: an UNFLAGGED job moved assigned->queued reads state=%q, want queued (the guard must act only on a row cancel flagged)", cp.unflaggedState)
+	}
+	if cp.flaggedEventErrorClass != "unknown" {
+		t.Fatalf("after Up: the assigned->cancelled event of a failed in-flight attempt carries error_class %q, want \"unknown\" (0057 did not teach fn_job_event_is_error_transition that this is an error transition: the operator errors metric and the account failure window would stop counting a real failure)", cp.flaggedEventErrorClass)
+	}
+	if cp.queuedCancelEventErrorClass != "" {
+		t.Fatalf("after Up: the queued->cancelled event of POST /v1/cancel carries error_class %q, want NULL (a cancel is not an error; a sticky earlier failure must not be stamped onto it)", cp.queuedCancelEventErrorClass)
+	}
+	if cp.cancelledWithoutCompletedAccepted {
+		t.Fatal("after Up: jobs_completed_at_valid_check accepted state='cancelled' with completed_at NULL (0057 did not move cancelled to the terminal branch)")
+	}
+	if !cp.cancelledWithCompletedAccepted {
+		t.Fatal("after Up: jobs_completed_at_valid_check rejected state='cancelled' with completed_at set (the control: the rejection above would otherwise be some other failure)")
+	}
 
 	// FORCE RLS is set on the crown-jewel credential table.
 	if !accountsForceRLS(t, admin) {
@@ -637,6 +678,36 @@ func TestRunnerLifecycle(t *testing.T) {
 	// --- Down: reverse the feature chain in strict reverse order (0015 -> 0001), proving each
 	// migration's DOWN is real, then finally the bootstrap 0000 which drops the schema. The first
 	// step (0015) exercises the runner's non-transactional DROP INDEX CONCURRENTLY down path. ---
+	// --- 0057's down REFUSES while a `cancelled` row exists (its header says so): restoring the original
+	// completed_at CHECK would have to rewrite or delete the record that the platform asked for a stop, and a
+	// schema revert has no business doing that. Driven for real, BEFORE the loop reverses it: one committed
+	// cancelled job, a Down that must fail and roll back WHOLE, then the row is removed and the loop proceeds. ---
+	cancelledJob := seedCommittedCancelledJob(t, admin)
+	if err := r.Down(ctx, "0057"); err == nil {
+		t.Fatal("Down 0057 succeeded while a job is in state 'cancelled': it must refuse (and roll back) rather than rewrite or delete cancelled rows")
+	}
+	if got := versions(t, admin); !equalStrings(got, wantChain) {
+		t.Fatalf("after the REFUSED Down 0057: versions = %v, want the full chain %v (the failed down did not roll back)", got, wantChain)
+	}
+	if !columnExists(t, admin, "jobs", "cancel_requested_at") || !functionExists(t, admin, "fn_jobs_cancel_guard") {
+		t.Fatal("after the REFUSED Down 0057: cancel_requested_at / fn_jobs_cancel_guard are gone (the failed down left a partial revert)")
+	}
+	// The paired control: with the cancelled row removed, the SAME down succeeds (so the refusal above was
+	// the cancelled row and nothing else), then 0057 is re-applied so the loop below starts from the full chain.
+	mustExec(t, admin, "DELETE FROM send_byo.jobs WHERE id = '"+cancelledJob+"'")
+	if err := r.Down(ctx, "0057"); err != nil {
+		t.Fatalf("Down 0057 with no cancelled row: %v (the control: the refusal above must be the cancelled row, not a broken down)", err)
+	}
+	if columnExists(t, admin, "jobs", "cancel_requested_at") || functionExists(t, admin, "fn_jobs_cancel_guard") {
+		t.Fatal("after Down 0057 (no cancelled rows): cancel_requested_at or fn_jobs_cancel_guard is still present")
+	}
+	if err := r.Up(ctx); err != nil {
+		t.Fatalf("re-Up after Down 0057: %v", err)
+	}
+	if got := versions(t, admin); !equalStrings(got, wantChain) {
+		t.Fatalf("after re-Up: versions = %v, want %v", got, wantChain)
+	}
+
 	for i := len(wantChain) - 1; i >= 1; i-- {
 		v := wantChain[i]
 		if err := r.Down(ctx, v); err != nil {
@@ -815,6 +886,39 @@ func TestRunnerLifecycle(t *testing.T) {
 				if !configKeyExists(t, admin, key) {
 					t.Fatalf("after Down 0053: %q is GONE — 0053's down must remove exactly its own four rows. autoquarantine_mode and dispatch_mode belong to EARLIER migrations that have not been reversed yet at this point in the loop, and every boolean/tuning key it gates has live consumers of its own", key)
 				}
+			}
+		}
+		// 0057's down removes the column, the guard trigger and its function, and restores the original
+		// completed_at CHECK; 0056's own down is the documented NO-OP for the enum value (Postgres has no
+		// DROP VALUE and the enum is additive-only forever), so 'cancelled' must SURVIVE both -- asserting
+		// that it vanished would be asserting something that cannot happen. The paired half of each up.
+		if v == "0057" {
+			if columnExists(t, admin, "jobs", "cancel_requested_at") {
+				t.Fatal("after Down 0057: send_byo.jobs.cancel_requested_at still present (down did not drop it)")
+			}
+			if functionExists(t, admin, "fn_jobs_cancel_guard") {
+				t.Fatal("after Down 0057: send_byo.fn_jobs_cancel_guard still present (down did not drop it)")
+			}
+			if !enumValueExists(t, admin, "job_state", "cancelled") {
+				t.Fatal("after Down 0057: job_state lost 'cancelled' -- impossible without recreating the type, which 0057's down must not do (0056 owns the value)")
+			}
+			// the error-context predicate is back to 0022's body (cancelled is not an error transition again), and
+			// still true for the requeue it always covered -- the control that the function was replaced, not dropped.
+			if isErrorTransition(t, admin, "sending", "cancelled") {
+				t.Fatal("after Down 0057: fn_job_event_is_error_transition still treats sending->cancelled as an error (down did not restore 0022's body)")
+			}
+			if !isErrorTransition(t, admin, "sending", "queued") {
+				t.Fatal("after Down 0057: fn_job_event_is_error_transition no longer treats sending->queued as an error (down dropped or broke 0022's predicate instead of restoring it)")
+			}
+			// the ORIGINAL constraint is back: a `cancelled` state with completed_at set is no longer the
+			// terminal branch, so it is refused (the reverse of the up-assertion).
+			if cancelledWithCompletedAcceptedBare(t, admin) {
+				t.Fatal("after Down 0057: jobs_completed_at_valid_check still accepts state='cancelled' with completed_at set (down did not restore the 0007 constraint)")
+			}
+		}
+		if v == "0056" {
+			if !enumValueExists(t, admin, "job_state", "cancelled") {
+				t.Fatal("after Down 0056: job_state lost 'cancelled' -- 0056's down is a documented no-op for the value (Postgres cannot drop an enum value)")
 			}
 		}
 		// The paired half of 0055's up-assertion: the seeded key is removed and ONLY that key (the count is
@@ -1072,6 +1176,196 @@ func insertJobAndTransition(t *testing.T, c *pgx.Conn, recipient string) string 
 		return ""
 	}
 	return *domain
+}
+
+// jobStateOrder returns the job_state labels in enumsortorder, comma-joined: the order
+// describe.vocabularies.job_state publishes.
+func jobStateOrder(t *testing.T, c *pgx.Conn) string {
+	t.Helper()
+	rows, err := c.Query(context.Background(),
+		`SELECT e.enumlabel FROM pg_enum e JOIN pg_type ty ON ty.oid = e.enumtypid JOIN pg_namespace n ON n.oid = ty.typnamespace
+		  WHERE n.nspname = 'send_byo' AND ty.typname = 'job_state' ORDER BY e.enumsortorder`)
+	if err != nil {
+		t.Fatalf("job_state order: %v", err)
+	}
+	defer rows.Close()
+	var labels []string
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			t.Fatal(err)
+		}
+		labels = append(labels, l)
+	}
+	return strings.Join(labels, ",")
+}
+
+// seedCancelFixture inserts a throwaway tenant, one job_item per suffix and a queued send_byo.jobs row for
+// each, inside tx, and returns the job ids in suffix order. Several jobs let the probe run a flagged job and
+// its unflagged control against the same schema in one rolled-back transaction.
+func seedCancelFixture(t *testing.T, ctx context.Context, tx pgx.Tx, suffixes ...string) []string {
+	t.Helper()
+	var userID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO public.users (email, is_active) VALUES ('j0057-cancel-probe@sender.local', true) RETURNING id`).Scan(&userID); err != nil {
+		t.Fatalf("0057 probe: seed user: %v", err)
+	}
+	var ids []string
+	for _, sfx := range suffixes {
+		var itemID string
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO public.job_items (campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, status)
+			 VALUES ($1, $1, $2, 's', 'b', 'r@x.com', 'pending') RETURNING id`,
+			userID, "rcpt-"+sfx+"@probe0057.example").Scan(&itemID); err != nil {
+			t.Fatalf("0057 probe: seed job_item %s: %v", sfx, err)
+		}
+		var jobID string
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO send_byo.jobs (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+			 VALUES ($1, $2, $2, $3, 's', 'b', 'r@x.com', 'queued', NOW()) RETURNING id`,
+			itemID, userID, "rcpt-"+sfx+"@probe0057.example").Scan(&jobID); err != nil {
+			t.Fatalf("0057 probe: seed job %s: %v", sfx, err)
+		}
+		ids = append(ids, jobID)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('send_byo.actor', 'dispatcher', true)`); err != nil {
+		t.Fatalf("0057 probe: set actor: %v", err)
+	}
+	return ids
+}
+
+// cancelProbeResult is what cancelGuardProbe observed.
+type cancelProbeResult struct {
+	flaggedState                      string // a job flagged cancel_requested_at, moved assigned->queued
+	flaggedCompleted                  bool
+	flaggedLeaseCleared               bool
+	flaggedEvents                     int    // job_events rows assigned->cancelled for that job
+	flaggedEventErrorClass            string // error_class stamped on that assigned->cancelled event ("" = NULL)
+	queuedCancelEventErrorClass       string // error_class on a queued->cancelled event of a job that failed earlier ("" = NULL)
+	unflaggedState                    string // the same move on an unflagged job (the control)
+	cancelledWithoutCompletedAccepted bool   // state='cancelled', completed_at NULL accepted by the CHECK?
+	cancelledWithCompletedAccepted    bool   // state='cancelled', completed_at set accepted by the CHECK?
+}
+
+// cancelGuardProbe drives send_byo_0057 for real in a transaction it rolls back: the guard (flagged vs the
+// unflagged control) and the widened completed_at CHECK (both directions).
+func cancelGuardProbe(t *testing.T, c *pgx.Conn) cancelProbeResult {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin 0057 probe: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- nothing is committed; the probe leaves no rows
+	ids := seedCancelFixture(t, ctx, tx, "flagged", "plain", "chk-bad", "chk-ok", "failed-then-cancelled")
+	flagged, plain, chkBad, chkOK, failedThenCancelled := ids[0], ids[1], ids[2], ids[3], ids[4]
+
+	for _, id := range []string{flagged, plain} {
+		if _, err := tx.Exec(ctx,
+			`UPDATE send_byo.jobs SET state = 'assigned', lease_expires_at = NOW() + INTERVAL '5 minutes' WHERE id = $1`, id); err != nil {
+			t.Fatalf("0057 probe: claim %s: %v", id, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE send_byo.jobs SET cancel_requested_at = NOW() WHERE id = $1`, flagged); err != nil {
+		t.Fatalf("0057 probe: flag: %v", err)
+	}
+	// The requeue every in-flight failure path performs: state back to queued, lease cleared.
+	for _, id := range []string{flagged, plain} {
+		if _, err := tx.Exec(ctx,
+			`UPDATE send_byo.jobs SET state = 'queued', lease_expires_at = NULL, next_attempt_at = NOW(),
+			        last_error_class = 'unknown', last_error_message = 'probe' WHERE id = $1`, id); err != nil {
+			t.Fatalf("0057 probe: requeue %s: %v", id, err)
+		}
+	}
+	var res cancelProbeResult
+	if err := tx.QueryRow(ctx,
+		`SELECT state::text, completed_at IS NOT NULL, lease_expires_at IS NULL FROM send_byo.jobs WHERE id = $1`, flagged).
+		Scan(&res.flaggedState, &res.flaggedCompleted, &res.flaggedLeaseCleared); err != nil {
+		t.Fatalf("0057 probe: read flagged: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM send_byo.job_events WHERE job_id = $1 AND to_state = 'cancelled' AND from_state = 'assigned'`, flagged).
+		Scan(&res.flaggedEvents); err != nil {
+		t.Fatalf("0057 probe: read events: %v", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT state::text FROM send_byo.jobs WHERE id = $1`, plain).Scan(&res.unflaggedState); err != nil {
+		t.Fatalf("0057 probe: read unflagged: %v", err)
+	}
+	// The error context of the failed attempt's event: the guard's `assigned -> cancelled` row is an ERROR
+	// transition (the attempt failed), so it carries the class; a plain `queued -> cancelled` -- the cancel
+	// itself, of a job that failed once earlier and so still holds a sticky last_error_class -- is NOT, and must
+	// not be stamped with that old failure (the defect send_byo_0022 fixed).
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(error_class::text, '') FROM send_byo.job_events WHERE job_id = $1 AND to_state = 'cancelled'`, flagged).
+		Scan(&res.flaggedEventErrorClass); err != nil {
+		t.Fatalf("0057 probe: read flagged event error class: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE send_byo.jobs SET last_error_class = 'unknown', last_error_message = 'earlier failure' WHERE id = $1`, failedThenCancelled); err != nil {
+		t.Fatalf("0057 probe: give the job an earlier failure: %v", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE send_byo.jobs SET state = 'cancelled', completed_at = NOW() WHERE id = $1`, failedThenCancelled); err != nil {
+		t.Fatalf("0057 probe: cancel a queued job: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(error_class::text, '') FROM send_byo.job_events WHERE job_id = $1 AND to_state = 'cancelled'`, failedThenCancelled).
+		Scan(&res.queuedCancelEventErrorClass); err != nil {
+		t.Fatalf("0057 probe: read queued-cancel event error class: %v", err)
+	}
+
+	// The CHECK, both directions, each in its own savepoint (a failed statement aborts a transaction).
+	bad, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("0057 probe: savepoint: %v", err)
+	}
+	_, badErr := bad.Exec(ctx, `UPDATE send_byo.jobs SET state = 'cancelled' WHERE id = $1`, chkBad)
+	_ = bad.Rollback(ctx)
+	res.cancelledWithoutCompletedAccepted = badErr == nil
+	ok, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("0057 probe: savepoint: %v", err)
+	}
+	_, okErr := ok.Exec(ctx, `UPDATE send_byo.jobs SET state = 'cancelled', completed_at = NOW() WHERE id = $1`, chkOK)
+	_ = ok.Rollback(ctx)
+	res.cancelledWithCompletedAccepted = okErr == nil
+	return res
+}
+
+// cancelledWithCompletedAcceptedBare reports whether jobs_completed_at_valid_check accepts a row in state
+// `cancelled` with completed_at set. After 0057 it does; after 0057's down (the 0007 text) it must not.
+func cancelledWithCompletedAcceptedBare(t *testing.T, c *pgx.Conn) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin 0057 down probe: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- nothing is committed
+	ids := seedCancelFixture(t, ctx, tx, "down-probe")
+	_, err = tx.Exec(ctx, `UPDATE send_byo.jobs SET state = 'cancelled', completed_at = NOW() WHERE id = $1`, ids[0])
+	return err == nil
+}
+
+// seedCommittedCancelledJob commits one job in state `cancelled` (with its job_events history) and returns its
+// id. The caller removes it (jobs -> job_events is ON DELETE CASCADE).
+func seedCommittedCancelledJob(t *testing.T, c *pgx.Conn) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin committed cancelled job: %v", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- a no-op after the Commit below
+	ids := seedCancelFixture(t, ctx, tx, "committed")
+	if _, err := tx.Exec(ctx,
+		`UPDATE send_byo.jobs SET state = 'cancelled', completed_at = NOW() WHERE id = $1`, ids[0]); err != nil {
+		t.Fatalf("committed cancelled job: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit cancelled job: %v", err)
+	}
+	return ids[0]
 }
 
 // columnExists reports whether send_byo.<table> has a column of the given name.

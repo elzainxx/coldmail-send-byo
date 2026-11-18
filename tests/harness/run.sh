@@ -507,6 +507,12 @@ hr; echo "SUITE 11: Module 3 Phase 3 C2 — verify-on-add LIVE end-to-end (real 
 # shellcheck disable=SC1091
 source tests/harness/phase3_verify.sh
 
+hr; echo "SUITE 12: Phase 3 close-out C1 — POST /v1/cancel LIVE (real Control, real Postgres, real migrations 0056/0057)"; hr
+# C1a auth/validation, C1b another tenant's call changes nothing, C1c the owner's call cancels exactly its queued
+# items (one event each), C1d idempotent + visible in the campaign report. Reuses phase3_send.sh's $PSQL/$PSQL1/$PLTOK.
+# shellcheck disable=SC1091
+source tests/harness/phase3_cancel.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr

@@ -28,7 +28,7 @@ Start at the [root README](../README.md) if you have not already.
 | [`history/`](./history/README.md) | Provenance: the locked phase specs, the build plan, the closed plans, module 2's carried-across record, and [`RELOCATED.md`](./history/RELOCATED.md) — the key to where every moved document went. Frozen: files here are not edited, only added to. |
 | [`user-facing-copy.md`](./user-facing-copy.md) | The audit of every sentence a user reads (From gate, SMTP error framing, notification templates, account-event reason text). Specific to this module — it is the only one with user-facing prose. Backed by [`user-copy-strings.txt`](./user-copy-strings.txt), which is CHECKED: the `user_copy_ledger` gate keeps the ledger, the code's `// copy-ledger:` markers and this document the same set of strings ([FW-M3-21](./future-work.md#fw-m3-21--the-user-copy-ledger-gate-m3-p8-od-3-ruled-gate--built-2026-11-14)). |
 | `config-manifest.txt`, `config-consumers.txt`, `user-output-readers.txt`, `current-phase.txt` | Machine-readable inputs to the gates (`config_drift`, `config_consumption`, `user_output_scrub`). Not prose — do not hand-edit without re-running the gate that reads them. |
-| `send_byo_backend_architecture.svg`, `send_byo_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid` | The canonical diagrams. |
+| `send_byo_backend_architecture.svg`, `send_byo_job_lifecycle_states.svg`, `module-3-architecture.mermaid`, `module-3-account-states.mermaid`, `module-3-job-states.mermaid` (the current job state machine, including `cancelled`) | The canonical diagrams. |
 
 **Operating rules for changing the code** are in [`../CLAUDE.md`](../CLAUDE.md) — canonical, and deliberately not mirrored here.
 

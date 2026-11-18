@@ -181,6 +181,7 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 | POST | `/v1/quote` | Phase 3; M3-Phase 7 | **M3-Phase 7 §4 (M3-P7-OD-11): a FEASIBILITY check, not a cost lookup** — module 3 prices as a flat monthly subscription (`module-3-build-plan.md` §1: no per-send charge, no per-recipient price), so `quote` answers *"can this run, how many recipients, within which cap, and roughly how long at current capacity?"* rather than computing a bill. Body now requires `user_id` (M3-P7-OD-5 — every field below is per-user; additive to the request) alongside `recipient_count`. Response: `feasible` (bool — **`false` means the request CANNOT be accepted as submitted**; a campaign merely exceeding today's daily capacity is `true` with a long projection, never `false` — conflating "slow" with "cannot run" is the one thing this endpoint must never do), `reasons[]` (empty when feasible; one entry per binding constraint — `exceeds_queue_cap` carrying `limit`/`requested`/`cap_name`, `no_eligible_accounts`, `all_accounts_unverified`, `from_gate_blocked`, `dispatch_disabled`), `capacity` (`eligible_accounts`, `daily_capacity_remaining`, `effective_concurrency`, and — **REQUIRED and non-null on every `feasible:true` response, never omitted** — `estimated_duration_sec` + `estimate_basis:"current_eligible_capacity"`, both entirely omitted together only when `quote_capacity_projection_enabled=false`), `caps` (the user's resolved `queue_depth_cap`/`daily_send_cap`/`account_count_cap`, override→global per M3-Phase 6 §1), and `warnings[]` (empty by default; an explicit `long_duration` object — `code`, `estimated_duration_sec`, `threshold_sec` — appears when the projection crosses `quote_long_duration_warn_sec`, never a bare number the caller must independently judge). The legacy `cost`/`currency`/`unit_price_credits`/`tier` fields are **retained** (Rule 5 — never removed) but are now **inert**: `unit_price_credits` is seeded `0` (`send_byo_0048`), so `cost` is always `0` at the default — the fields exist purely for contract compatibility with the additive shape module 2 established, not meaningful pricing. **A client must not infer that inertness from the `0` itself** — a zero cost is indistinguishable from a broken price lookup, and this endpoint returns `200` either way (audit finding **D22** / fix-plan item 5b: the defect was the silence, not the number). `describe` declares it explicitly via `pricing.cost_fields_inert`, and that is the field a cost-preview UI must branch on before rendering a price. Pure, side-effect-free, idempotent — reserves nothing and creates no job. **`recipient_count` rejections are distinguishable** (see the `details[]` note above): absent/`null` → `required`; present-but-negative → `out_of_range`; wrong JSON type → `malformed` naming the field. `0` is a VALID count, not a rejection | **Phase 3 close-out C2:** quote now predicts all four causes of a `run` 409 from the same function `run` reads (reasons `suspended`, `campaign_active`, `campaign_cap`, and `exceeds_queue_cap` now counting the jobs already queued; each carries the additive `cause`), accepts the optional `campaign_id`, and returns `caps.campaign_size_cap`. See "The four causes of a `run` 409" below. |
 | POST | `/v1/run` | Phase 3; M3-Phase 4/5 | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `send_byo.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (M3-Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy. **Module 3 M3-Phase 5 §5.2/§6.4, same advisory-locked transaction:** a SUSPENDED user's enqueue is refused outright (`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not losslessness. Exceeding `max_campaign_size` (this campaign's own job count) → `409 conflict` (`max_campaign_size_reached`); exceeding `max_queued_jobs` (the user's TOTAL live queue across all campaigns) → `409 conflict` (`max_queued_jobs_reached`) — both resolved per-user override→global (`send_byo.user_config_overrides`, admin-writable). On the FIRST job of a campaign, `/v1/run` also upserts a `send_byo.campaigns` row, resolving and FREEZING `campaign_expiry_sec` into `expires_at` (a later config/override change never retroactively moves an already-started campaign's expiry). **Fix-plan item 12 (`send_byo_0052`) — the dispatch rung gates intake at the two DEEPEST rungs only:** at `refuse_new` or `stopped` this route returns `503 paused` and creates ZERO job rows; at `serving` and `accept_and_defer` it accepts normally. Keeping intake open at `accept_and_defer` is the point of that rung existing — an operator halting sending should not also start losing customer submissions. The gate sits AFTER field validation, so a malformed body still gets its `400 validation_failed` rather than being masked by the pause (a caller must be able to fix their request during a halt), and BEFORE job creation, so a refusal is genuinely lossless rather than a row written then rejected. It fails **OPEN**: an unreadable, absent, or unrecognized `dispatch_mode` accepts the submission and logs at `level=error`, because refusing a submission may lose customer work permanently while accepting one that then sits queued is recoverable — the opposite disposition from `/v1/admin/health`, which fails closed (see §3.2). Note the asymmetry with the Control: a paused rung stops the dispatch loop from CLAIMING, so accepted work waits rather than sends | **The 409 now names its cause(s)** (Phase 3 close-out C2): `error.details[]` carries one entry per cause (`suspended`, `campaign_active`, `campaign_cap`, `queue_cap`; the two caps with `current`/`limit`); the status, code and message are unchanged. See "The four causes of a `run` 409" below. |
 | GET | `/v1/report` | Phase 3; M3-Phase 5/6/7 | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **M3-Phase 7 (§1.1, M3-P7-OD-1) widens this shape with three more OMITTED-until-set fields: `smtp_response` (the worker's own scrubbed provider text — never the internal reason, never a credential), `error_class` (the locked `send_byo.error_class` enum's text value), `failed_at` (an alias of `completed_at`, present only when the state is a genuine terminal `failed`/`bounced`).** All three are present whenever the job has a recorded failure detail (including a job currently `queued`/`assigned`/`sending` after a failed attempt that requeued — the sticky "why did the last attempt fail" fact), and are ALL OMITTED once the job reaches `sent` — the underlying columns are sticky-by-design and would otherwise show a stale failure reason on a job that ultimately succeeded. NEVER reads `last_error_message` (the internal-slug-carrying column) — enforced by the `user_output_scrub` CI gate, not merely by convention. **M3-Phase 7 (§2) also adds `account_id`/`account_username` — the per-account attribution delta**: which of the user's OWN accounts sent (or is assigned to send) this job, read from `jobs.assigned_account_id` via a `LEFT JOIN send_byo.accounts`. Both are OMITTED (key absent, not `null`) until the job is dispatched — a `queued` job never assigned, or one requeued and cleared, has neither key, matching this shape's existing omit-the-key convention. `account_username` is the human-readable `smtp_username` — the actual product feature (a uuid alone answers nothing for a user). The accounts join is NEVER what enforces tenancy (`jobs.user_id = $user_id` alone does); a cross-tenant probe gets the same `404 not_found` as ever, with no account field leaked. **M3-Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or its user having zero accounts — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire eligible account set is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`accounts_exhausted`, which accounts, why — renamed from `pool_exhausted` at G3, M3-P2-OD-3) is NEVER surfaced — two-vocabulary rule. **M3-Phase 6 (§2):** a job RECLAIMED from a dead/hung worker (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`worker heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true account exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
+| POST | `/v1/cancel` | Phase 3 close-out C1 | stop a campaign — body `{campaign_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED). Every not-yet-claimed (`queued`) item of that tenant's campaign becomes the terminal state `cancelled`; claimed items finish and report once. Response `200` `{"campaign_id","cancelled","in_flight","already_terminal"}`; idempotent; a foreign or unknown campaign answers the same empty `200`. Not gated by the dispatch rung or by suspension. See "`POST /v1/cancel` — stop a campaign" below. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
 derived ENTIRELY from `send_byo.jobs` state counts + existing per-job fields — no new state, no
@@ -206,7 +207,8 @@ schema change:
     "failed": 3,                      // terminal, infra/account-exhaustion, refundable
     "in_flight": 20,                  // assigned + sending
     "pending": 667,                   // queued and currently dispatchable
-    "waiting_for_capacity": 0         // queued but zero eligible account right now
+    "waiting_for_capacity": 0,        // queued but zero eligible account right now
+    "cancelled": 0                    // terminal, stopped by POST /v1/cancel (Phase 3 close-out C1) — never sent, never charged
   },
 
   // M3-Phase 7 (§2.1): the per-account attribution aggregate — "3 of my 5 accounts are failing,"
@@ -247,7 +249,10 @@ docs: `waiting_for_capacity` (still pending, no eligible account right now — a
 exhaustion — refundable, the platform's own policy), `bounced` (terminal, recipient-permanent 550
 — billable). `waiting_for_capacity` is an AGGREGATE count distinction on top of the same
 `state:"queued"` per-job value (§6.4's rule that a waiting job renders as clean pending) — never a
-new per-job state. A `campaign_id` that belongs to another tenant, or does not exist, returns a
+new per-job state.
+`cancelled` (additive, `send_byo_0056`) IS a per-job state: terminal, counted in `progress.terminal`
+and so in `is_complete` (a cancelled campaign reads as complete once its in-flight items have
+finished), and appended last to `describe.vocabularies.job_state`. A `campaign_id` that belongs to another tenant, or does not exist, returns a
 clean EMPTY report (`total:0`) rather than `404` — a `campaign_id` is not a single-resource
 identity the module allocates (the platform mints it), so "zero jobs under this id for this
 tenant" is the honest answer regardless of whether the id is foreign or simply not yet run; no
@@ -552,6 +557,54 @@ control `response_leak_gate_selftest.sh` breaks a scratch copy five ways and req
 path — a verifier error full of secret-looking text, a state and code nobody defined, database triggers raising a
 unique violation, a check violation, a foreign-key violation and a driver error, a failed save of the From check —
 and asserts every string in the JSON body is in its closed set and that no canary appears anywhere.
+
+### `POST /v1/cancel` — stop a campaign (Phase 3 close-out C1)
+
+Mirrors module 2's `POST /v1/cancel` (same path, request, response and semantics, so the platform's shared adapter
+calls it by the same name on both sender modules). Domain A auth (the platform service token); the same error
+envelope and codes as the sibling routes.
+
+```json
+POST /v1/cancel
+{"campaign_id": "6f1c2b9e-0000-4000-8000-0000000000c1", "user_id": "9a3f0d52-0000-4000-8000-0000000000u1"}
+
+200
+{"campaign_id": "6f1c2b9e-0000-4000-8000-0000000000c1", "cancelled": 37, "in_flight": 3, "already_terminal": 10}
+```
+
+- **Request.** Both fields are required UUIDs; `user_id` is the tenant selector, exactly as on `run` and `report`.
+  Missing is `400 validation_failed` with `details:[{field, issue:"required"}]`, a non-UUID is `issue:"malformed"`,
+  an unknown field is `400`, no token is `401`, a wrong verb is `405` (`Allow: POST`).
+- **What it does.** Every **not-yet-claimed** item (`state:"queued"`) of that tenant's campaign becomes the new
+  **terminal** state **`cancelled`** (one `job_events` row each, `completed_at` set). It can never be claimed again, and
+  because `job_item_id` is unique it can never be re-run under the same id: a repeat `run` of a cancelled item answers
+  the existing job (`200`, `state:"cancelled"`). Items already **claimed** (`assigned`/`sending`) are **not touched in
+  state**: they **finish and are reported exactly once** (`sent`, `bounced`, or their failure path), and if their
+  attempt fails or their worker dies they end `cancelled` instead of returning to `queued` — a retry after a cancel is a
+  new send, which is what cancel promised not to make. The mechanism (a `cancel_requested_at` flag on every non-terminal
+  item, plus a database guard that turns a flagged item's return to `queued` into `cancelled`; every claim query skips a
+  flagged row) is in `send_byo_0056`/`0057` and `internal/platformapi/cancel.go`.
+- **Response** = the campaign's position AFTER the call, as a partition of its non-queued items: `cancelled` = items
+  in state `cancelled`; `in_flight` = `assigned` + `sending` (still finishing); `already_terminal` = `sent` +
+  `failed` + `bounced`. **Idempotent:** a second call finds nothing left to cancel, changes nothing, writes nothing, and
+  returns the same position (apart from in-flight items that finished in between, which move from `in_flight` to
+  `already_terminal`, or to `cancelled` if their attempt failed).
+- **Tenant-scoped.** Every statement is `WHERE campaign_id = $1 AND user_id = $2`. Another tenant's campaign id, an
+  unknown id and a campaign with no items all answer the same `200` `{"cancelled":0,"in_flight":0,"already_terminal":0}`
+  — the campaign report's own rule; never an existence signal — and change nothing.
+- **Not gated.** Cancel works at every dispatch rung (`stopped` included) and for a **suspended** user: stopping its own
+  work is the tenant's explicit instruction, not an automatic failure of a suspended queue (which stays intact and
+  resumable); it leaves the suspension exactly as it was. It acts on the items that exist when it runs: a `job_item`
+  submitted to `run` for the same campaign afterwards is new work and is accepted as usual.
+- **Reports.** The campaign report's `totals` gains `cancelled` (additive); `progress.terminal` and `is_complete`
+  count it (a cancelled campaign is complete once its in-flight items have finished). The single-job and campaign-item
+  `state` is `"cancelled"` (published live in `describe.vocabularies.job_state`, last in the order); `completed_at` is when it
+  ended, `provider_message_id` is absent/null, and for an in-flight item that failed an attempt before ending
+  `cancelled` the last attempt's `smtp_response`/`error_class` are shown, as for any non-sent item. `GET
+  /v1/admin/health` gains `queue.cancelled`. `usage` does not count a cancelled item as attempted. The state machine is
+  drawn in [`module-3-job-states.mermaid`](./module-3-job-states.mermaid).
+- **Metering.** Module 3 is not metered (M3-01), so a cancelled item is free like every other state; nothing reaches the
+  platform's ledger.
 
 ### The four causes of a `run` 409, and what `quote` predicts (Phase 3 close-out C2)
 
@@ -986,7 +1039,7 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 | `dispatch.ticks_per_min` | float | observed dispatch cadence |
 | `dispatch.sends_last_window` | int | sends completed inside `window_sec` |
 | `dispatch.send_rate_per_min` | float | derived from the two above |
-| `queue.{queued,assigned,sending,sent,failed,bounced}` | int | `COUNT(*) GROUP BY state` over `send_byo.jobs` — one field per `job_state` |
+| `queue.{queued,assigned,sending,sent,failed,bounced,cancelled}` | int | `COUNT(*) GROUP BY state` over `send_byo.jobs` — one field per `job_state` (`cancelled` added with `send_byo_0056`, additive) |
 | `queue.waiting_for_capacity` | int | **G3 real rewrite (M3-P2-OD-12):** queued jobs whose owning user has ZERO currently-ELIGIBLE accounts — the real predicate (quarantined/disabled/deleted/credential-unverified/from-misaligned accounts excluded; the daily-reset/throttle cycle logic applied), not merely "has any account row." **Not an error state** |
 | `workers.{active,stale,disabled}` | int | counts by `box_status` |
 | `workers.oldest_active_heartbeat_age_sec` | int, **omitted** when no active worker | staleness of the least-recently-heard-from active worker |

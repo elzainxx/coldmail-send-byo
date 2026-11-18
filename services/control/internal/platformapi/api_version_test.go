@@ -236,6 +236,10 @@ func TestAPIVersion_ConstructionGoesThroughTheRefusal(t *testing.T) {
 //
 // It asserts against the CORE FOUR's version rather than against a literal "v1", so a legitimate /v2
 // migration that moves every route stays green — the property is agreement, not the string.
+// coreRouteCount is the number of routes the first block of platformRoutes() holds: quote, run, report,
+// describe and cancel (the last added by the Phase 3 close-out, C1). The extension registry follows.
+const coreRouteCount = 5
+
 func TestAPIVersion_ExtensionRegistryAgreesWithTheCoreFour(t *testing.T) {
 	s := &Server{}
 	ext := s.extensionRoutes()
@@ -249,10 +253,10 @@ func TestAPIVersion_ExtensionRegistryAgreesWithTheCoreFour(t *testing.T) {
 	// construction; deriving from them rather than restating them keeps this test from becoming the
 	// third copy of the same string.
 	all := s.platformRoutes()
-	if len(all) < 4 {
-		t.Fatalf("platformRoutes() returned %d routes; the core four must always be present", len(all))
+	if len(all) < coreRouteCount {
+		t.Fatalf("platformRoutes() returned %d routes; the core routes must always be present", len(all))
 	}
-	core := apiVersionOf(all[:4])
+	core := apiVersionOf(all[:coreRouteCount])
 	if core == "" {
 		t.Fatal("the CORE FOUR alone do not agree on a version — quote/run/report/describe are the\n" +
 			"  uniform cross-module surface (§5.1); if they disagree, nothing else can be judged against them")
@@ -271,11 +275,11 @@ func TestAPIVersion_ExtensionRegistryAgreesWithTheCoreFour(t *testing.T) {
 				rt.ID, rt.Method, rt.Path, seg, core)
 		}
 	}
-	if len(ext)+4 != len(all) {
-		t.Errorf("platformRoutes() returned %d routes but the core four plus %d extension routes is %d —\n"+
+	if len(ext)+coreRouteCount != len(all) {
+		t.Errorf("platformRoutes() returned %d routes but the %d core routes plus %d extension routes is %d —\n"+
 			"  this test checks the registry and assumes the flattening adds nothing else; if a third\n"+
 			"  declaration site was introduced, its routes are UNCHECKED by this test and it must be\n"+
-			"  extended rather than left to pass silently.", len(all), len(ext), len(ext)+4)
+			"  extended rather than left to pass silently.", len(all), coreRouteCount, len(ext), len(ext)+coreRouteCount)
 	}
 	// The success line is guarded rather than printed unconditionally. Observed while break-verifying
 	// B97: with one route under /v2 this logged "all 18 extension routes agree" immediately after the
