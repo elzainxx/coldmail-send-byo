@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -122,7 +123,7 @@ func TestRootMux_ADocumentedPathWithAnUnmountedSurfaceStillAnswersTheEnvelope(t 
 	// documented endpoint 404ing".
 	h := newRootHandler(t, nil, nil)
 	for _, p := range []string{
-		"/v1/quote", "/v1/run", "/v1/report", "/v1/describe", // core four, unmounted
+		"/v1/quote", "/v1/run", "/v1/cancel", "/v1/report", "/v1/describe", // core five, unmounted
 		"/v1/admin/accounts",         // admin surface, unmounted
 		"/v1/send-byo/accounts",      // platform extension prefix, unmounted
 		"/v1/send-byo/notifications", // ditto
@@ -152,6 +153,7 @@ func TestRootMux_MountedSurfacesStillReceiveTheirOwnPaths(t *testing.T) {
 		{"/v1/admin/anything/deeper", "admin"},
 		{"/v1/quote", "platform"},
 		{"/v1/run", "platform"},
+		{"/v1/cancel", "platform"},
 		{"/v1/report", "platform"},
 		{"/v1/describe", "platform"},
 		{"/v1/send-byo/accounts", "platform"},
@@ -256,4 +258,64 @@ func stubHandler(name string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(name))
 	})
+}
+
+// platformCoreRoutes returns every core (non-prefix) path platformapi/method_dispatch.go registers in the FIRST block of
+// platformRoutes() -- the literals the root mux must mount one by one, because the mux mounts each explicitly rather than
+// by prefix (so it does not shadow /v1/admin/*).
+func platformCoreRoutes(t *testing.T, src string) []string {
+	t.Helper()
+	i := strings.Index(src, ") platformRoutes() []route")
+	if i < 0 {
+		t.Fatal("(*Server).platformRoutes not found in method_dispatch.go")
+	}
+	body := src[i:]
+	if j := strings.Index(body, "append("); j >= 0 { // the extension registry follows the core literals
+		body = body[:j]
+	}
+	var paths []string
+	for _, m := range regexp.MustCompile(`\{"(?:GET|POST|PUT|PATCH|DELETE)", "(/v1/[a-z-]+)"`).FindAllStringSubmatch(body, -1) {
+		paths = append(paths, m[1])
+	}
+	return paths
+}
+
+// unmountedCoreRoutes names the core paths that health.go does not mount with `mux.Handle("<path>", platformHandler)`.
+func unmountedCoreRoutes(core []string, health string) []string {
+	var missing []string
+	for _, p := range core {
+		if !strings.Contains(health, `mux.Handle("`+p+`", platformHandler)`) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+func TestRootMux_EveryCorePlatformRouteIsMounted(t *testing.T) {
+	// POST /v1/cancel shipped registered in platformapi and answering 404 on the live Control, because the root mux mounts each core
+	// literal by hand and nobody added the sixth. This compares the two lists mechanically, so a core route added to
+	// platformRoutes() and forgotten here fails in this package, without a database.
+	dispatch, err := os.ReadFile("../platformapi/method_dispatch.go")
+	if err != nil {
+		t.Fatalf("read method_dispatch.go: %v", err)
+	}
+	health, err := os.ReadFile("health.go")
+	if err != nil {
+		t.Fatalf("read health.go: %v", err)
+	}
+	core := platformCoreRoutes(t, string(dispatch))
+	// the floor: the five core routes (an empty extraction that "passes" proves nothing)
+	if len(core) != 5 {
+		t.Fatalf("extracted %d core routes %v from platformRoutes(), want 5 (quote, run, cancel, report, describe)", len(core), core)
+	}
+	if missing := unmountedCoreRoutes(core, string(health)); len(missing) != 0 {
+		t.Fatalf("core platform route(s) registered in platformapi but NOT mounted in the root mux (health.go): %v -- the live Control answers them 404", missing)
+	}
+	// control: the checker reports a route that health.go does not mount
+	if got := unmountedCoreRoutes(append(append([]string{}, core...), "/v1/not-mounted"), string(health)); len(got) != 1 || got[0] != "/v1/not-mounted" {
+		t.Fatalf("control: the checker did not report an unmounted route: %v", got)
+	}
+	if got := unmountedCoreRoutes(core, strings.ReplaceAll(string(health), `mux.Handle("/v1/cancel", platformHandler)`, "")); len(got) != 1 || got[0] != "/v1/cancel" {
+		t.Fatalf("control: with the /v1/cancel mount removed the checker reported %v, want [/v1/cancel]", got)
+	}
 }
