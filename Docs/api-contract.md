@@ -283,7 +283,7 @@ modules) is ALSO declared in `describe`'s response, generated from the SAME regi
 `internal/platformapi/server.go`'s route mounting reads (`describe_routes.go`) — a route cannot be
 served without a `describe` declaration. Each entry carries `{id, method, path,
 auth:"platform_service_token", scope:"user", description, request_schema_ref?,
-response_schema_ref?}`; `schemas` holds the shapes those refs point into. Operator (`/v1/admin/*`)
+response_schema_ref?}`; `schemas` holds the shapes those refs point into. **`schemas` is compared with the real handlers** (Phase 3 close-out C6, `describe_schemas_test.go`): every fragment is checked against the bodies the production handlers return, in both directions (a key the handler returns that the fragment does not declare, a `required` key a response lacks, a declared key no response carried, a wrong type are each red). The list routes return `items` (accounts, events, notifications; the campaign report's own list is `items.results`, and bulk-add's is `results`), `account_object` is nested (`status{}`, `verification{}`, `from_alignment{}`), `required` lists the keys a response ALWAYS carries and a key omitted until set is declared but not required, and `settings.put`'s request is `settings_put_request` (the tenant is the query). Operator (`/v1/admin/*`)
 routes are NEVER declared here — `describe` is served on Domain A, and enumerating the admin
 surface to a platform token would be a free map of it.
 

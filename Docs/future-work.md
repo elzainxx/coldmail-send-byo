@@ -633,7 +633,9 @@ cursor column alongside the displayed one. The control already exists in
 `notifications_read_test.go` and transfers directly — three rows at `.100`/`.500`/`.900` inside one
 second, paged at `limit=1`, asserting no id repeats.
 
-### FW-M3-16 — `describe`'s schema fragments declare `results` where two handlers return `items`
+### FW-M3-16 — `describe`'s schema fragments declare `results` where two handlers return `items` — **FIXED (the Phase 3 close-out, owner ruling C6)**
+
+**Closed.** The owner ruled the second option of the decision below (correct outright, no deprecation window): `accounts_list_response` and `account_events_response` now declare `items`, `account_object` is declared NESTED as the handler returns it (`status{}`, `verification{}`, `from_alignment{}`), and every other fragment (`accounts_test_response`, `accounts_bulk_add_response`, `test_send_response`, `settings_object`, `usage_response`, `notifications_list_response`) was rewritten from its handler's own response type. `internal/platformapi/describe_schemas_test.go` drives the real handlers for every described response and compares keys and types with the fragments in BOTH directions (a returned key the fragment lacks, a `required` key a response lacks, a declared key no response carried, a wrong type), with paired controls that rename one key on either side. The history below is kept as written.
 
 **Registered:** 2026-08-04, found while adding item 9's `notifications_list_response` fragment.
 **Pre-existing contract inaccuracy, NOT introduced by item 9.**
