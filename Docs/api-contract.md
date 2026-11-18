@@ -502,6 +502,7 @@ user-facing verify surface, e.g. `auth_failed` and `starttls_unavailable` both c
 | `verify_auth_failed` | The username or password was rejected |
 | `verify_protocol_error` | The server did not speak SMTP as expected |
 | `verify_connection_lost` | The connection dropped mid-handshake |
+| `verify_host_not_allowed` | That host is not one we are allowed to connect to (the destination guard refused the address the host names or resolves to; additive, Phase 3 close-out C4) |
 
 **The two codes the test button adds when the check could not run at all** (additive): `verify_error` (the
 credential check did not complete — a plumbing failure, or a verifier answer outside this vocabulary) and
@@ -523,7 +524,7 @@ through**.
 | Field | Closed set | Fallback for anything else |
 |---|---|---|
 | test button `verification.state` | `verified`, `failed`, `unverified`, `unavailable` | `unavailable` |
-| test button `verification.code` (present unless verified) | the seven `verify_*` codes above, `verify_error`, `verification_unavailable` | `verify_error` |
+| test button `verification.code` (present unless verified) | the eight `verify_*` codes above (`verify_host_not_allowed` since C4), `verify_error`, `verification_unavailable` | `verify_error` |
 | test button `from_alignment.state` | `aligned`, `unaligned_warned`, `blocked`, `unverified`, `indeterminate` | `indeterminate` |
 | test button `from_alignment.code` (present when the From check could not run) | `from_dns_unavailable`, `from_domain_not_found` | `from_dns_unavailable` |
 | test button `from_alignment.error` (present when the check ran but its result could not be saved) | `from_check_not_saved` (replaces the internal slugs `from_gate_write_error` and `from_gate_acknowledgment_write_error`) | — |
@@ -551,6 +552,54 @@ control `response_leak_gate_selftest.sh` breaks a scratch copy five ways and req
 path — a verifier error full of secret-looking text, a state and code nobody defined, database triggers raising a
 unique violation, a check violation, a foreign-key violation and a driver error, a failed save of the From check —
 and asserts every string in the JSON body is in its closed set and that no canary appears anywhere.
+
+### The SMTP host destination guard (Phase 3 close-out C4)
+
+`smtp_host` is the one field in this module that makes the operator's own network open a connection to an
+address a USER chose, so it is guarded. The rule, the table and the reasoning are in
+[`security-posture.md`](./security-posture.md); this is the contract.
+
+- **Refused destinations** (the canonical table is `services/control/internal/hostguard/ranges.txt`, mirrored
+  row for row in the worker): this-network, private (RFC 1918), shared address space (carrier-grade NAT),
+  loopback, link-local **including the cloud metadata address**, the IETF protocol-assignment block, the three
+  documentation blocks, the deprecated 6to4 relay anycast block, benchmarking, multicast, the reserved class
+  and the limited broadcast address; for IPv6 the unspecified and loopback addresses, discard-only,
+  Teredo / IETF protocol assignments, the documentation blocks, unique-local (which contains the cloud IPv6
+  metadata address), link-local, site-local, multicast and local-use NAT64, and **every IPv6 address outside
+  global unicast**. An IPv4-mapped, NAT64 (well-known prefix) or 6to4 address is not refused as a range: the
+  IPv4 address it carries is judged. A literal address is judged in **every spelling a resolver library
+  reads** (dotted, decimal such as the integer form of loopback, octal, hex, short forms, bracketed or scoped
+  IPv6). A **name** is resolved and is refused if **any** address it resolves to is refused.
+- **Add time**, on **every** writer of `smtp_host`: `POST /v1/send-byo/accounts`, each row of
+  `POST /v1/send-byo/accounts/bulk`, `PATCH /v1/send-byo/accounts/{id}` (only when the PATCH names `smtp_host`),
+  and the operator routes `POST /v1/admin/accounts` and `PATCH /v1/admin/accounts/{id}`. A refusal is
+  `400 validation_failed` with `details:[{"field":"smtp_host","issue":"forbidden_value"}]` (a bulk row is
+  `status:"rejected"`, `code:"validation_failed"`, the same `details[]`). `forbidden_value` is an additive value of
+  the `details[].issue` vocabulary on this surface (the operator surface already used it). Nothing about the
+  refused address or range is in the response; both are in the log.
+- **A name that does not resolve at add time is allowed** (the module has never resolved at add time; a host
+  whose DNS has not propagated is a normal thing to add). It is re-resolved and re-judged at **every
+  connection**, so an unresolvable-now name that later resolves into a refused range is refused then.
+- **Connect time** (`services/worker/src/destguard.js`, the only code that opens a connection to a user's host):
+  the same table, applied to the address actually dialled: one resolution per connection, every returned
+  address judged, the judged IP literal dialled, the socket's real remote address judged again. A refusal ends
+  the session before anything is sent: the worker reports `error_reason: "destination_blocked"` with an
+  **empty** `smtp_response`, and the Control reports the **additive** closed verify code
+  `verify_host_not_allowed` (`verification.state: "failed"`) on the test button, create's verify-on-add and
+  bulk rows. A send job whose account now points at a refused host fails the attempt like any other
+  unclassified worker failure (requeue with backoff; the consecutive-failure trigger quarantines it at
+  `autoquarantine_mode=enforce`).
+- **The allowlist `smtp_host_allow_cidrs`** (`array<string>`, default `[]`, **production leaves it empty**): CIDR
+  ranges admitted even though they are otherwise refused, for a test harness whose SMTP sink is on a private
+  network. It overrides a refusal for exactly the addresses it names. Written through
+  `PUT /v1/admin/config/smtp_host_allow_cidrs` (`{"value": ["<cidr>", ...]}`; entries must be CIDRs, at most 64;
+  a bare address is `400`). It reaches the worker on every `push_job` / `push_verify` frame as the additive
+  `smtp.dest_allow_cidrs` field (omitted when empty). Non-empty is loud: a `WARNING` at Control start, on every
+  add-time use, and on the worker's first frame that carries it. An unreadable or unparseable stored value is
+  **empty** (the guard stays fully on).
+- **Not covered:** the **port** (any port of a permitted host is dialled, as before), and a publicly routable
+  address that happens to be internal; a host-level egress rule for the worker network remains a deployment
+  requirement alongside this guard.
 
 ### From-gate additions to the accounts surface (§2/§4.6/§5/§8 of `Docs/history/phase-4-from-gate.md`)
 

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -125,6 +126,17 @@ func main() {
 	sendCfg, err := dispatch.LoadConfig(ctx, database.Pool)
 	if err != nil {
 		log.Fatalf("FATAL send-path config load: %v", err)
+	}
+
+	// C4 (Phase 3 close-out): the SMTP host destination guard's allowlist. EMPTY is the only value
+	// production should ever run with; a non-empty one lets the worker connect to ranges it would
+	// otherwise refuse (loopback, private networks, link-local, cloud metadata) and exists for a test
+	// harness whose SMTP sink lives on a private network. Say so loudly at start, every start.
+	if len(sendCfg.SMTPHostAllowCIDRs) > 0 {
+		log.Printf("control: WARNING smtp_host_allow_cidrs is NON-EMPTY (%s): the SMTP destination guard is RELAXED for these ranges, so users and operators can point an account at them and the workers will connect. This is a test-harness setting; production leaves it empty level=warn",
+			strings.Join(sendCfg.SMTPHostAllowCIDRs, ","))
+	} else {
+		log.Printf("control: smtp_host_allow_cidrs is empty: the SMTP destination guard is fully on level=info")
 	}
 
 	// The persistent worker↔Control send stream (§2.1). The outcome handler is its ReportHandler.

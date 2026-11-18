@@ -90,7 +90,11 @@ function expiredPushJob(jobId) {
     request_id: "req-" + jobId,
     job_id: jobId,
     send: { recipient: "x@example.com", from_address: "u@ourdomain.com", subject: "s", body: "b", headers: {} },
-    smtp: { host: "127.0.0.1", port: 1, username: "u", secret: "SECRET", security: "starttls" },
+    // The lease is expired, so no connection is opened at all. dest_allow_cidrs (the Control's
+    // smtp_host_allow_cidrs, Phase 3 close-out C4) is on the frame anyway so that the connection this fixture
+    // models (loopback port 1: nothing listens) is still a plain connect failure (connect_refused) and NOT a
+    // destination_blocked refusal, were the lease ever live.
+    smtp: { host: "127.0.0.1", port: 1, username: "u", secret: "SECRET", security: "starttls", dest_allow_cidrs: ["127.0.0.0/8"] },
     lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
   };
 }

@@ -280,6 +280,9 @@ go_suite services/control/internal/workerproto    "variation wire-format round-t
 # genuinely leaks the credential — if a pgx bump fixes redaction upstream, or changes which trigger
 # carries the DSN, the premise fails loudly instead of the whole file going quietly vacuous.
 go_suite services/control/internal/dsnscrub       "DSN credential scrub (N1/D12: pgx echoes the whole connection string; 9 tests, no DB)"
+# Phase 3 close-out C4: the SMTP host destination guard (add-time half: the blocked-range table, the judgement, every spelling, the allowlist, the
+# no-unguarded-dial source gate over the Control and the worker). Needs no database or network: a fake resolver stands in for DNS.
+go_suite services/control/internal/hostguard      "SMTP host destination guard: every blocked range, spellings, names, allowlist, rebinding fixture, no unguarded dial (C4)"
 # fromgate is the exception: its 25 tests include a REAL-DNS file that resolves against the
 # local CoreDNS container (deploy/dns-test/), so it must run with the stack up — it is listed
 # after the DNS healthchecks have passed, which dev.sh up/reset blocks on before calling this

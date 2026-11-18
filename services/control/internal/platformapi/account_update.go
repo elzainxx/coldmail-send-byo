@@ -109,6 +109,18 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, newErr(codeValidationFailed, "account_update_validation").withDetails(details...))
 		return
 	}
+	// C4: a PATCH that names a new smtp_host goes through the SMTP host destination guard (host_guard.go),
+	// exactly as create does; a PATCH that does not name one changes no destination and is not re-checked
+	// here (the worker re-checks the destination at every connect).
+	if hasField(present, "smtp_host") && req.SMTPHost != nil {
+		hctx, hcancel := dbCtx(r.Context())
+		herr := s.checkSMTPHost(hctx, *req.SMTPHost)
+		hcancel()
+		if herr != nil {
+			s.fail(w, r, herr)
+			return
+		}
+	}
 
 	// §2.3: the gate re-runs synchronously if from_address is present AND its value DIFFERS from
 	// the current row — a PATCH that touches from_name alone, or resends the SAME from_address,

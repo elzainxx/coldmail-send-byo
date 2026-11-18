@@ -102,6 +102,12 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
+	// --- C4: the SMTP host destination guard (host_guard.go); the operator surface gets no exemption ---
+	if herr := s.checkSMTPHost(ctx, req.SMTPHost); herr != nil {
+		s.fail(w, r, herr)
+		return
+	}
+
 	// --- resolve daily_limit: request value, else config daily_limit_default ---
 	dailyLimit, lerr := s.resolveDailyLimit(ctx, req.DailyLimit)
 	if lerr != nil {

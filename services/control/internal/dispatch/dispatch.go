@@ -403,6 +403,8 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, workerI
 			// an account hang trips the worker's operation timeout FIRST and is reported (scored), never a
 			// silent Control lease reclaim (P6-10 carve-out's correctness dependency).
 			OperationTimeoutSec: cfg.SMTPOperationTimeoutSec,
+			// C4: the connect-time destination guard's allowlist (empty in production), see dest_guard.go.
+			DestAllowCIDRs: allowCIDRsForWire(cfg.SMTPHostAllowCIDRs),
 		},
 		// The resolved content-variation snapshot (§2.2, P8-3 GLOBAL scope): cfg's already-loaded
 		// send_byo_0020 values, copied verbatim into the wire shape (Chunk 5, config.go/variation.go).

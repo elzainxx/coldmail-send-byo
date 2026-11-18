@@ -66,7 +66,7 @@ func setOf(vs ...string) map[string]bool {
 // CREATED bulk-add row, can carry.
 var verifyCodeSet = setOf(
 	"verify_connect_failed", "verify_timeout", "verify_tls_unavailable", "verify_tls_failed",
-	"verify_auth_failed", "verify_protocol_error", "verify_connection_lost",
+	"verify_auth_failed", "verify_protocol_error", "verify_connection_lost", "verify_host_not_allowed",
 	codeVerifyError, codeVerificationUnavail,
 )
 

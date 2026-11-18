@@ -125,7 +125,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -207,8 +207,17 @@ func TestRunnerLifecycle(t *testing.T) {
 	// composed as CEILINGs) = 89. The absence
 	// assertions below are the anti-vacuity companions to this count: a count alone could be satisfied
 	// by dropping the WRONG keys.
-	if n := configKeyCount(t, admin); n != 89 {
-		t.Fatalf("after Up: send_byo.config has %d keys, want 89 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051 + 1 seeded at 0052 + 4 seeded at 0053)", n)
+	// PLUS ONE at 0055 (smtp_host_allow_cidrs, Phase 3 close-out C4: the SMTP host destination guard's
+	// allowlist, default EMPTY) = 90.
+	if n := configKeyCount(t, admin); n != 90 {
+		t.Fatalf("after Up: send_byo.config has %d keys, want 90 (77 pre-Phase-7 + 10 Phase 7 seeds - 2 dropped at 0049 - 1 dropped at 0051 + 1 seeded at 0052 + 4 seeded at 0053 + 1 seeded at 0055)", n)
+	}
+	// send_byo_0055's seed is EMPTY by default and by default_value: a freshly migrated deployment must not
+	// start with any destination range relaxed (the guard is on everywhere until a test harness says otherwise).
+	var allowEmpty bool
+	if err := admin.QueryRow(ctx, `SELECT value = '{"v":[]}'::jsonb AND default_value = '{"v":[]}'::jsonb AND value_type = 'array<string>'
+	                                 FROM send_byo.config WHERE key = 'smtp_host_allow_cidrs'`).Scan(&allowEmpty); err != nil || !allowEmpty {
+		t.Fatalf("after Up: smtp_host_allow_cidrs is not seeded as an EMPTY array<string> with an empty default (send_byo_0055): %v empty=%v", err, allowEmpty)
 	}
 	// Phase 8 Chunk 5's seventeen content-variation config seeds — anti-vacuity that they landed
 	// (amended from fourteen, P8-OD-1 RULED-WIDEN: css_magnitude_px/zero_width_rate/user_agent_rate).
@@ -806,6 +815,16 @@ func TestRunnerLifecycle(t *testing.T) {
 				if !configKeyExists(t, admin, key) {
 					t.Fatalf("after Down 0053: %q is GONE — 0053's down must remove exactly its own four rows. autoquarantine_mode and dispatch_mode belong to EARLIER migrations that have not been reversed yet at this point in the loop, and every boolean/tuning key it gates has live consumers of its own", key)
 				}
+			}
+		}
+		// The paired half of 0055's up-assertion: the seeded key is removed and ONLY that key (the count is
+		// 89 again at the next step down, which the earlier 0053 window then re-checks by name).
+		if v == "0055" {
+			if configKeyExists(t, admin, "smtp_host_allow_cidrs") {
+				t.Fatal("after Down 0055: send_byo.config still has smtp_host_allow_cidrs (down did not delete its seeded row)")
+			}
+			if n := configKeyCount(t, admin); n != 89 {
+				t.Fatalf("after Down 0055: send_byo.config has %d keys, want 89 (0055's down must remove exactly its own row)", n)
 			}
 		}
 		// The paired half of 0054's up-assertion: a column migration reverses completely, so the down

@@ -69,6 +69,14 @@ func (s *Server) handleAccountCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
+	// C4: the SMTP host destination guard (host_guard.go). A literal address or a name that resolves to a
+	// loopback / private / link-local / metadata (...) address is refused here, before anything is stored;
+	// the worker re-checks the destination at every connect.
+	if herr := s.checkSMTPHost(ctx, req.SMTPHost); herr != nil {
+		s.fail(w, r, herr)
+		return
+	}
+
 	dailyLimit, lerr := s.resolveDailyLimit(ctx, req.DailyLimit)
 	if lerr != nil {
 		s.fail(w, r, lerr)

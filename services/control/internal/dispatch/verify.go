@@ -166,6 +166,8 @@ func (v *Verifier) Verify(ctx context.Context, accountID, userID string, operati
 			// already enforces smtp_operation_timeout_sec < job_max_processing_time_sec; that invariant
 			// is unaffected here since a verify has no job lease to compare against.
 			OperationTimeoutSec: operationTimeoutSec,
+			// C4: the connect-time destination guard's allowlist (empty in production), see dest_guard.go.
+			DestAllowCIDRs: verifyAllowCIDRs(ctx, v.db),
 		},
 		VerifyDomain: sendingDomainFor(acct.smtpUser),
 	}
@@ -314,6 +316,9 @@ func externalCodeFor(reason string) (code, message string) {
 	case "ehlo_failed":
 		// copy-ledger: smtp_frame.verify_protocol_error
 		return "verify_protocol_error", "The server did not speak SMTP as expected."
+	case workerproto.ReasonDestinationBlocked:
+		// copy-ledger: smtp_frame.verify_host_not_allowed
+		return "verify_host_not_allowed", "That host is not one we are allowed to connect to."
 	case "connection_closed", "write_failed":
 		// copy-ledger: smtp_frame.verify_connection_lost
 		return "verify_connection_lost", "The connection dropped mid-handshake."

@@ -109,6 +109,9 @@ curl -s -o /dev/null -X PUT "$BASE_URL/v1/admin/config/send_delay_max_sec" -H "A
 # unacknowledge. Restored on exit like the other two dials.
 ORIG_FROM_GATE_MODE="$(curl -s "$BASE_URL/v1/admin/config/from_gate_mode" -H "Authorization: Bearer $ADMKEY" | grep -oE '"value":"[a-z_]+"' | cut -d'"' -f4)"
 curl -s -o /dev/null -X PUT "$BASE_URL/v1/admin/config/from_gate_mode" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":"off"}'
+# C4: the SMTP host destination guard refuses the compose network's private sink address unless the test-harness allowlist names it
+# (default EMPTY, EMPTY IN PRODUCTION; see tests/harness/phase3_send.sh for the full note). Set through the same admin config surface.
+curl -s -o /dev/null -X PUT "$BASE_URL/v1/admin/config/smtp_host_allow_cidrs" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d '{"value":["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]}'
 
 # A FIFTH gap, inherited from module 2 unchanged: concurrency_per_user_default IS the ramp
 # variable (run_ramp's own PUT, once per step below), so unlike the other four dials it was never

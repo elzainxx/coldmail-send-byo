@@ -83,7 +83,7 @@ The job state machine (`queued → assigned → sending → sent`, plus `sending
 | Credential never crosses a client boundary | two-vocabulary error rule; `no_secret_leak` CI gate (worker tokens, admin key, platform token, their hashes, KMS dev key) + the send-path harness's SMTP-credential canary scan | `internal/adminapi`, CI |
 | Tenant isolation | `user_id` on every table; RLS on all `send_byo.*`; `FORCE ROW LEVEL SECURITY` on `accounts` under the non-login `send_byo_owner` | DB |
 | No deadlock on account/job writes | account → job lock ordering, codebase-wide | CLAUDE.md Rule 9 + ADR-0010 |
-| Every tunable is config, not code | 89 seeded `send_byo.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
+| Every tunable is config, not code | 90 seeded `send_byo.config` keys; `config_drift` + `config_consumption` CI gates | DB + CI |
 
 ## Control plane
 
@@ -131,7 +131,7 @@ digest) are landed on top of them. The numbers, each of which is checked by some
 
 | Fact | Value | Checked by |
 |---|---|---|
-| Config keys seeded in `send_byo.config` | 89 | `config_drift` (manifest = live seeds = `config-reference.md`) |
+| Config keys seeded in `send_byo.config` | 90 | `config_drift` (manifest = live seeds = `config-reference.md`) |
 | Migrations | 55 up files, `send_byo_0001` … `send_byo_0054` | `migration_lint` |
 | Real-infra harness | 100 assertions, 0 failing on the last runner build | `bash scripts/dev.sh test`, step 'Real-infra behavioral harness' in `.github/workflows/real-infra.yml` |
 | Gate scripts | 15 gates + 7 self-tests (the paired controls) in `tests/harness/checks/`, all run by `real-infra.yml` | `test_enumeration` (every gate script is wired; every test package is run) |

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coldmail-send-byo/control/internal/hostguard"
+
 	// Embed the IANA tz database so daily_reset_timezone validation (time.LoadLocation) works
 	// regardless of the container's system tzdata. This is a data dependency, not a tuning
 	// constant (config-not-code is about behavioral dials; the tz table is a validation source).
@@ -242,6 +244,16 @@ func validateConfigValue(key, valueType string, value json.RawMessage) *apiError
 		// Phase 9.5 B5 §6: 0-600 seconds (0 = fail-fast, no wait).
 		if n, ok := asInt(value); !ok || n < 0 || n > 600 {
 			return typeErr(key, issueOutOfRange, "config_brain_singleton_acquire_timeout_sec_out_of_range")
+		}
+	case "smtp_host_allow_cidrs":
+		// Phase 3 close-out C4: the SMTP host destination guard's allowlist. Every entry must be a CIDR (a bare
+		// address is refused, so a typo cannot name one host by accident or widen a range), at most
+		// hostguard.MaxAllowEntries of them. An empty list is the production value. The value_type gate above
+		// has already proved it is an array of strings.
+		var entries []string
+		_ = json.Unmarshal(value, &entries)
+		if _, err := hostguard.ParseAllowList(entries); err != nil {
+			return typeErr(key, issueForbiddenValue, "config_smtp_host_allow_cidrs_invalid: "+err.Error())
 		}
 	case "variation_comment_intensity_rates":
 		// Phase 9.5 S11 §6 inner shape: low/medium/high all present, each 0-100. Same write-check +

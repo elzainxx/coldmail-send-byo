@@ -10,9 +10,13 @@ import { MemoryCredential, CredentialZeroedError } from "../src/creds.js";
 
 const CANARY = "canary-smtp-secret-9Z";
 
+// The destination guard (Phase 3 close-out C4) refuses a loopback host unless the job's allowlist names it: this
+// suite's sink listens on loopback, so every job here carries the loopback range, exactly as the test harness
+// does with smtp_host_allow_cidrs. The refusal itself is proven in destguard.test.mjs.
+
 function jobFor(port) {
   return {
-    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls" },
+    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls", destAllowCidrs: ["127.0.0.0/8"] },
     envelopeFrom: "user@ourdomain.com",
     recipient: "alice@example.com",
     dataBytes: "From: <user@ourdomain.com>\r\nTo: alice@example.com\r\nSubject: t\r\n\r\nhi",

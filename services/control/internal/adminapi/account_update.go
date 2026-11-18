@@ -123,6 +123,17 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, newErr(codeValidationFailed, "account_update_validation").withDetails(details...))
 		return
 	}
+	// C4: the SMTP host destination guard (host_guard.go) — the operator surface is a parallel write path
+	// to smtp_host and gets no exemption. A PATCH that names no smtp_host changes no destination.
+	if hasField(present, "smtp_host") && req.SMTPHost != nil {
+		hctx, hcancel := dbCtx(r.Context())
+		herr := s.checkSMTPHost(hctx, *req.SMTPHost)
+		hcancel()
+		if herr != nil {
+			s.fail(w, r, herr)
+			return
+		}
+	}
 
 	// §2.8/M3-P4-OD-9's store-layer requirement: this route writes from_address, so it MUST pass
 	// through the gate — the finding that made this the "live bypass" (from_address changed

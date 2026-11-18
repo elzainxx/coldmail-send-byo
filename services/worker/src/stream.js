@@ -102,6 +102,8 @@ export class WorkerStream {
     this.outcomeBufferMaxEntries = o.outcomeBufferMaxEntries || 1024;
     this.overflowDropped = 0; // observability/test counter: entries dropped by the cardinality bound
     this.supersededDropped = 0; // entries replaced because the job was pushed again (a new attempt)
+    // The destination-guard allowlist last announced on a frame (see #noteDestAllow): "" = none.
+    this.destAllowAnnounced = "";
   }
 
   // start dials the Control, completes the register handshake, and begins the read + heartbeat
@@ -301,6 +303,7 @@ export class WorkerStream {
   // MemoryCredential and zeroes it in `finally` on EVERY path — accept, SMTP error, or thrown
   // exception. The plaintext is never logged and never placed in the report.
   async #runJob(pj) {
+    this.#noteDestAllow(pj.smtp.dest_allow_cidrs);
     const credential = new MemoryCredential(pj.smtp.secret);
     // Drop our own reference to the plaintext string ASAP; the durable copy is the buffer.
     pj.smtp.secret = null;
@@ -324,7 +327,7 @@ export class WorkerStream {
           : this.smtpTimeoutMs;
         const result = await runSmtpSession(
           {
-            smtp: { host: pj.smtp.host, port: pj.smtp.port, username: pj.smtp.username, security: pj.smtp.security },
+            smtp: { host: pj.smtp.host, port: pj.smtp.port, username: pj.smtp.username, security: pj.smtp.security, destAllowCidrs: pj.smtp.dest_allow_cidrs },
             envelopeFrom: pj.send.from_address,
             recipient: pj.send.recipient,
             dataBytes,
@@ -385,6 +388,7 @@ export class WorkerStream {
   // verify_report is sent directly (no outcome buffer — a verify is not a job outcome the Control
   // must durably persist before ack; a lost verify_report simply times out Control-side).
   async #runVerify(pv) {
+    this.#noteDestAllow(pv.smtp.dest_allow_cidrs);
     const credential = new MemoryCredential(pv.smtp.secret);
     pv.smtp.secret = null;
 
@@ -399,7 +403,7 @@ export class WorkerStream {
       // so this is exactly its documented contract, not a workaround of it.
       const result = await runSmtpSession(
         {
-          smtp: { host: pv.smtp.host, port: pv.smtp.port, username: pv.smtp.username, security: pv.smtp.security },
+          smtp: { host: pv.smtp.host, port: pv.smtp.port, username: pv.smtp.username, security: pv.smtp.security, destAllowCidrs: pv.smtp.dest_allow_cidrs },
           envelopeFrom: "verify@" + (pv.verify_domain || "localhost"),
         },
         credential,
@@ -431,6 +435,22 @@ export class WorkerStream {
       if (this.onZeroed) { try { this.onZeroed(pv.request_id); } catch { /* test hook only */ } }
     }
     if (report) this.#send(report);
+  }
+
+  // #noteDestAllow is the loud half of the destination guard's one deliberate hole (Phase 3 close-out C4). The
+  // Control puts `dest_allow_cidrs` on a push_job / push_verify smtp block ONLY when smtp_host_allow_cidrs is
+  // non-empty (a test-harness setting; production leaves it empty and the field is absent). When a frame carries a
+  // non-empty list this logs ONE warning the first time the list is seen and again whenever it changes, never for an
+  // empty or absent list. It never throws (it runs before the credential exists) and never logs anything else.
+  #noteDestAllow(list) {
+    try {
+      const shown = Array.isArray(list) && list.length > 0 ? list.map((c) => String(c).replace(/[\r\n]+/g, " ")).join(",") : "";
+      if (shown === this.destAllowAnnounced) return;
+      this.destAllowAnnounced = shown;
+      if (shown !== "") {
+        console.warn(`worker ${this.workerId}: WARNING smtp_host_allow_cidrs is non-empty (${shown}): the SMTP destination guard is relaxed for these ranges; this is a test-harness setting and production leaves it empty`);
+      }
+    } catch { /* a log line must never stop a job */ }
   }
 
   // replayNow re-sends all still-unacked buffered outcomes (pruning expired ones first). The worker does

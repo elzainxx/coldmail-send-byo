@@ -1,7 +1,13 @@
 // smtp.js — the full SMTP session the worker runs itself (Phase 3 §4). Dependency-free: Node's
-// built-in net/tls only (the worker ships NO npm packages — structural no-DB/no-KMS boundary, and
+// built-in modules only (the worker ships NO npm packages — structural no-DB/no-KMS boundary, and
 // no SMTP library either). Sequence (§4.1): connect, EHLO, STARTTLS (587/25) or implicit TLS
 // (465), AUTH, MAIL FROM, RCPT TO, DATA, QUIT.
+//
+// EVERY connection to the user's host is opened by destguard.js (Phase 3 close-out C4), never here: the
+// destination is judged (loopback, private, link-local, cloud metadata, ... are refused) at connect time, and
+// the address judged is the address dialled. A refusal surfaces as SMTPError("destination_blocked", "") with an
+// EMPTY smtpResponse — nothing from inside the network may reach the user. A source gate keeps this file free
+// of any socket-opening call.
 //
 // LOCKED security properties (§4.2/§4.4):
 //   - AUTH is NEVER sent before TLS. On 587/25, if the server does not advertise STARTTLS the
@@ -12,9 +18,8 @@
 //     path — clean QUIT, SMTP error at AUTH, connection failure, timeout, thrown exception (S1/S3).
 //   - Any SMTP response line is scrubbed of the credential before it leaves this module (§4.4).
 
-import net from "node:net";
-import tls from "node:tls";
 import { CredentialZeroedError } from "./creds.js";
+import { guardedConnect, upgradeToTLS as guardedUpgradeToTLS, parseAllowList, DestinationBlockedError } from "./destguard.js";
 
 // SMTPError carries an internal error_reason slug (§2.4) plus the last SMTP response line. It is
 // deliberately built to NEVER carry the credential (only the server's own response text).
@@ -120,33 +125,40 @@ export class SmtpConn {
   }
 }
 
-// connectPlain / upgradeTLS helpers -----------------------------------------------------------
+// connectPlain / connectImplicitTLS / upgradeToTLS: thin wrappers over destguard.js that keep this file's
+// reason vocabulary. `guard` is { allow, lookup, connect }: the allowlist from the job and the test seams.
 
-function connectPlain(host, port, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const sock = net.connect({ host, port });
-    const to = setTimeout(() => { sock.destroy(); reject(new SMTPError("timeout", "")); }, timeoutMs);
-    sock.once("connect", () => { clearTimeout(to); resolve(sock); });
-    sock.once("error", () => { clearTimeout(to); reject(new SMTPError("connect_refused", "")); });
-  });
+// refusal is the only thing a refused destination becomes at this layer: destination_blocked with an EMPTY
+// smtpResponse. The detail (host, address, range) goes to the worker's own log as one JSON line and nowhere
+// else — never into the SMTPError, so it cannot reach the Control or the user. It carries no credential.
+function refusal(e) {
+  try { console.warn("smtp: destination refused " + JSON.stringify(e.detail)); } catch { /* logging is best-effort */ }
+  return new SMTPError("destination_blocked", "");
 }
 
-function connectImplicitTLS(host, port, timeoutMs, allowSelfSigned) {
-  return new Promise((resolve, reject) => {
-    const sock = tls.connect({ host, port, servername: host, rejectUnauthorized: !allowSelfSigned });
-    const to = setTimeout(() => { sock.destroy(); reject(new SMTPError("timeout", "")); }, timeoutMs);
-    sock.once("secureConnect", () => { clearTimeout(to); resolve(sock); });
-    sock.once("error", () => { clearTimeout(to); reject(new SMTPError("connect_refused", "")); });
-  });
+async function guarded(o) {
+  try {
+    return await guardedConnect(o);
+  } catch (e) {
+    if (e instanceof DestinationBlockedError) throw refusal(e);
+    throw new SMTPError(e && e.code === "ETIMEDOUT" ? "timeout" : "connect_refused", "");
+  }
 }
 
-function upgradeToTLS(plainSock, host, timeoutMs, allowSelfSigned) {
-  return new Promise((resolve, reject) => {
-    const sock = tls.connect({ socket: plainSock, servername: host, rejectUnauthorized: !allowSelfSigned });
-    const to = setTimeout(() => { sock.destroy(); reject(new SMTPError("timeout", "")); }, timeoutMs);
-    sock.once("secureConnect", () => { clearTimeout(to); resolve(sock); });
-    sock.once("error", () => { clearTimeout(to); reject(new SMTPError("starttls_failed", "")); });
-  });
+function connectPlain(host, port, timeoutMs, guard) {
+  return guarded({ host, port, tls: false, timeoutMs, ...guard });
+}
+
+function connectImplicitTLS(host, port, timeoutMs, allowSelfSigned, guard) {
+  return guarded({ host, port, tls: true, servername: host, rejectUnauthorized: !allowSelfSigned, timeoutMs, ...guard });
+}
+
+async function upgradeToTLS(plainSock, host, timeoutMs, allowSelfSigned) {
+  try {
+    return await guardedUpgradeToTLS(plainSock, host, timeoutMs, !allowSelfSigned);
+  } catch (e) {
+    throw new SMTPError(e && e.code === "ETIMEDOUT" ? "timeout" : "starttls_failed", "");
+  }
 }
 
 // isPrivateHost reports whether a host is loopback/RFC-1918/link-local, i.e. a test/sink target
@@ -191,9 +203,17 @@ function expect(reply, okCodes, reason) {
  * job.recipient/job.dataBytes on a verify job at all, so even a future regression in this branch
  * would find no address to send to.
  *
- * @param {object} job  { smtp:{host,port,username,security}, dataBytes:string, envelopeFrom, recipient }
+ * THE DESTINATION GUARD (Phase 3 close-out C4). The connection is opened by destguard.js: a host that is, or
+ * resolves to, a refused address (loopback, private, link-local, cloud metadata, ...) ends the session with
+ * SMTPError("destination_blocked", "") BEFORE anything is sent, and the smtpResponse is empty (nothing from inside
+ * the network may reach the user). job.smtp.destAllowCidrs is the one deliberate hole: an array of CIDR strings
+ * (default none; the Control's smtp_host_allow_cidrs, a test-harness setting production leaves empty). A malformed
+ * list refuses the session the same way rather than being ignored.
+ *
+ * @param {object} job  { smtp:{host,port,username,security,destAllowCidrs}, dataBytes:string, envelopeFrom, recipient }
  * @param {MemoryCredential} credential  memory-only plaintext secret
- * @param {object} opts { timeoutMs, stopAfterAuth }
+ * @param {object} opts { timeoutMs, stopAfterAuth, destGuard } — destGuard is a test seam { lookup, connect }
+ *        (see destguard.js guardedConnect); production never sets it
  */
 export async function runSmtpSession(job, credential, opts = {}) {
   const timeoutMs = opts.timeoutMs || 30000;
@@ -201,14 +221,23 @@ export async function runSmtpSession(job, credential, opts = {}) {
   const { host, port, username, security } = job.smtp;
   const allowSelfSigned = isPrivateHost(host); // test affordance ONLY (§4.2)
 
+  // The allowlist is parsed before anything is dialled; a list that does not parse fails CLOSED.
+  let guard;
+  try {
+    guard = { allow: parseAllowList(job.smtp.destAllowCidrs), lookup: opts.destGuard?.lookup, connect: opts.destGuard?.connect };
+  } catch {
+    console.warn("smtp: the destination allowlist is malformed; the session was refused");
+    throw new SMTPError("destination_blocked", "");
+  }
+
   let conn = null;
   let sock = null;
   try {
     // 1) Connect (implicit TLS at connect for 465; plain otherwise).
     if (security === "implicit_tls") {
-      sock = await connectImplicitTLS(host, port, timeoutMs, allowSelfSigned);
+      sock = await connectImplicitTLS(host, port, timeoutMs, allowSelfSigned, guard);
     } else {
-      sock = await connectPlain(host, port, timeoutMs);
+      sock = await connectPlain(host, port, timeoutMs, guard);
     }
     conn = new SmtpConn(sock, timeoutMs);
 
@@ -290,6 +319,8 @@ export async function runSmtpSession(job, credential, opts = {}) {
     // NO report at all on this path (Rule 5 — never invent an outcome), not a fabricated failure
     // report whose smtp_response happens to be empty.
     if (e instanceof CredentialZeroedError) throw e;
+    // A refused destination is its own reason; it is never re-mapped to connect_refused / timeout below.
+    if (e instanceof DestinationBlockedError) throw refusal(e);
     // Re-map generic errors to an SMTPError; scrub any credential from the response text.
     if (e instanceof SMTPError) {
       e.smtpResponse = scrubSecret(e.smtpResponse, credential, username);

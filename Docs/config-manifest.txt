@@ -198,3 +198,7 @@ autopause_mode
 retention_mode
 campaign_expiry_mode
 account_purge_mode
+#
+# Phase 3 close-out C4 (send_byo_0055): +1 key, 90 in total. smtp_host_allow_cidrs is the SMTP host destination
+# guard's allowlist (default EMPTY; production leaves it empty).
+smtp_host_allow_cidrs

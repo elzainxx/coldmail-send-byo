@@ -154,7 +154,7 @@ type staticVocabulary struct {
 var staticVocabularies = []staticVocabulary{
 	{
 		Name:   "detail_issue",
-		Values: []string{issueRequired, issueMalformed, issueOutOfRange, issueNotFound, issueConflict},
+		Values: []string{issueRequired, issueMalformed, issueOutOfRange, issueNotFound, issueConflict, issueForbiddenValue},
 		Fields: []string{"error.details[].issue"},
 	},
 	{

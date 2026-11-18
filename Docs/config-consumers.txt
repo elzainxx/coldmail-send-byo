@@ -141,3 +141,4 @@ autopause_mode|cfg\.AutopauseWrites
 retention_mode|cfg\.RetentionDeletes
 campaign_expiry_mode|cfg\.CampaignExpiryExpires
 account_purge_mode|cfg\.AccountPurgeDeletes
+smtp_host_allow_cidrs|smtp_host_allow_cidrs

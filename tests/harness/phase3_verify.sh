@@ -85,6 +85,37 @@ VERIFIED_EVENT="$(PSQL "SELECT count(*) FROM send_byo.account_events WHERE accou
 TESTBTN_JSON="$(curl -s -X POST "http://localhost:9080/v1/send-byo/accounts/$GOODACCT/test?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
 echo "$TESTBTN_JSON" | grep -q '"state":"verified"' && ok "C3 test button: reused push_verify path re-verified the already-good account live" || bad "C3 test button: unexpected response: $TESTBTN_JSON"
 
+# --- C4 (Phase 3 close-out): the SMTP host destination guard, LIVE, at ADD time and at CONNECT time ---
+# ADD time: with the harness allowlist naming only the compose network's private ranges, a loopback name, the cloud metadata
+# address (dotted and spelled in decimal) are still refused through the real route, for the guard's own reason (details
+# smtp_host:forbidden_value), and the SAME route accepted the sink above (the paired control: the sink is private and allowlisted).
+for H in 169.254.169.254 2852039166 localhost 127.0.0.1; do
+  C4_RESP="$(curl -s -w '\n%{http_code}' -X POST http://localhost:9080/v1/send-byo/accounts -H "Authorization: Bearer $PLTOK" -H 'content-type: application/json' \
+    -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"$H\",\"smtp_port\":$VERIFY_PORT,\"smtp_username\":\"c4-$H@ourdomain.com\",\"smtp_secret\":\"canary-c4-add-9Z\",\"from_address\":\"c4-add@ourdomain.com\"}")"
+  C4_CODE="$(echo "$C4_RESP" | tail -1)"; C4_BODY="$(echo "$C4_RESP" | head -1)"
+  if [[ "$C4_CODE" == "400" ]] && echo "$C4_BODY" | grep -q '"field":"smtp_host","issue":"forbidden_value"'; then
+    ok "C4 (live, add time): smtp_host=$H refused with 400 validation_failed / smtp_host:forbidden_value (the allowlist names only private ranges)"
+  else
+    bad "C4 (live, add time): smtp_host=$H -> $C4_CODE $C4_BODY, want 400 with smtp_host:forbidden_value"
+  fi
+done
+C4_STORED="$(PSQL "SELECT count(*) FROM send_byo.accounts WHERE smtp_username LIKE 'c4-%@ourdomain.com'" || true)"
+[[ "${C4_STORED:-x}" == "0" ]] && ok "C4 (live, add time): no account row was stored for any refused host" || bad "C4 (live, add time): $C4_STORED account row(s) stored for refused hosts"
+
+# CONNECT time, end to end through the REAL worker: the account GOODACCT was created while the sink's private range was
+# allowlisted. Clear the allowlist and press the test button: the worker (not the Control) refuses the destination at connect
+# time, the result is the closed code verify_host_not_allowed, and the stored verification records it. Then restore the allowlist
+# and press it again: the SAME account verifies (the paired control: the refusal was the guard's, the sink is healthy).
+PSQL "UPDATE send_byo.config SET value = '{\"v\":[]}'::jsonb WHERE key = 'smtp_host_allow_cidrs'" >/dev/null
+C4_BTN="$(curl -s -X POST "http://localhost:9080/v1/send-byo/accounts/$GOODACCT/test?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+echo "$C4_BTN" | grep -q '"code":"verify_host_not_allowed"' && ok "C4 (live, connect time): with the allowlist EMPTY the worker refused the sink's private address: test button code=verify_host_not_allowed" || bad "C4 (live, connect time): test button did not report verify_host_not_allowed: $C4_BTN"
+echo "$C4_BTN" | grep -q '"smtp_response":""' && ok "C4 (live, connect time): the refusal carries no smtp_response (nothing from inside the network reaches the user)" || bad "C4 (live, connect time): smtp_response not empty on a destination refusal: $C4_BTN"
+C4_STORED_CODE="$(PSQL "SELECT credential_verify_code FROM send_byo.accounts WHERE id='$GOODACCT'" || true)"
+[[ "$C4_STORED_CODE" == "verify_host_not_allowed" ]] && ok "C4 (live, connect time): the stored verification code is verify_host_not_allowed" || bad "C4 (live, connect time): stored verify code=$C4_STORED_CODE"
+PSQL "UPDATE send_byo.config SET value = '{\"v\":[\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\"]}'::jsonb WHERE key = 'smtp_host_allow_cidrs'" >/dev/null
+C4_BTN2="$(curl -s -X POST "http://localhost:9080/v1/send-byo/accounts/$GOODACCT/test?user_id=$SYSUSER" -H "Authorization: Bearer $PLTOK")"
+echo "$C4_BTN2" | grep -q '"state":"verified"' && ok "C4 (live, connect time): with the allowlist restored the SAME account verifies again (paired control)" || bad "C4 (live, connect time): the account did not verify after the allowlist was restored: $C4_BTN2"
+
 # --- C3 T5 (live): the test button is genuinely rate-limited, and a refused click produces NO
 # SMTP connection at the sink (otherwise the limit is cosmetic and the auth attempt it exists to
 # prevent still happened) ---

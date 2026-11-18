@@ -1,0 +1,55 @@
+# ranges.txt — the SMTP host destination guard's blocked-range table (Phase 3 close-out C4). THE canonical table.
+#
+# One row per line, three pipe-delimited fields:  CIDR|kind|name
+#   kind  block     the whole range is refused;
+#         embedded  the address CARRIES an IPv4 address (IPv4-mapped, NAT64, 6to4): the range is not refused as such,
+#                   the embedded IPv4 address is judged against the IPv4 rows instead (so a mapped loopback is refused
+#                   and a mapped public address is not).
+#   name  what the range is, for the log and the docs; it never reaches a response body.
+#
+# The Control embeds this file (hostguard.go), the worker keeps the same rows in services/worker/src/destguard.js, and a
+# test on each side parses THIS file and fails if its own table is not row-for-row the same (set equality, both
+# directions), so a range can be removed from neither without this file saying so. A range removed from a table turns
+# the table test red (the row is missing) AND the behaviour test red (the range's own first, last and middle address are
+# no longer refused).
+#
+# On top of the rows, one rule that is not a row: an IPv6 address outside 2000::/3 (not global unicast) is refused too,
+# so an unlisted corner of the non-global IPv6 space cannot be reached.
+#
+# A name that resolves to ANY refused address is refused as a whole (the guard never connects to the passing addresses
+# of a mixed answer). The allowlist dial smtp_host_allow_cidrs is checked AFTER the embedded-address judgement and
+# overrides a refused row for the addresses it names, and for nothing else.
+
+# --- IPv4 ---------------------------------------------------------------------------------------------------------
+0.0.0.0/8|block|this network
+10.0.0.0/8|block|private (RFC 1918)
+100.64.0.0/10|block|shared address space (carrier-grade NAT)
+127.0.0.0/8|block|loopback
+169.254.0.0/16|block|link-local, including the cloud metadata address
+172.16.0.0/12|block|private (RFC 1918)
+192.0.0.0/24|block|IETF protocol assignments
+192.0.2.0/24|block|documentation (TEST-NET-1)
+192.88.99.0/24|block|6to4 relay anycast (deprecated)
+192.168.0.0/16|block|private (RFC 1918)
+198.18.0.0/15|block|benchmarking
+198.51.100.0/24|block|documentation (TEST-NET-2)
+203.0.113.0/24|block|documentation (TEST-NET-3)
+224.0.0.0/4|block|multicast
+240.0.0.0/4|block|reserved for future use
+255.255.255.255/32|block|limited broadcast
+# --- IPv6 ---------------------------------------------------------------------------------------------------------
+::/128|block|unspecified
+::1/128|block|loopback
+::ffff:0:0/96|embedded|IPv4-mapped: the embedded IPv4 address is judged
+64:ff9b::/96|embedded|NAT64 well-known prefix: the embedded IPv4 address is judged
+64:ff9b:1::/48|block|local-use NAT64
+100::/64|block|discard-only
+2001::/23|block|IETF protocol assignments (Teredo and others)
+2001:db8::/32|block|documentation
+2002::/16|embedded|6to4: the embedded IPv4 address is judged
+3fff::/20|block|documentation
+fc00::/7|block|unique local
+fd00:ec2::/32|block|cloud instance metadata (IPv6)
+fe80::/10|block|link-local
+fec0::/10|block|site-local (deprecated)
+ff00::/8|block|multicast

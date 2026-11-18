@@ -113,6 +113,13 @@ type SMTP struct {
 	// job_max_processing_time_sec (config-load reject) so an account hang surfaces as a worker-REPORTED
 	// timeout, not an unscored Control lease reclaim (§2.4, P6-10).
 	OperationTimeoutSec int `json:"operation_timeout_sec,omitempty"`
+	// DestAllowCIDRs delivers the seeded smtp_host_allow_cidrs (Phase 3 close-out C4) to the DB-less worker:
+	// the CIDR ranges its connect-time destination guard admits even though they are otherwise refused
+	// (loopback, private, link-local, ...). It is EMPTY AND OMITTED in production; a test harness whose
+	// SMTP sink lives on a private network sets it. Additive, omitempty so older frames still parse; the
+	// worker treats absent as empty (the guard fully on). Never a secret, never user-supplied: it is
+	// operator configuration, validated as CIDRs at the Control before it is sent.
+	DestAllowCIDRs []string `json:"dest_allow_cidrs,omitempty"`
 }
 
 // PushJob delivers one job + its credential down the held stream (§2.3). One push = one send.
@@ -256,12 +263,15 @@ type ReportAck struct {
 
 // error_reason slugs (§2.4). Internal only; mapped to error_class='unknown' in Phase 3 (§5.4).
 const (
-	ReasonConnectRefused    = "connect_refused"
-	ReasonAuthFailed        = "auth_failed"
-	ReasonStartTLSUnavail   = "starttls_unavailable"
-	ReasonDataRejected4xx   = "data_rejected_4xx"
-	ReasonDataRejected5xx   = "data_rejected_5xx"
-	ReasonLeaseExpired      = "lease_expired"
-	ReasonTimeout           = "timeout"
-	ReasonAcceptedWithoutID = "accepted_without_id" // §4.3 defensive backstop (should be impossible)
+	ReasonConnectRefused  = "connect_refused"
+	ReasonAuthFailed      = "auth_failed"
+	ReasonStartTLSUnavail = "starttls_unavailable"
+	ReasonDataRejected4xx = "data_rejected_4xx"
+	ReasonDataRejected5xx = "data_rejected_5xx"
+	ReasonLeaseExpired    = "lease_expired"
+	ReasonTimeout         = "timeout"
+	// ReasonDestinationBlocked is the worker's connect-time destination guard refusing the host (C4): the
+	// address the user's smtp_host names or resolves to is in a refused range. It carries NO smtp_response.
+	ReasonDestinationBlocked = "destination_blocked"
+	ReasonAcceptedWithoutID  = "accepted_without_id" // §4.3 defensive backstop (should be impossible)
 )

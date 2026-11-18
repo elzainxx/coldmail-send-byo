@@ -91,6 +91,14 @@ func newTestEnvSeams(t *testing.T, suffix string, verifier AccountVerifier, test
 		t.Fatalf("disable from_gate_mode for test clone: %v", err)
 	}
 
+	// C4: the SMTP host destination guard resolves a host NAME at add time. These tests name hosts like
+	// smtp.example.com that are not meant to be looked up on the real network, so every clone gets an OFFLINE
+	// resolver (a name does not resolve = allowed, the documented add-time behaviour); the tests that are about
+	// the guard install their own resolver after construction.
+	prevLookup := hostLookup
+	hostLookup = offlineHostLookup
+	t.Cleanup(func() { hostLookup = prevLookup })
+
 	srv := NewServer(pool, auth, nil, enc, verifier, testSender) // kick=nil: run only needs to INSERT + return; verifier/testSender=nil unless a test supplies a counting fake: no worker in these tests
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

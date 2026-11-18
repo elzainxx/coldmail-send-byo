@@ -56,6 +56,9 @@ SYSUSER="$(PSQL "SELECT gen_random_uuid()" | head -1)"
 PSQL "INSERT INTO public.users (id,email,is_active) VALUES ('$SYSUSER','drill-${SYSUSER}@sender.local',true) ON CONFLICT (id) DO NOTHING" >/dev/null
 echo "   fresh tenant for this drill: $SYSUSER"
 PSQL "UPDATE send_byo.config SET value = '{\"v\":\"off\"}' WHERE key = 'from_gate_mode'" >/dev/null
+# C4: the SMTP host destination guard refuses the compose network's private sink address unless the test-harness allowlist names it
+# (default EMPTY, EMPTY IN PRODUCTION; see tests/harness/phase3_send.sh for the full note).
+PSQL "UPDATE send_byo.config SET value = '{\"v\":[\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\"]}'::jsonb WHERE key = 'smtp_host_allow_cidrs'" >/dev/null
 ACCT_RESP="$(curl -s -X POST "$API/v1/admin/accounts" -H "Authorization: Bearer $ADMKEY" -H 'content-type: application/json' -d "{\"user_id\":\"$SYSUSER\",\"smtp_host\":\"smtp-sink\",\"smtp_port\":1025,\"smtp_username\":\"sender@ourdomain.com\",\"smtp_secret\":\"drill-secret\",\"from_address\":\"sender@ourdomain.com\",\"from_name\":\"Drill\"}" || true)"
 ACCT="$(echo "$ACCT_RESP" | grep -oE '"id":"[0-9a-f-]+"' | head -1 | cut -d'"' -f4 || true)"
 [ -n "$ACCT" ] || { bad "could not create an account — the API answered: ${ACCT_RESP:-<nothing>}"; exit 1; }

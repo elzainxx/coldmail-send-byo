@@ -98,7 +98,9 @@ function richVariationPushJob(jobId, sinkPort) {
         Date: new Date().toUTCString(),
       },
     },
-    smtp: { host: "127.0.0.1", port: sinkPort, username: "sender@ourdomain.com", secret: CANARY, security: "starttls" },
+    // dest_allow_cidrs is the Control's smtp_host_allow_cidrs on the wire (Phase 3 close-out C4): the destination
+    // guard refuses a loopback sink unless the frame names it, exactly as the test harness configures it.
+    smtp: { host: "127.0.0.1", port: sinkPort, username: "sender@ourdomain.com", secret: CANARY, security: "starttls", dest_allow_cidrs: ["127.0.0.0/8"] },
     // A LIVE (non-expired) lease — #runJob must reach the real SMTP session, unlike every
     // buffer.test.mjs fixture which pushes an already-expired lease and short-circuits.
     lease_expires_at: new Date(Date.now() + 60_000).toISOString(),

@@ -70,6 +70,13 @@ done
 # reason (see their own harness_test.go comments); the shell harness needs the same override,
 # same as phase3_verify.sh's own config pokes for its own fixtures.
 PSQL "UPDATE send_byo.config SET value = '{\"v\":\"off\"}' WHERE key = 'from_gate_mode'" >/dev/null
+# C4 (Phase 3 close-out): the SMTP host destination guard refuses private networks at add time AND at connect time, and this
+# stack's sink (smtp-sink) lives on the compose network's private address space. smtp_host_allow_cidrs is the ONE deliberate
+# hole for exactly that: default EMPTY, EMPTY IN PRODUCTION, a test-harness setting (the Control logs a loud WARNING at start
+# when it is non-empty and the worker logs one on the first frame that carries it). This harness names only the private ranges
+# a compose network is allocated from; the guard stays ON for loopback, link-local and the cloud metadata address, and
+# phase3_verify.sh proves that live (add time and connect time) with the allowlist cleared and restored.
+PSQL "UPDATE send_byo.config SET value = '{\"v\":[\"10.0.0.0/8\",\"172.16.0.0/12\",\"192.168.0.0/16\"]}'::jsonb WHERE key = 'smtp_host_allow_cidrs'" >/dev/null
 
 # --- fixtures: one eligible account owned by the system user, targeting the sink, via the ADMIN
 # API. Re-keyed at G2 (Docs/history/phase-2-strip-shared-pool.md §6): base routing now reaches an account

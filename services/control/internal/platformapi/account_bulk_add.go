@@ -187,6 +187,16 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 	rowCtx, cancel := dbCtx(ctx)
 	defer cancel()
 
+	// C4: the SMTP host destination guard, per row (host_guard.go). A refused host is a validation
+	// rejection of THAT row — validation_failed with details [{smtp_host, forbidden_value}] — and never
+	// stops the batch; the address and range that were refused go to the log.
+	if herr := s.checkSMTPHost(rowCtx, row.SMTPHost); herr != nil {
+		// copy-ledger: not-copy: a log line (the internal reason, keyed by request_id); it is never rendered to a user
+		log.Printf("platformapi bulk-add rid=%s row=%d rejected: code=%s reason=%s level=%s",
+			requestID, rowNum, bulkRowCode(herr), herr.internalReason, logLevelFor(herr.code))
+		return bulkAddRowResult{Status: bulkAddStatusRejected, Code: bulkRowCode(herr), Details: herr.details}
+	}
+
 	dailyLimit, lerr := s.resolveDailyLimit(rowCtx, row.DailyLimit)
 	if lerr != nil {
 		code := bulkRowCode(lerr)

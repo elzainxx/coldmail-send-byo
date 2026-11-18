@@ -19,9 +19,13 @@ import { MemoryCredential } from "../src/creds.js";
 const CANARY = "s3cret-pw-9"; // deliberately short + alphanumeric-punctuation mixed (matches the spec's own worked example)
 const USERNAME = "alice@example.com"; // the spec's own GAP 1 worked example
 
+// The destination guard (Phase 3 close-out C4) refuses a loopback host unless the job's allowlist names it: this
+// suite's sink listens on loopback, so every job here carries the loopback range, exactly as the test harness
+// does with smtp_host_allow_cidrs. The refusal itself is proven in destguard.test.mjs.
+
 function jobFor(port, username = USERNAME) {
   return {
-    smtp: { host: "127.0.0.1", port, username, security: "starttls" },
+    smtp: { host: "127.0.0.1", port, username, security: "starttls", destAllowCidrs: ["127.0.0.0/8"] },
     envelopeFrom: username,
     recipient: "bob@example.com",
     dataBytes: "From: <" + username + ">\r\nTo: bob@example.com\r\nSubject: t\r\n\r\nhi",

@@ -1,6 +1,6 @@
 # Config reference (living mirror of Phase 9 §4)
 
-**89 keys** at migration `send_byo_0053`. Every key is a seeded row in `send_byo.config`, changeable at runtime with no redeploy; there are no hardcoded tuning
+**90 keys** at migration `send_byo_0055`. Every key is a seeded row in `send_byo.config`, changeable at runtime with no redeploy; there are no hardcoded tuning
 constants (the deliberate exceptions are the *bounds* listed at the end of this file). The sections below are in the order the keys were added, so each one says
 which migration seeded it; the ordering invariants and the hardcoded bounds close the file.
 
@@ -14,7 +14,7 @@ CI `config_drift` gate (`tests/harness/checks/config_drift.sh`) — live `send_b
 `send_byo.config` is created in Phase 1 (`send_byo_0010`), seeding the **14 foundation keys** below
 (Phase 9 §4.1). Later phases append their keys (Phase 5 `send_byo_0017`, Phase 6 `send_byo_0018`,
 Phase 7 `send_byo_0019`, Phase 8 `send_byo_0020`, Phase 9.5 `send_byo_0021`) growing to the 53-key
-total (module 2's end state — module 3 has since grown it to 89; the later sections say how). The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
+total (module 2's end state — module 3 has since grown it to 90; the later sections say how). The drift gate diffs the **phase-aware manifest** (`config-manifest.txt`) against the
 live `send_byo.config` key set AND this table — all three must match, which is what makes "no
 hardcoded tuning constant" structurally checkable. `default_value` is never mutated.
 
@@ -406,6 +406,32 @@ including the demotion half.
 `send_byo_0021`) — which makes it the single most likely row for a future "delete the mode dials" edit to
 take by mistake. It is not `0053`'s, and the migrate-tool integration test's Down loop is what pins that
 ownership.
+
+## Phase 3 close-out C4 state (+1 key, `send_byo_0055`) — the SMTP host destination guard's allowlist
+
+`smtp_host` used to accept any IP and any name, and the worker connected to whatever it resolved to. The guard
+refuses a loopback, private-network, link-local, cloud-metadata or other special-use destination **at add time**
+(the user and operator account routes: `services/control/internal/hostguard`, table
+`services/control/internal/hostguard/ranges.txt`) **and at connect time** (the worker, the only code that opens a
+connection to a user's host: `services/worker/src/destguard.js`, same table). This key is the ONE deliberate
+hole: CIDR ranges the guard admits anyway, so a **test harness whose SMTP sink lives on a private network** can
+reach it while the guard stays on everywhere else.
+
+**Production leaves it EMPTY, and it is empty by default.** A non-empty list lets a user or an operator point an
+account at an address inside the operator network and the workers will connect to it. So it is loud: the Control
+logs a `WARNING smtp_host_allow_cidrs is NON-EMPTY` line at every start, the add-time check logs one on every
+use, and the worker logs one the first time a frame carries a non-empty list (and whenever it changes). An
+unreadable or unparseable stored value is treated as EMPTY (the guard stays fully on), never as "off". Entries
+must be CIDRs (a bare address is refused at the admin PUT), at most 64.
+
+| key | default_value | value_type | seeding migration | description |
+|-----|---------------|-----------|-------------------|-------------|
+| `smtp_host_allow_cidrs` | `{"v":[]}` | array<string> | send_byo_0055 | SMTP host destination guard allowlist: CIDR ranges admitted even though they are otherwise refused (loopback, private networks, link-local, the cloud metadata address, ...). EMPTY by default and EMPTY IN PRODUCTION; a test-harness setting. Read fresh by the add-time check on every account create/update/bulk row, and delivered to the worker on every `push_job`/`push_verify` frame (`workerproto.SMTP.dest_allow_cidrs`) for the connect-time check. |
+
+`from_dns_lookup_timeout_ms` (seeded `send_byo_0039`) additionally bounds the add-time resolution of a host
+NAME in this check: one timeout for "a DNS lookup this module waits for". A name that does not resolve at add
+time is allowed (the module has never resolved at add time) and is re-checked, and refused if it then resolves
+into a refused range, at every connect.
 
 ## All six config-ordering invariants (enforced at BOTH the admin PUT boundary AND config-LOAD; CLAUDE.md Rule 1, Phase 7 §5.3 authoritative for the first two; Phase 4 §6.4/§6.5 for the two From-gate pairs; Phase 5 §10.4 for the two quarantine dials)
 

@@ -17,7 +17,7 @@ pinned together by the parent repository, which also holds the platform contract
 Two services and one database. The **Control** (Go) is the only thing that talks to Postgres and the only thing that can decrypt an SMTP credential; exactly
 one is ever active, guarded by a Postgres advisory lock. It claims queued jobs, picks a healthy sending account, decrypts that account's credential, and pushes the
 job over mutual TLS to a **sender worker** (Node.js) — a dumb SMTP relay that ships no database driver and no KMS SDK, holds the credential in memory only, zeroes
-it on every exit from the send path, and reports the outcome back. Workers scale horizontally and are never publicly reachable. Everything tunable — 89 keys — is a
+it on every exit from the send path, and reports the outcome back. Workers scale horizontally and are never publicly reachable. Everything tunable — 90 keys — is a
 seeded row in `send_byo.config`, changeable at runtime with no redeploy; there are no hardcoded tuning constants. Full shape in
 [`Docs/architecture.md`](./Docs/architecture.md).
 

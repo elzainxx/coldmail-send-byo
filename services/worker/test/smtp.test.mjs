@@ -12,9 +12,14 @@ import { MemoryCredential } from "../src/creds.js";
 
 const CANARY = "canary-smtp-secret-9Z"; // distinctive secret we scan for (§9 S1)
 
+// The destination guard (Phase 3 close-out C4) refuses a loopback host unless the job's allowlist names it: this
+// suite's sink listens on loopback, so every job here carries the loopback range, exactly as the test harness
+// does with smtp_host_allow_cidrs. The refusal itself is proven in destguard.test.mjs.
+const LOOPBACK_ALLOW = ["127.0.0.0/8"];
+
 function jobFor(port) {
   return {
-    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls" },
+    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls", destAllowCidrs: LOOPBACK_ALLOW },
     envelopeFrom: "user@ourdomain.com",
     recipient: "alice@example.com",
     dataBytes: "From: <user@ourdomain.com>\r\nTo: alice@example.com\r\nSubject: t\r\n\r\nhi",
@@ -145,7 +150,7 @@ function verifyJobFor(port) {
   // absent fields, not merely the stopAfterAuth flag, are what make a regression in the flag
   // harmless: even if the branch below it ran, there would be no address to send to.
   return {
-    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls" },
+    smtp: { host: "127.0.0.1", port, username: "user@ourdomain.com", security: "starttls", destAllowCidrs: LOOPBACK_ALLOW },
     envelopeFrom: "verify@ourdomain.com",
   };
 }

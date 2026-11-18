@@ -139,6 +139,14 @@ type Config struct {
 	CampaignExpiryMode string // campaign_expiry_mode — off|shadow|enforce; the campaign expiry sweep (§5.3), whose job failures are TERMINAL
 	AccountPurgeMode   string // account_purge_mode — off|shadow|enforce; the account purge sweep (§6.3). shadow => a deleted credential outlives its window (go-live gate)
 
+	// Phase 3 close-out C4: the SMTP host destination guard's allowlist (send_byo_0055). The worker refuses to
+	// connect to a loopback / private / link-local / metadata address; these CIDRs are the ranges a test
+	// harness admits anyway (its sink lives on a private network). EMPTY in production. Delivered to the worker
+	// on every push_job/push_verify frame (workerproto.SMTP.DestAllowCIDRs); read by the add-time check in
+	// platformapi/adminapi on their own. Validated as CIDRs where it is USED (allowCIDRsForWire), never at
+	// load: an unparseable stored value must fall back to EMPTY (the guard fully on), not wedge dispatch.
+	SMTPHostAllowCIDRs []string // smtp_host_allow_cidrs
+
 	AlertWebhookURL                   string         // alert_webhook_url — B4 optional outbound webhook (§4.3); "" = disabled
 	HealthMetricsWindowSec            int            // health_metrics_window_sec — B3 rolling window (§3.2)
 	ControlSingletonAcquireTimeoutSec int            // brain_singleton_acquire_timeout_sec — B5 bounded wait (§5.2)
@@ -404,6 +412,9 @@ func LoadConfig(ctx context.Context, db *pgxpool.Pool) (Config, error) {
 		return c, err
 	}
 	if c.CampaignExpiryMode, err = readStringKey(ctx, db, "campaign_expiry_mode"); err != nil {
+		return c, err
+	}
+	if c.SMTPHostAllowCIDRs, err = readStringArrayKey(ctx, db, "smtp_host_allow_cidrs"); err != nil {
 		return c, err
 	}
 	if c.AccountPurgeMode, err = readStringKey(ctx, db, "account_purge_mode"); err != nil {

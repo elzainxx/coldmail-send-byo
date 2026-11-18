@@ -177,6 +177,7 @@ func (d *Dispatcher) createAndPushTestSend(ctx context.Context, userID string, a
 			Secret:              string(plaintext),
 			Security:            securityForPort(acct.smtpPort),
 			OperationTimeoutSec: cfg.SMTPOperationTimeoutSec,
+			DestAllowCIDRs:      allowCIDRsForWire(cfg.SMTPHostAllowCIDRs), // C4, see dest_guard.go
 		},
 	}
 	if lease, ok := d.readLease(ctx2, jobID); ok {

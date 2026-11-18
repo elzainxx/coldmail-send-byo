@@ -266,6 +266,54 @@ fix (narrowing which hosts may skip verification, or a dev-only flag separating 
 from production posture) is registered in [`future-work.md`](./future-work.md); this paragraph is
 that disclosure.
 
+**Update (Phase 3 close-out C4): a user can no longer reach that path.** The SMTP host destination guard
+(next section) refuses a private, loopback or link-local `smtp_host` at add time and at connect time, so the
+private-host branch of `isPrivateHost` is reachable only through the test-harness allowlist
+`smtp_host_allow_cidrs`, which production leaves empty. The `isPrivateHost` affordance itself is unchanged
+(the harness still needs it for its self-signed sink); what changed is who can make a session take it.
+
+### The SMTP host destination guard (Phase 3 close-out C4)
+
+**What was open.** `smtp_host` accepted any IP and any name, and the worker connected to whatever it
+resolved to, from the operator's own network. A user could name a loopback, a private network, a link-local
+address or the cloud metadata address (or a name that resolves to one) and have the worker open an SMTP
+session into the operator's side of the fence; the server's reply text comes back to the user as
+`smtp_response`.
+
+**What closes it.** Two checks over one table (`services/control/internal/hostguard/ranges.txt`: every IANA
+special-purpose range that is not globally routable, the cloud metadata addresses, multicast and reserved
+space; IPv4-mapped, NAT64 and 6to4 addresses are judged by the IPv4 address they carry; an IPv6 address outside
+global unicast is refused):
+
+- **Add time** (every writer of `smtp_host` on the user surface AND the operator surface: create, bulk-add
+  rows, PATCH): a literal address in any spelling a resolver library would read (dotted, decimal, octal, hex,
+  short forms, bracketed or scoped IPv6) is judged; a name is resolved and refused if **any** address it
+  resolves to is refused. The refusal is a `400 validation_failed` with `details:[{smtp_host,
+  forbidden_value}]`; the address and range are in the log only.
+- **Connect time** (the worker, which is the only code that opens a connection to a user's host:
+  `services/worker/src/destguard.js`; a source gate keeps it that way): the same table and the same judgement
+  applied to the address that is actually dialled. The worker resolves **once**, judges **every** address,
+  refuses the whole host if any is refused, dials the judged IP **literal** (so there is no second resolution
+  for a hostile resolver to answer differently), and judges the socket's real remote address again after the
+  connection, so a resolver that answers a public address at check time and a private one at dial time is
+  refused. A refusal ends the session before anything is sent with the worker reason `destination_blocked`
+  and an **empty** `smtp_response`, which the Control reports as the closed code `verify_host_not_allowed`.
+
+**A name that does not resolve at add time is allowed.** The module has never resolved at add time, and a
+host whose DNS has not propagated is a normal thing to add. That is safe only because the connect-time check
+re-resolves and re-judges every name at every connection: the add-time check is the early courtesy, the
+connect-time check is the enforcement that cannot be raced.
+
+**The one deliberate hole: `smtp_host_allow_cidrs`.** A CIDR list, default empty, for a test harness whose SMTP
+sink lives on a private network. **Production leaves it empty.** It is loud (a `WARNING` at Control start, on
+every add-time use, and on the worker's first frame that carries it); a value that does not parse is treated as
+empty; entries must be CIDRs. It admits exactly the addresses it names and nothing next to them.
+
+**What it does not do.** It is not an egress firewall: a host-level egress rule for the worker network (module
+1's ADR-0021, layer 4) remains the only control that cannot be raced by a bug in the process, and is a
+deployment requirement alongside this one. The guard also does not restrict the **port**: any port of a
+public host is dialled, as before.
+
 ### A compromised worker can fabricate the outcome of the job it legitimately holds
 
 "The Control never invents an outcome" (§2) constrains the Control, and it holds. The converse is not
