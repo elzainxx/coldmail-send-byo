@@ -58,9 +58,11 @@ func TestSmtpHostRejectsPortSuffix(t *testing.T) {
 		"user_id": u, "smtp_host": "smtp.example.com", "smtp_username": "u3@example.com",
 		"smtp_secret": "s", "from_address": "s@example.com",
 	}).requireStatus(t, 201)
-	// bare IPv6 literal → 201 (colons allowed only for a valid IP literal).
+	// bare IPv6 literal → 201 (colons allowed only for a valid IP literal). The literal is a PUBLIC address: since the
+	// Phase 3 close-out's SMTP host destination guard (C4) a documentation-range address such as 2001:db8::1 is
+	// refused as a destination, which is the guard's behaviour and not this test's subject (host_guard_test.go).
 	e.do(t, "POST", "/v1/admin/accounts", map[string]any{
-		"user_id": u, "smtp_host": "2001:db8::1", "smtp_username": "u4@example.com",
+		"user_id": u, "smtp_host": "2606:4700:4700::1111", "smtp_username": "u4@example.com",
 		"smtp_secret": "s", "from_address": "s@example.com",
 	}).requireStatus(t, 201)
 }
