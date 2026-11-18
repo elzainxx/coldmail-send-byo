@@ -64,42 +64,38 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 		return "", false, newErr(codeInternalError, "advisory_lock_failed")
 	}
 
-	// §6.4: a suspended user's enqueue is refused outright, under the SAME lock as the caps below
-	// — checked first since it needs nothing else read yet (cheapest gate, no wasted work).
-	var suspended bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM send_byo.user_suspensions WHERE user_id=$1 AND suspended=TRUE)`, userID).
-		Scan(&suspended); err != nil {
-		return "", false, newErr(codeInternalError, "suspend_check_failed")
-	}
-	if suspended {
-		return "", false, newErr(codeConflict, "user_suspended")
-	}
-
-	// A DIFFERENT campaign already active for this user (any non-terminal job) → reject outright,
-	// no job row written. This must run for THIS job_item's campaign_id, so read it first — a
-	// cross-tenant job_item still resolves to job_item_not_found below via the same INSERT...
-	// SELECT tenant scoping, never leaking whether it exists.
+	// THE FOUR CAUSES OF A 409 (the Phase 3 close-out, C2; run_causes.go). `run` refuses for exactly four
+	// reasons — the user is suspended (§6.4: a suspended user's enqueue is refused outright, accepting work
+	// into a queue that cannot drain is a growing debt against the queue cap), ANOTHER campaign is still
+	// active, THIS campaign already holds max_campaign_size jobs, the user's live queue already holds
+	// max_queued_jobs — and used to answer one opaque 409 for all of them. Every cause that applies is now
+	// collected (NOT first-match: two can hold at once) from the SAME facts `quote` reads, and the 409 carries
+	// one details[] entry per cause. The status, the code and the message are unchanged.
+	//
+	// The job item is read first because the campaign facts depend on its campaign_id; a cross-tenant job_item
+	// still resolves to job_item_not_found via the same tenant scoping, never leaking whether it exists. A
+	// SUSPENDED user is still refused before anything about job items is revealed: with no item found the
+	// answer is the one cause known without it.
 	var campaignID string
+	itemFound := true
 	if err := tx.QueryRow(ctx,
 		`SELECT campaign_id FROM public.job_items WHERE id = $1 AND user_id = $2`, jobItemID, userID).
 		Scan(&campaignID); err != nil {
-		if isNoRows(err) {
-			return "", false, newErr(codeNotFound, "job_item_not_found").
-				withDetails(fieldDetail{Field: "job_item_id", Issue: issueNotFound})
+		if !isNoRows(err) {
+			return "", false, newErr(codeInternalError, "read_job_item_failed")
 		}
-		return "", false, newErr(codeInternalError, "read_job_item_failed")
+		itemFound, campaignID = false, ""
 	}
-	var otherCampaignActive bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM send_byo.jobs
-		                WHERE user_id = $1 AND campaign_id <> $2
-		                  AND state IN ('queued','assigned','sending'))`,
-		userID, campaignID).Scan(&otherCampaignActive); err != nil {
-		return "", false, newErr(codeInternalError, "campaign_check_failed")
+	facts, ferr := readRunCauseFacts(ctx, tx, userID, campaignID)
+	if ferr != nil {
+		return "", false, newErr(codeInternalError, "run_cause_facts_failed")
 	}
-	if otherCampaignActive {
-		return "", false, newErr(codeConflict, "user_campaign_active")
+	if !itemFound {
+		if facts.Suspended {
+			return "", false, runConflict([]fieldDetail{runCauseDetail(runCauseSuspended, nil, nil)})
+		}
+		return "", false, newErr(codeNotFound, "job_item_not_found").
+			withDetails(fieldDetail{Field: "job_item_id", Issue: issueNotFound})
 	}
 
 	// §5.2's two resource caps, each resolved override→global (§10.2 — Phase 6 owns consolidating
@@ -109,22 +105,8 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	if cerr != nil {
 		return "", false, cerr
 	}
-	var campaignSize int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM send_byo.jobs WHERE campaign_id = $1`, campaignID).Scan(&campaignSize); err != nil {
-		return "", false, newErr(codeInternalError, "campaign_size_check_failed")
-	}
-	if campaignSize >= maxCampaignSize {
-		return "", false, newErr(codeConflict, "max_campaign_size_reached")
-	}
-	var queuedJobs int
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*) FROM send_byo.jobs WHERE user_id = $1 AND state IN ('queued','assigned','sending')`, userID).
-		Scan(&queuedJobs); err != nil {
-		return "", false, newErr(codeInternalError, "queued_jobs_check_failed")
-	}
-	if queuedJobs >= maxQueuedJobs {
-		return "", false, newErr(codeConflict, "max_queued_jobs_reached")
+	if causes := facts.causes(1, maxCampaignSize, maxQueuedJobs); len(causes) > 0 {
+		return "", false, runConflict(causes)
 	}
 
 	// §5.3: upsert the campaign row on the FIRST job of a campaign — expires_at is resolved and

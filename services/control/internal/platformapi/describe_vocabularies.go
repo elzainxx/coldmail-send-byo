@@ -162,8 +162,16 @@ var staticVocabularies = []staticVocabulary{
 		Values: []string{
 			quoteReasonDispatchDisabled, quoteReasonExceedsQueueCap, quoteReasonNoEligibleAccounts,
 			quoteReasonAllAccountsUnverified, quoteReasonFromGateBlocked,
+			quoteReasonSuspended, quoteReasonCampaignActive, quoteReasonCampaignCap,
 		},
 		Fields: []string{"quote.reasons[].code"},
+	},
+	{
+		// The closed causes of a `run` 409 (Phase 3 close-out C2, run_causes.go): the `code` of each
+		// error.details[] entry run's 409 carries, and the `cause` of the quote reason that predicts it.
+		Name:   "run_conflict_cause",
+		Values: []string{runCauseSuspended, runCauseCampaignActive, runCauseCampaignCap, runCauseQueueCap},
+		Fields: []string{"run.error.details[].code", "quote.reasons[].cause"},
 	},
 	{
 		Name:   "quote_warning_code",

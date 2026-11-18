@@ -78,10 +78,15 @@ var codeStatus = map[string]int{
 	codePaused:           http.StatusServiceUnavailable,
 }
 
-// fieldDetail is one structured field-level error.
+// fieldDetail is one structured field-level error. Code, Current and Limit are ADDITIVE and omitted
+// everywhere except the cause entries of a `run` 409 (run_causes.go, Phase 3 close-out C2): Code is the
+// closed cause code, Current and Limit the user's own count and resolved limit for the two caps.
 type fieldDetail struct {
-	Field string `json:"field"`
-	Issue string `json:"issue"`
+	Field   string `json:"field"`
+	Issue   string `json:"issue"`
+	Code    string `json:"code,omitempty"`
+	Current *int   `json:"current,omitempty"`
+	Limit   *int   `json:"limit,omitempty"`
 }
 
 // apiError is the handler-internal error carrier. message is a curated safe sentence;

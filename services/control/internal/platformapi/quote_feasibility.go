@@ -23,14 +23,21 @@ import (
 // values are unchanged; quote_feasibility_test.go still asserts the literal strings, which is what
 // makes this promotion self-controlling (a typo in a constant fails those existing tests).
 const (
-	quoteReasonDispatchDisabled       = "dispatch_disabled"
-	quoteReasonExceedsQueueCap        = "exceeds_queue_cap"
-	quoteReasonNoEligibleAccounts     = "no_eligible_accounts"
-	quoteReasonAllAccountsUnverified  = "all_accounts_unverified"
-	quoteReasonFromGateBlocked        = "from_gate_blocked"
+	quoteReasonDispatchDisabled      = "dispatch_disabled"
+	quoteReasonExceedsQueueCap       = "exceeds_queue_cap"
+	quoteReasonNoEligibleAccounts    = "no_eligible_accounts"
+	quoteReasonAllAccountsUnverified = "all_accounts_unverified"
+	quoteReasonFromGateBlocked       = "from_gate_blocked"
+	// The three causes of a `run` 409 that quote now predicts (Phase 3 close-out C2). Their codes ARE the run
+	// causes' codes (run_causes.go); the fourth cause, queue_cap, is predicted by the long-standing
+	// exceeds_queue_cap, which now carries "cause":"queue_cap" so a caller can match quote to run by one field.
+	quoteReasonSuspended              = runCauseSuspended
+	quoteReasonCampaignActive         = runCauseCampaignActive
+	quoteReasonCampaignCap            = runCauseCampaignCap
 	quoteWarningLongDuration          = "long_duration"
 	quoteEstimateBasisCurrentCapacity = "current_eligible_capacity"
 	quoteCapNameQueueDepth            = "queue_depth_cap"
+	quoteCapNameCampaignSize          = "campaign_size_cap"
 )
 
 // quoteReason mirrors §4.2's reasons[] entry shape — one per binding constraint, empty when
@@ -41,6 +48,11 @@ type quoteReason struct {
 	Limit     *int   `json:"limit,omitempty"`
 	Requested *int   `json:"requested,omitempty"`
 	CapName   string `json:"cap_name,omitempty"`
+	// Current and Cause are ADDITIVE (Phase 3 close-out C2). Current is the count the cap is already holding
+	// (the user's queued jobs, or the campaign's jobs); Cause is the run 409 cause this reason predicts
+	// (run_causes.go) — set on the four reasons that mirror a run cause, absent on the rest.
+	Current *int   `json:"current,omitempty"`
+	Cause   string `json:"cause,omitempty"`
 }
 
 // quoteWarning mirrors §4.3 requirement 2's warnings[] entry — a JUDGMENT object, not a bare
@@ -66,6 +78,7 @@ type quoteFeasibility struct {
 	EstimatedDurationSec   int
 	EstimateBasis          string
 	QueueDepthCap          int
+	CampaignSizeCap        int
 	DailySendCap           int
 	AccountCountCap        int
 	Warnings               []quoteWarning
@@ -77,7 +90,7 @@ type quoteFeasibility struct {
 // this package's own copy (OD-7 package isolation — platformapi cannot import internal/dispatch),
 // the SAME copy campaignTotals' waiting_for_capacity and health's queryWaitingForCapacity already
 // use, so quote can never disagree with the dispatcher about who is eligible.
-func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, recipientCount int) (quoteFeasibility, *apiError) {
+func (s *Server) computeQuoteFeasibility(ctx context.Context, userID, campaignID string, recipientCount int) (quoteFeasibility, *apiError) {
 	dispatchEnabled, ok, err := s.readConfigBool(ctx, "dispatch_enabled")
 	if err != nil {
 		return quoteFeasibility{}, newErr(codeInternalError, "dispatch_enabled_lookup_error")
@@ -132,20 +145,32 @@ func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, rec
 		DailyCapacityRemaining: elig.dailyCapacityRemaining,
 		EffectiveConcurrency:   uc.ConcurrencyPerUser,
 		QueueDepthCap:          uc.MaxQueuedJobs,
+		CampaignSizeCap:        uc.MaxCampaignSize,
 		DailySendCap:           elig.dailySendCap,
 		AccountCountCap:        accountCountCap,
 	}
+
+	// The four causes of a `run` 409 (Phase 3 close-out C2): suspended, campaign_active, campaign_cap and
+	// queue_cap, read through the SAME function `run` reads them through (run_causes.go), so quote can never
+	// predict a refusal run would not make or miss one it would. Before C2 quote never read suspension, never
+	// used max_campaign_size and judged the queue cap by the request's size alone.
+	facts, ferr := readRunCauseFacts(ctx, s.db, userID, campaignID)
+	if ferr != nil {
+		return quoteFeasibility{}, newErr(codeInternalError, "run_cause_facts_failed")
+	}
+	causes := facts.causes(recipientCount, uc.MaxCampaignSize, uc.MaxQueuedJobs)
 
 	// §4.3's infeasible table, in order — the FIRST binding reason is reported; quote answers one
 	// clear "why," not every constraint that happens to also be true (a user with zero accounts
 	// AND an over-cap request cares which one to fix first, and no_eligible_accounts subsumes
 	// exceeds_queue_cap's relevance anyway — there is nothing to route regardless of the cap).
+	// The one deliberate exception is the run causes: when SEVERAL hold at once, each is reported (as run's
+	// 409 does), because they call for different actions (stop / wait / split the campaign).
 	switch {
 	case !dispatchEnabled:
 		f.Reasons = []quoteReason{{Code: quoteReasonDispatchDisabled}}
-	case recipientCount > uc.MaxQueuedJobs:
-		limit, requested := uc.MaxQueuedJobs, recipientCount
-		f.Reasons = []quoteReason{{Code: quoteReasonExceedsQueueCap, Limit: &limit, Requested: &requested, CapName: quoteCapNameQueueDepth}}
+	case len(causes) > 0:
+		f.Reasons = quoteReasonsFor(causes, recipientCount)
 	case elig.totalAccounts == 0:
 		f.Reasons = []quoteReason{{Code: quoteReasonNoEligibleAccounts}}
 	case elig.verifiedAccounts == 0:
@@ -189,6 +214,28 @@ func (s *Server) computeQuoteFeasibility(ctx context.Context, userID string, rec
 		f.Warnings = []quoteWarning{{Code: quoteWarningLongDuration, EstimatedDurationSec: f.EstimatedDurationSec, ThresholdSec: warnSec}}
 	}
 	return f, nil
+}
+
+// quoteReasonsFor renders the run causes as quote reasons: suspended, campaign_active and campaign_cap under
+// their own codes, queue_cap under the long-standing exceeds_queue_cap. `requested` is the recipient_count,
+// `limit` the user's resolved cap and `current` what the cap already holds, so a client can read both "how much
+// room is left" (limit - current) and "how much was asked" without a second call.
+func quoteReasonsFor(causes []fieldDetail, requested int) []quoteReason {
+	out := make([]quoteReason, 0, len(causes))
+	for _, c := range causes {
+		req := requested
+		switch c.Code {
+		case runCauseSuspended:
+			out = append(out, quoteReason{Code: quoteReasonSuspended, Cause: c.Code})
+		case runCauseCampaignActive:
+			out = append(out, quoteReason{Code: quoteReasonCampaignActive, Cause: c.Code})
+		case runCauseCampaignCap:
+			out = append(out, quoteReason{Code: quoteReasonCampaignCap, Limit: c.Limit, Requested: &req, CapName: quoteCapNameCampaignSize, Current: c.Current, Cause: c.Code})
+		case runCauseQueueCap:
+			out = append(out, quoteReason{Code: quoteReasonExceedsQueueCap, Limit: c.Limit, Requested: &req, CapName: quoteCapNameQueueDepth, Current: c.Current, Cause: c.Code})
+		}
+	}
+	return out
 }
 
 // estimateDurationSec projects wall-clock seconds to drain recipientCount at the effective
@@ -313,6 +360,12 @@ func quoteFeasibilityJSON(f quoteFeasibility) map[string]any {
 		if r.CapName != "" {
 			m["cap_name"] = r.CapName
 		}
+		if r.Current != nil {
+			m["current"] = *r.Current
+		}
+		if r.Cause != "" {
+			m["cause"] = r.Cause
+		}
 		reasons = append(reasons, m)
 	}
 	out := map[string]any{
@@ -320,6 +373,7 @@ func quoteFeasibilityJSON(f quoteFeasibility) map[string]any {
 		"reasons":  reasons,
 		"caps": map[string]any{
 			"queue_depth_cap":   f.QueueDepthCap,
+			"campaign_size_cap": f.CampaignSizeCap,
 			"daily_send_cap":    f.DailySendCap,
 			"account_count_cap": f.AccountCountCap,
 		},

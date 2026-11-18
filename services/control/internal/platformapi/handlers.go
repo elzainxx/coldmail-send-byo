@@ -52,6 +52,11 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 type quoteReq struct {
 	RecipientCount *int   `json:"recipient_count"`
 	UserID         string `json:"user_id"` // M3-P7-OD-5: every §4.2 field is per-user; module 2's quote takes no tenant context
+	// CampaignID (additive, Phase 3 close-out C2) names the campaign the recipients will join. Omitted, the
+	// quote answers for a NEW campaign (the only case in which another campaign's active jobs block it, and
+	// one that starts with zero jobs against max_campaign_size); given, jobs already in that campaign count
+	// against the campaign cap and its own active jobs are not "another campaign".
+	CampaignID string `json:"campaign_id"`
 }
 
 func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
@@ -93,10 +98,15 @@ func (s *Server) handleQuote(w http.ResponseWriter, r *http.Request) {
 			withDetails(fieldDetail{Field: "user_id", Issue: issueMalformed}))
 		return
 	}
+	if req.CampaignID != "" && !uuidRe.MatchString(req.CampaignID) {
+		s.fail(w, r, newErr(codeValidationFailed, "campaign_id_malformed").
+			withDetails(fieldDetail{Field: "campaign_id", Issue: issueMalformed}))
+		return
+	}
 	ctx, cancel := dbCtx(r.Context())
 	defer cancel()
 
-	feas, ferr := s.computeQuoteFeasibility(ctx, req.UserID, *req.RecipientCount)
+	feas, ferr := s.computeQuoteFeasibility(ctx, req.UserID, req.CampaignID, *req.RecipientCount)
 	if ferr != nil {
 		s.fail(w, r, ferr)
 		return
