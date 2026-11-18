@@ -473,7 +473,7 @@ func (d *Dispatcher) claimOne(ctx context.Context, workerID string, jobMaxProces
 	}
 	var j claimedJob
 	err = tx.QueryRow(ctx, claimQuery, workerID, jobMaxProcessingTimeSec).
-		Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.replyTo)
+		Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.text, &j.replyTo)
 	if err == pgx.ErrNoRows {
 		return claimedJob{}, false, tx.Commit(ctx) // nothing queued; commit the (no-op) tx
 	}
