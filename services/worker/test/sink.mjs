@@ -49,6 +49,11 @@ export function startSink(opts = {}) {
   let tlsActive = false;
   let dataLines = null;
   let capturedBody = null;
+  // messages: the DATA payload of EVERY message the sink accepted, exactly as the wire carried it -- CRLF line
+  // endings, SMTP dot-stuffing undone (RFC 5321 4.5.2), without the terminating "." line (Phase 3 close-out C5:
+  // the plain-text part's wire test compares these bytes with the assembled message). Unlike capturedBody
+  // (LF-joined, only the last message, only with captureData) this is always recorded.
+  const messages = [];
 
   const tlsOpts = {
     cert: fs.readFileSync(path.join(certDir, "sink.crt")),
@@ -87,12 +92,15 @@ export function startSink(opts = {}) {
   function onLine(sock, line, isTls, setData, clearData, inData) {
     if (inData()) {
       if (line === ".") {
+        messages.push((sock._msgLines || []).join("\r\n"));
+        sock._msgLines = [];
         if (captureData && dataLines) capturedBody = dataLines.join("\n");
         dataLines = null;
         clearData();
         write(sock, "250 2.0.0 Ok: queued as SINK12345");
         return;
       }
+      (sock._msgLines ||= []).push(line.startsWith("..") ? line.slice(1) : line);
       if (captureData) {
         if (!dataLines) dataLines = [];
         // RFC 5321 §4.5.2 transparency: a line starting with ".." on the wire means a real leading
@@ -167,6 +175,7 @@ export function startSink(opts = {}) {
     } else if (up === "DATA") {
       if (rejectData) { write(sock, "554 5.6.0 rejected for test"); return; }
       write(sock, "354 End data with <CR><LF>.<CR><LF>");
+      sock._msgLines = [];
       setData();
     } else if (up === "QUIT") {
       write(sock, "221 2.0.0 Bye");
@@ -188,6 +197,7 @@ export function startSink(opts = {}) {
         received,
         tlsWasActive: () => tlsActive,
         get capturedBody() { return capturedBody; },
+        messages,
         close: () => new Promise((r) => server.close(r)),
       });
     });

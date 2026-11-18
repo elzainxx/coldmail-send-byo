@@ -79,7 +79,7 @@ FKs, reads and test-send's one `INSERT` into `public.job_items` (`send_byo_0037`
 **Assumed shape** (ADR-0007; verify against the real platform schema before the first live
 migration run):
 - `public.users(id uuid PRIMARY KEY, ...)`
-- `public.job_items(id uuid PRIMARY KEY, campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz, ...)`
+- `public.job_items(id uuid PRIMARY KEY, campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text NULL, reply_to text, status text, created_at timestamptz, ...)`
 
 **Action:** diff the real platform schema against the assumed shape above. If the platform's real
 columns differ (renamed, different type, additional NOT NULL constraints the module doesn't

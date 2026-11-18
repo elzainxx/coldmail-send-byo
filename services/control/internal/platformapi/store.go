@@ -121,15 +121,16 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 		return "", false, newErr(codeInternalError, "campaign_upsert_failed")
 	}
 
-	// Freeze the denormalized copy from public.job_items into send_byo.jobs (Phase 1 shape), but ONLY
+	// Freeze the denormalized copy from public.job_items into send_byo.jobs (Phase 1 shape; rendered_text, the
+	// optional plain-text alternative, since Phase 3 close-out C5), but ONLY
 	// if the job_item belongs to the calling tenant (`ji.user_id = $2`). A cross-tenant job_item
 	// matches 0 rows → job_item_not_found (404-style), identical to a non-existent job_item — the
 	// module never confirms another tenant's job_item exists.
 	err = tx.QueryRow(ctx,
 		`INSERT INTO send_byo.jobs
-		   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, reply_to, state, next_attempt_at)
+		   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to, state, next_attempt_at)
 		 SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
-		        ji.rendered_subject, ji.rendered_body, ji.reply_to, 'queued', NOW()
+		        ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.reply_to, 'queued', NOW()
 		 FROM public.job_items ji
 		 WHERE ji.id = $1 AND ji.user_id = $2
 		 RETURNING id`, jobItemID, userID).Scan(&jobID)

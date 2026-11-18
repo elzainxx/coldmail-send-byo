@@ -53,7 +53,7 @@ SET state = 'assigned',
     lease_expires_at = NOW() + make_interval(secs => $3),
     updated_at = NOW()
 WHERE id IN (SELECT id FROM claimed)
-RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, reply_to`
+RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to`
 
 // ringSlot is one active user's turn this tick: how many lanes they may claim, and the RESOLVED
 // per-user config this tick used to decide that grant. Module 3 Phase 6 §3.2: carrying uc alongside

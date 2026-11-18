@@ -44,7 +44,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS send_byo_migtest" -c "CREATE DATABASE send_byo_migtest" >/dev/null 2>&1 || true
 $DC exec -T postgres psql -U postgres -d send_byo_migtest -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 export TEST_DATABASE_URL="postgres://postgres:${SUPER}@localhost:6432/send_byo_migtest"
 
 # Worker token for the live mTLS test (from .env, written by scripts/dev.sh certs).
@@ -73,7 +73,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 TPL_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template"
 $DC exec -T postgres psql -U postgres -d send_byo_template -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 # up-and-set-password: apply the full chain AND set send_byo_app's password out-of-band, so
 # the Phase 1 role-isolation tests (T5/T6/T3e) can connect as send_byo_app against clones.
 if MIGRATE_DATABASE_URL="$TPL_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
@@ -304,7 +304,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 P2_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template_p2"
 $DC exec -T postgres psql -U postgres -d send_byo_template_p2 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 if MIGRATE_DATABASE_URL="$P2_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
      tools/send-byo-migrate/bin/send-byo-migrate up-and-set-password >/dev/null 2>&1; then
   export TEST_TEMPLATE_DB="send_byo_template_p2"; echo "  Phase 2 template ready (migrated to head + app password)"
@@ -475,7 +475,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 P3_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template_p3"
 $DC exec -T postgres psql -U postgres -d send_byo_template_p3 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 if MIGRATE_DATABASE_URL="$P3_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
      tools/send-byo-migrate/bin/send-byo-migrate up-and-set-password >/dev/null 2>&1; then
   export TEST_TEMPLATE_DB="send_byo_template_p3"; echo "  Phase 3 template ready"
@@ -512,6 +512,12 @@ hr; echo "SUITE 12: Phase 3 close-out C1 — POST /v1/cancel LIVE (real Control,
 # items (one event each), C1d idempotent + visible in the campaign report. Reuses phase3_send.sh's $PSQL/$PSQL1/$PLTOK.
 # shellcheck disable=SC1091
 source tests/harness/phase3_cancel.sh
+
+hr; echo "SUITE 13: Phase 3 close-out C5 — the optional plain-text part LIVE (public.job_items.rendered_text -> multipart/alternative, real worker + real Mailpit)"; hr
+# NULL and whitespace-only rendered_text give the single-part text/html message; a real text gives multipart/alternative, text/plain
+# first and text/html last; each present case has its absent twin. Reads what Mailpit RECEIVED over SMTP. Reuses phase3_send.sh's fixtures.
+# shellcheck disable=SC1091
+source tests/harness/phase3_text_part.sh
 
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"

@@ -122,13 +122,14 @@ func TestRunnerLifecycle(t *testing.T) {
 	// GET /v1/admin/users/{id}/suspension returns). Then the Phase 3 close-out's 0055 (C4: the SMTP host
 	// allowlist seed), 0056 (C1: the job_state enum value `cancelled`, a file of its own because Postgres
 	// refuses to use a value in the transaction that added it) and 0057 (C1: the cancel_requested_at column,
-	// the widened completed_at CHECK and the cancel guard trigger). This is the executable expectation of the
-	// migration chain.
+	// the widened completed_at CHECK, the cancel guard trigger and the error-context predicate's new clause), and
+	// 0058 (C5: the nullable jobs.rendered_text column, the optional plain-text part). This is the executable
+	// expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055", "0056", "0057"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055", "0056", "0057", "0058"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -655,6 +656,8 @@ func TestRunnerLifecycle(t *testing.T) {
 	if cp.queuedCancelEventErrorClass != "" {
 		t.Fatalf("after Up: the queued->cancelled event of POST /v1/cancel carries error_class %q, want NULL (a cancel is not an error; a sticky earlier failure must not be stamped onto it)", cp.queuedCancelEventErrorClass)
 	}
+	// 0058 (Phase 3 close-out C5): the nullable plain-text column and its size CHECK, driven.
+	assertTextMigration(t, admin)
 	if cp.cancelledWithoutCompletedAccepted {
 		t.Fatal("after Up: jobs_completed_at_valid_check accepted state='cancelled' with completed_at NULL (0057 did not move cancelled to the terminal branch)")
 	}
@@ -682,12 +685,21 @@ func TestRunnerLifecycle(t *testing.T) {
 	// completed_at CHECK would have to rewrite or delete the record that the platform asked for a stop, and a
 	// schema revert has no business doing that. Driven for real, BEFORE the loop reverses it: one committed
 	// cancelled job, a Down that must fail and roll back WHOLE, then the row is removed and the loop proceeds. ---
+	// 0057 is not the head of the chain any more (0058 follows it), and the runner refuses to roll back a version
+	// while a higher one is applied -- a refusal that would make the assertion below pass for the WRONG reason. So
+	// 0058 is reversed first (cleanly), and the refusal under test is checked to be the CHECK constraint's.
+	if err := r.Down(ctx, "0058"); err != nil {
+		t.Fatalf("Down 0058 (to make 0057 the head): %v", err)
+	}
+	headChain := wantChain[:len(wantChain)-1]
 	cancelledJob := seedCommittedCancelledJob(t, admin)
 	if err := r.Down(ctx, "0057"); err == nil {
 		t.Fatal("Down 0057 succeeded while a job is in state 'cancelled': it must refuse (and roll back) rather than rewrite or delete cancelled rows")
+	} else if !strings.Contains(err.Error(), "jobs_completed_at_valid_check") {
+		t.Fatalf("Down 0057 was refused for the wrong reason (want the restored jobs_completed_at_valid_check rejecting the cancelled row): %v", err)
 	}
-	if got := versions(t, admin); !equalStrings(got, wantChain) {
-		t.Fatalf("after the REFUSED Down 0057: versions = %v, want the full chain %v (the failed down did not roll back)", got, wantChain)
+	if got := versions(t, admin); !equalStrings(got, headChain) {
+		t.Fatalf("after the REFUSED Down 0057: versions = %v, want %v (the failed down did not roll back)", got, headChain)
 	}
 	if !columnExists(t, admin, "jobs", "cancel_requested_at") || !functionExists(t, admin, "fn_jobs_cancel_guard") {
 		t.Fatal("after the REFUSED Down 0057: cancel_requested_at / fn_jobs_cancel_guard are gone (the failed down left a partial revert)")
@@ -702,7 +714,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Down 0057 (no cancelled rows): cancel_requested_at or fn_jobs_cancel_guard is still present")
 	}
 	if err := r.Up(ctx); err != nil {
-		t.Fatalf("re-Up after Down 0057: %v", err)
+		t.Fatalf("re-Up after Down 0057 and 0058: %v", err)
 	}
 	if got := versions(t, admin); !equalStrings(got, wantChain) {
 		t.Fatalf("after re-Up: versions = %v, want %v", got, wantChain)
@@ -892,6 +904,18 @@ func TestRunnerLifecycle(t *testing.T) {
 		// completed_at CHECK; 0056's own down is the documented NO-OP for the enum value (Postgres has no
 		// DROP VALUE and the enum is additive-only forever), so 'cancelled' must SURVIVE both -- asserting
 		// that it vanished would be asserting something that cannot happen. The paired half of each up.
+		// 0058's down drops the column AND its size CHECK; the table (0007's) and every other jobs column survive.
+		if v == "0058" {
+			if columnExists(t, admin, "jobs", "rendered_text") {
+				t.Fatal("after Down 0058: send_byo.jobs.rendered_text is still present (down did not drop it)")
+			}
+			if constraintExists(t, admin, "jobs", "jobs_rendered_text_size_check") {
+				t.Fatal("after Down 0058: jobs_rendered_text_size_check is still present (down did not drop it)")
+			}
+			if !columnExists(t, admin, "jobs", "rendered_body") || !columnExists(t, admin, "jobs", "cancel_requested_at") {
+				t.Fatal("after Down 0058: a column that is not 0058's is GONE (rendered_body / cancel_requested_at) -- the down must drop only rendered_text")
+			}
+		}
 		if v == "0057" {
 			if columnExists(t, admin, "jobs", "cancel_requested_at") {
 				t.Fatal("after Down 0057: send_byo.jobs.cancel_requested_at still present (down did not drop it)")

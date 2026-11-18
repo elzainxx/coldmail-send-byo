@@ -89,13 +89,19 @@ type Heartbeat struct {
 
 // Send is the rendered message content the worker transmits (§2.3, headers per §8).
 type Send struct {
-	Recipient   string            `json:"recipient"`
-	FromAddress string            `json:"from_address"`
-	FromName    string            `json:"from_name,omitempty"`
-	ReplyTo     string            `json:"reply_to,omitempty"`
-	Subject     string            `json:"subject"`
-	Body        string            `json:"body"`
-	Headers     map[string]string `json:"headers"` // the §8 minimum guaranteed set the Control built
+	Recipient   string `json:"recipient"`
+	FromAddress string `json:"from_address"`
+	FromName    string `json:"from_name,omitempty"`
+	ReplyTo     string `json:"reply_to,omitempty"`
+	Subject     string `json:"subject"`
+	Body        string `json:"body"`
+	// Text is the OPTIONAL plain-text alternative of the message (Phase 3 close-out C5): the platform's
+	// public.job_items.rendered_text, copied into send_byo.jobs.rendered_text at run. Present (non-empty, at
+	// least one non-whitespace character) => the worker builds a multipart/alternative message, the text/plain
+	// part FIRST and the text/html Body LAST. Absent => the single text/html message it has always built, byte
+	// for byte: omitempty, so a push_job without text is the same frame an older Control sent.
+	Text    string            `json:"text,omitempty"`
+	Headers map[string]string `json:"headers"` // the §8 minimum guaranteed set the Control built
 }
 
 // SMTP carries the connection + the decrypted plaintext credential for ONE send (§2.3). secret

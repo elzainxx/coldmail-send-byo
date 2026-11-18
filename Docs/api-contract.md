@@ -280,7 +280,7 @@ set equality and a control that reproduces the old construction and must be caug
 
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
-| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
+| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`, and, since the Phase 3 close-out C5, `plain_text_alternative:true` — see "The optional plain-text part" below) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
 
 **`GET /v1/describe`'s `extension_routes[]`** (M3-Phase 7 §5.1) — every Domain A user-facing route
 below except the core four (`quote`/`run`/`report`/`describe` are implicit, uniform across
@@ -385,6 +385,13 @@ prevent.
 > to exactly M3-Phase 7 behavior rather than having legitimate outcomes discarded. Two-vocabulary is
 > unchanged: the token is an internal machine-to-machine identifier on the worker channel and is never
 > surfaced on any client boundary (`/v1/report` still returns only clean external state).
+>
+> **Phase 3 close-out C5 — the additive `text` field on `push_job.send`.** `push_job.send` gains one optional string,
+> `text`: the optional plain-text alternative of the message (`public.job_items.rendered_text`, frozen into
+> `send_byo.jobs.rendered_text` at run). It is present only when the text has at least one non-whitespace character
+> (`omitempty`), so a message without a text part is the same frame an older Control sent; with it the worker builds
+> `multipart/alternative` (text/plain first, text/html last), without it the single-part message it has always built,
+> byte for byte. Never a credential, never logged. See "The optional plain-text part" below.
 >
 > **M3-Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
 > gains one optional field, `variation`: the Control's RESOLVED content-variation toggle snapshot
@@ -605,6 +612,59 @@ POST /v1/cancel
   drawn in [`module-3-job-states.mermaid`](./module-3-job-states.mermaid).
 - **Metering.** Module 3 is not metered (M3-01), so a cancelled item is free like every other state; nothing reaches the
   platform's ledger.
+
+### The optional plain-text part (Phase 3 close-out C5)
+
+A message can carry a plain-text alternative beside its HTML body. **There is no field for it on `POST /v1/run`** (a `text` field on the run request is an unknown field, `400
+validation_failed`): like the HTML body, the text lives on the platform-owned `public.job_items` row, and the module copies it at run time.
+
+| Where | Name | Type | Owner |
+|---|---|---|---|
+| `public.job_items` | `rendered_text` | `text`, **nullable, no default** | the **platform** adds and writes it; this module never creates or alters anything in the `public` schema and only reads it |
+| `send_byo.jobs` | `rendered_text` | `text`, nullable, no default, `CHECK (rendered_text IS NULL OR octet_length(rendered_text) <= 1048576)` | this module, `send_byo_0058` (forward additive migration) |
+| `push_job.send` (Control to worker) | `text` | string, `omitempty` | present only when there is a text part |
+
+**The statements that mention it** (the same statements that already mention `rendered_body`):
+
+```sql
+-- POST /v1/run (platformapi/store.go createJob): the run copy
+INSERT INTO send_byo.jobs
+  (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to, state, next_attempt_at)
+SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
+       ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.reply_to, 'queued', NOW()
+FROM public.job_items ji
+WHERE ji.id = $1 AND ji.user_id = $2
+RETURNING id
+
+-- the single claim (dispatch/dispatch.go claimOne) and the per-user claim (dispatch/loop.go claimForUserQuery): the tail of each
+RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to
+```
+
+`send_byo_0058` adds the column and its size CHECK on `send_byo.jobs`. The migration pre-flight (`db/preflight/check_platform_tables.sql`) **refuses to migrate against a
+`public.job_items` that has no `rendered_text` column**, naming it: the platform's migration must run first, and "deployed in the wrong order" becomes a refused migration instead of a
+`POST /v1/run` that answers 500. `send_byo.send_logs` does not record the text (it records the HTML body as before). Test-send (`send_byo_0037`'s six-column `INSERT` into
+`public.job_items`) names no `rendered_text` and keeps working against a platform table that has the column: its job has no text part.
+
+**What the text means**
+
+- `NULL`, the empty string and a **whitespace-only** string are **one meaning: no text part.** The message is then the single-part `text/html` message the module has always sent,
+  **byte for byte** (a golden test over 19 cases, every variation profile included, pins this against bytes captured from the renderer before the text part existed). A blank `text/plain`
+  alternative is not an alternative, and a new field must not be ambiguous. The Control applies the rule before it puts the field on the wire (Go `strings.TrimSpace`: a text with no
+  non-whitespace character is omitted) and the worker applies it again on its side (JavaScript `\S`), so neither trusts the other. Both treat tab, newline, space, no-break and em
+  spaces as whitespace; the two definitions differ only for U+0085 (whitespace to Go only) and U+FEFF (whitespace to JavaScript only), and a text made of nothing else is dropped by
+  one layer or the other either way, so the result is the same: the single-part message.
+- Anything else is a text part and is sent **verbatim** (no trimming, no re-wrapping; the worker only gives it CRLF line endings).
+- A text over **1 MiB (1,048,576 bytes)** is refused at run: `400 validation_failed` (the existing `job_item_invalid` path), no job row written, the same item runnable once its text is
+  fixed. Exactly 1 MiB is accepted.
+
+**What is sent.** With a text part the message is `multipart/alternative` (RFC 2046 section 5.1.4): the **`text/plain` part first, the `text/html` part last**, each part stating
+`charset="utf-8"` and its own `Content-Transfer-Encoding` (`8bit`; the outer multipart carries none), then the closing delimiter. The outer headers are the single-part message's, in the same
+order, without the single-part `Content-Transfer-Encoding`. **Deterministic:** the boundary is `----=_Alt_` plus a hash of the job id (the next deterministic candidate if the delimiter line
+occurs inside a part), with no random value and no clock, so a retry or a duplicate of the same item renders byte-identical bytes and a different item renders a different boundary.
+Content variation composes: encoding rotation puts the same rotated encoding on both parts, boundary rotation changes the boundary's style and keeps the structure, the content stages
+change the HTML part and leave the text part alone.
+
+`GET /v1/describe` advertises `capabilities.plain_text_alternative: true` (additive).
 
 ### The four causes of a `run` 409, and what `quote` predicts (Phase 3 close-out C2)
 
