@@ -340,6 +340,21 @@ jobs:
         if: always()
         run: bash tests/harness/checks/user_copy_ledger_selftest.sh
 
+      # Phase 3 close-out C3 (the two-vocabulary rule on the two routes that put a code in a 200 body). No response field of the account test button or of
+      # bulk-add may carry raw error text: the route files are parsed, every place a response field is set is classified, and the run fails if a string
+      # field can be assigned from err.Error(), a formatted string, a concatenation, the internal reason, or anything outside its closed set (user_codes.go).
+      # It has a nonzero floor on the fields it found and fails on a rule that matches no site. The DB-backed half (every internal failure path forced, every
+      # string in the body asserted against its closed set) is response_closed_vocabulary_test.go in the platformapi suite.
+      - name: Response leak gate — no response field of the test button or bulk-add can carry raw error text (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/response_leak_gate.sh
+
+      # Its PAIRED CONTROL: five one-line breaks of a scratch copy (err.Error() in a field, the internal reason as a row code, a concatenation, a literal
+      # outside the closed set, a new field with no rule) must each turn the gate red with their own signature.
+      - name: Response leak gate SELF-TEST — five breaks each go RED (BLOCKING)
+        if: always()
+        run: bash tests/harness/checks/response_leak_gate_selftest.sh
+
       - name: Diagnostics on failure
         if: failure()
         run: |

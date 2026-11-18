@@ -9,6 +9,7 @@ package platformapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"time"
 
@@ -131,7 +132,7 @@ func (s *Server) handleAccountBulkAdd(w http.ResponseWriter, r *http.Request) {
 rows:
 	for i, row := range req.Accounts {
 		rowNum := i + 1
-		res := s.processBulkAddRow(r.Context(), req.UserID, row, requestID)
+		res := s.processBulkAddRow(r.Context(), req.UserID, row, requestID, rowNum)
 		res.Row = rowNum
 		results = append(results, res)
 
@@ -160,7 +161,7 @@ rows:
 // processBulkAddRow validates, creates, and (if created) verifies ONE row, returning its §4.2
 // result. Never returns an error to the caller — every outcome, including a validation/DB failure,
 // is expressed as a bulkAddRowResult so one bad row cannot abort the batch.
-func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkAddRow, requestID string) bulkAddRowResult {
+func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkAddRow, requestID string, rowNum int) bulkAddRowResult {
 	var details []fieldDetail
 	if row.SMTPSecret == "" {
 		details = append(details, fieldDetail{Field: "smtp_secret", Issue: issueMalformed})
@@ -188,7 +189,11 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 
 	dailyLimit, lerr := s.resolveDailyLimit(rowCtx, row.DailyLimit)
 	if lerr != nil {
-		return bulkAddRowResult{Status: bulkAddStatusRejected, Code: lerr.internalReason}
+		code := bulkRowCode(lerr)
+		// copy-ledger: not-copy: a log line (the internal reason, keyed by request_id); it is never rendered to a user
+		log.Printf("platformapi bulk-add rid=%s row=%d rejected: code=%s reason=%s level=%s",
+			requestID, rowNum, code, lerr.internalReason, logLevelFor(lerr.code))
+		return bulkAddRowResult{Status: bulkAddStatusRejected, Code: code}
 	}
 
 	// createAccountRow's own doc comment: give it ctx (this row's slice of the request's own
@@ -198,9 +203,16 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 		row.FromAddress, row.FromName, dailyLimit, requestID, row.AcknowledgeAlignmentWarning)
 	if cerr != nil {
 		// account_cap_reached / duplicate_account_for_user / an unacknowledged-warning refusal
-		// (M3-P4-OD-15) / any other clean apiError from the SAME create path C1 uses — never a raw
-		// SQLSTATE (translateAccountWrite already scrubbed it inside createAccountRow).
-		res := bulkAddRowResult{Status: bulkAddStatusRejected, Code: cerr.internalReason}
+		// (M3-P4-OD-15) are the documented row codes and are kept as-is. EVERY other failure is named by
+		// its external error code or `internal_error` (bulkRowCode, user_codes.go): the internal reason
+		// (`unique_violation:<constraint>`, `tx_begin_error: <err>`, `account_write_error: <driver text>`,
+		// ...) used to be the row's `code` verbatim, a two-vocabulary leak (C3). It goes to the LOG,
+		// against the request_id and the 1-based row, exactly like an error envelope's reason.
+		code := bulkRowCode(cerr)
+		// copy-ledger: not-copy: a log line (the internal reason, keyed by request_id); it is never rendered to a user
+		log.Printf("platformapi bulk-add rid=%s row=%d rejected: code=%s reason=%s level=%s",
+			requestID, rowNum, code, cerr.internalReason, logLevelFor(cerr.code))
+		res := bulkAddRowResult{Status: bulkAddStatusRejected, Code: code}
 		if len(cerr.details) > 0 {
 			res.Details = cerr.details
 		}
@@ -209,7 +221,7 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 
 	res := bulkAddRowResult{Status: bulkAddStatusCreated, AccountID: accIDStr, Verification: "unverified"}
 	// Phase 4 §2.4: each row gets its OWN From verdict, reported alongside the credential one.
-	res.AlignmentState = verdict.State
+	res.AlignmentState = userAlignmentState(verdict.State)
 	if verdict.Outcome != fromgate.OutcomeIndeterminate {
 		if msg := fromgate.RenderCopy(verdict, row.FromAddress, domainOfAddress(row.FromAddress), row.SMTPHost); msg != "" {
 			res.AlignmentMessage = msg
@@ -232,8 +244,10 @@ func (s *Server) processBulkAddRow(ctx context.Context, userID string, row bulkA
 		// §2.5's own create-path precedent (a verify problem never demotes a real create).
 		return res
 	}
-	res.Verification = vr.State
-	res.Code = vr.ExternalCode
+	res.Verification = userVerificationState(vr.State)
+	if !vr.Verified {
+		res.Code = userVerifyCode(vr.ExternalCode)
+	}
 	res.SMTPResponse = vr.SMTPResponse
 	return res
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -146,13 +147,18 @@ func (s *Server) handleAccountTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
+			// The reason goes to the LOG against the request_id, never into the body (C3): the body
+			// carries only the closed code.
+			log.Printf("platformapi test-button rid=%s account=%s: the credential check did not complete: %v level=error", requestIDFrom(r.Context()), id, err)
 			verification = map[string]any{"state": "unavailable", "code": "verify_error"}
 		} else {
 			// A failed TEST is still a successful API call (200): the caller asked "does this
 			// credential work" and got a real answer, never an error just because it was "no".
-			verification = map[string]any{"state": result.State, "smtp_response": result.SMTPResponse}
+			// state and code are drawn from the closed sets in user_codes.go (an unknown value from the
+			// verifier is not passed through); smtp_response is the provider's own scrubbed reply.
+			verification = map[string]any{"state": userVerificationState(result.State), "smtp_response": result.SMTPResponse}
 			if !result.Verified {
-				verification["code"] = result.ExternalCode
+				verification["code"] = userVerifyCode(result.ExternalCode)
 			}
 		}
 	}
@@ -169,7 +175,7 @@ func (s *Server) runTestButtonFromGate(ctx context.Context, accountID string, ac
 	gateRes := s.runFromGate(ctx, acc.FromAddress, acc.SMTPHost, acc.SMTPUsername, acknowledged)
 	v := gateRes.verdict
 	if v.Outcome == fromgate.OutcomeIndeterminate {
-		return map[string]any{"state": "indeterminate", "code": v.ExternalCode}
+		return map[string]any{"state": "indeterminate", "code": userAlignmentCode(v.ExternalCode)}
 	}
 
 	// M3-P4-OD-17: fromGateVerdictSets' acknowledgeRequired-driven refusal (the create/PATCH
@@ -200,27 +206,38 @@ func (s *Server) runTestButtonFromGate(ctx context.Context, accountID string, ac
 	defer cancel()
 	tx, err := s.db.Begin(updCtx)
 	if err != nil {
-		return map[string]any{"state": v.State, "error": "from_gate_write_error"}
+		return fromCheckNotSaved(ctx, accountID, v.State, "begin", err)
 	}
 	defer tx.Rollback(context.Background())
 
 	if _, err := tx.Exec(updCtx, "UPDATE send_byo.accounts SET "+strings.Join(sets, ", ")+" WHERE id = "+idParam, args...); err != nil {
-		return map[string]any{"state": v.State, "error": "from_gate_write_error"}
+		return fromCheckNotSaved(ctx, accountID, v.State, "write", err)
 	}
 	if v.Outcome == fromgate.OutcomeWarn && acknowledged {
 		if err := fromGateWriteAcknowledgment(updCtx, tx, accountID); err != nil {
-			return map[string]any{"state": v.State, "error": "from_gate_acknowledgment_write_error"}
+			return fromCheckNotSaved(ctx, accountID, v.State, "acknowledgment", err)
 		}
 	}
 	if err := tx.Commit(updCtx); err != nil {
-		return map[string]any{"state": v.State, "error": "from_gate_write_error"}
+		return fromCheckNotSaved(ctx, accountID, v.State, "commit", err)
 	}
 
-	resp := map[string]any{"state": v.State}
+	resp := map[string]any{"state": userAlignmentState(v.State)}
 	if msg := fromgate.RenderCopy(v, acc.FromAddress, domainOfAddress(acc.FromAddress), acc.SMTPHost); msg != "" {
 		resp["message"] = msg
 	}
 	return resp
+}
+
+// fromCheckNotSaved is the one answer for "the From check ran but its result could not be saved": the
+// verdict's own state, and the closed code `from_check_not_saved`. Which step failed, and the driver's
+// text, go to the LOG against the request_id (ctx is the request's own) — never into the body (C3: the
+// body used to carry the internal slugs `from_gate_write_error` and
+// `from_gate_acknowledgment_write_error`).
+func fromCheckNotSaved(ctx context.Context, accountID, state, step string, err error) map[string]any {
+	log.Printf("platformapi test-button rid=%s account=%s: the From check result was not saved (%s): %v level=error",
+		requestIDFrom(ctx), accountID, step, err)
+	return map[string]any{"state": userAlignmentState(state), "error": "from_check_not_saved"}
 }
 
 // readAccountTestRateLimit reads account_test_rate_limit_per_day fresh from send_byo.config.
