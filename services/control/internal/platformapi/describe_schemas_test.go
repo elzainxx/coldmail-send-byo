@@ -696,7 +696,7 @@ WHERE id = $1`, acctID); err != nil {
 			continue
 		}
 		cc := newConformance(bad)
-		cc.check("list", "accounts_list_response", bad["accounts_list_response"], s.body)
+		cc.check("accounts_list_response", "accounts_list_response", bad["accounts_list_response"], s.body)
 		if miss, ok := containsAll(cc.problems, "accounts_list_response.items: not declared", "accounts_list_response.results: missing required"); !ok {
 			t.Errorf("CONTROL FAILED: the real list body against a schema that says `results` was not caught (%q): %v", miss, cc.problems)
 		}
