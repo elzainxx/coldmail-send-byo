@@ -1114,7 +1114,9 @@ For how to *interpret* these numbers, see [`operator-runbook.md`](./operator-run
 
 **`errors_last_window` counts one failure once.** It counts `send_byo.job_events` rows in the window
 that are *error transitions* — a terminal `failed` or `bounced`, or a **requeue** (a non-genesis
-transition back to `queued`). Forward progress (`queued→assigned`, `assigned→sending`) and success
+transition back to `queued`), or an in-flight item that ended `cancelled` instead of requeueing
+(`POST /v1/cancel`'s guard, `send_byo_0057`: the attempt still failed; a `queued→cancelled` cancel is not an
+error and is not counted). Forward progress (`queued→assigned`, `assigned→sending`) and success
 (`sending→sent`) are never counted, so the number is a count of *failures*, not of rows that happen to
 carry a class. Read it as incident size: one failing send contributes exactly 1, no matter how many
 times that job is later retried and eventually succeeds.
