@@ -269,7 +269,7 @@ pattern as the admin list endpoints): `?campaign_id=<uuid>&user_id=<uuid>&cursor
 from a previous response's next_cursor>&page_size=<int>`. `page_size` defaults to **100** and
 clamps to a max of **200**; a missing, zero, negative, or non-numeric `page_size` silently falls
 back to the default (never a `400`). `cursor` is opaque (base64) — pass back exactly what
-`next_cursor` returned; a malformed `cursor` returns `400 validation_failed`. `next_cursor:null`
+`next_cursor` returned; a malformed `cursor` returns `400 validation_failed` — that includes a cursor that is valid base64 but is not an RFC 3339 instant and a uuid joined by `|` (the platform's Phase 4 follow-up A1; before it such a cursor reached the keyset query as text and answered `500 internal_error`). `next_cursor:null`
 means the last page. **The cursor anchors on the last item RETURNED** (the P2 close-out, owner ruling
 C1): the query reads `page_size + 1` rows, and the extra one only says "there is another page" — it is
 trimmed and never anchors the cursor. Until that fix the cursor was built from the extra row, so the

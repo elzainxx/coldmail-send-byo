@@ -438,6 +438,14 @@ func parseReportCursor(r *http.Request) (*reportCursor, *apiError) {
 		return nil, newErr(codeValidationFailed, "cursor_malformed").
 			withDetails(fieldDetail{Field: "cursor", Issue: issueMalformed})
 	}
+	// Phase 3 close-out follow-up (Phase 4 A1): a cursor that decodes but is not what encodeReportCursor makes (an RFC 3339 instant and
+	// a uuid) used to reach the keyset query as text, fail the SQL cast and answer 500 internal_error ("forged|forged" did). Every cursor
+	// field is checked BEFORE it can reach SQL; the answer is the same 400 a cursor that is not base64 gets (module 2 does the same
+	// since its close-out B2). The cursor format is unchanged, so every cursor this module ever issued is still accepted.
+	if _, terr := time.Parse(time.RFC3339Nano, parts[0]); terr != nil || !uuidRe.MatchString(parts[1]) {
+		return nil, newErr(codeValidationFailed, "cursor_malformed").
+			withDetails(fieldDetail{Field: "cursor", Issue: issueMalformed})
+	}
 	return &reportCursor{CreatedAt: parts[0], ID: parts[1]}, nil
 }
 
