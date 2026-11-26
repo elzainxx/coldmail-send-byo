@@ -60,8 +60,9 @@ func TestGrantsInvariant(t *testing.T) {
 	// meaningless. Assert the known set is present (a superset check — later phases add more).
 	// "pools" removed at G2 (Docs/history/phase-2-strip-shared-pool.md §5.1/§8.1 criterion 10) — the table
 	// is dropped by 0028. G3 adds campaigns/notifications/user_config_overrides/user_settings/
-	// user_suspensions (0029-0033), landed here in the same commit as their migrations.
-	mustHave := []string{"account_events", "accounts", "boxes", "campaigns", "config", "job_events",
+	// user_suspensions (0029-0033), landed here in the same commit as their migrations. Phase 4 C1 adds campaign_pauses (a normal
+	// mutable table) and campaign_events (append-only, classified below) with 0059.
+	mustHave := []string{"account_events", "accounts", "boxes", "campaign_events", "campaign_pauses", "campaigns", "config", "job_events",
 		"jobs", "notifications", "schema_migrations", "send_logs", "user_config_overrides",
 		"user_settings", "user_suspensions"}
 	present := map[string]bool{}
@@ -92,6 +93,8 @@ func expectedPrivs(table string) []string {
 	case "job_events": // append-only audit log
 		return []string{"INSERT", "SELECT"}
 	case "account_events": // Phase 2 append-only account audit sink (send_byo_0014)
+		return []string{"INSERT", "SELECT"}
+	case "campaign_events": // Phase 4 C1 append-only campaign audit (send_byo_0059): one row per pause/resume transition
 		return []string{"INSERT", "SELECT"}
 	case "send_logs": // write-once, DELETE for the Phase 7 retention sweep
 		return []string{"DELETE", "INSERT", "SELECT"}

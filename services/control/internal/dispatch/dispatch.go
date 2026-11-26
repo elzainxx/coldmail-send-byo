@@ -210,7 +210,8 @@ func (d *Dispatcher) logReclaimFrozenByOperator(cfg Config) {
 // notSuspendedFragment (Module 3 Phase 5 §6.3) is included here too — the same reasoning as
 // claimForUserQuery's own comment: TryDispatch is a second, independent claim path, and "a filter
 // is not a gate" means the suspend predicate belongs in every statement that can claim a job, not
-// only in the live loop's ring-membership filter.
+// only in the live loop's ring-membership filter. notPausedFragment (Phase 4 C1: a campaign the platform paused
+// with POST /v1/pause) is stated here for the identical reason, as the same shared constant.
 const claimQuery = `
 WITH claimed AS (
     SELECT id FROM send_byo.jobs j
@@ -218,6 +219,7 @@ WITH claimed AS (
       AND j.provider_message_id IS NULL
       AND j.cancel_requested_at IS NULL
       AND ` + notSuspendedFragment + `
+      AND ` + notPausedFragment + `
     ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1

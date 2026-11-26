@@ -28,7 +28,7 @@ type HealthServer struct {
 
 // NewHealthServer wires the health routes and mounts, when provided:
 //   - adminHandler   under /v1/admin/*   (Domain B operator surface, Phase 2)
-//   - platformHandler for /v1/quote,/v1/run,/v1/cancel,/v1/report,/v1/describe, and
+//   - platformHandler for /v1/quote,/v1/run,/v1/cancel,/v1/pause,/v1/resume,/v1/report,/v1/describe, and
 //     /v1/send-byo/... (Domain A, Phase 3 + Module 3 Phase 3's user-owned accounts)
 //
 // Passing nil for either keeps that surface unmounted (fail-closed when its credential is
@@ -43,13 +43,15 @@ func NewHealthServer(addr string, database *db.DB, guard *singleton.Guard, admin
 		mux.Handle("/v1/admin/", adminHandler)
 	}
 	if platformHandler != nil {
-		// The platform server owns exactly /v1/quote,/v1/run,/v1/cancel,/v1/report,/v1/describe (Domain A),
+		// The platform server owns exactly /v1/quote,/v1/run,/v1/cancel,/v1/pause,/v1/resume,/v1/report,/v1/describe (Domain A),
 		// plus the namespaced /v1/send-byo/... extension path (Module 3 Phase 3 §1.2, M3-P3-OD-1).
 		// Register each literal explicitly, plus the ONE prefix, so the mux does not shadow
 		// /v1/admin/*.
 		mux.Handle("/v1/quote", platformHandler)
 		mux.Handle("/v1/run", platformHandler)
 		mux.Handle("/v1/cancel", platformHandler) // Phase 3 close-out C1: POST /v1/cancel (a core route, platformapi/cancel.go)
+		mux.Handle("/v1/pause", platformHandler)  // Phase 4 C1: POST /v1/pause (a core route, platformapi/campaign_pause.go)
+		mux.Handle("/v1/resume", platformHandler) // Phase 4 C1: POST /v1/resume (a core route, platformapi/campaign_pause.go)
 		mux.Handle("/v1/report", platformHandler)
 		mux.Handle("/v1/describe", platformHandler)
 		mux.Handle("/v1/send-byo/", platformHandler)

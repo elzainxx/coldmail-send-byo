@@ -519,6 +519,14 @@ hr; echo "SUITE 13: Phase 3 close-out C5 — the optional plain-text part LIVE (
 # shellcheck disable=SC1091
 source tests/harness/phase3_text_part.sh
 
+hr; echo "SUITE 14: Phase 4 C1 — POST /v1/pause and POST /v1/resume LIVE (real Control, real worker, real Mailpit, real migration 0059; restarts the Control AND the worker while a campaign is held)"; hr
+# C1m3-1 a RUNNING campaign is paused: nothing new reaches the sink for a window many times the dispatch tick, in-flight items finish and are reported once;
+# C1m3-2 resume: every item exactly once, with the paired control (the same campaign never paused, same totals, same loop); C1m3-3 a restart of the Control
+# and the worker while paused leaves it paused; C1m3-4 pause x suspension, all four combinations; C1m3-5 a cancel of a paused campaign. Every assertion reads what
+# the SINK received, counted per recipient. Reuses phase3_send.sh's $PSQL/$PSQL1/$ADMKEY/$PLTOK/$DC and tightens the pacing for its own duration (restored at the end).
+# shellcheck disable=SC1091
+source tests/harness/phase4_pause.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr

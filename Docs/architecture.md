@@ -72,13 +72,19 @@ returning to `queued`) is drawn in `module-3-job-states.mermaid` (the older `sen
 predates `cancelled`). Diagnosing where a job is stuck is
 `operator-runbook.md`.
 
+**Pausing a campaign is not a state of the job machine.** Since Phase 4 C1 the platform can hold one campaign and release it
+(`POST /v1/pause`, `POST /v1/resume`, ADR-0021): the hold is a row in `send_byo.campaign_pauses`, every claim statement skips a
+queued job whose campaign has a row, and no job changes state, so the diagram above is unchanged — a held item is simply a `queued`
+item that no claim takes. It is independent of the user's suspension (`send_byo.user_suspensions`): the two are ANDed in the claim.
+
 ## Where each guarantee lives
 
 | Guarantee | Enforced by | Where |
 |---|---|---|
 | Exactly-once job pickup | `FOR UPDATE SKIP LOCKED` CTE + partial claim index | DB + `internal/dispatch` |
 | No double-send under retry/replay | `provider_message_id UNIQUE` + attempt token + pre-persist idempotency check | DB + `internal/dispatch` |
-| Append-only audit | `job_events` / `account_events` triggers + `REVOKE UPDATE, DELETE` | DB (`send_byo_0008`, `send_byo_0014`) |
+| Append-only audit | `job_events` / `account_events` / `campaign_events` triggers + `REVOKE UPDATE, DELETE` | DB (`send_byo_0008`, `send_byo_0014`, `send_byo_0059`) |
+| A paused campaign is never claimed, and a resume never overrides a suspension | one shared `notPausedFragment` in every claiming statement (ANDed with `notSuspendedFragment`; two independent tables) | `internal/dispatch` + DB (`send_byo_0059`, ADR-0021) |
 | Exactly one active Control | session-level advisory lock, fixed key | `internal/singleton` (`Docs/architecture.md#advisory-locks`) |
 | Control is sole decryptor | `internal/credential` wired only into `internal/dispatch`; KMS IAM grants Decrypt to the Control role only | code + cloud IAM (not code-checkable — see `security-posture.md`) |
 | Worker holds no persistent secret | no DB driver, no KMS SDK shipped; in-memory creds zeroed on every **send-path** exit (not on shutdown — `security-posture.md` §3.12) | `services/worker` (structural) |

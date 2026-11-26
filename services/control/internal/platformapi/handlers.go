@@ -371,6 +371,12 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			// platform-owned job_items table, not an API request field, so it is advertised as a capability here
 			// rather than as a schema (describe publishes no request schemas for the core routes).
 			"plain_text_alternative": true,
+			// Phase 4 C1, additive: the module can hold ONE campaign and release it later — POST /v1/pause and
+			// POST /v1/resume (campaign_pause.go) — and the campaign report says which with `paused`. Declared here
+			// the way plain_text_alternative is, as a capability the platform's adapter can read, because describe
+			// publishes no request schemas for the core routes. Always true: it is a property of this build, not of
+			// a deployment's configuration.
+			"pause_resume": true,
 		},
 		"pricing": map[string]any{
 			"currency": "credits",

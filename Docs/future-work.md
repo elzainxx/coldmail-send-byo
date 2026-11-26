@@ -987,3 +987,21 @@ had reported `skipped=1` and `skipped=2`.
 design), the DNS-fixture skips (`fromgate/evaluate_realdns_test.go`, `adminapi` and `platformapi` `from_gate_test.go`), the two `fromgate` upstream-DNS canaries, and the two `tz database unavailable` skips in
 `dispatch/rollup_timezone_test.go` (a host without zoneinfo; the runner has it, and that test already picks its zone from the clock without skipping). **No other test skips on the wall
 clock.** **Reopen trigger:** a test that skips or fails depending on the time of day.
+
+### FW-M3-24 — campaign pause: no read route for `campaign_events`, no paused-campaign count in the health snapshot, and an overlap of pause and suspension is credited to the expiry clock twice
+
+**Registered 2026-11-26 (Phase 4 C1, `POST /v1/pause` and `POST /v1/resume`, `send_byo_0059`, ADR-0021).** Three small things the feature deliberately did not build, none of them a defect
+in what it does:
+
+1. **Nothing reads `send_byo.campaign_events` over HTTP.** The audit is written (one row per real transition, none for a no-op, append-only) and an operator reads it in SQL
+   (`SELECT action, actor, request_id, created_at FROM send_byo.campaign_events WHERE campaign_id = … ORDER BY created_at`), which is the same posture the user-level suspend/unsuspend rows in
+   `account_events` have. A read route is new contract surface, so it is its own ruling; the platform records its own pause and resume in `platform.job_events` and does not need one.
+2. **`GET /v1/admin/health` does not count paused campaigns.** An operator who asks "why is this user's queue not moving" reads the campaign report's `paused` (or `campaign_pauses` in SQL); the
+   runbook's [A campaign is paused](./operator-runbook.md#a-campaign-is-paused-what-that-stops-what-it-does-not) section says how. A count would be an additive field on the health response, wanted only if
+   a paused campaign turns out to be a common cause of "queued and not sending".
+3. **A pause that overlaps a suspension credits the overlap to the campaign's expiry clock twice.** `resume` pushes `campaigns.expires_at` forward by the paused interval and the suspension
+   reinstate pushes it forward by the suspended interval; the two are separate columns of state (`campaign_pauses.paused_at`, `campaigns.clock_paused_at`), so the instants they share are counted in
+   both. The campaign's window therefore ends a little LATER than strictly necessary and never earlier, so no item is ever failed by expiry too soon. Unifying the two clocks would mean changing the suspension path, which
+   this change deliberately does not touch.
+
+**Reopen trigger:** an operator or the platform asking for any of the three, or a campaign seen to outlive `campaign_expiry_sec` by more than its overlap.

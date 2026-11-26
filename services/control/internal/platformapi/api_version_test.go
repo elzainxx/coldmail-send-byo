@@ -237,8 +237,8 @@ func TestAPIVersion_ConstructionGoesThroughTheRefusal(t *testing.T) {
 // It asserts against the CORE FOUR's version rather than against a literal "v1", so a legitimate /v2
 // migration that moves every route stays green — the property is agreement, not the string.
 // coreRouteCount is the number of routes the first block of platformRoutes() holds: quote, run, report,
-// describe and cancel (the last added by the Phase 3 close-out, C1). The extension registry follows.
-const coreRouteCount = 5
+// describe, cancel (added by the Phase 3 close-out, C1), pause and resume (added by Phase 4 C1). The extension registry follows.
+const coreRouteCount = 7
 
 func TestAPIVersion_ExtensionRegistryAgreesWithTheCoreFour(t *testing.T) {
 	s := &Server{}

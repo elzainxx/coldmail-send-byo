@@ -3,7 +3,9 @@ package platformapi
 // campaign_report.go — Phase 9 Chunk 4 (B8, §2 of phase-9-contract-and-doc-completions.md): the
 // campaign-scoped GET /v1/report?campaign_id= response. Derives ENTIRELY from send_byo.jobs state
 // counts + existing per-job fields — no new state, no schema change. report remains a read/poll
-// of existing data (§2 ruling).
+// of existing data (§2 ruling). Phase 4 C1 adds ONE boolean, `paused` (this campaign was paused by POST /v1/pause and
+// not yet resumed, read from send_byo.campaign_pauses by the same definition pause and resume answer with — see
+// campaign_pause.go); every other field and every existing shape is unchanged.
 //
 // The three-way distinction a UI must render without reading internal state-machine docs (§2.3):
 // waiting_for_capacity (still pending, no eligible account right now — NEVER shown as failed),
@@ -119,6 +121,17 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 		s.fail(w, r, newErr(codeInternalError, "campaign_report_dispatch_state_failed"))
 		return
 	}
+	// `paused` (Phase 4 C1, additive): THIS campaign was paused by POST /v1/pause and not yet resumed — the platform's
+	// own instruction about one campaign. It is NOT `dispatch_paused` above, which is the OPERATOR's module-wide rung
+	// (and is true at accept_and_defer, refuse_new and stopped): the two are independent, either can be true without the
+	// other, and a UI that wants "is this campaign being held?" must read this one. It is read from the SAME definition
+	// pause and resume answer with (campaignFacts.state): a cancelled or finished campaign reads false even if a pause row
+	// outlived it, because nothing of it is being held.
+	facts, err := readCampaignFacts(ctx, s.db, campaignID, userID)
+	if err != nil {
+		s.fail(w, r, newErr(codeInternalError, "campaign_report_pause_state_failed"))
+		return
+	}
 
 	// cancelled is TERMINAL (send_byo_0056): an item the platform stopped is as settled as one that was sent, so
 	// it counts toward progress and is_complete.
@@ -131,6 +144,7 @@ func (s *Server) handleCampaignReport(w http.ResponseWriter, r *http.Request, ca
 	writeJSON(w, http.StatusOK, map[string]any{
 		"campaign_id":       campaignID,
 		"dispatch_paused":   dispatchPaused,
+		"paused":            facts.state() == campaignStatePaused,
 		"totals":            totals,
 		"totals_by_account": totalsByAccount,
 		"progress": map[string]any{

@@ -27,6 +27,25 @@ import (
 // T7b).
 const notSuspendedFragment = `NOT EXISTS (SELECT 1 FROM send_byo.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)`
 
+// notPausedFragment is Phase 4 C1's per-CAMPAIGN pause (POST /v1/pause, send_byo_0059): a queued job whose
+// campaign has a row in send_byo.campaign_pauses is not claimable. It is the sibling of notSuspendedFragment and
+// follows the same rule for the same reason — "a filter is not a gate": the predicate is stated in EVERY statement
+// that can claim a job (claimQuery in dispatch.go, claimForUserQuery below) and in the ring-membership snapshot
+// (snapshotActiveUsers), as this ONE constant, never as hand-written copies. The check is therefore in the SAME
+// statement (and so the same snapshot and the same transaction) that moves the job to `assigned`: there is no gap
+// between "was this campaign paused?" and "claim it" in which a pause could be read stale.
+//
+// WHAT "SAME STATEMENT" DOES AND DOES NOT PROMISE. A claim statement that began before a pause COMMITTED reads the
+// pre-pause snapshot and may still assign one job; that job is in flight, and an in-flight item finishes and is
+// reported once (the contract). Every claim statement that begins after the pause commits sees the row and takes
+// nothing. internal/dispatch/campaign_pause_test.go proves both halves (T13's shape, for pause).
+//
+// It is independent of notSuspendedFragment BY CONSTRUCTION: two tables, two predicates, ANDed. Lifting a
+// suspension does not touch send_byo.campaign_pauses and resuming a campaign does not touch
+// send_byo.user_suspensions, so neither can ever undo the other. The tenant is part of the match
+// (cp.user_id = j.user_id) because the key of campaign_pauses is (campaign_id, user_id).
+const notPausedFragment = `NOT EXISTS (SELECT 1 FROM send_byo.campaign_pauses cp WHERE cp.campaign_id = j.campaign_id AND cp.user_id = j.user_id)`
+
 // claimForUserQuery is the LOCKED per-user claim (§1.1, CLAIM_FOR_USER), backed by the additive
 // jobs_claim_by_user_idx (migration send_byo_0015). It keeps the Phase 1 draft 02 shape exactly —
 // FOR UPDATE SKIP LOCKED, ORDER BY next_attempt_at, created_at, the same lease — generalized with
@@ -38,12 +57,16 @@ const notSuspendedFragment = `NOT EXISTS (SELECT 1 FROM send_byo.user_suspension
 // excludes a suspended user from the ring in the live loop — this statement is a second,
 // independent enforcement point so a bypass of the ring (a bug, or a future caller) still cannot
 // claim on behalf of a suspended user.
+//
+// notPausedFragment (Phase 4 C1) is the same kind of second enforcement point for a PAUSED CAMPAIGN: the ring
+// snapshot below also leaves such a job out, and this statement refuses it again at the moment of the claim.
 const claimForUserQuery = `
 WITH claimed AS (
     SELECT id FROM send_byo.jobs j
     WHERE j.state = 'queued' AND j.next_attempt_at <= NOW() AND j.user_id = $1
       AND j.cancel_requested_at IS NULL
       AND ` + notSuspendedFragment + `
+      AND ` + notPausedFragment + `
     ORDER BY j.next_attempt_at ASC, j.created_at ASC
     FOR UPDATE SKIP LOCKED
     LIMIT $2
@@ -317,6 +340,11 @@ func (d *Dispatcher) snapshotInFlight(ctx context.Context) (map[string]int, erro
 // (served by the Phase 1 partial index, row-absent = not suspended = costs nothing for the common
 // case) keeps a suspended user out of the ring entirely, so neither evaluateChain nor
 // claimForUser ever runs for them.
+//
+// Phase 4 C1: a job of a PAUSED campaign (notPausedFragment) is left out the same way, and for the same reason. If
+// the paused campaign were a ring member, a user whose accounts are all terminal_blocked would reach evaluateChain,
+// get FAIL, and failExhaustedJobs would turn the paused campaign's queued items into `failed` — a pause would
+// destroy the queue it was asked to hold. A user whose ONLY ready work is paused is simply not active this tick.
 func (d *Dispatcher) snapshotActiveUsers(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -324,7 +352,8 @@ func (d *Dispatcher) snapshotActiveUsers(ctx context.Context) ([]string, error) 
 		`SELECT DISTINCT j.user_id FROM send_byo.jobs j
 		  WHERE j.state='queued' AND j.next_attempt_at <= NOW()
 		    AND j.cancel_requested_at IS NULL
-		    AND NOT EXISTS (SELECT 1 FROM send_byo.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)`)
+		    AND NOT EXISTS (SELECT 1 FROM send_byo.user_suspensions us WHERE us.user_id = j.user_id AND us.suspended = TRUE)
+		    AND `+notPausedFragment)
 	if err != nil {
 		return nil, err
 	}

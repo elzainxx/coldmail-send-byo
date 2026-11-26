@@ -182,6 +182,8 @@ internal hostname (two-vocabulary rule). Additive-only: these routes never renam
 | POST | `/v1/run` | Phase 3; M3-Phase 4/5 | accept a job — body `{job_item_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED) → create one `send_byo.jobs` row, return `202` immediately (async kickoff; never blocks on the send). The `job_item_id` must belong to `user_id` (else `404 not_found`). Duplicate `job_item_id` for the same tenant → clean `200` with the existing job (idempotent; never a raw `23505`). **One active campaign per user (M3-Phase 4 §8, P4-7):** if `user_id` already has a DIFFERENT campaign active (any non-terminal job), the run is rejected outright with `409 conflict` (internal reason `user_campaign_active`) and creates ZERO job rows — enforced under a per-user Postgres advisory lock so concurrent attempts are genuinely serialized, not racy. **Module 3 M3-Phase 5 §5.2/§6.4, same advisory-locked transaction:** a SUSPENDED user's enqueue is refused outright (`409 conflict`, `user_suspended`) — accepting work into a queue that cannot drain is not losslessness. Exceeding `max_campaign_size` (this campaign's own job count) → `409 conflict` (`max_campaign_size_reached`); exceeding `max_queued_jobs` (the user's TOTAL live queue across all campaigns) → `409 conflict` (`max_queued_jobs_reached`) — both resolved per-user override→global (`send_byo.user_config_overrides`, admin-writable). On the FIRST job of a campaign, `/v1/run` also upserts a `send_byo.campaigns` row, resolving and FREEZING `campaign_expiry_sec` into `expires_at` (a later config/override change never retroactively moves an already-started campaign's expiry). **Fix-plan item 12 (`send_byo_0052`) — the dispatch rung gates intake at the two DEEPEST rungs only:** at `refuse_new` or `stopped` this route returns `503 paused` and creates ZERO job rows; at `serving` and `accept_and_defer` it accepts normally. Keeping intake open at `accept_and_defer` is the point of that rung existing — an operator halting sending should not also start losing customer submissions. The gate sits AFTER field validation, so a malformed body still gets its `400 validation_failed` rather than being masked by the pause (a caller must be able to fix their request during a halt), and BEFORE job creation, so a refusal is genuinely lossless rather than a row written then rejected. It fails **OPEN**: an unreadable, absent, or unrecognized `dispatch_mode` accepts the submission and logs at `level=error`, because refusing a submission may lose customer work permanently while accepting one that then sits queued is recoverable — the opposite disposition from `/v1/admin/health`, which fails closed (see §3.2). Note the asymmetry with the Control: a paused rung stops the dispatch loop from CLAIMING, so accepted work waits rather than sends | **The 409 now names its cause(s)** (Phase 3 close-out C2): `error.details[]` carries one entry per cause (`suspended`, `campaign_active`, `campaign_cap`, `queue_cap`; the two caps with `current`/`limit`); the status, code and message are unchanged. See "The four causes of a `run` 409" below. |
 | GET | `/v1/report` | Phase 3; M3-Phase 5/6/7 | reflect a job's state — `?user_id=<uuid>` (REQUIRED tenant selector) plus `?job_id=` or `?job_item_id=`: returns `state`, `provider_message_id` (when `sent`), `completed_at`, `attempt_count` — clean external state only. **`provider_message_id`/`completed_at` are OMITTED (key absent, not `null`) until set** — a UI must check for key presence, not for `null`, on this single-job shape. A job owned by another tenant → `404 not_found` (no existence disclosure). **M3-Phase 7 (§1.1, M3-P7-OD-1) widens this shape with three more OMITTED-until-set fields: `smtp_response` (the worker's own scrubbed provider text — never the internal reason, never a credential), `error_class` (the locked `send_byo.error_class` enum's text value), `failed_at` (an alias of `completed_at`, present only when the state is a genuine terminal `failed`/`bounced`).** All three are present whenever the job has a recorded failure detail (including a job currently `queued`/`assigned`/`sending` after a failed attempt that requeued — the sticky "why did the last attempt fail" fact), and are ALL OMITTED once the job reaches `sent` — the underlying columns are sticky-by-design and would otherwise show a stale failure reason on a job that ultimately succeeded. NEVER reads `last_error_message` (the internal-slug-carrying column) — enforced by the `user_output_scrub` CI gate, not merely by convention. **M3-Phase 7 (§2) also adds `account_id`/`account_username` — the per-account attribution delta**: which of the user's OWN accounts sent (or is assigned to send) this job, read from `jobs.assigned_account_id` via a `LEFT JOIN send_byo.accounts`. Both are OMITTED (key absent, not `null`) until the job is dispatched — a `queued` job never assigned, or one requeued and cleared, has neither key, matching this shape's existing omit-the-key convention. `account_username` is the human-readable `smtp_username` — the actual product feature (a uuid alone answers nothing for a user). The accounts join is NEVER what enforces tenancy (`jobs.user_id = $user_id` alone does); a cross-tenant probe gets the same `404 not_found` as ever, with no account field leaked. **M3-Phase 5 (§5.4):** a job WAITING for capacity — its only accounts self-recovering (throttle/daily-limit paused), or its user having zero accounts — reads as clean pending `state:"queued"` (never `failed`, never an error, even if it waits until the next daily reset); a job whose entire eligible account set is truly exhausted (all accounts quarantined/disabled/manual-paused) reads `state:"failed"`. The internal reason (`accounts_exhausted`, which accounts, why — renamed from `pool_exhausted` at G3, M3-P2-OD-3) is NEVER surfaced — two-vocabulary rule. **M3-Phase 6 (§2):** a job RECLAIMED from a dead/hung worker (heartbeat-miss or lease-expiry) returns to clean pending `state:"queued"` with an incremented `attempt_count` (saturating) — the internal reclaim reason (`worker heartbeat missed`/`lease expired`, `actor='reclaim_loop'`) stays internal and is never surfaced; a persistently-reclaimed job never fails by attempt count (it fails only on true account exhaustion, §2.5). **B8 (Phase 9 contract completion) — `?campaign_id=<uuid>` mode:** when `campaign_id` is present (instead of `job_id`/`job_item_id`), `report` returns the CAMPAIGN-scoped aggregate shape below rather than the single-job shape. |
 | POST | `/v1/cancel` | Phase 3 close-out C1 | stop a campaign — body `{campaign_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED). Every not-yet-claimed (`queued`) item of that tenant's campaign becomes the terminal state `cancelled`; claimed items finish and report once. Response `200` `{"campaign_id","cancelled","in_flight","already_terminal"}`; idempotent; a foreign or unknown campaign answers the same empty `200`. Not gated by the dispatch rung or by suspension. See "`POST /v1/cancel` — stop a campaign" below. |
+| POST | `/v1/pause` | Phase 4 C1 | hold ONE campaign — body `{campaign_id, user_id}` (both UUIDs; `user_id` = owning tenant, REQUIRED), exactly cancel's. A paused campaign's **unclaimed** items are not claimed by any worker (every claim statement skips them; the check is in the claiming statement itself); items already in flight finish and are reported once; every item keeps its state (queued stays queued). Response `200` `{"campaign_id","state","paused"}` with `state` ∈ `paused` \| `running` \| `cancelled` \| `finished` \| `unknown`; **idempotent** (a second pause, or a pause of a cancelled / finished / unknown campaign, changes nothing and writes nothing); a foreign or unknown campaign answers the same `200` `unknown`. Stored in Postgres (survives a restart), one `campaign_events` row per real transition, never gated by the dispatch rung or by suspension. See "`POST /v1/pause` and `POST /v1/resume`" below. |
+| POST | `/v1/resume` | Phase 4 C1 | release a paused campaign — the same body, the same answers, the same tenant scoping as `/v1/pause`. Its queued items become claimable again and sending continues where it stopped; every item is sent exactly once overall. **A resume never overrides the user's suspension**, and lifting a suspension never resumes a campaign: either blocks claiming. A resume of a campaign that is not paused (or is cancelled / finished / unknown) is a `200` no-op. |
 
 **B8 — the campaign-scoped `report` response** (`GET /v1/report?campaign_id=<uuid>&user_id=<uuid>`),
 derived ENTIRELY from `send_byo.jobs` state counts + existing per-job fields — no new state, no
@@ -199,6 +201,13 @@ schema change:
   // deliberately does not add the string (that is the operator surface's job, §3.2's
   // `dispatch.dispatch_rung`) — a tenant does not administer the module's rung.
   "dispatch_paused": false,
+
+  // Phase 4 C1, ADDITIVE: THIS campaign was paused by POST /v1/pause and not yet resumed. It is NOT `dispatch_paused`
+  // above: that one is the OPERATOR's module-wide rung (true at accept_and_defer, refuse_new and stopped, and for every
+  // campaign of every tenant); this one is the platform's own hold on ONE campaign. Independent: either can be true
+  // without the other, and "is this campaign being held?" is read here and nowhere else. A cancelled or finished
+  // campaign reads false (nothing of it is being held), whatever its history. An unknown / foreign campaign reads false.
+  "paused": false,
 
   "totals": {
     "total": 5000,
@@ -280,10 +289,10 @@ set equality and a control that reproduces the old construction and must be caug
 
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
-| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`, and, since the Phase 3 close-out C5, `plain_text_alternative:true` — see "The optional plain-text part" below) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
+| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`, and, since the Phase 3 close-out C5, `plain_text_alternative:true` — see "The optional plain-text part" below — and, since Phase 4 C1, `pause_resume:true` — see "`POST /v1/pause` and `POST /v1/resume`" below) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
 
 **`GET /v1/describe`'s `extension_routes[]`** (M3-Phase 7 §5.1) — every Domain A user-facing route
-below except the core four (`quote`/`run`/`report`/`describe` are implicit, uniform across
+below except the core routes (`quote`/`run`/`cancel`/`pause`/`resume`/`report`/`describe` are implicit, uniform across
 modules) is ALSO declared in `describe`'s response, generated from the SAME registry
 `internal/platformapi/server.go`'s route mounting reads (`describe_routes.go`) — a route cannot be
 served without a `describe` declaration. Each entry carries `{id, method, path,
@@ -612,6 +621,83 @@ POST /v1/cancel
   drawn in [`module-3-job-states.mermaid`](./module-3-job-states.mermaid).
 - **Metering.** Module 3 is not metered (M3-01), so a cancelled item is free like every other state; nothing reaches the
   platform's ledger.
+
+### `POST /v1/pause` and `POST /v1/resume` — hold and release one campaign (Phase 4 C1)
+
+The owner's ruling: each sender module gets PER-CAMPAIGN pause and resume, so the platform can hold one running send job and
+continue it later (before this, the only stop was `cancel`, which is final). Module 2 serves the same two paths with the same
+request, the same answers and the same report field, so the platform's shared adapter calls both senders by the same names.
+Domain A auth (the platform service token); the same error envelope and codes as the sibling routes (**no new error code**).
+
+```json
+POST /v1/pause            POST /v1/resume
+{"campaign_id": "6f1c2b9e-0000-4000-8000-0000000000c1", "user_id": "9a3f0d52-0000-4000-8000-0000000000u1"}
+
+200
+{"campaign_id": "6f1c2b9e-0000-4000-8000-0000000000c1", "state": "paused", "paused": true}
+```
+
+- **Request.** Cancel's, field for field: both required UUIDs, `user_id` is the tenant selector. Missing is `400 validation_failed`
+  with `details:[{field, issue:"required"}]`, a non-UUID is `issue:"malformed"`, an unknown field is `400`, no token is `401`, a
+  wrong verb is `405` (`Allow: POST`).
+- **`state`** is the campaign's state AFTER the call, from one definition shared with the campaign report:
+
+  | `state` | Meaning | `pause` does | `resume` does |
+  |---|---|---|---|
+  | `running` | something is still unfinished (queued, assigned or sending) and the campaign is not paused | **pauses it** (one row, one event) → `paused` | no-op, `running` |
+  | `paused` | the campaign is paused and something is still unfinished | no-op, `paused` | **releases it** (row deleted, one event) → `running` |
+  | `cancelled` | `POST /v1/cancel` stopped it and no unflagged item is left that a pause could hold | no-op, `cancelled` | no-op, `cancelled` |
+  | `finished` | every item is final (`sent`, `failed`, `bounced`) and none was cancelled | no-op, `finished` | no-op, `finished` |
+  | `unknown` | no item of this campaign exists for this tenant | no-op, `unknown` | no-op, `unknown` |
+
+  `paused` (the boolean) is `state == "paused"`, spelled the way the campaign report carries it.
+- **Idempotent, and the no-op never writes.** A second `pause` of a paused campaign, a `resume` of one that is not paused: `200`
+  with the current state; no row changes and **no event is written**. An actual transition writes exactly ONE row of
+  `send_byo.campaign_events` (`action` `paused` or `resumed`, `actor` `system`, the call's `request_id`). Two calls racing each other
+  still write one: the pause is `INSERT … ON CONFLICT DO NOTHING` on the `(campaign_id, user_id)` key and the resume is
+  `DELETE … RETURNING`, so the loser changes nothing (forced and observed, not assumed, in `internal/platformapi/campaign_pause_test.go`).
+- **Cancelled, finished and unknown campaigns are no-ops for BOTH verbs, so neither can un-cancel anything.** Pause and resume never
+  touch an item's state, its `cancel_requested_at` flag or any other column of `send_byo.jobs`. A campaign cancelled while paused
+  reads `cancelled` (its pause row is inert and its report says `paused:false`). A cancelled campaign that is later handed NEW items
+  through `run` has unfinished, unflagged work again and can be paused like any other.
+- **Tenant-scoped, indistinguishable from missing.** Every statement is scoped `campaign_id = $1 AND user_id = $2`. Another tenant's
+  campaign id, an unknown id and a campaign with no items all answer the same `200` `{"state":"unknown","paused":false}` and change
+  nothing (the campaign report's and cancel's own rule: a campaign id is not a resource this module allocates, so "no items under this
+  id for this tenant" is never an existence signal). A foreign `resume` cannot release the owner's pause.
+- **What a pause does.** The campaign's row in `send_byo.campaign_pauses` is the whole state. Every statement that can CLAIM a job
+  (`dispatch.claimQuery`, `claimForUserQuery`) and the ring-membership snapshot skip a queued job whose campaign has a row, as the one
+  shared `notPausedFragment`, **in the claiming statement itself** — a claim that begins after the pause commits cannot slip past it.
+  A claim that was already running when the pause committed may still assign one item: that item is in flight, and an in-flight item
+  **finishes and is reported exactly once**, as for cancel. Items **keep their states**: `queued` stays `queued` (the report's
+  `waiting_for_capacity` is still an aggregate of queued items, nothing new is invented), a `run` for a later item of a paused campaign
+  is accepted (`202`) and held with the rest, and the held items are not failed by the exhaustion sweep or timed out by the
+  campaign-expiry sweep. **Resume** deletes the row: the same queued items are claimable again, sending continues where it stopped, and
+  every item is sent exactly once overall (nothing is re-created, re-queued or re-sent by either verb). The next claim happens within
+  one dispatch tick; resume does not kick the dispatcher.
+- **The user's suspension is a different mechanism and the two are independent.** Suspension (the operator's per-user control,
+  `POST /v1/admin/users/{id}/suspend`, driven by the platform's entitlement sync) and a campaign pause are two tables ANDed in the
+  claim: **either blocks claiming**. A `resume` of a campaign whose user is suspended answers `200 running` and **the user stays
+  suspended**: nothing is claimed until the suspension is lifted. Lifting a suspension never touches `campaign_pauses`, so **a paused
+  campaign stays paused**. All four combinations are proved (the dispatch package for the statements, `tests/harness/phase4_pause.sh`
+  against a real worker and sink).
+- **Not gated.** Pause and resume work at every dispatch rung (`stopped` included) and for a suspended user, like cancel: recording the
+  tenant's instruction about its own campaign is not sending, and neither verb changes the rung or the suspension.
+- **Stored.** The state is in the module's own schema (`send_byo_0059`, two new tables, no existing table changed): a restart of the
+  Control, or of the worker, while a campaign is paused leaves it paused (`phase4_pause.sh` restarts both).
+- **The expiry clock.** A campaign's expiry window (`campaign_expiry_sec`, frozen at its first job) does not run while it is held: the
+  campaign-expiry sweep skips a paused campaign, and `resume` credits the paused interval back to `campaigns.expires_at` (and to
+  `paused_total_sec`), exactly as the suspension reinstate does. If a suspension overlaps a pause, both credits apply and the overlap is
+  credited twice (the window ends a little later than strictly necessary, never earlier).
+- **Reports.** The campaign report (`GET /v1/report?campaign_id=`) gains ONE boolean, **`paused`** — this campaign is paused (state
+  `paused`). It is **not** `dispatch_paused`, which is unchanged and means the OPERATOR's module-wide rung is not `serving`: the two are
+  independent (an operator halt does not read as a campaign pause, and a campaign pause does not read as an operator halt). Every other
+  field of every response — `quote`, `run`, `cancel`, `report`'s `totals`/`progress`/`items`, the single-job report — is unchanged
+  (`campaign_pause_test.go` compares the key sets).
+- **`describe`** gains `capabilities.pause_resume: true` (additive; `plain_text_alternative`'s shape).
+- **Audit.** `send_byo.campaign_events` (append-only, `INSERT`+`SELECT` only, a reject-update trigger) holds one row per transition. There
+  was no campaign-level audit table: `job_events` is per job and trigger-driven (a pause changes no job's state), and `account_events` is
+  keyed by account with no campaign column. No read route exposes it (an operator reads it in SQL); see `future-work.md` FW-M3-24.
+- **Metering.** Module 3 is not metered (M3-01); nothing here reaches the platform's ledger.
 
 ### The optional plain-text part (Phase 3 close-out C5)
 

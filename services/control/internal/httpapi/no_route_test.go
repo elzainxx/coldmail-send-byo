@@ -123,7 +123,7 @@ func TestRootMux_ADocumentedPathWithAnUnmountedSurfaceStillAnswersTheEnvelope(t 
 	// documented endpoint 404ing".
 	h := newRootHandler(t, nil, nil)
 	for _, p := range []string{
-		"/v1/quote", "/v1/run", "/v1/cancel", "/v1/report", "/v1/describe", // core five, unmounted
+		"/v1/quote", "/v1/run", "/v1/cancel", "/v1/pause", "/v1/resume", "/v1/report", "/v1/describe", // core seven, unmounted
 		"/v1/admin/accounts",         // admin surface, unmounted
 		"/v1/send-byo/accounts",      // platform extension prefix, unmounted
 		"/v1/send-byo/notifications", // ditto
@@ -154,6 +154,8 @@ func TestRootMux_MountedSurfacesStillReceiveTheirOwnPaths(t *testing.T) {
 		{"/v1/quote", "platform"},
 		{"/v1/run", "platform"},
 		{"/v1/cancel", "platform"},
+		{"/v1/pause", "platform"},
+		{"/v1/resume", "platform"},
 		{"/v1/report", "platform"},
 		{"/v1/describe", "platform"},
 		{"/v1/send-byo/accounts", "platform"},
@@ -304,9 +306,9 @@ func TestRootMux_EveryCorePlatformRouteIsMounted(t *testing.T) {
 		t.Fatalf("read health.go: %v", err)
 	}
 	core := platformCoreRoutes(t, string(dispatch))
-	// the floor: the five core routes (an empty extraction that "passes" proves nothing)
-	if len(core) != 5 {
-		t.Fatalf("extracted %d core routes %v from platformRoutes(), want 5 (quote, run, cancel, report, describe)", len(core), core)
+	// the floor: the seven core routes (an empty extraction that "passes" proves nothing)
+	if len(core) != 7 {
+		t.Fatalf("extracted %d core routes %v from platformRoutes(), want 7 (quote, run, cancel, pause, resume, report, describe)", len(core), core)
 	}
 	if missing := unmountedCoreRoutes(core, string(health)); len(missing) != 0 {
 		t.Fatalf("core platform route(s) registered in platformapi but NOT mounted in the root mux (health.go): %v -- the live Control answers them 404", missing)
@@ -317,5 +319,12 @@ func TestRootMux_EveryCorePlatformRouteIsMounted(t *testing.T) {
 	}
 	if got := unmountedCoreRoutes(core, strings.ReplaceAll(string(health), `mux.Handle("/v1/cancel", platformHandler)`, "")); len(got) != 1 || got[0] != "/v1/cancel" {
 		t.Fatalf("control: with the /v1/cancel mount removed the checker reported %v, want [/v1/cancel]", got)
+	}
+	// Phase 4 C1: the same control for each of the two routes added after cancel, so a forgotten mount of either is red here
+	// and not a 404 on the live Control.
+	for _, p := range []string{"/v1/pause", "/v1/resume"} {
+		if got := unmountedCoreRoutes(core, strings.ReplaceAll(string(health), `mux.Handle("`+p+`", platformHandler)`, "")); len(got) != 1 || got[0] != p {
+			t.Fatalf("control: with the %s mount removed the checker reported %v, want [%s]", p, got, p)
+		}
 	}
 }

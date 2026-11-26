@@ -60,6 +60,7 @@ If `/readyz` is clean, the health snapshot tells you which tree to open:
 | `queue.queued` is large and `dispatch.sends_last_window` is 0 | [Everything is queued and nothing is sending](#everything-is-queued-and-nothing-is-sending) |
 | `queue.waiting_for_capacity` > 0 | [No eligible account / waiting for capacity](#no-eligible-account--waiting-for-capacity) |
 | One user's items are `pending` and not moving while everyone else's are, or a user cannot add an account / press Test / test-send | [A user is suspended: what that stops, what it does not](#a-user-is-suspended-what-that-stops-what-it-does-not) |
+| One CAMPAIGN is queued and not moving, the user is NOT suspended, and the platform paused it (the campaign report says `paused:true`) | [A campaign is paused: what that stops, what it does not](#a-campaign-is-paused-what-that-stops-what-it-does-not) |
 | `accounts.quarantined` > 0 | [An account got quarantined](#an-account-got-quarantined) |
 | `workers.stale` > 0, or `boxes.active` is 0 | [A worker died](#a-worker-died) |
 | `active_conditions[]` is non-empty | [Alert conditions](#alert-conditions--triage) |
@@ -526,6 +527,45 @@ first; then read the route above (a `suspended:true` means the reinstate did not
 `version` that did not move means nothing changed); then walk
 [Everything is queued and nothing is sending](#everything-is-queued-and-nothing-is-sending) — a
 reinstated user is an ordinary user.
+
+---
+
+## A campaign is paused: what that stops, what it does not
+
+The platform can hold ONE campaign and release it later (`POST /v1/pause`, `POST /v1/resume`, [`api-contract.md`](./api-contract.md#post-v1pause-and-post-v1resume--hold-and-release-one-campaign-phase-4-c1)).
+This is **not** the user's suspension and **not** the `dispatch_mode` ladder, and you do not operate it: it is the platform's instruction about one campaign. You meet it as "a campaign is queued and
+nothing of it is sending, and the user is not suspended and dispatch is serving".
+
+**What a pause means — stated so nobody is surprised:**
+
+- **No new claims for that campaign.** Its queued items stay `queued` (nothing fails, nothing is re-timed, no `job_events` row is written); items already `assigned` or `sending` finish and are reported
+  once, exactly as for a suspension or a cancel. "Nothing is sent after the pause" is false for the few items already in flight.
+- **Other campaigns are untouched, and so is the user.** A paused campaign does not suspend the user, does not gate test-send, the Test button or account creation, and does not stop another campaign.
+- **Either a pause or a suspension blocks claiming, and neither lifts the other.** Resuming a campaign of a suspended user leaves the user suspended (nothing is claimed until you reinstate them);
+  reinstating a user leaves their paused campaign paused (nothing is claimed until the platform resumes it). If a user's queue does not move after you reinstated them, check for a paused campaign too.
+- **It survives a restart** of the Control or the worker: the state is a row in Postgres, not in a process.
+- **The campaign does not expire while it is held**, and `resume` gives back the time it was held. Resume latency is up to one dispatch tick.
+
+**How to see it — read it, do not infer it:**
+
+```bash
+# the platform's own view: the campaign report has `paused` (this campaign) beside `dispatch_paused` (YOUR rung, module-wide, a different thing)
+curl -fsS "$PLATFORM/v1/report?campaign_id=$CAMPAIGN&user_id=$USER_ID" -H "Authorization: Bearer $PLATFORM_TOKEN" | jq '{paused, dispatch_paused, totals}'
+```
+
+```sql
+-- every paused campaign right now, how long it has been held, and how much is waiting behind it
+SELECT p.campaign_id, p.user_id, p.paused_at,
+       (SELECT count(*) FROM send_byo.jobs j WHERE j.campaign_id = p.campaign_id AND j.user_id = p.user_id AND j.state = 'queued') AS queued
+  FROM send_byo.campaign_pauses p ORDER BY p.paused_at;
+
+-- the audit: one row per real pause or resume, never one for a repeated call
+SELECT created_at, action, actor, request_id FROM send_byo.campaign_events WHERE campaign_id = '<campaign>' ORDER BY created_at;
+```
+
+**There is no operator route to release someone else's pause**, on purpose: it is the platform's hold, and releasing it from here would put work in flight that the platform asked not to send. If a pause is
+stuck because the platform cannot reach this module to resume it, the platform's own runbook owns the decision; the only break-glass here is the SQL above (`DELETE FROM send_byo.campaign_pauses WHERE campaign_id = …`
+releases it — and writes no audit row, so write down that you did it).
 
 ---
 

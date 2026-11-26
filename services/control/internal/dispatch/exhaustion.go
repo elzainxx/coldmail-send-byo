@@ -144,6 +144,14 @@ func (d *Dispatcher) userHasSelfRecovering(ctx context.Context, userID string, c
 // classic 40P01, so both take their row locks in the same (id) order. A flagged row is a campaign the tenant
 // has just stopped: it is about to be `cancelled`, and failing it here would report an exhaustion nobody
 // asked about. It changes nothing about WHICH other rows are failed.
+//
+// Phase 4 C1: a job of a PAUSED campaign (send_byo.campaign_pauses, POST /v1/pause) is skipped too. A pause asks the
+// module to HOLD the campaign's queued items exactly as they are ("items keep their states"), and failing them for
+// an exhaustion nobody can act on while the campaign is held would turn a pause into a loss. snapshotActiveUsers
+// already keeps a user whose only ready work is paused out of the ring, so this is the second, independent
+// enforcement point for the case the ring cannot cover: a user who ALSO has ready work that is not paused. The
+// correlated reference is to `jobs` (the sub-select's own range variable, the innermost one by name), not to the
+// UPDATE target.
 func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -157,6 +165,8 @@ func (d *Dispatcher) failExhaustedJobs(ctx context.Context, userID string) error
 			 WHERE id IN (SELECT id FROM send_byo.jobs
 			               WHERE user_id=$1 AND state='queued' AND next_attempt_at <= NOW()
 			                 AND cancel_requested_at IS NULL
+			                 AND NOT EXISTS (SELECT 1 FROM send_byo.campaign_pauses cp
+			                                  WHERE cp.campaign_id = jobs.campaign_id AND cp.user_id = jobs.user_id)
 			               ORDER BY id FOR UPDATE)`, userID)
 		return err
 	})

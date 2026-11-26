@@ -88,6 +88,7 @@ func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int
 	rows, err := d.db.Query(ctx,
 		`SELECT c.id, c.user_id FROM send_byo.campaigns c
 		  WHERE c.expired_at IS NULL AND c.clock_paused_at IS NULL AND c.expires_at < NOW()
+		    AND NOT EXISTS (SELECT 1 FROM send_byo.campaign_pauses cp WHERE cp.campaign_id = c.id AND cp.user_id = c.user_id)
 		    AND EXISTS (SELECT 1 FROM send_byo.jobs j WHERE j.campaign_id = c.id
 		                  AND j.state IN ('queued','assigned','sending'))
 		  ORDER BY c.expires_at LIMIT $1`, maxCampaignExpiryBatchPerTick)
@@ -162,11 +163,21 @@ func (d *Dispatcher) sweepExpiredCampaigns(ctx context.Context, cfg Config) (int
 // job" EXISTS check from sweepExpiredCampaigns' own SELECT — closing the window where a campaign's
 // last job completes naturally between that SELECT and this per-campaign transaction, which would
 // otherwise expire a campaign that finished a moment too late to be excluded by the outer query.
+//
+// Phase 4 C1: it ALSO re-asserts, in the same statement, that the campaign is not PAUSED (send_byo.campaign_pauses,
+// POST /v1/pause). A pause holds the campaign's queued items as they are, so its expiry clock must not run out while it
+// is held: the candidate SELECT above leaves a paused campaign out, this re-check narrows the window in which a pause
+// lands between that SELECT and this transaction to the statement itself (a pause that commits after THIS statement's
+// snapshot found the campaign already past its window, so it was legitimately expired a moment before the pause — the
+// pause did not hold what had already run out), and POST /v1/resume pushes expires_at FORWARD by the paused interval
+// (the same self-referential credit the suspension reinstate gives, adminapi/user_suspend.go), so a resumed campaign
+// gets back exactly the window the pause took from it and is not expired the instant it resumes.
 func (d *Dispatcher) expireOneCampaign(ctx context.Context, campaignID, userID string) error {
 	return d.inActorTx(ctx, "dispatcher", func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx,
 			`UPDATE send_byo.campaigns SET expired_at = NOW(), updated_at = NOW()
 			  WHERE id = $1 AND expired_at IS NULL AND clock_paused_at IS NULL AND expires_at < NOW()
+			    AND NOT EXISTS (SELECT 1 FROM send_byo.campaign_pauses cp WHERE cp.campaign_id = campaigns.id AND cp.user_id = campaigns.user_id)
 			    AND EXISTS (SELECT 1 FROM send_byo.jobs j WHERE j.campaign_id = $1
 			                  AND j.state IN ('queued','assigned','sending'))`,
 			campaignID)

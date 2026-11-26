@@ -146,8 +146,8 @@ func mustAPIVersion(rs []route) string {
 	return v
 }
 
-// platformRoutes is the full served set: the core five (quote, run, report, describe and, since the
-// Phase 3 close-out, cancel), then every extension route in registry order. Additive-only; the served set must match Docs/api-contract.md (the contract_drift gate).
+// platformRoutes is the full served set: the core seven (quote, run, report, describe, since the
+// Phase 3 close-out cancel, and since Phase 4 C1 pause and resume), then every extension route in registry order. Additive-only; the served set must match Docs/api-contract.md (the contract_drift gate).
 //
 // The "/v1" in these patterns — the four literals here and the Path of every extensionRoute — is
 // what APIVersion() reads, so they are the single source of this module's contract version. describe
@@ -162,6 +162,11 @@ func (s *Server) platformRoutes() []route {
 		// uniform across the sender modules (module 2 serves the same path with the same shape), so the
 		// platform's shared adapter calls it by the same name on both. See cancel.go.
 		{"POST", "/v1/cancel", s.handleCancel},
+		// Phase 4 C1 (owner ruling): hold and release ONE campaign. Core, like cancel, and for the same reason: the
+		// request and the answers are written to match module 2's, so the platform's shared adapter calls both
+		// senders by the same names. See campaign_pause.go.
+		{"POST", "/v1/pause", s.handlePause},
+		{"POST", "/v1/resume", s.handleResume},
 	}
 	for _, rt := range s.extensionRoutes() {
 		rs = append(rs, route{rt.Method, rt.Path, rt.Handler})
