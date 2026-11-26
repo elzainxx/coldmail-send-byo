@@ -21,9 +21,9 @@ package platformapi
 //     the test (a pending item is refused by the suspension and the cap, and held by the pause) and the cancelled item still
 //     answers `job_item_cancelled`;
 //   - the atomicity (CLAUDE.md Rule 10): a marker the platform commits BETWEEN the run's read of the item and its insert does
-//     not slip a run through. FORCED, not hoped for: the run is parked, observed blocked in pg_stat_activity on the statement
-//     that follows the item read, the marker is committed, the run is released and refused — control: the identical interleave
-//     with no marker is accepted;
+//     not slip a run through. FORCED, not hoped for: a held LOCK TABLE parks the run on the creating INSERT itself, observed
+//     blocked in pg_stat_activity by that statement's own text (so its item read, which saw the item pending, is behind it), the
+//     marker is committed, the run is released and refused — control: the identical interleave with no marker is accepted;
 //   - the replay beats the guard in the one race where they could meet (a first run that created the job while this one waited
 //     for the per-user lock) — forced the same way, control: the same race with no job answers the refusal;
 //   - Postgres-free: the envelope and status of the new code; the two statements carry the SAME single named exclusion, never an
@@ -41,9 +41,12 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const cancelledItemMessage = "This job item has been cancelled and cannot be run."
@@ -337,37 +340,89 @@ func TestRunCancelledItem_DoesNotDependOnSuspensionPauseOrCaps(t *testing.T) {
 
 // --- the atomicity: a marker committed between the read and the insert, FORCED ---------------------------------------------
 
-// runHeldBetweenReadAndInsert runs POST /v1/run for item while a held transaction keeps it parked at the statement that follows the
-// item read, optionally commits the platform's marker while it is parked, then releases it and returns the answer.
+// holdTx opens a transaction on a SECOND superuser connection to the test's database, for the lock that parks the run under test.
 //
-// The park is a LOCK TABLE ... ACCESS EXCLUSIVE on send_byo.user_suspensions, the table runCauseFacts reads FIRST, immediately after
-// the item read. The run is observed blocked in pg_stat_activity on that exact statement, so the item read (which saw the item
-// pending) has completed: the marker below lands in the gap between the two statements, which is the gap the insert's own
-// predicate exists to close.
-func (e *testEnv) runHeldBetweenReadAndInsert(t *testing.T, userID, itemID string, mark bool) resp {
+// It is deliberately not a transaction on e.admin. pg_stat_activity is snapshotted per TRANSACTION: the first read inside a
+// transaction fixes what every later read in that transaction sees. A poll made through a connection that is itself inside an open
+// transaction therefore keeps returning the picture it took before the run blocked, and never sees the blocked backend — which is
+// exactly why the first versions of the two interleave tests, which held their lock on e.admin and polled on e.admin, timed out with
+// "no backend ever blocked". The existing forced-interleave tests (TestPause_RacingPausesWriteOneEvent and its siblings) hold their
+// transaction on one connection (e.pool) and poll on another (e.admin) that is in no transaction; this does the same, with a
+// superuser holder because LOCK TABLE and the platform's marker need privileges the module's role does not hold.
+func (e *testEnv) holdTx(t *testing.T) pgx.Tx {
 	t.Helper()
-	hold, err := e.admin.Begin(bgctx())
+	c := connect(t, e.admin.Config().ConnString()) // closed by connect's cleanup
+	tx, err := c.Begin(bgctx())
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		t.Fatalf("begin the holding transaction: %v", err)
 	}
-	defer hold.Rollback(bgctx())
-	if _, err := hold.Exec(bgctx(), `LOCK TABLE send_byo.user_suspensions IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatalf("lock user_suspensions: %v", err)
+	return tx
+}
+
+// waitParkedOn is waitBlockedOn's mechanism (a backend of THIS database, active, waiting on a Lock, whose statement text contains
+// fragment), with one difference: when nothing ever blocks it says what every backend of the database WAS doing, so a wrong fragment
+// or a lock the statement does not take is read off the failure instead of guessed.
+func (e *testEnv) waitParkedOn(t *testing.T, fragment string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		var n int
+		if err := e.admin.QueryRow(bgctx(),
+			`SELECT count(*) FROM pg_stat_activity
+			  WHERE datname = current_database() AND wait_event_type = 'Lock' AND state = 'active'
+			    AND query ILIKE '%' || $1 || '%'`, fragment).Scan(&n); err != nil {
+			t.Fatalf("pg_stat_activity: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	call := callAsync(func() resp { return e.runItem(t, userID, itemID) })
-	e.waitBlockedOn(t, "SELECT EXISTS(SELECT 1 FROM send_byo.user_suspensions WHERE user_id", 10*time.Second)
-	if st := e.itemStatus(t, itemID); st != "pending" {
-		t.Fatalf("the run is parked after its read of the item, and the item must still be pending there: %q", st)
-	}
-	if mark {
-		if tag, err := hold.Exec(bgctx(), `UPDATE public.job_items SET status = 'cancelled' WHERE id = $1`, itemID); err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("the marker: tag=%v err=%v", tag, err)
+	rows, err := e.admin.Query(bgctx(),
+		`SELECT pid, state, COALESCE(wait_event_type, ''), COALESCE(wait_event, ''), left(regexp_replace(query, '\s+', ' ', 'g'), 110)
+		   FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() ORDER BY pid`)
+	dump := ""
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pid int
+			var state, wt, we, q string
+			if rows.Scan(&pid, &state, &wt, &we, &q) == nil {
+				dump += "\n  pid=" + strconv.Itoa(pid) + " state=" + state + " wait=" + wt + "/" + we + " query=" + q
+			}
 		}
 	}
-	if err := hold.Commit(bgctx()); err != nil {
-		t.Fatalf("commit (marker and release): %v", err)
+	t.Fatalf("no backend ever blocked on a lock in a statement containing %q within %v: the interleave this test claims never happened. Backends of this database:%s", fragment, within, dump)
+}
+
+// runParkedAtTheInsert runs POST /v1/run for item while a held transaction keeps it parked AT THE STATEMENT THAT CREATES THE JOB,
+// optionally commits the platform's marker while it is parked, then releases it and returns the answer.
+//
+// The park is LOCK TABLE send_byo.jobs IN SHARE MODE: it conflicts with the ROW EXCLUSIVE lock the creating INSERT needs on that table
+// and with nothing the run takes before it (the pre-lock replay lookup, the item read, the cause facts and the campaign upsert only
+// read send_byo.jobs, which SHARE does not block, or touch other tables). So the run gets through the whole item read — which saw the
+// item pending — and is blocked on the production statement jobItemFreezeSQL itself, observed in pg_stat_activity by its own text.
+// A lock on public.job_items would park the item READ instead (the same table), not the gap between the read and the insert, which is
+// the gap the insert's own predicate exists to close: the marker below is committed inside it.
+func (e *testEnv) runParkedAtTheInsert(t *testing.T, userID, itemID string, mark bool) resp {
+	t.Helper()
+	hold := e.holdTx(t)
+	defer hold.Rollback(bgctx())
+	if _, err := hold.Exec(bgctx(), `LOCK TABLE send_byo.jobs IN SHARE MODE`); err != nil {
+		t.Fatalf("lock send_byo.jobs: %v", err)
 	}
-	return awaitResp(t, "the held run", call, 15*time.Second)
+	call := callAsync(func() resp { return e.runItem(t, userID, itemID) })
+	e.waitParkedOn(t, "INSERT INTO send_byo.jobs", 10*time.Second)
+	if st := e.itemStatus(t, itemID); st != "pending" {
+		t.Fatalf("the run is parked at its insert, after its read of the item, and the item must still be pending there: %q", st)
+	}
+	if mark {
+		e.markItemCancelled(t, itemID) // committed on e.admin's own connection while the run is parked: between the read and the insert
+	}
+	if err := hold.Commit(bgctx()); err != nil {
+		t.Fatalf("release the park: %v", err)
+	}
+	return awaitResp(t, "the parked run", call, 15*time.Second)
 }
 
 func (e *testEnv) itemStatus(t *testing.T, itemID string) string {
@@ -386,7 +441,7 @@ func TestRunCancelledItem_AMarkerCommittedBetweenTheReadAndTheInsertDoesNotSlipT
 	racing := e.seedJobItemCampaign(t, c, u, "racing@example.com")
 
 	before := e.runWrites(t)
-	r := e.runHeldBetweenReadAndInsert(t, u, racing, true)
+	r := e.runParkedAtTheInsert(t, u, racing, true)
 	requireCancelledRefusal(t, "a run whose item was marked between its read and its insert", r)
 	if e.itemStatus(t, racing) != "cancelled" {
 		t.Fatalf("the marker was not committed")
@@ -401,7 +456,7 @@ func TestRunCancelledItem_AMarkerCommittedBetweenTheReadAndTheInsertDoesNotSlipT
 	// CONTROL: the identical interleave with NO marker is accepted — the park, the lock and the release do not themselves refuse the run,
 	// so the refusal above is the marker landing in the gap and the insert's predicate catching it.
 	clean := e.seedJobItemCampaign(t, c, u, "clean@example.com")
-	ok := e.runHeldBetweenReadAndInsert(t, u, clean, false)
+	ok := e.runParkedAtTheInsert(t, u, clean, false)
 	if ok.status != 202 || ok.str("job_id") == "" || e.jobsForItem(t, clean) != 1 {
 		t.Fatalf("control (same interleave, no marker): status=%d body=%s jobs=%d, want 202 and one job", ok.status, ok.raw, e.jobsForItem(t, clean))
 	}
@@ -418,18 +473,17 @@ func TestRunCancelledItem_TheReplayBeatsTheGuardInTheRacingFirstRun(t *testing.T
 
 	race := func(label string, firstRunCreatesTheJob bool) (resp, string) {
 		item := e.seedJobItemCampaign(t, c, u, label+"@example.com")
-		hold, err := e.admin.Begin(bgctx())
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
+		// "the first run": a transaction on a connection of its own (see holdTx: never e.admin, which polls pg_stat_activity)
+		hold := e.holdTx(t)
 		defer hold.Rollback(bgctx())
-		// "the first run" owns the user's lock...
+		// ...it owns the user's lock, taken with the production statement's own text...
 		if _, err := hold.Exec(bgctx(), `SELECT pg_advisory_xact_lock(hashtext('send_byo.campaign_start:' || $1::text))`, u); err != nil {
 			t.Fatalf("take the user lock: %v", err)
 		}
-		// ...and this run passes its pre-lock replay lookup (there is no job yet) and waits for it
+		// ...and this run passes its pre-lock replay lookup (there is no job yet) and waits for it: observed blocked on createJob's
+		// own `SELECT pg_advisory_xact_lock(…)`, the only statement of the run that takes that lock
 		call := callAsync(func() resp { return e.runItem(t, u, item) })
-		e.waitBlockedOn(t, "pg_advisory_xact_lock", 10*time.Second)
+		e.waitParkedOn(t, "pg_advisory_xact_lock", 10*time.Second)
 		var firstJob string
 		if firstRunCreatesTheJob {
 			// the first run creates the job with the PRODUCTION statement (the item is still pending), the platform then marks the
