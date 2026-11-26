@@ -14,10 +14,52 @@ const (
 	sqlstateCheckViolation      = "23514"
 )
 
+// The two statements `run` issues against the platform's public.job_items. They are named constants (each one literal, never
+// built by concatenation) because the platform's drift gate (db/module-statements.txt, labels J1 and J2) holds their TEXT, and
+// because platformapi's structural test reads them: the cancelled-item guard is the SAME single named exclusion in both.
+//
+// jobItemReadSQL (J1) reads the item for a run, scoped to the calling tenant: the campaign the item belongs to and whether the
+// platform has marked it cancelled, in ONE statement. `status IS NOT DISTINCT FROM 'cancelled'` is true for that one value and
+// never NULL, so a NULL status (the fixture tables in this repository declare the column with no default and no NOT NULL) reads
+// as "not cancelled" instead of poisoning the Scan; every other value, the default 'pending' included, is "not cancelled" too.
+//
+// jobItemFreezeSQL (J2) freezes the item into send_byo.jobs (the genesis job_events row is written by a trigger) and carries the
+// SAME exclusion as a predicate of its own SELECT: `ji.status IS DISTINCT FROM 'cancelled'`, the negation of J1's test and
+// NULL-safe in the same way. The predicate is not a repeat for show. J1 and J2 are two statements, and a marker the platform
+// commits between them must not slip a run through; J2 tests the status and creates the row in ONE statement under ONE
+// snapshot, so there is no instant between the check and the insert for a marker to land in. A row lock on the item (the other
+// way to close the gap) is not available: the module's role holds SELECT and INSERT on that table and never UPDATE, and
+// SELECT ... FOR SHARE needs UPDATE.
+const (
+	jobItemReadSQL = `SELECT campaign_id, status IS NOT DISTINCT FROM 'cancelled' FROM public.job_items WHERE id = $1 AND user_id = $2`
+
+	jobItemFreezeSQL = `INSERT INTO send_byo.jobs
+	   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to, state, next_attempt_at)
+	 SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
+	        ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.reply_to, 'queued', NOW()
+	 FROM public.job_items ji
+	 WHERE ji.id = $1 AND ji.user_id = $2 AND ji.status IS DISTINCT FROM 'cancelled'
+	 RETURNING id`
+)
+
 // createJob creates one send_byo.jobs row in state 'queued' from the platform-owned job_item
 // (read with SELECT here; the module's one write to public.job_items is test-send's INSERT, send_byo_0037), with the actor='system' GUC so the genesis event
 // is written (§6.2). Returns (jobID, existing, err): existing=true when the job_item already has
 // a sender job (the jobs_job_item_id_unique constraint) — the run is idempotent, never a raw 23505.
+//
+// THE CANCELLED-ITEM GUARD (ADR-0022). The platform gives a never-submitted item of a job that expired, was cancelled or failed
+// the terminal marker public.job_items.status = 'cancelled'. No module may act on such a row, so a run of one is REFUSED with
+// `job_item_cancelled` (409) and no job row is written. Both statements that touch the item carry the exclusion (jobItemReadSQL
+// and jobItemFreezeSQL above); the refusal is answered only for an item of the CALLER'S tenant (another tenant's cancelled item
+// is the same 404 as an id that does not exist); and every other status runs exactly as before. It is answered BEFORE the four
+// causes of a 409 are read, so it does not depend on the user's suspension, on a pause of the item's campaign or on any cap: a
+// dead item is a permanent fact and must not be hidden behind a transient one the platform would wait out and retry.
+//
+// WHICH WINS when the item already has a module job: THE REPLAY. The existing-job lookup is the first statement of this
+// function and returns before the item is read at all, so a job accepted before the marker keeps answering 200 with its current
+// state however the item is marked later — it already ran, the marker is the platform's record and not a lock, and a job the
+// module accepted is stopped (if the platform wants it stopped) by POST /v1/cancel, never by the marker. The guard also yields to
+// a replay in the one interleave where it could otherwise contradict it: see replayOrRefuseCancelled.
 //
 // TENANT-SCOPED (OD-25 option b): the caller's tenant (userID) is enforced. The job_item must
 // BELONG to userID (`ji.user_id = userID`); a job_item owned by another tenant is treated as
@@ -76,15 +118,23 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 	// still resolves to job_item_not_found via the same tenant scoping, never leaking whether it exists. A
 	// SUSPENDED user is still refused before anything about job items is revealed: with no item found the
 	// answer is the one cause known without it.
-	var campaignID string
+	var (
+		campaignID string
+		cancelled  bool
+	)
 	itemFound := true
-	if err := tx.QueryRow(ctx,
-		`SELECT campaign_id FROM public.job_items WHERE id = $1 AND user_id = $2`, jobItemID, userID).
-		Scan(&campaignID); err != nil {
+	if err := tx.QueryRow(ctx, jobItemReadSQL, jobItemID, userID).Scan(&campaignID, &cancelled); err != nil {
 		if !isNoRows(err) {
 			return "", false, newErr(codeInternalError, "read_job_item_failed")
 		}
 		itemFound, campaignID = false, ""
+	}
+	// The platform has marked this item cancelled: refuse it (or, where a committed job already exists, replay it) BEFORE the
+	// causes of a 409 are read, so the answer is about the item alone and does not move with the user's suspension, a pause of
+	// its campaign or a cap. Nothing has been written yet. Only a FOUND item (this tenant's own) can be cancelled here: another
+	// tenant's item reads as not found above and takes the not_found path below, indistinguishable from a missing id.
+	if itemFound && cancelled {
+		return s.replayOrRefuseCancelled(ctx, jobItemID, userID, "job_item_cancelled_at_read")
 	}
 	facts, ferr := readRunCauseFacts(ctx, tx, userID, campaignID)
 	if ferr != nil {
@@ -123,17 +173,11 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 
 	// Freeze the denormalized copy from public.job_items into send_byo.jobs (Phase 1 shape; rendered_text, the
 	// optional plain-text alternative, since Phase 3 close-out C5), but ONLY
-	// if the job_item belongs to the calling tenant (`ji.user_id = $2`). A cross-tenant job_item
-	// matches 0 rows → job_item_not_found (404-style), identical to a non-existent job_item — the
-	// module never confirms another tenant's job_item exists.
-	err = tx.QueryRow(ctx,
-		`INSERT INTO send_byo.jobs
-		   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to, state, next_attempt_at)
-		 SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
-		        ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.reply_to, 'queued', NOW()
-		 FROM public.job_items ji
-		 WHERE ji.id = $1 AND ji.user_id = $2
-		 RETURNING id`, jobItemID, userID).Scan(&jobID)
+	// if the job_item belongs to the calling tenant (`ji.user_id = $2`) AND the platform has not marked it cancelled
+	// (jobItemFreezeSQL's last predicate: the status test and the insert are this ONE statement, so the refusal is atomic
+	// with the creation). A cross-tenant job_item matches 0 rows → job_item_not_found (404-style), identical to a
+	// non-existent job_item — the module never confirms another tenant's job_item exists.
+	err = tx.QueryRow(ctx, jobItemFreezeSQL, jobItemID, userID).Scan(&jobID)
 	if err != nil {
 		switch pgCode(err) {
 		case sqlstateUniqueViolation:
@@ -147,10 +191,30 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 			return "", false, newErr(codeValidationFailed, "job_item_invalid")
 		}
 		if isNoRows(err) {
-			// No such job_item FOR THIS TENANT (unknown id, or owned by another tenant). Same
-			// clean 404-style outcome either way — no cross-tenant existence disclosure.
-			return "", false, newErr(codeNotFound, "job_item_not_found").
-				withDetails(fieldDetail{Field: "job_item_id", Issue: issueNotFound})
+			// The freeze matched nothing. The read above found this tenant's item a moment ago (the not-found case returned
+			// before here), so the likeliest cause is the marker landing between the two statements; look again, in this
+			// transaction (a fresh statement, so a fresh snapshot), to say WHICH refusal is true instead of guessing. This
+			// re-read only CLASSIFIES a refusal that jobItemFreezeSQL has already made: it admits nothing.
+			var (
+				campaign     string
+				cancelledNow bool
+			)
+			rerr := tx.QueryRow(ctx, jobItemReadSQL, jobItemID, userID).Scan(&campaign, &cancelledNow)
+			switch {
+			case rerr == nil && cancelledNow:
+				return s.replayOrRefuseCancelled(ctx, jobItemID, userID, "job_item_cancelled_before_insert")
+			case rerr == nil:
+				// The item exists, is the tenant's and is not cancelled, and yet the freeze returned no row: not a state
+				// the table's vocabulary can produce (a marker is never moved back).
+				return "", false, newErr(codeInternalError, "create_job_failed")
+			case isNoRows(rerr):
+				// No such job_item FOR THIS TENANT (unknown id, or owned by another tenant). Same
+				// clean 404-style outcome either way — no cross-tenant existence disclosure.
+				return "", false, newErr(codeNotFound, "job_item_not_found").
+					withDetails(fieldDetail{Field: "job_item_id", Issue: issueNotFound})
+			default:
+				return "", false, newErr(codeInternalError, "read_job_item_failed")
+			}
 		}
 		return "", false, newErr(codeInternalError, "create_job_failed")
 	}
@@ -158,6 +222,20 @@ func (s *Server) createJob(ctx context.Context, jobItemID, userID string) (jobID
 		return "", false, newErr(codeInternalError, "commit_failed")
 	}
 	return jobID, false, nil
+}
+
+// replayOrRefuseCancelled is the answer for an item the platform has marked cancelled, and it is the one place the guard
+// yields: if the item ALREADY has a module job (found on the pool, i.e. committed), that job is the answer and the run is the
+// idempotent replay it has always been. That can only matter in one interleave: two first runs of the same item serialize on the
+// per-user advisory lock above, the first creates the job and commits, the platform marks the item, and the second, which passed
+// the existing-job lookup before the first committed, would otherwise report a cancelled item that does have a job. Otherwise
+// nothing exists for this item and the run is refused, with the internal reason saying which of the two statements saw the
+// marker (logged against the request id, never serialized). Either way nothing is written by this call.
+func (s *Server) replayOrRefuseCancelled(ctx context.Context, jobItemID, userID, reason string) (string, bool, *apiError) {
+	if existingID, ok := s.jobIDByItem(ctx, jobItemID, userID); ok {
+		return existingID, true, nil
+	}
+	return "", false, newErr(codeJobItemCancelled, reason)
 }
 
 // resolveCampaignLimits resolves the three §5.2/§5.3 dials for userID through userconfig.Resolve —

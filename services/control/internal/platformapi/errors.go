@@ -21,7 +21,27 @@ const (
 	codeRateLimited      = "rate_limited"       // 429
 	codeInternalError    = "internal_error"     // 500
 	codePaused           = "paused"             // 503 (additive, fix-plan item 12)
+	codeJobItemCancelled = "job_item_cancelled" // 409 (additive, ADR-0022: the platform's terminal marker on a never-submitted item)
 )
+
+// codeJobItemCancelled is the refusal of POST /v1/run for a job item the platform has marked `cancelled`
+// (public.job_items.status, written by the platform when a job expires, is cancelled or fails before the item was
+// submitted). Three notes, because each was a decision (the full argument is ADR-0022):
+//
+//   - 409 AND NOT 400, 404 OR 422. The request is well-formed and names an item that exists for this tenant, so it is not
+//     validation_failed (400: "this request's FIELDS are wrong"; job_item_invalid is that, an item whose content cannot be
+//     frozen) and not not_found (404). What refuses it is the item's STATE, which is the family `conflict` already answers on
+//     this route (job_item_already_accepted, user_campaign_active): a request that conflicts with the current state of the
+//     thing it names. 422 is not used because module 2, which must answer identically, has no `unprocessable`. A client that
+//     does not know the new code degrades by status (describe.error_codes[]) to its `conflict` handling, which is "do not
+//     retry this request unchanged": exactly right, the marker is never moved back.
+//
+//   - A NEW CODE, NOT A CAUSE UNDER `conflict`. run's `conflict` carries the four closed causes in details[] (run_causes.go) and
+//     they are all "wait, or change something on your side"; a cancelled item is dead for good. A platform that read the
+//     envelope of a cancelled item as one of the waiting causes would retry it for ever, so the two get different codes.
+//
+//   - IT IS NEVER AN EXISTENCE SIGNAL ACROSS TENANTS. It is answered only for an item that belongs to the caller's own tenant;
+//     another tenant's cancelled item is the same 404 not_found as an id that does not exist.
 
 // codePaused is the intake refusal at the `refuse_new` and `stopped` rungs of the dispatch ladder
 // (send_byo_0052, rung.go). Three notes, because each was a decision:
@@ -64,6 +84,7 @@ var fixedMessages = map[string]string{
 	codeRateLimited:      "Too many requests.",
 	codeInternalError:    "An unexpected error occurred.",
 	codePaused:           "Dispatch is paused by an operator; retry later.",
+	codeJobItemCancelled: "This job item has been cancelled and cannot be run.",
 }
 
 var codeStatus = map[string]int{
@@ -76,6 +97,7 @@ var codeStatus = map[string]int{
 	codeRateLimited:      http.StatusTooManyRequests,
 	codeInternalError:    http.StatusInternalServerError,
 	codePaused:           http.StatusServiceUnavailable,
+	codeJobItemCancelled: http.StatusConflict,
 }
 
 // fieldDetail is one structured field-level error. Code, Current and Limit are ADDITIVE and omitted

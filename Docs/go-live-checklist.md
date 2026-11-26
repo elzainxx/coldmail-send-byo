@@ -80,6 +80,8 @@ FKs, reads and test-send's one `INSERT` into `public.job_items` (`send_byo_0037`
 migration run):
 - `public.users(id uuid PRIMARY KEY, ...)`
 - `public.job_items(id uuid PRIMARY KEY, campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text NULL, reply_to text, status text, created_at timestamptz, ...)`
+  — `status` is READ by `POST /v1/run` (ADR-0022): the one value `cancelled` is the platform's terminal marker on a never-submitted item and is
+  refused with `409 job_item_cancelled`; every other value (the default `pending`, anything else, NULL) runs as before.
 
 **Action:** diff the real platform schema against the assumed shape above. If the platform's real
 columns differ (renamed, different type, additional NOT NULL constraints the module doesn't

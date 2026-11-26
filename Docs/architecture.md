@@ -23,6 +23,8 @@ Single repository, multiple deployable services:
   `send_byo_owner` role); the platform owns `public`. The module reads exactly two platform
   tables (`public.users`, `public.job_items`) and writes exactly one thing in them: test-send's `INSERT` into
   `public.job_items` (six columns, `send_byo_0037`, M3-P3-OD-17). It never updates or deletes either table and holds no `DELETE`.
+  `POST /v1/run` reads one more thing off a job item than the campaign it belongs to: its `status`, so that an item the platform
+  has marked `cancelled` is refused (`409 job_item_cancelled`, ADR-0022) and never becomes a job.
 
 For the physical deployment (which VPS runs what, the private network, systemd units,
 version-skew ordering), see `install-and-deploy.md`.

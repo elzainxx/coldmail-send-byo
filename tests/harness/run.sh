@@ -527,6 +527,14 @@ hr; echo "SUITE 14: Phase 4 C1 — POST /v1/pause and POST /v1/resume LIVE (real
 # shellcheck disable=SC1091
 source tests/harness/phase4_pause.sh
 
+hr; echo "SUITE 15: Phase 4 close-out — POST /v1/run REFUSES an item the platform marked cancelled LIVE (real Control, real worker, real Mailpit; public.job_items.status = 'cancelled' written by an UPDATE as the platform's stand-in)"; hr
+# C4m3-1 the marked item is refused 409 job_item_cancelled and nothing is written (the module's role holds no UPDATE: the marker is the platform's write);
+# C4m3-2 the paired control: a pending item of the same tenant and campaign is accepted and sent exactly once while the sink holds nothing for the cancelled item's
+# recipient for a window many times the dispatch tick; C4m3-3 an item that already ran is still the idempotent replay (same job, one send) after it is marked;
+# C4m3-4 another tenant gets the plain 404; C4m3-5 a suspended user's cancelled item still answers job_item_cancelled. Reuses phase4_pause.sh's p4_* helpers.
+# shellcheck disable=SC1091
+source tests/harness/phase4_cancelled_item.sh
+
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"
 hr
