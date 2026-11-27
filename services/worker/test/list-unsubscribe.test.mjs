@@ -9,7 +9,14 @@
 //      <- the paired control is the same case WITHOUT the pair: it carries neither header, and the with-pair render differs from it (so the
 //         comparison can fail)
 //   2  THE WIRE: through the REAL worker (WorkerStream -> runSmtpSession) to a REAL SMTP server, the message the server accepts holds both headers exactly
-//      once, exactly as sent, and is exactly the assembled bytes; the twin without the pair holds neither.
+//      once, exactly as sent, and is exactly the assembled bytes; the twin without the pair holds neither. The frame is also sent in the key order Go's
+//      encoding/json gives a map (alphabetical, so the pair sits BETWEEN the §8 headers in the object), because that is the order the live Control writes.
+//
+// WHICH PATH THESE TESTS DRIVE. Group 1 calls assembleDataBytes, the function stream.js's #runJob calls on the push_job it received (`assembleDataBytes(pj.send, pj.variation,
+// jobId)`); group 2 does not call it directly at all: a JSON push_job frame goes over a socket into the real WorkerStream, which decodes it, runs #runJob, assembles, and speaks SMTP to
+// a real server. That is the path a live message takes, with only the mTLS wrap substituted (proven elsewhere). Nothing between the frame's `send.headers` and the DATA bytes
+// filters a Control-supplied header: the pair survives every variation stage. (The first live run of SUITE 16 reported the pair missing; the cause was the harness fetching the
+// wrong message from Mailpit, whose /api/v1/messages ignores a `query` parameter and returns the newest message of the whole sink, not anything in this worker.)
 //
 // Run: node --test services/worker/test/list-unsubscribe.test.mjs   (Node 24)
 
@@ -140,11 +147,13 @@ const waitFor = async (pred, ms = 8000) => {
 const crlf = (s) => s.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"); // what smtp.js's DATA normalisation does to bare LFs
 
 // sendThroughWorker runs ONE job through the real worker against a real SMTP server and returns what that server accepted and the worker's report.
-async function sendThroughWorker({ pair, text, variation, jobId = FIXED_JOB_ID }) {
+async function sendThroughWorker({ pair, text, variation, jobId = FIXED_JOB_ID, goKeyOrder = false }) {
   const sink = await startSink({ authResult: "ok" });
   const reports = [];
   const base = goldenSend(jobId);
-  const headers = pair ? { ...base.headers, "List-Unsubscribe": UNSUB, "List-Unsubscribe-Post": POST } : base.headers;
+  let headers = pair ? { ...base.headers, "List-Unsubscribe": UNSUB, "List-Unsubscribe-Post": POST } : base.headers;
+  // Go's encoding/json writes a map[string]string in sorted key order; the live Control's frame therefore carries Date, From, List-Unsubscribe, List-Unsubscribe-Post, Message-ID, ...
+  if (goKeyOrder) headers = Object.fromEntries(Object.entries(headers).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const send = { recipient: base.recipient, from_address: base.from_address, subject: base.subject, body: base.body, headers, ...(text ? { text } : {}) };
   const frame = {
     type: "push_job", request_id: "req-unsub", job_id: jobId, attempt_token: 1, send,
@@ -197,4 +206,22 @@ test("list-unsubscribe wire: under the all-on variation profile the pair still a
   assert.equal(one.report.outcome, "accepted");
   assert.deepEqual(pairLines(one.accepted[0]).sort(), [`List-Unsubscribe-Post: ${POST}`, `List-Unsubscribe: ${UNSUB}`].sort());
   assert.equal(one.accepted[0], two.accepted[0], "a retry of the same item sent different bytes");
+});
+
+test("list-unsubscribe wire: a frame whose headers arrive in the Go Control's sorted key order still puts the pair once each in the header block, and the §8 headers keep their order", async () => {
+  for (const variation of [undefined, GOLDEN_CASES.find((c) => c.name === "header-stages").variation]) {
+    const { report, accepted } = await sendThroughWorker({ pair: true, text: TEXT, goKeyOrder: true, variation, jobId: variation ? "golden-job-headers" : FIXED_JOB_ID });
+    assert.equal(report.outcome, "accepted", `the worker's report was ${JSON.stringify(report)}`);
+    assert.equal(accepted.length, 1);
+    const { lines } = splitHeaderSection(accepted[0]);
+    assert.deepEqual(lines.filter(isPairLine).sort(), [`List-Unsubscribe-Post: ${POST}`, `List-Unsubscribe: ${UNSUB}`].sort(), "the pair is not exactly the two headers, once each, in the header block");
+    if (!variation) {
+      const names = lines.map((l) => l.slice(0, l.indexOf(":")));
+      assert.deepEqual(names.slice(0, 5), ["From", "To", "Subject", "Reply-To", "Message-ID"], "the §8 set lost its order because the frame's keys were sorted");
+    }
+  }
+  // the paired control: the same sorted frame WITHOUT the pair has neither header
+  const none = await sendThroughWorker({ pair: false, goKeyOrder: true });
+  assert.equal(none.report.outcome, "accepted");
+  assert.ok(!/list-unsubscribe/i.test(none.accepted[0]), "a sorted frame without the pair was sent with a List-Unsubscribe header");
 });

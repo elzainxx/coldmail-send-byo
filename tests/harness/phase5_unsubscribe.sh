@@ -55,19 +55,31 @@ u5_wait_sent() { # $1=job id $2=max seconds -> 0 once the job is sent
   done
   return 1
 }
+# WHICH MESSAGE IS WHICH. GET /api/v1/messages does NOT filter: it lists the newest messages and ignores a `query` parameter (the search endpoint is /api/v1/search).
+# The first version of this suite copied phase3_text_part.sh's `messages?query=to:<rcpt>` + `head -1`, which silently returns the NEWEST message of the whole sink, whoever it was
+# for: the first CI run (95aa095) therefore read the message of u5b (no link) when asked for u5a, and reported "x0" for a link that was in fact never looked at (its own
+# failure output showed `To: u5b@...` under the label "item WITH a link"). The older suites that use that form pass only because each fetches the message it has just sent.
+# Here the recipient is matched EXACTLY against the list's own To/From/Reply-To addresses (a sender or a reply-to can never equal a recipient of this suite), and every
+# assertion below also checks the fetched message's own To: line, so a wrong message can no longer pass or fail silently.
+u5_dump() { curl -s "$U5_MAILPIT/api/v1/messages?limit=1000" || true; }
+u5_msg_id() { # $1=recipient -> the id of the newest message addressed to exactly that recipient ("" when none)
+  u5_dump | grep -oE '"ID":"[^"]+"|"Address":"[^"]*"' | awk -F'"' -v t="$1" '$2=="ID"{id=$4} $2=="Address" && $4==t {print id; exit}' || true
+}
 u5_raw() { # $1=recipient -> the message Mailpit received for that recipient, CR stripped (CRLF on the wire)
   local id
-  id="$(curl -s "$U5_MAILPIT/api/v1/messages?query=to:$1" | grep -oE '"ID":"[^"]+"' | head -1 | cut -d'"' -f4 || true)"
+  id="$(u5_msg_id "$1")"
   [[ -n "$id" ]] && curl -s "$U5_MAILPIT/api/v1/message/$id/raw" | tr -d '\r'
 }
 u5_headers() { awk '/^$/{exit} {print}'; }   # the header section of a CR-stripped message (up to the first blank line)
-u5_rcpt_count() { { curl -s "$U5_MAILPIT/api/v1/messages?query=to:$1" | grep -oE '"Address":"[^"]*"' | grep -cF "\"Address\":\"$1\"" || true; } | tr -d ' '; }
+u5_rcpt_count() { { u5_dump | grep -oE '"Address":"[^"]*"' | grep -cxF "\"Address\":\"$1\"" || true; } | tr -d ' '; }   # how many messages the sink holds for exactly that recipient
+u5_is_for() { printf '%s\n' "$1" | u5_headers | grep -qxF "To: $2"; }   # $1=raw message $2=recipient -> the message's own To: line names that recipient
 
 # u5_assert_pair <label> <recipient> <expected url> -> the message of that recipient holds BOTH headers exactly once with that URL, and nothing else List-Unsubscribe
 u5_assert_pair() {
   local label="$1" rcpt="$2" url="$3" raw hdr n_u n_p n_any
   raw="$(u5_raw "$rcpt" || true)"
   if [[ -z "$raw" ]]; then bad "$label: could not find the message for $rcpt in Mailpit"; return 0; fi
+  if ! u5_is_for "$raw" "$rcpt"; then bad "$label: the message fetched for $rcpt is addressed to somebody else (the helper picked the wrong message) — To: line is '$(printf '%s\n' "$raw" | u5_headers | grep -m1 '^To: ' || true)'"; return 0; fi
   hdr="$(printf '%s\n' "$raw" | u5_headers)"
   n_u="$(printf '%s\n' "$hdr" | grep -cxF "List-Unsubscribe: <$url>" || true)"
   n_p="$(printf '%s\n' "$hdr" | grep -cxF "List-Unsubscribe-Post: $U5_POST_VALUE" || true)"
@@ -83,6 +95,7 @@ u5_assert_none() {
   local label="$1" rcpt="$2" raw n_any
   raw="$(u5_raw "$rcpt" || true)"
   if [[ -z "$raw" ]]; then bad "$label: could not find the message for $rcpt in Mailpit"; return 0; fi
+  if ! u5_is_for "$raw" "$rcpt"; then bad "$label: the message fetched for $rcpt is addressed to somebody else (the helper picked the wrong message) — To: line is '$(printf '%s\n' "$raw" | u5_headers | grep -m1 '^To: ' || true)'"; return 0; fi
   n_any="$(printf '%s\n' "$raw" | grep -ciE 'list-unsubscribe' || true)"
   [[ "$n_any" == "0" ]] && ok "$label: the raw message holds NEITHER header (a job without a link is the message it always was)" \
     || bad "$label: a message without a link mentions List-Unsubscribe x$n_any — HEADERS (cat -A): $(printf '%s\n' "$raw" | u5_headers | cat -A | head -20)"
