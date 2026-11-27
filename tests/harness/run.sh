@@ -44,7 +44,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS send_byo_migtest" -c "CREATE DATABASE send_byo_migtest" >/dev/null 2>&1 || true
 $DC exec -T postgres psql -U postgres -d send_byo_migtest -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, unsubscribe_url text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 export TEST_DATABASE_URL="postgres://postgres:${SUPER}@localhost:6432/send_byo_migtest"
 
 # Worker token for the live mTLS test (from .env, written by scripts/dev.sh certs).
@@ -73,7 +73,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 TPL_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template"
 $DC exec -T postgres psql -U postgres -d send_byo_template -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, unsubscribe_url text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 # up-and-set-password: apply the full chain AND set send_byo_app's password out-of-band, so
 # the Phase 1 role-isolation tests (T5/T6/T3e) can connect as send_byo_app against clones.
 if MIGRATE_DATABASE_URL="$TPL_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
@@ -304,7 +304,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 P2_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template_p2"
 $DC exec -T postgres psql -U postgres -d send_byo_template_p2 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, unsubscribe_url text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 if MIGRATE_DATABASE_URL="$P2_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
      tools/send-byo-migrate/bin/send-byo-migrate up-and-set-password >/dev/null 2>&1; then
   export TEST_TEMPLATE_DB="send_byo_template_p2"; echo "  Phase 2 template ready (migrated to head + app password)"
@@ -475,7 +475,7 @@ $DC exec -T postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q \
 P3_DSN="postgres://postgres:${SUPER}@localhost:6432/send_byo_template_p3"
 $DC exec -T postgres psql -U postgres -d send_byo_template_p3 -v ON_ERROR_STOP=1 -q \
   -c "CREATE TABLE IF NOT EXISTS public.users(id uuid primary key default gen_random_uuid(), email text, is_active boolean default true, created_at timestamptz default now())" \
-  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
+  -c "CREATE TABLE IF NOT EXISTS public.job_items(id uuid primary key default gen_random_uuid(), campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text, unsubscribe_url text, reply_to text, status text, created_at timestamptz default now())" >/dev/null 2>&1
 if MIGRATE_DATABASE_URL="$P3_DSN" SEND_BYO_MODULE_PASSWORD="${SEND_BYO_MODULE_PASSWORD:-devmodulepass}" \
      tools/send-byo-migrate/bin/send-byo-migrate up-and-set-password >/dev/null 2>&1; then
   export TEST_TEMPLATE_DB="send_byo_template_p3"; echo "  Phase 3 template ready"
@@ -534,6 +534,13 @@ hr; echo "SUITE 15: Phase 4 close-out — POST /v1/run REFUSES an item the platf
 # C4m3-4 another tenant gets the plain 404; C4m3-5 a suspended user's cancelled item still answers job_item_cancelled. Reuses phase4_pause.sh's p4_* helpers.
 # shellcheck disable=SC1091
 source tests/harness/phase4_cancelled_item.sh
+
+hr; echo "SUITE 16: Phase 5 S4 — the one-click unsubscribe pair LIVE (public.job_items.unsubscribe_url -> List-Unsubscribe and List-Unsubscribe-Post, real Control, real worker, real Mailpit, real migration 0060; restarts the Control AND the worker while two items wait)"; hr
+# U5-1 a campaign with two items, one WITH a link and one WITHOUT: the raw message Mailpit received for the first holds BOTH headers exactly once with that item's URL, the second
+# holds NEITHER; U5-2 the same shape accepted while the dispatch rung holds sending, the Control and the worker restarted, then resumed: the same bytes (the link lives in Postgres);
+# U5-3 a non-https link is refused at run with 400 validation_failed and writes nothing; U5-4 describe advertises list_unsubscribe. Reuses phase4_pause.sh's p4_* helpers.
+# shellcheck disable=SC1091
+source tests/harness/phase5_unsubscribe.sh
 
 hr
 echo "HARNESS RESULT: $PASS passed, $FAIL failed"

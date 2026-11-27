@@ -20,9 +20,10 @@ module repositories use the same layout and file naming. The numbers, titles and
 | [ADR-0020](./ADR-0020-post-v1-cancel-flags-then-cancels-and-the-guard-lives-in-the-database.md) | `POST /v1/cancel` flags, then cancels, in two transactions; "an in-flight item never returns to the queue once cancelled" is enforced by a database guard | accepted |
 | [ADR-0021](./ADR-0021-per-campaign-pause-is-a-stored-row-every-claim-checks-and-never-touches-the-suspension.md) | Per-campaign pause (`POST /v1/pause`, `POST /v1/resume`) is a stored row that every claim statement checks, independent of the user's suspension and of every item's state | accepted |
 | [ADR-0022](./ADR-0022-run-refuses-an-item-the-platform-marked-cancelled-in-both-statements-that-touch-it.md) | `POST /v1/run` refuses a job item the platform marked `cancelled` (`409 job_item_cancelled`), with the exclusion in BOTH statements that touch the item; the replay of an item that already ran wins | accepted |
+| [ADR-0023](./ADR-0023-the-unsubscribe-headers-are-built-by-the-control-from-one-nullable-column-and-refused-when-unsafe.md) | The one-click unsubscribe headers (`List-Unsubscribe`, `List-Unsubscribe-Post`) are built by the Control from one nullable column (`send_byo.jobs.unsubscribe_url`, copied from the platform by the same statement as the body) and refused, requeued and never sent, when they cannot be written safely; also the research note for the change | accepted |
 
 **Decisions made after ADR-0018 that have no ADR of their own are recorded in [`../open-decisions.md`](../open-decisions.md) under their own ids** (`M3-CI-OD-1` … `M3-CI-OD-4`: rooted DNS names, SPF
 CIDR lengths, macro-bearing SPF targets, every image pinned by digest). They were ruled and implemented without an ADR of their own because each is fully
 specified, with its evidence and its controls, in its ledger entry; if one is ever superseded it gets an ADR (ADR-0020 onward) that points back at the entry.
 
-**Next number: ADR-0023.**
+**Next number: ADR-0024.**

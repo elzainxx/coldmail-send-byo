@@ -154,8 +154,11 @@ func TestPreflight_RequiresRenderedText(t *testing.T) {
 		t.Fatalf("the pre-flight refused for the wrong reason (it must name rendered_text): %v", err)
 	}
 
+	// The control needs BOTH named columns now (a table with rendered_text alone is refused for unsubscribe_url: that half is
+	// TestPreflight_RequiresUnsubscribeURL), so the pass below proves rendered_text is the one this half was refused for.
 	mustExec(t, conn, `ALTER TABLE public.job_items ADD COLUMN rendered_text text`)
+	mustExec(t, conn, `ALTER TABLE public.job_items ADD COLUMN unsubscribe_url text`)
 	if _, err := conn.Exec(ctx, string(sqlBytes)); err != nil {
-		t.Fatalf("control: the pre-flight REFUSED a public.job_items that has rendered_text: %v", err)
+		t.Fatalf("control: the pre-flight REFUSED a public.job_items that has rendered_text and unsubscribe_url: %v", err)
 	}
 }

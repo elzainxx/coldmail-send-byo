@@ -776,8 +776,10 @@ The other three dials have no boolean at all. `autopause_enabled` does not touch
 
 ### Two of the four have a standing cost while shadowed
 
-`autopause_mode` and `campaign_expiry_mode` are safe to leave at `shadow` indefinitely: you get a logged
-decision instead of a pause, or a reported stuck campaign instead of a terminated one. Both recoverable.
+`autopause_mode` and `campaign_expiry_mode` are safe to leave at `shadow` while you observe: you get a logged
+decision instead of a pause, or a reported stuck campaign instead of a terminated one. Both recoverable. The owner's rule (2026-11-27) is to promote them, like
+`autoquarantine_mode`, after 14 days of real traffic if their shadow rows show no false positive, otherwise to tune and observe 7 more days; the dated schedule from launch day L is in
+[`go-live-checklist.md`](./go-live-checklist.md#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l).
 
 The other two are not, and they are REQUIRED promotions in
 [`go-live-checklist.md`](./go-live-checklist.md) item 14:
@@ -791,7 +793,7 @@ The other two are not, and they are REQUIRED promotions in
   only postpones each account, so a small shadow count does not mean a small commitment.
 
 `account_purge_mode=enforce` is **irreversible per row**. There is no undo for a purged credential, so
-promote it only after you have read the count.
+promote it only after you have read the count. The owner's dates for the two REQUIRED promotions: `retention_mode` at L+14, `account_purge_mode` at L+28.
 
 ### Reading the shadow evidence
 
@@ -2069,6 +2071,8 @@ a user who never comes back stay on the old key indefinitely — which is a live
 user's accounts (step 5 below refuses to unfreeze while any row is unmigrated) or, if a partial
 unfreeze is forced, a permanently-orphaned old-labelled row per CLAUDE.md Rule 1's config-ordering
 posture on rejecting rather than clamping.
+
+**The owner accepted this for V1 on 2026-11-27** ([`accepted-risk-master-key.md`](./accepted-risk-master-key.md), awaiting signature).
 
 **This is not a procedure this phase builds.** Inventing an operator-side workaround would require a
 second Decrypt call site outside the send path, which Rule 6 forbids adding casually. The honest

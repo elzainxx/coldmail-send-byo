@@ -8,6 +8,10 @@ four disposition tables below or has its own `RULED` section). Nothing is deferr
 deliberately postponed live in [`future-work.md`](future-work.md), not here. The paragraphs from here to the
 disposition summary are the 2026-08-04 position, **kept as written for provenance** — their "97" was true on that date.
 
+**(2026-11-27): four owner decisions are recorded below as `M3-OWN-OD-1` to `-4`** — a new id series for decisions the owner takes outside a phase (the campaign expiry window, the
+`CLAUDE.md` status block, the master key without rotation, the retention window and the promotion dates). All four are decided; the ledger still has **zero open items**, and the
+113-id recount above is unchanged (it counted the `M3-P<phase>-OD-<n>` and `M3-CI-OD-<n>` series only).
+
 **(2026-08-04): ALL 97 ITEMS ARE RULED.** The queue is empty again. The two that were
 AWAITING RULING as of 2026-08-03 — [M3-P8-OD-7](#m3-p8-od-7--ruled-a-2026-08-04-module-3s-ledger-stays-at-its-own-path-it-is-not-moved-onto-module-2s)
 (the ledger path collision) and [M3-P8-OD-8](#m3-p8-od-8--ruled-2026-08-04-drop-the-two-never-consumed-keys-keep-score_alert_threshold-against-a-named-future-work-item)
@@ -2034,9 +2038,55 @@ harness's certs and sink), so nothing regresses with the move — the proof that
 
 ---
 
+## M3-OWN-OD-1 — DECIDED 2026-11-27 (owner): the campaign expiry window is 30 days
+
+**The question.** `campaign_expiry_sec` was seeded by `send_byo_0042` at `{"v":604800}` (7 days). The evidence the original value was chosen on (the local test run's
+Stage 10.4/10.6) is in none of the four repositories, so the value could not be re-derived; the go-live checklist carried it as "not determined".
+
+**DECIDED (the owner, 2026-11-27): 30 days, `campaign_expiry_sec` = 2592000.** `campaign_expiry_mode` stays `shadow`: the window does not terminate anything until the mode is promoted,
+under the rule in M3-OWN-OD-4.
+
+**How it is built.** `send_byo_0061` DELETEs the `campaign_expiry_sec` row and re-INSERTs it at `{"v":2592000}` for both `value` and `default_value`. It is a DELETE + re-INSERT and not an
+UPDATE for the reason [M3-P7-OD-11](#m3-p7-od-11--ruled-2026-08-02-zero-unit_price_credits-quotedescribes-cost-fields-become-inert-under-the-flat-subscription-model) already ruled
+(`send_byo_0048`): CLAUDE.md Rule 1, "`default_value` is never mutated" — the new row's own default, at its own new seed site, is the one that is never mutated again. The down re-INSERTs the
+`send_byo_0042` row verbatim (`{"v":604800}`). No key is added or removed, so `config-manifest.txt` and the `config_drift` gate are unchanged; neither config-ordering invariant involves this
+key; the per-user override column (`send_byo.user_config_overrides.campaign_expiry_sec`, NULL = inherit) is unchanged. The window is frozen at a campaign's first job, so a campaign that already
+started keeps the `expires_at` it was given. Dependents updated in the same change: [`config-reference.md`](./config-reference.md) (the row), [`go-live-checklist.md`](./go-live-checklist.md).
+
+## M3-OWN-OD-2 — DECIDED 2026-11-27 (owner): the `CLAUDE.md` status-block rewrite of 2026-11-13 is accepted
+
+**The question.** The 2026-11-13 documentation unification rewrote `CLAUDE.md`'s **status block** (its 2026-08-01 text, "Phases 2–8 are planned … not yet built", had been false for months) while
+Rule 8 says the file changes only by a deliberate, reviewed change. The parent repository's `OWNER-ACTIONS.md` (section 7) asked the owner to accept the diff or revert it.
+
+**DECIDED (the owner, 2026-11-27): accepted.** The block records *state*, not rules (it says so itself), and the **rules** (§0 onward) were not touched. This entry is the record of
+the acceptance; `CLAUDE.md` itself is not edited by it.
+
+## M3-OWN-OD-3 — DECIDED 2026-11-27 (owner): the master key has no rotation in V1, and that is accepted
+
+**The question.** Go-live checklist item 12: module 3's master key cannot be rotated by the operator (no Control-side bulk re-encrypt exists; the operator has never held a plaintext credential), so a
+suspected key compromise has no clean recovery short of every user re-entering their SMTP credential ([`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3).
+
+**DECIDED (the owner, 2026-11-27): accepted for V1.** The record is [`accepted-risk-master-key.md`](./accepted-risk-master-key.md) (the risk, why it is accepted, the mitigations that exist,
+what rotation would need). **Awaiting the owner's signature** in its `Owner: ____  Date: ____` block; the decision is taken, the signature is not yet. Rotation itself stays deferred and registered
+as [`FW-M3-4`](./future-work.md#fw-m3-4--server-side-bulk-credential-re-encryption-master-key-rotation-has-no-operator-path).
+
+## M3-OWN-OD-4 — DECIDED 2026-11-27 (owner): the retention window is 7 days, and the promotions have dates
+
+**DECIDED (the owner, 2026-11-27).** Relative to launch day L (the day live traffic is first switched on):
+- `debug_log_retention_days` = **7**. It is the seeded value (`{"v": 7}`, `send_byo_0010`); nothing changes in the system.
+- `retention_mode` → `enforce` at **L+14**, after reading its shadow count; `account_purge_mode` → `enforce` at **L+28** (14 days after the previous), after reading its shadow count; one at a time.
+- `autoquarantine_mode`, `autopause_mode` and `campaign_expiry_mode` leave `shadow` after 14 days of real traffic if their shadow rows show no false positive; otherwise they are tuned and observed
+  7 more days.
+
+The dated table, where each shadow count is read and what to tune is in [`go-live-checklist.md`](./go-live-checklist.md#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l).
+This replaces the open-ended posture the checklist's items 6 and 14 gave `autoquarantine_mode`, `autopause_mode` and `campaign_expiry_mode`; the two REQUIRED promotions (item 14) are unchanged
+in substance and now carry their dates.
+
+---
+
 ## Honest final position
 
-**Zero open (2026-11-14).** Every one of the 113 ids in this file (109 phase items, 4 CI items) is ruled, and every ruling is either
+**Zero open (2026-11-14; re-read 2026-11-27, four owner decisions added above as `M3-OWN-OD-1` to `-4`, all decided, still zero open).** Every one of the 113 ids in this file (109 phase items, 4 CI items) is ruled, and every ruling is either
 landed in the tree or is a ruling to *not* build something (in which case the thing it declined is named in [`future-work.md`](future-work.md)
 and cited from the ruling). This file holds no pending question; if one is raised later it is added above this section and this section is
 re-read, not edited in place.

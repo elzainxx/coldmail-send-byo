@@ -30,13 +30,18 @@ const (
 // snapshot, so there is no instant between the check and the insert for a marker to land in. A row lock on the item (the other
 // way to close the gap) is not available: the module's role holds SELECT and INSERT on that table and never UPDATE, and
 // SELECT ... FOR SHARE needs UPDATE.
+//
+// J2 also copies public.job_items.unsubscribe_url (Phase 5 S4: the per-recipient unsubscribe link, a nullable column the PLATFORM adds
+// and writes) into send_byo.jobs.unsubscribe_url, beside rendered_text. A NULL stays NULL (the message is then exactly as it was, with
+// neither List-Unsubscribe header); a value the module's own CHECK (jobs_unsubscribe_url_check, send_byo_0060) refuses is the same
+// 23514 -> 400 validation_failed the other copied columns answer. J1 is unchanged: it needs no part of the link.
 const (
 	jobItemReadSQL = `SELECT campaign_id, status IS NOT DISTINCT FROM 'cancelled' FROM public.job_items WHERE id = $1 AND user_id = $2`
 
 	jobItemFreezeSQL = `INSERT INTO send_byo.jobs
-	   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to, state, next_attempt_at)
+	   (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, unsubscribe_url, reply_to, state, next_attempt_at)
 	 SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
-	        ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.reply_to, 'queued', NOW()
+	        ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.unsubscribe_url, ji.reply_to, 'queued', NOW()
 	 FROM public.job_items ji
 	 WHERE ji.id = $1 AND ji.user_id = $2 AND ji.status IS DISTINCT FROM 'cancelled'
 	 RETURNING id`

@@ -378,6 +378,12 @@ func (s *Server) handleDescribe(w http.ResponseWriter, r *http.Request) {
 			// publishes no request schemas for the core routes. Always true: it is a property of this build, not of
 			// a deployment's configuration.
 			"pause_resume": true,
+			// Phase 5 S4, additive: for a job whose public.job_items.unsubscribe_url is set, the module sends
+			// `List-Unsubscribe: <URL>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 2369, RFC 8058), each
+			// exactly once, and neither header for a job without one. Like plain_text_alternative, the input is a COLUMN of
+			// the platform-owned job_items table and not an API request field, so it is advertised here as a capability.
+			// Always true: a property of this build, not of a deployment's configuration.
+			"list_unsubscribe": true,
 		},
 		"pricing": map[string]any{
 			"currency": "credits",

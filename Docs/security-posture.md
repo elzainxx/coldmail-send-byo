@@ -227,6 +227,9 @@ this is worse for module 3 than for module 2 is in
 [`operator-runbook.md#disaster-recovery-key-backup-and-rotation`](./operator-runbook.md#disaster-recovery-key-backup-and-rotation) §3; this page states the fact and links rather than
 duplicating that procedure, since another change to this docs set covers it directly.
 
+**Accepted for V1 by the owner (2026-11-27).** The record — the risk in plain words, why it is accepted, the mitigations that exist today, what rotation would need — is
+[`accepted-risk-master-key.md`](./accepted-risk-master-key.md); it awaits the owner's signature. Rotation stays deferred as `FW-M3-4` in [`future-work.md`](./future-work.md).
+
 ### There is no rate limiting or lockout on the API surfaces
 
 Neither Domain A nor Domain B limits authentication attempts or request volume. bcrypt comparison
@@ -393,9 +396,9 @@ window, §14 the two `enforce` promotions).
       `retention_mode` and `account_purge_mode` are not (the two rows above).
 - ⏳ The database's own at-rest encryption is enabled (the only control over `send_logs` content
       besides retention).
-- ⏳ No account has a **private-range or link-local `smtp_host`** — certificate verification is
-      skipped for those, and users can set this themselves. `SELECT id, smtp_host FROM
-      send_byo.accounts;` and eyeball it.
+- ⏳ `smtp_host_allow_cidrs` is **empty** in production (`GET /v1/admin/config`). The destination guard (Phase 3 close-out C4) refuses a private-range or link-local `smtp_host`
+      at add time and at connect time, so users can no longer reach the certificate-verification exemption for those ranges; a non-empty allowlist is the one hole in it.
+      `SELECT id, smtp_host FROM send_byo.accounts;` remains a cheap sanity read.
 - ⏳ `alert_webhook_url` points where you think it does — the value is validated for scheme prefix
       only, and the Control will POST to a private or link-local address just as readily as to your
       alerting service.

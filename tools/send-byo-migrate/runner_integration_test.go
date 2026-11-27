@@ -125,13 +125,15 @@ func TestRunnerLifecycle(t *testing.T) {
 	// the widened completed_at CHECK, the cancel guard trigger and the error-context predicate's new clause), and
 	// 0058 (C5: the nullable jobs.rendered_text column, the optional plain-text part), and Phase 4's 0059 (C1: the
 	// two NEW tables of POST /v1/pause and POST /v1/resume — send_byo.campaign_pauses, the state, and
-	// send_byo.campaign_events, the append-only audit; no existing table is touched). This is the executable
-	// expectation of the migration chain.
+	// send_byo.campaign_events, the append-only audit; no existing table is touched). Then Phase 5's 0060 (S4: the
+	// nullable jobs.unsubscribe_url column and its CHECK, the source of the List-Unsubscribe and List-Unsubscribe-Post
+	// headers) and 0061 (the owner's 30-day campaign_expiry_sec, re-seeded by DELETE + INSERT on 0048's precedent: no
+	// new key, the row only). This is the executable expectation of the migration chain.
 	wantChain := []string{"0000", "0001", "0002", "0003", "0004", "0005", "0006", "0007",
 		"0008", "0009", "0010", "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019",
 		"0020", "0021", "0022", "0023", "0024", "0025", "0026", "0027", "0028",
 		"0029", "0030", "0031", "0032", "0033", "0034", "0035", "0036", "0037", "0038", "0039", "0040", "0041",
-		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055", "0056", "0057", "0058", "0059"}
+		"0042", "0043", "0044", "0045", "0046", "0047", "0048", "0049", "0050", "0051", "0052", "0053", "0054", "0055", "0056", "0057", "0058", "0059", "0060", "0061"}
 
 	// --- Apply ---
 	if err := r.Up(ctx); err != nil {
@@ -662,6 +664,10 @@ func TestRunnerLifecycle(t *testing.T) {
 	assertTextMigration(t, admin)
 	// 0059 (Phase 4 C1): the two pause/resume tables, their grants, key, CHECK, append-only guard and cascade, driven.
 	assertCampaignPauseMigration(t, admin)
+	// 0060 (Phase 5 S4): the nullable unsubscribe link column and its CHECK, driven on both sides.
+	assertUnsubscribeMigration(t, admin)
+	// 0061 (the owner's 30-day window): the re-seeded row, value and default_value both, and only that row.
+	assertCampaignExpiryReseed(t, admin)
 	if cp.cancelledWithoutCompletedAccepted {
 		t.Fatal("after Up: jobs_completed_at_valid_check accepted state='cancelled' with completed_at NULL (0057 did not move cancelled to the terminal branch)")
 	}
@@ -689,9 +695,16 @@ func TestRunnerLifecycle(t *testing.T) {
 	// completed_at CHECK would have to rewrite or delete the record that the platform asked for a stop, and a
 	// schema revert has no business doing that. Driven for real, BEFORE the loop reverses it: one committed
 	// cancelled job, a Down that must fail and roll back WHOLE, then the row is removed and the loop proceeds. ---
-	// 0057 is not the head of the chain any more (0058 and 0059 follow it), and the runner refuses to roll back a version
-	// while a higher one is applied -- a refusal that would make the assertion below pass for the WRONG reason. So
-	// 0059 and 0058 are reversed first (cleanly), and the refusal under test is checked to be the CHECK constraint's.
+	// 0057 is not the head of the chain any more (0058, 0059, 0060 and 0061 follow it), and the runner refuses to roll back a
+	// version while a higher one is applied -- a refusal that would make the assertion below pass for the WRONG reason. So
+	// 0061, 0060, 0059 and 0058 are reversed first (cleanly), and the refusal under test is checked to be the CHECK constraint's.
+	for _, v := range []string{"0061", "0060"} {
+		if err := r.Down(ctx, v); err != nil {
+			t.Fatalf("Down %s (to make 0057 the head): %v", v, err)
+		}
+	}
+	assertUnsubscribeDown(t, admin)
+	assertCampaignExpiryDown(t, admin)
 	if err := r.Down(ctx, "0059"); err != nil {
 		t.Fatalf("Down 0059 (to make 0057 the head): %v", err)
 	}
@@ -699,7 +712,7 @@ func TestRunnerLifecycle(t *testing.T) {
 	if err := r.Down(ctx, "0058"); err != nil {
 		t.Fatalf("Down 0058 (to make 0057 the head): %v", err)
 	}
-	headChain := wantChain[:len(wantChain)-2]
+	headChain := wantChain[:len(wantChain)-4]
 	cancelledJob := seedCommittedCancelledJob(t, admin)
 	if err := r.Down(ctx, "0057"); err == nil {
 		t.Fatal("Down 0057 succeeded while a job is in state 'cancelled': it must refuse (and roll back) rather than rewrite or delete cancelled rows")
@@ -722,7 +735,7 @@ func TestRunnerLifecycle(t *testing.T) {
 		t.Fatal("after Down 0057 (no cancelled rows): cancel_requested_at or fn_jobs_cancel_guard is still present")
 	}
 	if err := r.Up(ctx); err != nil {
-		t.Fatalf("re-Up after Down 0057, 0058 and 0059: %v", err)
+		t.Fatalf("re-Up after Down 0057, 0058, 0059, 0060 and 0061: %v", err)
 	}
 	if got := versions(t, admin); !equalStrings(got, wantChain) {
 		t.Fatalf("after re-Up: versions = %v, want %v", got, wantChain)
@@ -907,6 +920,14 @@ func TestRunnerLifecycle(t *testing.T) {
 					t.Fatalf("after Down 0053: %q is GONE — 0053's down must remove exactly its own four rows. autoquarantine_mode and dispatch_mode belong to EARLIER migrations that have not been reversed yet at this point in the loop, and every boolean/tuning key it gates has live consumers of its own", key)
 				}
 			}
+		}
+		// 0061's down puts the ORIGINAL 0042 row back, verbatim (7 days); 0060's down drops the unsubscribe column and its CHECK and
+		// nothing else. (Both were already driven once above, when they were reversed to make 0057 the head; this is the second pass.)
+		if v == "0061" {
+			assertCampaignExpiryDown(t, admin)
+		}
+		if v == "0060" {
+			assertUnsubscribeDown(t, admin)
 		}
 		// 0059's down drops its two tables and the append-only guard's function, and nothing else (the neighbours survive).
 		if v == "0059" {

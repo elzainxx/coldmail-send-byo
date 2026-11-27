@@ -290,7 +290,7 @@ set equality and a control that reproduces the old construction and must be caug
 
 | Method | Path | Phase | Purpose |
 |---|---|---|---|
-| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`, and, since the Phase 3 close-out C5, `plain_text_alternative:true` — see "The optional plain-text part" below — and, since Phase 4 C1, `pause_resume:true` — see "`POST /v1/pause` and `POST /v1/resume`" below) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
+| GET | `/v1/describe` | Phase 9; M3-Phase 7 | module self-description (Phase 9 §2, finalized): `capabilities` (honest — `sequences:false`, no tracking, `content_variation:true`, and, since the Phase 3 close-out C5, `plain_text_alternative:true` — see "The optional plain-text part" below — and, since Phase 4 C1, `pause_resume:true` — see "`POST /v1/pause` and `POST /v1/resume`" below — and, since Phase 5 S4, `list_unsubscribe:true` — see "The per-recipient unsubscribe link" below) + `pricing` (`model:"flat_subscription"` per M3-P7-OD-11 — corrected from an earlier `"flat_per_recipient"` label that never matched this module's actual billing; `unit_price_credits` — the SAME live value `quote` multiplies by, seeded `0` — and `tiers` — `shared`/`dedicated`, the one real V1 axis, **identical unit price in V1**; dedicated is isolation, not a premium — plus **`cost_fields_inert`** (bool, additive, D22/fix-plan 5b): `true` when `unit_price_credits` is `0`, i.e. when `quote`'s `cost` is structurally zero rather than computed, so a cost-preview UI can tell "this module does not charge per recipient" from "the price lookup returned 0". **DERIVED from the live `unit_price_credits` on every request, never hardcoded** — `unit_price_credits` stays live-retunable (Rule 1), so an operator who sets it non-zero flips this to `false` on the very next request; a frozen `true` would tell a client the cost half is inert while the module is actually charging) + **`models[]`** (fix-plan item 6 — the platform's whole declared set of pricing models, `{flat_per_recipient, flat_subscription, free}`, ADDITIVE-ONLY per Rule 5; `model` above is always a MEMBER of it. `free` is declared though neither sender reports it, deliberately: the point of publishing the set is that a client writes its branch once and handles a module it has not met yet, so declaring only today's two values would make a third module's launch a client-side code change) + **`extension_routes[]`/`schemas`** (M3-Phase 7 §5.1 — see the dedicated note below the user-owned account surface's table) + **`vocabularies{}`/`error_codes[]`** (fix-plan item 8 — see the dedicated note below) |
 
 **`GET /v1/describe`'s `extension_routes[]`** (M3-Phase 7 §5.1) — every Domain A user-facing route
 below except the core routes (`quote`/`run`/`cancel`/`pause`/`resume`/`report`/`describe` are implicit, uniform across
@@ -403,6 +403,12 @@ prevent.
 > (`omitempty`), so a message without a text part is the same frame an older Control sent; with it the worker builds
 > `multipart/alternative` (text/plain first, text/html last), without it the single-part message it has always built,
 > byte for byte. Never a credential, never logged. See "The optional plain-text part" below.
+>
+> **Phase 5 S4 — two more entries in the existing `push_job.send.headers` map; no new field.** For a job whose frozen
+> `send_byo.jobs.unsubscribe_url` is set, the Control adds `List-Unsubscribe` (the URL in angle brackets) and
+> `List-Unsubscribe-Post` (`List-Unsubscribe=One-Click`) to the Control-supplied headers it already sends; a job without a link
+> sends neither key, the same map an older Control sent. The worker relays them like any extra header. See "The per-recipient
+> unsubscribe link" below.
 >
 > **M3-Phase 8 Chunk 2 (§2.2, P8-2/P8-3) — the additive `variation` block on `push_job`.** `push_job`
 > gains one optional field, `variation`: the Control's RESOLVED content-variation toggle snapshot
@@ -799,6 +805,70 @@ Content variation composes: encoding rotation puts the same rotated encoding on 
 change the HTML part and leave the text part alone.
 
 `GET /v1/describe` advertises `capabilities.plain_text_alternative: true` (additive).
+
+(The run copy quoted above is the statement as C5 left it. Two later changes touch the same statement and are described in their own sections: the cancelled-item exclusion
+(Phase 4, ADR-0022) in its `WHERE`, and the unsubscribe link (Phase 5 S4) in its column lists, below. The current text of the statement is the constant `jobItemFreezeSQL` in
+`platformapi/store.go`, and the platform's `db/module-statements.txt` holds it as label `J2`.)
+
+### The per-recipient unsubscribe link: `List-Unsubscribe` and `List-Unsubscribe-Post` (Phase 5 S4, ADR-0023)
+
+Mailbox providers require two headers of a bulk sender: `List-Unsubscribe` (RFC 2369: the unsubscribe URL in angle brackets) and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+(RFC 8058: tells the provider it may POST to that URL to unsubscribe the recipient without opening a page). This module sends through the **user's own SMTP account**, so the **Control**
+builds both headers and the worker only relays them. **There is no field for the link on `POST /v1/run`** (an `unsubscribe_url` field on the run request is an unknown field, `400
+validation_failed`): like the HTML body and the text part, the link lives on the platform-owned `public.job_items` row and the module copies it at run time.
+
+| Where | Name | Type | Owner |
+|---|---|---|---|
+| `public.job_items` | `unsubscribe_url` | `text`, **nullable, no default**: a single https URL, at most 2000 characters by the platform's own rule, no whitespace, control character, `<` or `>` | the **platform** adds (`platform_0017`, which runs **before** this module's migrations) and writes it; this module never creates or alters anything in the `public` schema and only reads it |
+| `send_byo.jobs` | `unsubscribe_url` | `text`, nullable, no default, `CHECK jobs_unsubscribe_url_check` (below) | this module, `send_byo_0060` (forward additive migration) |
+| `push_job.send.headers` (Control to worker) | `List-Unsubscribe`, `List-Unsubscribe-Post` | strings; present **only** when the job has a link | built by the Control, `dispatch/headers.go` |
+
+**The statements that mention it.** `POST /v1/run`'s read (`J1`) is unchanged. The statement that freezes the item into the module's job (`J2`, `jobItemFreezeSQL`) copies the column in the
+same statement that copies `rendered_body` and `rendered_text`; this is its exact current text:
+
+```sql
+INSERT INTO send_byo.jobs
+  (job_item_id, campaign_id, user_id, recipient_email, rendered_subject, rendered_body, rendered_text, unsubscribe_url, reply_to, state, next_attempt_at)
+SELECT ji.id, ji.campaign_id, ji.user_id, ji.recipient_email,
+       ji.rendered_subject, ji.rendered_body, ji.rendered_text, ji.unsubscribe_url, ji.reply_to, 'queued', NOW()
+FROM public.job_items ji
+WHERE ji.id = $1 AND ji.user_id = $2 AND ji.status IS DISTINCT FROM 'cancelled'
+RETURNING id
+```
+
+The single claim (`dispatch.go` `claimQuery`) and the per-user claim (`loop.go` `claimForUserQuery`) end `RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body,
+rendered_text, unsubscribe_url, reply_to`; `writeSendLog` reads the column too. Test-send (`send_byo_0037`'s six-column `INSERT` into `public.job_items`) names no `unsubscribe_url` and keeps
+working against a platform table that has the column: its job has no link and its message has neither header.
+
+**The migration and the pre-flight.** `send_byo_0060` adds `send_byo.jobs.unsubscribe_url` and `jobs_unsubscribe_url_check`: the value is NULL, or it matches `^https://[^[:space:]<>]+$`, is at
+most 2001 characters (the scheme's 8 plus the platform's 1993; PostgreSQL caps a regex repetition bound at 255, so the length is its own `char_length` predicate) and contains no control
+character (`!~ '[[:cntrl:]]'`: the C0 range and DEL, which `[:space:]` leaves open). A value that violates it fails `23514`, which `POST /v1/run` answers `400 validation_failed` (the existing
+`job_item_invalid` path), writing no job row; the same item runs once its link is fixed. The migration pre-flight (`db/preflight/check_platform_tables.sql`) **refuses to migrate against a
+`public.job_items` that has no `unsubscribe_url` column**, naming it: a platform that has not run `platform_0017` yet becomes a refused migration (nothing applied) instead of a
+`POST /v1/run` that answers 500.
+
+**What is sent**
+
+- A job whose link is **NULL** behaves exactly as before: the message has neither header, byte for byte (the worker's golden bytes are unchanged).
+- A job with a link gets `List-Unsubscribe: <URL>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, **each exactly once**, in the header section, with the Control-supplied headers
+  (after the §8 set, which keeps its order). They pass through the content-variation stage untouched: header re-ordering moves them but never edits, drops or duplicates them, and no stage
+  adds a header of the same name (a worker test over all 19 golden cases, with and without a text part, requires that removing the two lines from the with-link render gives exactly the
+  without-link render). The **From-gate**, the **plain-text part** and the rest of the message are unchanged.
+- **The header-safe builder** (`listUnsubscribeHeaders`) refuses, before anything is spent or sent: any CR, LF, NUL, TAB or other control character, a space, `<` or `>` (which would close the
+  angle brackets and smuggle in a second URL), any byte above 0x7E (a raw 8-bit byte in a header needs SMTPUTF8, which this module does not negotiate; a URI is ASCII by definition, so an
+  internationalised link must arrive already encoded), a non-`https` or empty value, and a header line over RFC 5322's 998 octets (this module does not fold headers and a URL cannot be folded).
+  It is stricter than the database CHECK on purpose: the CHECK stops a bad value at the database, the builder stops one that reached the row some other way. A refused link **sends nothing**,
+  runs **before an account is selected** (so no slot of the daily limit is spent) and **requeues the job** with a fixed internal reason (`header_invalid:<slug>`, never the URL, never
+  serialized to a client).
+- `send_logs.headers` (the record of the §8 set the Control built) holds the same two entries for such a job and nothing for a job without one.
+- Never logged: the link is a per-recipient capability, so no log line, error or requeue reason carries it.
+
+`GET /v1/describe` advertises `capabilities.list_unsubscribe: true` (additive).
+
+The proofs: `unsubscribe_run_test.go` (platformapi: the copy, NULL stays NULL, no request field, the CHECK through `run`, describe), `list_unsubscribe_test.go` (dispatch: the builder over every byte
+value, both claims, the frame, the hostile link refused before the account is spent), `services/worker/test/list-unsubscribe.test.mjs` (every variation profile and the real SMTP wire), the
+migration lifecycle (`unsubscribe_probe_test.go`: the column, the CHECK driven both sides, the refused pre-flight and its control, the down) and `tests/harness/phase5_unsubscribe.sh` (SUITE 16: a
+real worker and a real sink, two items, one with a link and one without, and a restart).
 
 ### The four causes of a `run` 409, and what `quote` predicts (Phase 3 close-out C2)
 

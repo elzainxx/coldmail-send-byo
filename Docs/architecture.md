@@ -24,7 +24,9 @@ Single repository, multiple deployable services:
   tables (`public.users`, `public.job_items`) and writes exactly one thing in them: test-send's `INSERT` into
   `public.job_items` (six columns, `send_byo_0037`, M3-P3-OD-17). It never updates or deletes either table and holds no `DELETE`.
   `POST /v1/run` reads one more thing off a job item than the campaign it belongs to: its `status`, so that an item the platform
-  has marked `cancelled` is refused (`409 job_item_cancelled`, ADR-0022) and never becomes a job.
+  has marked `cancelled` is refused (`409 job_item_cancelled`, ADR-0022) and never becomes a job. It also copies two nullable columns of
+  the item into the job, `rendered_text` (the plain-text part) and `unsubscribe_url` (the per-recipient link the Control turns into the
+  `List-Unsubscribe` and `List-Unsubscribe-Post` headers at send time, ADR-0023); the migration pre-flight requires both columns by name.
 
 For the physical deployment (which VPS runs what, the private network, systemd units,
 version-skew ordering), see `install-and-deploy.md`.

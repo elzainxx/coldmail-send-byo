@@ -523,15 +523,15 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 	// what the worker was handed. Date is send-time; send_logs records the attempt time — acceptable
 	// (the header Date lives in the message; send_logs is a debug record, Phase 1 #28).
 	var recipient, subject, body string
-	var replyTo *string
+	var replyTo, unsubscribeURL *string
 	var fromAddr string
 	var fromName *string
 	err := tx.QueryRow(ctx,
-		`SELECT j.recipient_email, j.rendered_subject, j.rendered_body, j.reply_to,
+		`SELECT j.recipient_email, j.rendered_subject, j.rendered_body, j.reply_to, j.unsubscribe_url,
 		        a.from_address, a.from_name
 		 FROM send_byo.jobs j
 		 LEFT JOIN send_byo.accounts a ON a.id = j.assigned_account_id
-		 WHERE j.id = $1`, jobID).Scan(&recipient, &subject, &body, &replyTo, &fromAddr, &fromName)
+		 WHERE j.id = $1`, jobID).Scan(&recipient, &subject, &body, &replyTo, &unsubscribeURL, &fromAddr, &fromName)
 	if err != nil {
 		return err
 	}
@@ -544,6 +544,12 @@ func (h *OutcomeHandler) writeSendLog(ctx context.Context, tx pgx.Tx, jobID, smt
 		rt = *replyTo
 	}
 	headers := buildHeaders(fn, fromAddr, recipient, subject, rt, messageIDFor(jobID, fromAddr), time.Now().UTC())
+	// The one-click unsubscribe pair the Control handed the worker (Phase 5 S4), so the record matches the bytes sent. A job
+	// without a link has none; a link that cannot be rebuilt here was never sent (resolveAndPush refused it first), so the
+	// record simply omits the pair rather than fail the outcome transaction.
+	if listHeaders, lerr := listUnsubscribeHeaders(unsubscribeURL); lerr == nil {
+		_ = addHeaders(headers, listHeaders)
+	}
 
 	_, err = tx.Exec(ctx,
 		`INSERT INTO send_byo.send_logs

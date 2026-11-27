@@ -230,7 +230,7 @@ SET state = 'assigned',
     lease_expires_at = NOW() + make_interval(secs => $2),
     updated_at = NOW()
 WHERE id IN (SELECT id FROM claimed)
-RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, rendered_text, reply_to`
+RETURNING id, user_id, campaign_id, recipient_email, rendered_subject, rendered_body, rendered_text, unsubscribe_url, reply_to`
 
 // claimedJob is the row the claim returns.
 type claimedJob struct {
@@ -241,7 +241,11 @@ type claimedJob struct {
 	subject    string
 	body       string
 	text       *string // rendered_text: the optional plain-text alternative (NULL when the platform wrote none)
-	replyTo    *string
+	// unsubscribeURL is the per-recipient unsubscribe link (send_byo_0060), frozen at run from the platform's
+	// public.job_items.unsubscribe_url: NULL when the platform wrote none, in which case the message carries neither
+	// List-Unsubscribe header. It is read by BOTH claim statements and turned into the two headers by listUnsubscribeHeaders.
+	unsubscribeURL *string
+	replyTo        *string
 }
 
 // selectedAccount is the selected sending account for a job's user (§5.1).
@@ -323,6 +327,17 @@ func (d *Dispatcher) TryDispatch(ctx context.Context) (string, error) {
 // threaded through to selectAccountForJob so a job-loop of N claimed jobs does not re-read
 // send_byo.config N times in a single tick.
 func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, workerID string, cfg Config) (bool, error) {
+	// 1b) The job's one-click unsubscribe pair (Phase 5 S4), built by the header-safe builder BEFORE an account is selected:
+	// a job whose link cannot be written as a valid header must not spend a slot of anyone's daily limit (accountConsume
+	// increments daily_sent_count before any send), and it must never reach a socket. A refused link requeues the job with a
+	// fixed slug (never the URL: it is a per-recipient capability) and sends nothing; a NULL link is no headers at all.
+	listHeaders, lerr := listUnsubscribeHeaders(job.unsubscribeURL)
+	if lerr != nil {
+		log.Printf("dispatch: job %s has an unsendable unsubscribe link (%v) — requeued, not sent (header guard) level=warn", job.id, lerr)
+		d.requeue(ctx, job.id, "header_invalid:"+lerr.Error())
+		return false, nil
+	}
+
 	// 2) Resolve an eligible account from the job's user and atomically CONSUME it (§3/§7, THE
 	// double-booking core — accountConsume increments daily_sent_count in the SAME statement that
 	// admits the row, before any send is attempted). On exhaustion of the user's account set,
@@ -381,6 +396,15 @@ func (d *Dispatcher) resolveAndPush(ctx context.Context, job claimedJob, workerI
 
 	msgID := messageIDFor(job.id, acct.fromAddress)
 	headers := buildHeaders(fromName, acct.fromAddress, job.recipient, job.subject, replyTo, msgID, sentAt)
+	// The unsubscribe pair joins the Control-supplied set here, once, so the worker relays it with the rest; a job without
+	// a link adds nothing and the map is exactly what buildHeaders made. A name collision (cannot happen today) refuses
+	// the send the same way an unsendable link does, rather than emit a header twice.
+	if err := addHeaders(headers, listHeaders); err != nil {
+		zero(plaintext)
+		log.Printf("dispatch: job %s: %v — requeued, not sent (header guard) level=error", job.id, err)
+		d.requeue(ctx, job.id, "header_invalid:"+err.Error())
+		return false, nil
+	}
 
 	pj := workerproto.PushJob{
 		Type:      workerproto.TypePushJob,
@@ -475,7 +499,7 @@ func (d *Dispatcher) claimOne(ctx context.Context, workerID string, jobMaxProces
 	}
 	var j claimedJob
 	err = tx.QueryRow(ctx, claimQuery, workerID, jobMaxProcessingTimeSec).
-		Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.text, &j.replyTo)
+		Scan(&j.id, &j.userID, &j.campaignID, &j.recipient, &j.subject, &j.body, &j.text, &j.unsubscribeURL, &j.replyTo)
 	if err == pgx.ErrNoRows {
 		return claimedJob{}, false, tx.Commit(ctx) // nothing queued; commit the (no-op) tx
 	}

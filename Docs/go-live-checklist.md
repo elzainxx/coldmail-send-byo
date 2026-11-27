@@ -9,7 +9,7 @@ Cross-reference: `Docs/history/module-2/pre-live-gates.md` (G1-G4, the platform-
 authoritative source for the reasoning behind each item; this document is the single ordered checklist a launch operator actually works through. The owner-level
 ordering across **all** modules is the parent repository's `OWNER-ACTIONS.md`.
 
-## Status at a glance (2026-11-14)
+## Status at a glance (2026-11-14; the owner's decisions of 2026-11-27 are folded in)
 
 **Legend.** ✅ verified, with the evidence named · ⏳ not done — only the owner can do it (needs the production environment, a real provider account, or a person's
 sign-off) · ➖ deliberately deferred past launch. Nothing below is "unchecked by default": each line says why it is in the state it is in.
@@ -21,25 +21,55 @@ sign-off) · ➖ deliberately deferred past launch. Nothing below is "unchecked 
 | 3 | Advisory-lock band + migration credential | ⏳ | Needs platform-side confirmation; neither is fixable retroactively. |
 | 4 | KMS/IAM separation (platform roles hold no Decrypt) | ⏳ | Not code-checkable. The structural half is tested (the `Decryptor` is wired only into `internal/dispatch`; `internal/adminapi`'s `Encryptor` has no `Decrypt` method); the cloud IAM grant is a sign-off with no automated re-check. |
 | 5 | Provision workers out of band | ⏳ | `tools/provision-worker` and the register / revoke path run on every CI build (`dev.sh certs`, `seed`, the harness). Production provisioning is yours. |
-| 6 | Promote auto-quarantine from `shadow` to `enforce` | ➖ | Deliberately **not** day one — give the shadow ladder real time first. |
+| 6 | Promote auto-quarantine from `shadow` to `enforce` | ➖ | Deliberately **not** day one — give the shadow ladder real time first. **Decided 2026-11-27:** after 14 days of real traffic if the shadow rows show no false positive, otherwise tuned and observed 7 more days ([the schedule](#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l)). |
 | 7 | Accounts are pre-warmed | ⏳ | V1 has no ramp logic; a person decides each account is ready. |
 | 8 | Master-key backup **and** recovery drill (REQUIRED) | ⏳ | The one unrecoverable loss. Nothing in CI can do this for you. |
 | 9 | Module vulnerabilities | ✅ → ⏳ | `govulncheck` reported none in all four Go modules on 2026-11-07 (builder `golang:1.26-alpine`, `pgx` v5.10.0, `x/text` v0.43.0, `x/net` v0.62.0). The advisory database moves — **re-run immediately before the pilot.** |
 | 10 | Monitoring + the webhook poller | ⏳ | Pointing a monitor at your host is yours. Evidence the behaviour behind it works: the on-demand `outage-drill` workflow passed 22/22 on a runner ([run 42500897743](https://github.com/elzainxx/coldmail-send-byo/actions/runs/42500897743)) — Control survives a 50 s `docker stop postgres`, fails closed with only `{code, message, request_id}`, and delivers the in-flight job exactly once afterwards. Re-run it on the deployed shape. |
 | 11 | Real-provider smoke test | ⏳ | **Written, deliberately not yet run** (a local sink cannot rehearse a real provider's reputation response). Needs item 8 first. |
-| 12 | Sign off that the master key has no rotation path (REQUIRED) | ⏳ | A signed accepted-risk record; the code cannot sign it for you. |
-| 13 | Decide the `send_logs` retention window (REQUIRED) | ⏳ | A decision you can defend to a user, made before real content accumulates. |
-| 14 | Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED) | ⏳ | Both ship at `shadow`; until promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised window. Promote one at a time, after reading the shadow counts. |
-| Pre-flight | Final pre-flight (below) | ✅ / ⏳ | The harness and all 15 gates + 7 self-tests are green on the runner at the last push (✅); every deployment-specific line is yours (⏳). |
+| 12 | Sign off that the master key has no rotation path (REQUIRED) | ⏳ accepted, awaiting signature | **Accepted for V1 by the owner, 2026-11-27.** The record is [`accepted-risk-master-key.md`](./accepted-risk-master-key.md); the only thing left is the owner's signature in its `Owner: ____  Date: ____` block, which the code cannot supply. Rotation stays in [`future-work.md`](./future-work.md) `FW-M3-4`. |
+| 13 | Decide the `send_logs` retention window (REQUIRED) | ✅ decided | **Decided 2026-11-27: `debug_log_retention_days = 7`.** It is the seeded value (`{"v": 7}`, `send_byo_0010`), so nothing needs to be changed in the system; read it back with `GET /v1/admin/config` before real content flows. |
+| 14 | Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED) | ⏳ | Both ship at `shadow`; until promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised window. Promote one at a time, after reading the shadow counts. **Decided 2026-11-27:** `retention_mode` at launch day L+14, `account_purge_mode` at L+28 ([the schedule](#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l)). |
+| Pre-flight | Final pre-flight (below) | ⏳ | The harness and all 16 gates + 8 self-tests are enumerated in the workflow and were last recorded green on the runner on 2026-11-14 at 15 + 7, before `response_leak_gate` and its self-test were added (re-confirm at the head you deploy); every deployment-specific line is yours (⏳). |
 
-**Count.** Of the 14 numbered items: 0 done, 1 cleared-with-a-re-run-due (§9), 1 deliberately deferred (§6), 12 owner actions. That is the honest state of a module whose
-engineering is finished: the remaining work is yours, and none of it is a decision this module is waiting on (the decision ledger has zero open items).
+**Count.** Of the 14 numbered items: 1 decided (§13), 1 cleared-with-a-re-run-due (§9), 1 accepted and awaiting only the owner's signature (§12), 1 deliberately deferred
+with its rule decided (§6), 10 owner actions (§14 among them, with its dates decided). That is the honest state of a module whose engineering is finished: the remaining work
+is yours, and none of it is a decision this module is waiting on (the decision ledger has zero open items).
 
-**Not determined.** The campaign-expiry gap the local test run recorded evidence for (Stage 10.4/10.6): the evidence is not in any of the four repositories, so it could be
-neither confirmed nor closed. `campaign_expiry_mode` defaults to `shadow`, so campaign expiry does not enforce until it is promoted (§14).
+**Decided (was "not determined").** The campaign-expiry window. The evidence the local test run once recorded for it (Stage 10.4/10.6) is in none of the four repositories and
+could not be re-derived, so the owner decided the value on 2026-11-27: **30 days (`campaign_expiry_sec` = 2592000)**, seeded by `send_byo_0061` (the `send_byo_0042` seed was 7 days).
+`campaign_expiry_mode` stays `shadow`, so campaign expiry does not enforce until it is promoted under the rule in the schedule below (§14). Ledger entry:
+[`open-decisions.md`](./open-decisions.md#m3-own-od-1--decided-2026-11-27-owner-the-campaign-expiry-window-is-30-days) (`M3-OWN-OD-1`).
 
 The dated notes that preceded this table (what the 2026-11-07 post-audit fixes changed, what the first real GitHub runner found on 2026-11-08, the From-gate DNS ruling, the
 database-outage drill) are kept verbatim in [Appendix — dated status notes](#appendix--dated-status-notes-2026-11-0708) at the end of this file.
+
+---
+
+## Owner decisions of 2026-11-27, and the dated steps from launch day L
+
+These are **decisions the owner has taken**, not open questions; each is also recorded in the ledger ([`open-decisions.md`](./open-decisions.md), `M3-OWN-OD-1` to `-4`).
+**Launch day L** is the day live traffic is first switched on (after the Final pre-flight and the real-provider smoke test). "14 days of real traffic" means 14 days after L
+with real users sending.
+
+| When | Step | Before you do it | Where to read the number |
+|---|---|---|---|
+| Before real content flows (§13) | `debug_log_retention_days` = **7**. Decided. It is the seeded value (`{"v": 7}`, `send_byo_0010`): nothing to change. | `GET /v1/admin/config` reads 7. | — |
+| L | `campaign_expiry_sec` = **2592000** (30 days), seeded by `send_byo_0061`. `campaign_expiry_mode`, `retention_mode`, `account_purge_mode`, `autoquarantine_mode` and `autopause_mode` all start at `shadow`. | Nothing: this is the seeded state. A campaign's window is frozen at its first job, so a later change never moves a running campaign. | — |
+| **L+14** | `retention_mode` → `enforce` (§14). | Read the accumulated shadow count. A number far larger than your traffic and the 7-day window predict means the window is wrong: fix that first. After the `PUT`, watch one sweep tick and confirm the deletion count matches the shadow count that preceded it. | log line `retention_shadow_would_delete` |
+| **L+28** (14 days after the step above actually happened) | `account_purge_mode` → `enforce` (§14). **Irreversible per row.** | Read the accumulated shadow count against `account_retention_window_sec`. Never promote it together with, or in the same sitting as, `retention_mode`. | log line `purge_shadow_would_delete` |
+| On or after L+14, after 14 days of real traffic | `autoquarantine_mode`, `autopause_mode` and `campaign_expiry_mode` leave `shadow` for `enforce`, **one at a time** with a sweep tick between them (the runbook's rule), if their shadow rows show **no false positive**. If they show one: tune, observe **7 more days**, then decide again. | Judge each shadow row against the account's or campaign's own history (§6 for the quarantine triggers). A would-expire line that names a campaign which was in fact draining normally is a false positive, and expiry is terminal (`failed` is not re-queued by correcting the window afterwards). | `GET /v1/admin/health` → `.shadow` (`would_quarantine_count`, `recent[]`); `account_events` rows with `actor='system'` and a `reason` starting `shadow_would_pause:`; log line `campaign_expiry_shadow_would_expire` (it counts jobs as well as campaigns) |
+
+Every one of those readers, with the exact commands, is in [`operator-runbook.md#reading-the-shadow-evidence`](./operator-runbook.md#reading-the-shadow-evidence). Tuning dials if a
+shadow row is wrong: `quarantine_consecutive_threshold`, `quarantine_failure_rate_pct`, `quarantine_min_sample` (auto-quarantine), `throttle_pause_seconds` (auto-pause), and
+`campaign_expiry_sec` or the per-user override of it (campaign expiry); all are config `PUT`s, no redeploy ([`config-reference.md`](./config-reference.md)).
+
+**Also decided on 2026-11-27.**
+- **The master key has no rotation in V1: accepted** (§12), recorded in [`accepted-risk-master-key.md`](./accepted-risk-master-key.md), awaiting the owner's signature. Rotation stays in `FW-M3-4`.
+- **Network exposure.** The module listens only on the private network and is never exposed. TLS terminates at the platform's public edge (Caddy), which fronts the platform
+  API and web app only; the platform reaches this module over the private network. Recorded in the platform's `Docs/install.md`.
+- **The `CLAUDE.md` status-block rewrite of 2026-11-13 is accepted.** The owner accepted the diff (the status block was rewritten because its 2026-08-01 text, "Phases 2–8 are planned
+  … not yet built", had been false for months); the **rules** were not touched, and the ledger records it as `M3-OWN-OD-2`. `CLAUDE.md` is not edited by this record (its own Rule 8).
 
 ---
 
@@ -72,16 +102,23 @@ item is not done.
 ## 2. Confirm the real `public.users` / `public.job_items` column shapes (G3 / OD-8)
 
 **Why it blocks:** the module's pre-flight (`db/preflight/check_platform_tables.sql`) checks table
-**existence only**, deliberately (a column-level check would false-fail every time the platform
-legitimately adds an unrelated column). It does NOT verify the actual column set the module's
+**existence**, plus the two columns `POST /v1/run` copies and that the platform adds in its own migrations
+(`rendered_text`, `unsubscribe_url`: a wrong deployment order is a refused migration, not a failing run). It deliberately does NOT
+verify the rest of the column set (a full column-level check would false-fail every time the platform
+legitimately adds an unrelated column), so it does not verify the shape the module's
 FKs, reads and test-send's one `INSERT` into `public.job_items` (`send_byo_0037`) assume.
 
 **Assumed shape** (ADR-0007; verify against the real platform schema before the first live
 migration run):
 - `public.users(id uuid PRIMARY KEY, ...)`
-- `public.job_items(id uuid PRIMARY KEY, campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text NULL, reply_to text, status text, created_at timestamptz, ...)`
+- `public.job_items(id uuid PRIMARY KEY, campaign_id uuid, user_id uuid, recipient_email text, rendered_subject text, rendered_body text, rendered_text text NULL, unsubscribe_url text NULL, reply_to text, status text, created_at timestamptz, ...)`
   — `status` is READ by `POST /v1/run` (ADR-0022): the one value `cancelled` is the platform's terminal marker on a never-submitted item and is
   refused with `409 job_item_cancelled`; every other value (the default `pending`, anything else, NULL) runs as before.
+  — `unsubscribe_url` is READ by `POST /v1/run` (copied into `send_byo.jobs.unsubscribe_url`, `send_byo_0060`): a single `https` URL (at most 2000 characters, no whitespace,
+  control character, `<` or `>`) that the module sends as `List-Unsubscribe: <URL>` plus `List-Unsubscribe-Post: List-Unsubscribe=One-Click`. NULL means no unsubscribe headers,
+  exactly as before. **Deployment order:** the platform migration `platform_0017` (it adds this nullable column to `public.job_items`) runs **before** this module's migrations, and
+  the module's pre-flight (`db/preflight/check_platform_tables.sql`) **refuses to migrate** when the column is missing, naming it in the message. Test-send's six-column `INSERT`
+  (`send_byo_0037`) omits the column, so it must stay nullable.
 
 **Action:** diff the real platform schema against the assumed shape above. If the platform's real
 columns differ (renamed, different type, additional NOT NULL constraints the module doesn't
@@ -214,6 +251,10 @@ change quarantine sensitivity.
 what happens to a REAL account (it starts getting quarantined), not just what the Control observes
 — treat the promotion itself as a deliberate, reviewed operational change, not a config tweak.
 
+**Decided 2026-11-27 (the owner): the rule for "when".** Promote `autoquarantine_mode` after **14 days of real traffic** if its shadow rows show **no false positive**
+(step 2 above is how you judge one); otherwise tune the three dials (step 4) and observe **7 more days**, then decide again. The dated schedule, with
+`autopause_mode` and `campaign_expiry_mode` under the same rule, is [here](#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l).
+
 ---
 
 ## 7. Confirm accounts are pre-warmed (no ramp logic in V1)
@@ -224,10 +265,11 @@ A brand-new account inherits `daily_limit_default` and will be routed up to that
 day one if its owning tenant needs the volume, with no automatic gradual ramp. (What the default
 actually is: [`config-reference.md`](./config-reference.md).)
 
-**Also check while you are looking at the accounts:** no account's `smtp_host` is a private-range or
-link-local address. The API accepts one, but the worker **skips TLS certificate verification** for those
-(a harness affordance for the local sink), so the credential would cross an unverified connection —
-[`security-posture.md`](./security-posture.md) §3.13. `SELECT id, smtp_host FROM send_byo.accounts;`
+**Also check while you are looking at the accounts:** the SMTP host destination guard (Phase 3 close-out C4) refuses a private-range, loopback or
+link-local `smtp_host` at add time and the worker refuses it again at connect time, so a user can no longer reach the worker's
+certificate-verification exemption for those ranges (a harness affordance for the local sink). The one deliberate hole is the
+`smtp_host_allow_cidrs` config key: **confirm it is empty in production** (`GET /v1/admin/config`) — a non-empty value opens the guard for the
+ranges it names. [`security-posture.md`](./security-posture.md) (the destination guard section). `SELECT id, smtp_host FROM send_byo.accounts;` remains a cheap sanity read.
 
 **Action:** if the SMTP accounts being provisioned are genuinely new (freshly created mailboxes,
 new sending domains, accounts that haven't built sending reputation with receiving providers),
@@ -317,9 +359,19 @@ order — one message to yourself, then a second provider, then the deliberate f
 then a small real batch. It is written to be small, to addresses you control, and reversible. Item 8
 (key backup **and** drill) is a prerequisite of this item, not a follow-up.
 
+**Also check, on the first real messages (Phase 5 S4, [ADR-0023](./adr/ADR-0023-the-unsubscribe-headers-are-built-by-the-control-from-one-nullable-column-and-refused-when-unsafe.md)):** view the
+raw source of what each provider received. A message sent for a job with an unsubscribe link must carry `List-Unsubscribe: <https://…>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`
+exactly once each, and the provider's own `DKIM-Signature` should list both in its `h=` tag (RFC 8058 section 4: this module does not sign, the account's provider does, so only a real
+provider can show it). The one-click `POST` to that link must unsubscribe the recipient (the platform's endpoint). A job without a link must carry neither header. The local sink proves the
+bytes, not a provider's behaviour.
+
 ---
 
 ## 12. Confirm the master key has no rotation path, and sign off on that risk explicitly (REQUIRED — no module 2 counterpart)
+
+**Status (2026-11-27): accepted, awaiting signature.** The owner **accepted this risk for V1** on 2026-11-27. The record is
+[`accepted-risk-master-key.md`](./accepted-risk-master-key.md) (the risk in plain words, why it is accepted, the mitigations that exist, what rotation would need). It becomes the
+signed record when the owner fills in its `Owner: ____  Date: ____` block. Rotation stays registered in [`future-work.md`](./future-work.md) `FW-M3-4`.
 
 **Why it blocks, and why this has no equivalent in module 2's checklist.** Module 2's operator could,
 in principle, rotate the master key manually by re-entering every account's plaintext password by
@@ -337,15 +389,17 @@ even a suspected-but-unconfirmed compromise cannot be cleanly rotated away.
 **Action:**
 - ⏳ Read `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3 in full — specifically the paragraph stating rotation is not an
       operator-side procedure — before going live, not after an incident makes it urgent.
-- ⏳ Record an explicit, signed accepted-risk sign-off (who, when, against which version of
-      `operator-runbook.md#disaster-recovery-key-backup-and-rotation` §3) alongside the item 8 key-backup sign-off. This is not satisfied by
+- ⏳ **Sign** [`accepted-risk-master-key.md`](./accepted-risk-master-key.md) (who, when) alongside the item 8 key-backup sign-off. This is not satisfied by
       "we read future-work.md" (item 8's own final-pre-flight checkbox) — it needs its own signature,
       because the consequence (a key compromise has no clean recovery short of re-onboarding every
-      user) is a distinct business decision from "we backed the key up."
+      user) is a distinct business decision from "we backed the key up." The decision itself is taken (accepted, 2026-11-27); only the signature is open.
 
 ---
 
 ## 13. Decide the `send_logs` retention window you can defend to a user (REQUIRED — no module 2 counterpart)
+
+**Status (2026-11-27): DECIDED — `debug_log_retention_days = 7`.** The owner chose 7 days, which is the seeded value (`{"v": 7}`, `send_byo_0010`), so no `PUT` is needed;
+the actions below are kept as the way to confirm and record it. The retention sweep only deletes once `retention_mode` is `enforce` (item 14, scheduled at L+14).
 
 **Why it blocks, and why this has no equivalent in module 2's checklist.** `send_byo.send_logs` holds
 users' message bodies and recipient addresses in plaintext at rest, for `debug_log_retention_days`
@@ -357,20 +411,24 @@ engineering choice, not necessarily one a specific deployment's users would cons
 asked directly.
 
 **Action:**
-- ⏳ Read the current `debug_log_retention_days` value (`config-reference.md`) and decide, explicitly,
-      whether that window is one you could state plainly to a user whose message body and recipient
+- ✅ Decide, explicitly, whether the window is one you could state plainly to a user whose message body and recipient
       list it holds — "we keep your sent message content in plaintext for N days after send, for
-      debugging" — and would still consider fair.
-- ⏳ If not, change it via `PUT /v1/admin/config/debug_log_retention_days` **before** real user
+      debugging" — and would still consider fair. **Decided 2026-11-27: N = 7.**
+- ➖ Changing it (`PUT /v1/admin/config/debug_log_retention_days`) is not needed: 7 is the seeded value. If the owner ever shortens it, do so **before** real user
       content flows through the system — a shorter window going forward does not retroactively purge
       already-written rows early.
-- ⏳ Record the decision (value chosen, and the reasoning) alongside the other go-live sign-offs.
-      This is a product/trust decision, not a technical one, so it belongs here rather than in
+- ⏳ Read the value back (`GET /v1/admin/config`) and record that it reads 7 alongside the other go-live sign-offs.
+      This is a product/trust decision, not a technical one, so it is recorded here rather than in
       `config-reference.md`'s own neutral default documentation.
 
 ---
 
 ## 14. Promote `retention_mode` and `account_purge_mode` to `enforce` (REQUIRED — two promises are not being kept until you do)
+
+**Decided 2026-11-27 (the owner), relative to launch day L:** `retention_mode` → `enforce` at **L+14**, then `account_purge_mode` → `enforce` at **L+28** (14 days after the
+previous), **one at a time**, each only after reading its own shadow count. `autoquarantine_mode`, `autopause_mode` and `campaign_expiry_mode` follow the
+14-days-of-real-traffic rule. The full table, with where each count is read, is
+[here](#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l).
 
 **Why it blocks.** Fix-plan item 13 (`send_byo_0053`, [ADR-0018](./adr/ADR-0018-every-autonomous-mutator-gets-a-shadow-ladder.md))
 put every autonomous mutator behind an `off | shadow | enforce` dial, all four **seeded at `shadow`** so a
@@ -381,8 +439,8 @@ yet, and for two of the four dials it is a state you cannot stay in:
 |---|---|---|
 | `retention_mode` | `send_byo.send_logs` — recipient, subject, body, headers, SMTP response — **grows without bound**, and the retention promise in [`security-posture.md`](./security-posture.md) is not being kept | **NO — blocks go-live** |
 | `account_purge_mode` | a soft-deleted account's `credential_ciphertext` **outlives its promised retention window**; the user deleted their account and their SMTP credential is still in your database | **NO — blocks go-live** |
-| `autopause_mode` | throttle responses are logged instead of applied — sending continues into a provider that is rate-limiting you | yes, indefinitely; recoverable |
-| `campaign_expiry_mode` | a permanently-stuck campaign is reported instead of terminated, so its jobs sit `queued` forever | yes, indefinitely; recoverable |
+| `autopause_mode` | throttle responses are logged instead of applied — sending continues into a provider that is rate-limiting you | yes, until the promotion rule above says otherwise; recoverable |
+| `campaign_expiry_mode` | a permanently-stuck campaign is reported instead of terminated, so its jobs sit `queued` forever (the window is 30 days, `campaign_expiry_sec` = 2592000, decided 2026-11-27) | yes, until the promotion rule above says otherwise; recoverable |
 
 The two blocking ones are not tuning gaps. They are **commitments to users** that the system is silently
 not honouring while the dial is shadowed, and item 13's whole trade — accepting a behaviour change on
@@ -398,24 +456,24 @@ visible, and those lines are what you read to decide you are ready.
 walked back the same way if the first enforcing tick surprises you.
 
 **Action:**
-- ⏳ Read the accumulated `retention_shadow_would_delete` counts from the Control's logs. Confirm the
+- ⏳ **At L+14:** read the accumulated `retention_shadow_would_delete` counts from the Control's logs. Confirm the
       number is what you expect for your traffic and `debug_log_retention_days` (item 13). A number far
       larger than expected means the window, not the dial, is wrong — fix that first.
-- ⏳ Read the accumulated `purge_shadow_would_delete` counts the same way, against
+- ⏳ **At L+28:** read the accumulated `purge_shadow_would_delete` counts the same way, against
       `account_retention_window_sec`. **Be aware `account_retention_window_sec` is not an enable:**
       setting it enormous does not stop the sweep, it only postpones each individual account, so a small
       count here does not mean a small commitment.
-- ⏳ `PUT /v1/admin/config/retention_mode` with `enforce`. Watch one sweep tick and confirm the
+- ⏳ **At L+14:** `PUT /v1/admin/config/retention_mode` with `enforce`. Watch one sweep tick and confirm the
       deletion count matches the shadow count that preceded it.
-- ⏳ `PUT /v1/admin/config/account_purge_mode` with `enforce`. **This one is irreversible per row** — a
+- ⏳ **At L+28** (14 days after the previous): `PUT /v1/admin/config/account_purge_mode` with `enforce`. **This one is irreversible per row** — a
       purged account's credential ciphertext is gone. Promote it only after the count above is a number
       you have actually looked at.
 - ⏳ Promote these two **one at a time**, not together, and leave a tick between them. If something is
       wrong you want to know which dial caused it.
 - ⏳ Record both promotions (date, the shadow count you read first) alongside the other sign-offs.
-- ➖ Decide `autopause_mode` and `campaign_expiry_mode` separately and without deadline pressure — see
-      item 6's reasoning for auto-quarantine, which applies unchanged to both. Leaving either at `shadow`
-      is a legitimate long-term posture; leaving the two above at `shadow` is not.
+- ⏳ **On or after L+14, after 14 days of real traffic:** `autopause_mode` and `campaign_expiry_mode` (like `autoquarantine_mode`, item 6) leave `shadow` if their shadow rows
+      show no false positive; otherwise tune and observe 7 more days, then decide again. One at a time, a tick between them. Item 6's reasoning applies unchanged to both.
+      A dial left at `shadow` past that rule is a decision the owner takes and records, not a standing default.
 
 ---
 
@@ -437,12 +495,10 @@ walked back the same way if the first enforcing tick surprises you.
    provisioning) and 7 (account pre-warming) — the system has no capacity to route a job until
    these are done. Then item 11 (the real-provider smoke test) — the first live send is a
    deliberate, small, watched one, never a campaign.
-5. **After a launch-safety observation window:** item 6 (auto-quarantine promotion) — deliberately
-   NOT day-one; give the shadow ladder real time to prove itself first. Item 14's two REQUIRED
-   promotions (`retention_mode`, `account_purge_mode`) belong in this same window and are subject to the
-   same "watch it first" discipline — but unlike item 6 they are not optional, and the observation window
-   has to *end*. Both promises they enact are unkept until it does. The other two dials item 14 covers
-   (`autopause_mode`, `campaign_expiry_mode`) are genuinely open-ended like item 6.
+5. **After launch, on the owner's dated schedule** ([the table above](#owner-decisions-of-2026-11-27-and-the-dated-steps-from-launch-day-l)): item 14's two REQUIRED
+   promotions are `retention_mode` at L+14 and `account_purge_mode` at L+28, one at a time, each after reading its shadow count. Item 6 (auto-quarantine promotion) is
+   deliberately NOT day-one: it, `autopause_mode` and `campaign_expiry_mode` leave `shadow` after 14 days of real traffic if their shadow rows show no false positive,
+   otherwise they are tuned and observed 7 more days. The observation window has to *end*: the two promises item 14 enacts are unkept until it does.
 
 ## Final pre-flight (run immediately before flipping live traffic on)
 
@@ -451,12 +507,12 @@ flipping traffic on can confirm, because each is about *their* deployment.
 
 - ⏳ `scripts/dev.sh test` (or the prod-equivalent harness invocation) is green — full behavioral
       suite against the ACTUAL deployed images, not a stale build.
-- ✅ All 15 gates and their 7 self-tests (22 scripts in `tests/harness/checks/`) are green. They are enumerated by name in the `run:` steps of
+- ⏳ All 16 gates and their 8 self-tests (24 scripts in `tests/harness/checks/`) are green at the head you deploy. They are enumerated by name in the `run:` steps of
       `.github/workflows/real-infra.yml`, and `test_enumeration` fails if a script exists that the workflow does not run, so this line cannot drift from the
-      directory the way earlier counts did. Green on the GitHub runner at the last push (2026-11-14); re-confirm after any change you make.
-      The 15: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `consume_contention`, `user_copy_ledger`, `drain_grace`,
-      `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`. The 7 self-tests: `config_consumption_selftest`,
-      `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`, `consume_contention_selftest`, `user_copy_ledger_selftest`.
+      directory the way earlier counts did. Last recorded green on the GitHub runner on 2026-11-14 (then 15 gates + 7 self-tests; `response_leak_gate` came later); re-confirm after any change you make.
+      The 16: `config_drift`, `config_consumption`, `contract_drift`, `migration_lint`, `test_enumeration`, `image_pins`, `dns_search_domain`, `consume_contention`, `user_copy_ledger`, `drain_grace`,
+      `postgres_durability`, `secret_ownership`, `no_secret_leak`, `dsn_scrub_wiring`, `user_output_scrub`, `response_leak_gate`. The 8 self-tests: `config_consumption_selftest`,
+      `test_enumeration_selftest`, `go_suite_selftest`, `dns_search_domain_selftest`, `image_pins_selftest`, `consume_contention_selftest`, `user_copy_ledger_selftest`, `response_leak_gate_selftest`.
 - ⏳ The deployment's SIGTERM grace clears `shutdown_drain_timeout_sec` — `stop_grace_period` if
       you run under Compose, `TimeoutStopSec` if you run under systemd, and **both** if the unit
       wraps a compose file (the shorter of the two wins). `drain_grace` checks the committed dev
@@ -468,15 +524,18 @@ flipping traffic on can confirm, because each is about *their* deployment.
       `dispatch_paused:false`.
 - ⏳ Items 1–5 and 7–13 above are done; item 6 is deliberately deferred to a post-launch
       observation window, per its own section.
-- ⏳ Item 14's two REQUIRED promotions are done: `retention_mode=enforce` and
-      `account_purge_mode=enforce`, each after reading its accumulated shadow count. Until both are
+- ⏳ Item 14's two REQUIRED promotions are **scheduled** (they are read from real traffic's shadow counts, so they cannot be done before launch): `retention_mode=enforce` at L+14 and
+      `account_purge_mode=enforce` at L+28, each after reading its accumulated shadow count. Until both are
       promoted, `send_logs` grows without bound and a deleted user's SMTP credential outlives its promised
-      window — two commitments the system is silently not keeping. Item 14's other two dials
-      (`autopause_mode`, `campaign_expiry_mode`) are a deliberate, open-ended posture decision like item 6.
+      window — two commitments the system is silently not keeping, so put both dates in your calendar on launch day. `autopause_mode` and `campaign_expiry_mode`
+      follow the 14-days-of-real-traffic rule like item 6.
 - ⏳ The master key backup **and drill** (item 8) are done. This is the one item on this page whose
       omission cannot be corrected after the fact.
-- ⏳ The master-key-rotation risk sign-off (item 12) and the `send_logs` retention window decision
-      (item 13) are both recorded — module 3's two go-live items with no module 2 counterpart.
+- ⏳ The master-key-rotation risk sign-off (item 12: accepted 2026-11-27, signature outstanding in [`accepted-risk-master-key.md`](./accepted-risk-master-key.md)) and the `send_logs` retention window decision
+      (item 13: decided 2026-11-27, 7 days; read the value back) are both recorded — module 3's two go-live items with no module 2 counterpart.
+- ⏳ The module listens only on the private network and is never exposed (no public ingress to its APIs, health port or worker link); TLS terminates at the platform's public
+      edge (Caddy), recorded in the platform's `Docs/install.md`.
+- ⏳ The platform migration `platform_0017` (`public.job_items.unsubscribe_url`, nullable) has run before this module's migrations; the pre-flight refuses to migrate without it.
 - ⏳ You have read [`future-work.md`](./future-work.md) and accept the V1 limits it records —
       particularly that there is **no bounce or complaint data**, so provider-side monitoring is your
       only deliverability feedback loop.
